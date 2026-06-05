@@ -1,0 +1,190 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.securitynotifications",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": ["", "en"],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "Security Notifications",
+        "description": "Administration interface for Security Notifications management",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleUrl": "i18n/i18n.properties",
+                    "supportedLocales": ["", "en"],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "extends": {
+            "extensions": {
+                "sap.ui.controllerExtensions": {
+                    "sap.fe.templates.ObjectPage.ObjectPageController": {
+                        "controllerName": "admin.securitynotifications.ext.controller.NotificationActions"
+                    }
+                }
+            }
+        },
+        "resources": {
+            "css": []
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "MySecurityNotificationsList",
+                    "target": "MySecurityNotificationsList"
+                },
+                {
+                    "pattern": "MySecurityNotifications({key}):?query:",
+                    "name": "MySecurityNotificationsObjectPage",
+                    "target": "MySecurityNotificationsObjectPage"
+                }
+            ],
+            "targets": {
+                "MySecurityNotificationsList": {
+                    "type": "Component",
+                    "id": "MySecurityNotificationsList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/MySecurityNotifications",
+                            "entitySet": "MySecurityNotifications",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None",
+                                        "selectionMode": "Multi"
+                                    },
+                                    "actions": {
+                                        "BulkMarkAsSeen": {
+                                            "press": "admin.securitynotifications.ext.BulkActions.onBulkMarkAsSeen",
+                                            "visible": true,
+                                            "enabled": true,
+                                            "text": "Mark as Seen",
+                                            "requiresSelection": true
+                                        },
+                                        "BulkDelete": {
+                                            "press": "admin.securitynotifications.ext.BulkActions.onBulkDelete",
+                                            "visible": "{= ${user>/isAdmin} === true}",
+                                            "enabled": "{= ${user>/isAdmin} === true}",
+                                            "text": "Delete",
+                                            "requiresSelection": true
+                                        }
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "MySecurityNotifications": {
+                                    "detail": {
+                                        "route": "MySecurityNotificationsObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "MySecurityNotificationsObjectPage": {
+                    "type": "Component",
+                    "id": "MySecurityNotificationsObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/MySecurityNotifications",
+                            "editableHeaderContent": false
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

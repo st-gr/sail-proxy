@@ -1,0 +1,36 @@
+# Validation Service Test Configuration
+version: '3.8'
+
+services:
+  admin-validation:
+    build:
+      context: .
+      dockerfile: Dockerfile.validation
+    ports:
+      - "4004:4004"
+    environment:
+      - NODE_ENV=development
+      - CDS_REQUIRES_DB_KIND=sqlite
+      - CDS_REQUIRES_DB_CREDENTIALS_URL=db/admin.db
+    volumes:
+      - ./db:/app/db
+      - ./src:/app/src
+    command: ["pnpm", "run", "dev"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4004/validate/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+  # Test client for validation
+  validation-test:
+    image: node:20-alpine
+    depends_on:
+      - admin-validation
+    volumes:
+      - ./dist:/app/dist
+      - ./node_modules:/app/node_modules
+    working_dir: /app
+    command: ["node", "dist/services/admin/src/test/validation-service.test.js", "http://admin-validation:4004/validate"]
+    profiles:
+      - test

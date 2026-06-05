@@ -1,0 +1,39 @@
+# Docker Compose Registry-Only Mode
+#
+# This override file removes all build directives, forcing Docker to only
+# pull pre-built images from the configured container registry.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.registry.yml up
+#
+# Or add this to your shell profile:
+#   alias dc-registry="docker-compose -f docker-compose.yml -f docker-compose.registry.yml"
+#
+# This mode is useful for:
+#   - Production-like environments
+#   - CI/CD testing with published images
+#   - Users who don't need to build locally
+#   - Faster startup times (no build step)
+#
+# Prerequisites:
+#   - Images must exist in the registry
+#   - Proper authentication to the registry (if private)
+#   - Correct DOCKER_REGISTRY, DOCKER_ORGANIZATION, and DOCKER_TAG values
+#
+
+services:
+  gateway:
+    build: null
+    pull_policy: always
+
+  admin:
+    build: null
+    pull_policy: always
+
+  ollama:
+    build: null
+    pull_policy: always
+
+  nginx:
+    build: null
+    pull_policy: always

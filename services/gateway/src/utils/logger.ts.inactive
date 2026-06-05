@@ -1,0 +1,582 @@
+import * as winston from 'winston';
+import * as path from 'path';
+import * as fs from 'fs';
+
+// Define log levels with their numerical values
+const LOG_LEVELS = {
+  ERROR: 0,
+  WARN: 1,
+  INFO: 2,
+  DEBUG: 3,
+  TRACE: 4
+} as const;
+
+// Map from string level to Winston log level
+const LEVEL_MAP = {
+  'ERROR': 'error',
+  'WARN': 'warn',
+  'INFO': 'info',
+  'DEBUG': 'debug',
+  'TRACE': 'silly'
+} as const;
+
+// ANSI color codes for console output
+const COLORS = {
+  ERROR: '\x1b[31m', // Red
+  WARN: '\x1b[33m',  // Yellow
+  INFO: '\x1b[32m',  // Green
+  DEBUG: '\x1b[36m', // Cyan
+  TRACE: '\x1b[35m', // Magenta
+  RESET: '\x1b[0m'   // Reset
+} as const;
+
+type LogLevel = keyof typeof LOG_LEVELS;
+
+interface LogConfig {
+  api_config?: {
+    logging?: {
+      defaultLevel?: string;
+      components?: Record<string, string>;
+      log_folder_path?: string;
+    };
+  };
+}
+
+interface LogMeta {
+  [key: string]: any;
+  component?: string;
+  headers?: Record<string, any>;
+}
+
+// Custom Winston format for colorized component output
+const colorizedComponentFormat = winston.format((info: winston.Logform.TransformableInfo) => {
+  const { level, message, component } = info;
+  const color = level === 'error' ? COLORS.ERROR 
+              : level === 'warn' ? COLORS.WARN
+              : level === 'info' ? COLORS.INFO
+              : level === 'debug' ? COLORS.DEBUG
+              : COLORS.TRACE;
+
+  info.message = component 
+    ? `${color}[${component}]${COLORS.RESET} ${message}` 
+    : message;
+  
+  return info;
+});
+
+// Ensure log directory exists
+function ensureLogDirectory(logDir: string): string {
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+  return logDir;
+}
+
+class Logger {
+  private sharedLogger: winston.Logger | null = null;
+  private defaultLevel: string;
+  private componentLevels: Record<string, string> = {};
+  private initialized: boolean = false;
+  private logFolderPath: string = './logs';
+  private logDir: string = '';
+
+  constructor() {
+    this.defaultLevel = process.env.LOG_LEVEL || 'INFO';
+    
+    // Increase the max listeners limit to prevent warnings
+    process.setMaxListeners(20);
+    
+    // Initialize with default settings
+    this.initialize();
+  }
+
+  private initialize(): void {
+    try {
+      // Load config directly from file instead of using configService
+      let config: LogConfig | undefined;
+      const configPath = process.env.CONFIG_FILE_PATH || path.join(__dirname, '../api_config.json');
+      if (fs.existsSync(configPath)) {
+        try {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        } catch (parseError: any) {
+          console.error(`Error parsing config file: ${parseError.message}`);
+        }
+      }
+
+      // Extract logging configuration
+      if (config?.api_config?.logging) {
+        const loggingConfig = config.api_config.logging;
+        
+        // Get default log level using most permissive approach
+        const envLevel = process.env.LOG_LEVEL;
+        const configLevel = loggingConfig.defaultLevel;
+        const fallbackLevel = 'INFO';
+        
+        // Determine the most permissive (highest numerical value) level
+        const envLevelValue = envLevel ? (LOG_LEVELS[envLevel.toUpperCase() as LogLevel] || LOG_LEVELS.INFO) : -1;
+        const configLevelValue = configLevel ? (LOG_LEVELS[configLevel.toUpperCase() as LogLevel] || LOG_LEVELS.INFO) : -1;
+        const fallbackLevelValue = LOG_LEVELS.INFO;
+        
+        if (envLevelValue >= configLevelValue && envLevelValue >= fallbackLevelValue) {
+          this.defaultLevel = envLevel || fallbackLevel;
+        } else if (configLevelValue >= envLevelValue && configLevelValue >= fallbackLevelValue) {
+          this.defaultLevel = configLevel || fallbackLevel;
+        } else {
+          this.defaultLevel = fallbackLevel;
+        }
+        
+        // Get component specific levels
+        if (loggingConfig.components) {
+          this.componentLevels = loggingConfig.components;
+        }
+        
+        // Get log folder path
+        this.logFolderPath = loggingConfig.log_folder_path || './logs';
+      } else {
+        this.logFolderPath = './logs';
+      }
+
+      // Ensure log directory exists
+      this.logDir = ensureLogDirectory(path.resolve(path.join(__dirname, '..', this.logFolderPath)));
+
+      // Create the shared logger only once
+      this.createSharedLogger();
+      
+      this.initialized = true;
+    } catch (err: any) {
+      console.error(`Error initializing logger: ${err.message}`);
+      
+      // Create a basic fallback logger
+      this.createFallbackLogger();
+    }
+  }
+
+  // Find the most permissive log level needed across all components
+  getMostPermissiveLevel(): string {
+    let mostPermissiveValue = LOG_LEVELS[this.defaultLevel.toUpperCase() as LogLevel] || LOG_LEVELS.INFO;
+    let mostPermissiveLevel = this.defaultLevel;
+
+    // Check all component-specific levels
+    Object.values(this.componentLevels).forEach(level => {
+      const levelValue = LOG_LEVELS[level.toUpperCase() as LogLevel] || LOG_LEVELS.INFO;
+      if (levelValue > mostPermissiveValue) {
+        mostPermissiveValue = levelValue;
+        mostPermissiveLevel = level;
+      }
+    });
+
+    return mostPermissiveLevel;
+  }
+
+  // Create a single shared logger to prevent memory leaks
+  private createSharedLogger(): winston.Logger {
+    if (this.sharedLogger) {
+      return this.sharedLogger;
+    }
+
+    // Find the most permissive (highest numeric value) log level needed
+    const mostPermissiveLevel = this.getMostPermissiveLevel();
+    const winstonLevel = LEVEL_MAP[mostPermissiveLevel.toUpperCase() as LogLevel] || 'info';
+    const logFilePath = path.join(this.logDir, 'app.log');
+    
+    // Define transports
+    const transports: winston.transport[] = [
+      // File transport
+      new winston.transports.File({
+        filename: logFilePath,
+        level: winstonLevel,
+        handleExceptions: false, // Disable exception handling to prevent listener buildup
+        maxsize: 5242880, // 5MB
+        maxFiles: 5,
+        format: winston.format.combine(
+          winston.format.timestamp(),
+          winston.format.json()
+        )
+      }),
+      // Console transport with colors
+      new winston.transports.Console({
+        level: winstonLevel,
+        handleExceptions: false, // Disable exception handling to prevent listener buildup
+        format: winston.format.combine(
+          colorizedComponentFormat(),
+          winston.format.simple()
+        )
+      })
+    ];
+
+    // Create the shared logger
+    this.sharedLogger = winston.createLogger({
+      level: winstonLevel,
+      levels: winston.config.npm.levels,
+      transports,
+      exitOnError: false,
+      handleExceptions: false, // Disable global exception handling
+      handleRejections: false  // Disable global rejection handling
+    });
+
+    return this.sharedLogger;
+  }
+
+  // Format meta objects for TRACE level logging
+  private formatMetaForTrace(meta: LogMeta): LogMeta {
+    if (!meta || typeof meta !== 'object') {
+      return meta;
+    }
+    
+    // Create a new object to avoid modifying the original
+    const formatted: LogMeta = {};
+    
+    // Process each property
+    Object.entries(meta).forEach(([key, value]) => {
+      // Handle headers specially since they often contain arrays
+      if (key === 'headers' && typeof value === 'object') {
+        formatted[key] = {};
+        Object.entries(value).forEach(([headerName, headerValue]) => {
+          // Format array header values for better readability
+          if (Array.isArray(headerValue)) {
+            formatted[key]![headerName] = headerValue.map(v => String(v)).join(', ');
+          } else {
+            formatted[key]![headerName] = headerValue;
+          }
+        });
+      } 
+      // Handle arrays
+      else if (Array.isArray(value)) {
+        try {
+          // Pretty print arrays with indentation for readability
+          formatted[key] = JSON.stringify(value, null, 2);
+        } catch (err) {
+          formatted[key] = `[Array of length ${value.length}]`;
+        }
+      } 
+      // Handle objects (but not Error objects)
+      else if (value && typeof value === 'object' && !(value instanceof Error)) {
+        try {
+          // Pretty print objects with indentation for readability
+          formatted[key] = JSON.stringify(value, null, 2);
+        } catch (err) {
+          formatted[key] = '[Object]';
+        }
+      } 
+      // Leave other values as is
+      else {
+        formatted[key] = value;
+      }
+    });
+    
+    return formatted;
+  }
+
+  // Fallback logger when initialization fails
+  private createFallbackLogger(): void {
+    if (this.sharedLogger) {
+      return;
+    }
+
+    const consoleTransport = new winston.transports.Console({
+      handleExceptions: false,
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      )
+    });
+
+    this.sharedLogger = winston.createLogger({
+      level: LEVEL_MAP[this.defaultLevel as LogLevel] || 'info',
+      transports: [consoleTransport],
+      exitOnError: false,
+      handleExceptions: false,
+      handleRejections: false
+    });
+  }
+
+  // Get the shared logger (no longer creates separate loggers per component)
+  getLogger(): winston.Logger {
+    if (!this.sharedLogger) {
+      this.createSharedLogger();
+    }
+    return this.sharedLogger!;
+  }
+
+  // Check if a log level is enabled for a component
+  isLevelEnabled(component: string, level: string): boolean {
+    const componentLevel = this.componentLevels[component] || this.defaultLevel;
+    const componentLevelValue = LOG_LEVELS[componentLevel.toUpperCase() as LogLevel] || LOG_LEVELS.INFO;
+    const requestedLevelValue = LOG_LEVELS[level.toUpperCase() as LogLevel] || -1;
+    
+    return requestedLevelValue <= componentLevelValue;
+  }
+
+  // Log at a specific level
+  log(level: string, component: string, message?: string, meta?: LogMeta): void;
+  log(level: string, message: string, meta?: LogMeta): void;
+  log(level: string, componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    if (!this.initialized) {
+      this.initialize();
+    }
+
+    let component: string;
+    let message: string;
+    let logMeta: LogMeta | undefined;
+
+    // Handle overloaded parameters
+    if (typeof messageOrMeta === 'string') {
+      component = componentOrMessage;
+      message = messageOrMeta;
+      logMeta = meta;
+    } else {
+      component = 'default';
+      message = componentOrMessage;
+      logMeta = messageOrMeta;
+    }
+
+    // Skip logging if this level is not enabled for this component
+    if (!this.isLevelEnabled(component, level)) {
+      return;
+    }
+
+    const logger = this.getLogger();
+    const winstonLevel = LEVEL_MAP[level.toUpperCase() as LogLevel] || 'info';
+    
+    // Add component to meta if not already present
+    let finalLogMeta: LogMeta = { component, ...(logMeta || {}) };
+    
+    // Special handling for headers to ensure proper formatting
+    if (finalLogMeta?.headers && typeof finalLogMeta.headers === 'object') {
+      const formattedHeaders: Record<string, any> = {};
+      Object.entries(finalLogMeta.headers).forEach(([key, value]) => {
+        // Convert arrays to strings for better readability
+        if (Array.isArray(value)) {
+          formattedHeaders[key] = value.join(', ');
+        } else {
+          formattedHeaders[key] = value;
+        }
+      });
+      finalLogMeta.headers = formattedHeaders;
+    }
+    
+    // Check if this is a TRACE level log and we need to format objects/arrays
+    if (level.toUpperCase() === 'TRACE') {
+      // Process the logMeta object for better formatting
+      finalLogMeta = this.formatMetaForTrace(finalLogMeta);
+    }
+    
+    logger.log(winstonLevel, message, finalLogMeta);
+  }
+
+  // Convenience methods for different log levels
+  error(component: string, message: string, meta?: LogMeta): void;
+  error(message: string, meta?: LogMeta): void;
+  error(componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    if (typeof messageOrMeta === 'string') {
+      this.log('ERROR', componentOrMessage, messageOrMeta, meta);
+    } else {
+      this.log('ERROR', componentOrMessage, messageOrMeta);
+    }
+  }
+
+  warn(component: string, message: string, meta?: LogMeta): void;
+  warn(message: string, meta?: LogMeta): void;
+  warn(componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    if (typeof messageOrMeta === 'string') {
+      this.log('WARN', componentOrMessage, messageOrMeta, meta);
+    } else {
+      this.log('WARN', componentOrMessage, messageOrMeta);
+    }
+  }
+
+  info(component: string, message: string, meta?: LogMeta): void;
+  info(message: string, meta?: LogMeta): void;
+  info(componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    if (typeof messageOrMeta === 'string') {
+      this.log('INFO', componentOrMessage, messageOrMeta, meta);
+    } else {
+      this.log('INFO', componentOrMessage, messageOrMeta);
+    }
+  }
+
+  debug(component: string, message: string, meta?: LogMeta): void;
+  debug(message: string, meta?: LogMeta): void;
+  debug(componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    if (typeof messageOrMeta === 'string') {
+      this.log('DEBUG', componentOrMessage, messageOrMeta, meta);
+    } else {
+      this.log('DEBUG', componentOrMessage, messageOrMeta);
+    }
+  }
+
+  trace(component: string, message: string, meta?: LogMeta): void;
+  trace(message: string, meta?: LogMeta): void;
+  trace(componentOrMessage: string, messageOrMeta?: string | LogMeta, meta?: LogMeta): void {
+    let component: string;
+    let message: string;
+    let logMeta: LogMeta | undefined;
+
+    // Handle overloaded parameters
+    if (typeof messageOrMeta === 'string') {
+      component = componentOrMessage;
+      message = messageOrMeta;
+      logMeta = meta;
+    } else {
+      component = 'default';
+      message = componentOrMessage;
+      logMeta = messageOrMeta;
+    }
+
+    // For TRACE level, ensure objects and arrays are properly formatted
+    let formattedMeta = logMeta;
+    if (logMeta && typeof logMeta === 'object') {
+      // Clone the meta object to avoid modifying the original
+      formattedMeta = { ...logMeta };
+      
+      // Special handling for headers object
+      if (formattedMeta.headers && typeof formattedMeta.headers === 'object') {
+        const headers: Record<string, any> = {};
+        Object.entries(formattedMeta.headers).forEach(([key, value]) => {
+          // Convert arrays to strings for better readability
+          if (Array.isArray(value)) {
+            headers[key] = value.join(', ');
+          } else {
+            headers[key] = value;
+          }
+        });
+        formattedMeta.headers = headers;
+      }
+      
+      // Process each property for better formatting of arrays and objects
+      Object.keys(formattedMeta).forEach(key => {
+        const value = formattedMeta![key];
+        // Skip headers as they've already been processed
+        if (key === 'headers') return;
+        
+        if (Array.isArray(value)) {
+          // Format arrays for better readability
+          formattedMeta![key] = JSON.stringify(value, null, 2);
+        } else if (value && typeof value === 'object' && !(value instanceof Error)) {
+          // Format nested objects (but not Error instances)
+          formattedMeta![key] = JSON.stringify(value, null, 2);
+        }
+        // Leave strings, numbers, etc. as is
+      });
+    }
+    
+    this.log('TRACE', component, message, formattedMeta);
+  }
+
+  // Create a Morgan stream for HTTP request logging
+  get stream() {
+    return {
+      write: (message: string) => {
+        this.info('HTTP', message.trim());
+      }
+    };
+  }
+
+  // Method to clean up resources (call this when shutting down)
+  close(): void {
+    if (this.sharedLogger) {
+      this.sharedLogger.close();
+      this.sharedLogger = null;
+    }
+  }
+
+  // Method to reinitialize logger with updated configuration
+  reinitialize(): void {
+    // Close existing logger
+    this.close();
+    
+    // Reset initialization flag
+    this.initialized = false;
+    
+    // Reinitialize with current config
+    this.initialize();
+  }
+}
+
+// Create a singleton instance
+const logger = new Logger();
+
+/**
+ * Create a safe, readable preview of headers or objects for logging
+ * @param data - The data to create a preview for
+ * @param maxLength - Maximum length of the preview (default: 1000)
+ * @returns Safe preview string
+ */
+export function createSafePreview(data: any, maxLength: number = 1000): string {
+  try {
+    // Handle null/undefined
+    if (data == null) {
+      return String(data);
+    }
+
+    // Handle strings - check if it's already JSON
+    if (typeof data === 'string') {
+      // If it looks like JSON, try to parse and re-format it
+      if ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))) {
+        try {
+          const parsed = JSON.parse(data);
+          const formatted = JSON.stringify(parsed, null, 2);
+          return formatted.length > maxLength ? formatted.substring(0, maxLength) + '... [truncated]' : formatted;
+        } catch (e) {
+          // If parsing fails, treat as regular string
+          return data.length > maxLength ? data.substring(0, maxLength) + '... [truncated]' : data;
+        }
+      }
+      return data.length > maxLength ? data.substring(0, maxLength) + '... [truncated]' : data;
+    } 
+    
+    // Handle buffers
+    else if (Buffer.isBuffer(data)) {
+      const previewLength = Math.min(200, data.length);
+      return `[Buffer ${data.length} bytes]: ${data.toString('utf8', 0, previewLength)}${data.length > previewLength ? '... [truncated]' : ''}`;
+    } 
+    
+    // Handle objects/arrays
+    else {
+      const jsonStr = JSON.stringify(data, null, 2);
+      return jsonStr.length > maxLength ? jsonStr.substring(0, maxLength) + '... [truncated]' : jsonStr;
+    }
+  } catch (e: any) {
+    return `[Object - failed to serialize: ${e.message}]`;
+  }
+}
+
+/**
+ * Create a safe preview specifically for headers logging
+ * @param headers - Headers object to preview
+ * @returns Safe headers preview string
+ */
+export function createHeadersPreview(headers: Record<string, any> | null | undefined): string {
+  if (!headers) return '[No headers]';
+  
+  // Create a sanitized copy of headers for logging
+  const sanitizedHeaders = { ...headers };
+  
+  // Sanitize authorization header
+  if (sanitizedHeaders.Authorization || sanitizedHeaders.authorization) {
+    const authKey = sanitizedHeaders.Authorization ? 'Authorization' : 'authorization';
+    const authValue = sanitizedHeaders[authKey];
+    if (typeof authValue === 'string' && authValue.length > 15) {
+      sanitizedHeaders[authKey] = `${authValue.substring(0, 15)}...`;
+    }
+  }
+  
+  return createSafePreview(sanitizedHeaders, 500);
+}
+
+// Clean up on process exit
+process.on('exit', () => {
+  logger.close();
+});
+
+process.on('SIGINT', () => {
+  logger.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  logger.close();
+  process.exit(0);
+});
+
+export default logger;

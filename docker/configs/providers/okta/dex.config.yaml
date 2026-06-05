@@ -1,0 +1,73 @@
+# Dex configuration for Okta SAML integration
+# Prerequisites:
+# 1. Okta SAML application configured with proper endpoints
+# 2. SAML certificate available (base64 data or file)
+# 3. Group attribute mappings configured in Okta
+
+issuer: BASE_URL/dex
+
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: sap_llm_gateway
+    user: admin_user
+    password: admin_password
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins: ["BASE_URL", "http://localhost:5556"]
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  skipApprovalScreen: false
+  responseTypes: ["code"]
+  grantTypes: ["authorization_code", "refresh_token"]
+
+staticClients:
+- id: oauth2-proxy
+  redirectURIs:
+  - 'BASE_URL/auth/callback'
+  name: 'SAP LLM Gateway OAuth2 Proxy'
+  secret: __OAUTH2_PROXY_CLIENT_SECRET__
+  trustedPeers:
+  - oauth2-proxy
+
+connectors:
+- type: saml
+  id: okta-saml
+  name: Okta SAML
+  config:
+    # Okta SAML endpoint
+    ssoURL: OKTA_SSO_URL
+    
+    # SAML certificate validation
+    # Using certificate file path (PEM format certificate mounted as file)
+    ca: /etc/dex/certs/saml-ca.pem
+    
+    # Alternative: Inline base64 data (comment out ca above and uncomment caData)
+    # caData: OKTA_SAML_CA_DATA
+    
+    # Entity issuer (this Dex instance)
+    redirectURI: BASE_URL/dex/callback
+    entityIssuer: BASE_URL/dex
+    
+    # SAML response parsing (updated for Okta attribute names)
+    usernameAttr: name
+    emailAttr: email  
+    groupsAttr: groups
+    
+    # Optional: Additional attribute mappings
+    # nameIDPolicyFormat: persistent
+    
+    # Optional: Signing configuration (for production)
+    # ssoIssuer: https://your-org.okta.com
+
+# Disable password database (only SAML authentication)
+enablePasswordDB: false

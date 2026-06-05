@@ -1,0 +1,36 @@
+specVersion: "3.0"
+metadata:
+  name: admin.shell
+type: application
+framework:
+  name: SAPUI5
+  version: "1.136.0"
+  libraries:
+    - name: sap.ui.core
+    - name: sap.m
+    - name: sap.f
+    - name: sap.tnt
+    - name: sap.ui.table
+    - name: sap.ui.fl
+    - name: sap.ui.mdc
+    - name: sap.fe.core
+    - name: sap.fe.templates
+    - name: sap.ui.export
+    - name: sap.viz
+    - name: sap.suite.ui.microchart
+    - name: sap.ui.codeeditor
+    - name: sap.insights
+    - name: sap.ui.webc.main
+    - name: sap.ui.webc.fiori
+    - name: sap.ui.webc.common
+    - name: themelib_sap_horizon
+builder:
+  customTasks:
+    # Transpile TypeScript
+    - name: ui5-tooling-transpile-task
+      afterTask: generateVersionInfo
+server:
+  customMiddleware:
+    # Transpile TypeScript
+    - name: ui5-tooling-transpile-middleware
+      afterMiddleware: compression

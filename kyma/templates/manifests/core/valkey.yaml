@@ -1,0 +1,110 @@
+# Valkey ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  namespace: sail-proxy
+data:
+  valkey.conf: |
+    # Enable binding to all interfaces
+    bind 0.0.0.0 ::
+    protected-mode no
+    port 6379
+    
+    # Disable persistence for cache usage
+    save ""
+    
+    # Basic settings
+    timeout 0
+    tcp-keepalive 300
+    
+    # Memory management
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+---
+# Valkey (Redis) Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: sail-proxy
+  labels:
+    app: valkey
+spec:
+  type: ClusterIP
+  selector:
+    app: valkey
+  ports:
+  - name: tcp
+    port: 6379
+    targetPort: 6379
+---
+# Valkey (Redis) Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: sail-proxy
+  labels:
+    app: valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+        # Disable Istio injection for database
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: valkey
+        image: valkey/valkey:8
+        ports:
+        - containerPort: 6379
+        command:
+        - valkey-server
+        - /usr/local/etc/valkey/valkey.conf
+        startupProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 3
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: valkey-data
+          mountPath: /data
+        - name: config
+          mountPath: /usr/local/etc/valkey
+      volumes:
+      - name: valkey-data
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: valkey-config

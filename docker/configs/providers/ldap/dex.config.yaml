@@ -1,0 +1,91 @@
+# Dex configuration for local test LDAP server integration
+# Prerequisites:
+# 1. Local LDAP test server (provided via docker-compose.override.yml)
+# 2. Test user and group structure pre-configured
+# 3. Group membership properly defined in test data
+
+issuer: BASE_URL/dex
+
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: sap_llm_gateway
+    user: admin_user
+    password: admin_password
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins: ["BASE_URL", "http://localhost:5556"]
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  skipApprovalScreen: false
+  responseTypes: ["code"]
+  grantTypes: ["authorization_code", "refresh_token"]
+
+staticClients:
+- id: oauth2-proxy
+  redirectURIs:
+  - 'BASE_URL/auth/callback'
+  name: 'SAP LLM Gateway OAuth2 Proxy'
+  secret: __OAUTH2_PROXY_CLIENT_SECRET__
+  trustedPeers:
+  - oauth2-proxy
+
+connectors:
+- type: ldap
+  id: ldap-directory
+  name: LDAP Directory
+  config:
+    # Local test LDAP server connection
+    host: ldap-server:389
+    insecureNoSSL: true  # For local testing only
+    # For SSL/TLS connection:
+    # host: LDAP_HOST
+    # insecureNoSSL: false
+    # rootCA: /etc/dex/ldap-ca.crt
+    
+    # Service account for local test LDAP server
+    bindDN: cn=admin,dc=example,dc=com
+    bindPW: admin
+    
+    # User search configuration
+    userSearch:
+      # Base DN for user search (local test server)
+      baseDN: ou=people,dc=example,dc=com
+      # LDAP filter to match users
+      filter: "(objectClass=inetOrgPerson)"
+      # Username attribute (what users enter to login)
+      username: uid
+      # Unique ID attribute
+      idAttr: uid
+      # Email attribute
+      emailAttr: mail
+      # Display name attribute
+      nameAttr: displayName
+      # Preferred username for display
+      preferredUsernameAttr: uid
+    
+    # Group search configuration
+    groupSearch:
+      # Base DN for group search (local test server)
+      baseDN: ou=groups,dc=example,dc=com
+      # LDAP filter to match groups
+      filter: "(objectClass=groupOfUniqueNames)"
+      # Group name attribute
+      nameAttr: cn
+      # User membership attribute in groups
+      userMatchers:
+      # Match users by DN in the uniqueMember attribute
+      - userAttr: DN
+        groupAttr: uniqueMember
+
+# Disable password database (only LDAP authentication)
+enablePasswordDB: false

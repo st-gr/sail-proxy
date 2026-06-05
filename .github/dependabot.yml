@@ -1,0 +1,88 @@
+# Dependabot configuration for SAP LLM Gateway
+# Security-only updates to avoid dependency hell with 2000+ packages
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # ============================================================================
+  # NPM/PNPM Workspace Dependencies - SECURITY ONLY
+  # ============================================================================
+  # Monitor root package.json which manages the entire pnpm workspace
+  # This includes all services (gateway, admin, ollama), libs, and UI apps
+  #
+  # Note: open-pull-requests-limit: 0 disables version updates but security
+  # updates are ALWAYS created regardless of this setting
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "npm"
+
+  # ============================================================================
+  # Docker Images - SECURITY ONLY
+  # ============================================================================
+  # Gateway, Admin, and Ollama service Dockerfiles
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
+
+  # Nginx reverse proxy Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/docker/nginx"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
+      - "nginx"
+
+  # LDAP test server Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/docker/configs/providers/ldap/ldap-server"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
+      - "ldap"
+
+  # Ollama service Docker image
+  - package-ecosystem: "docker"
+    directory: "/services/ollama/ollama-docker"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
+      - "ollama"
+
+  # ============================================================================
+  # GitHub Actions Workflows - SECURITY ONLY
+  # ============================================================================
+  # CI/CD workflow dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "security"
+      - "github-actions"
+      - "ci"

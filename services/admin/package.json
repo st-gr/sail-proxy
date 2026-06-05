@@ -1,0 +1,300 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP",
+  "private": true,
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.js\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../config-app && pnpm run build && cd ../..",
+    "start": "node server.js",
+    "start:cds": "cds-serve",
+    "start:docker": "DEPLOY_TARGET=docker node server.js",
+    "dev": "cds watch --port ${PORT:-4004}",
+    "dev:mock": "cross-env NODE_ENV=development cds watch --port ${PORT:-4004}",
+    "dev:jwt": "cross-env NODE_ENV=production cds watch --port ${PORT:-4004}",
+    "dev:ts": "nodemon --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
+    "dev:ts:mock": "cross-env NODE_ENV=development DEBUG=sql nodemon --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
+    "dev:ts:jwt": "cross-env NODE_ENV=production nodemon --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
+    "pretest": "pnpm --filter @sap-llm-gateway/test-utils build",
+    "test": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js",
+    "pretest:unit": "pnpm --filter @sap-llm-gateway/test-utils build",
+    "test:unit": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"test/unit\"",
+    "pretest:integration": "pnpm --filter @sap-llm-gateway/test-utils build",
+    "test:integration": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"test/integration\"",
+    "test:simple": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"simple.test.ts\"",
+    "test:http": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"integration/http\"",
+    "test:http:aws": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"aws-credentials-http.test.ts\"",
+    "test:http:config": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"configuration-management-http.test.ts\"",
+    "test:http:analytics": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"analytics-reporting-http.test.ts\"",
+    "test:usage-processor": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"usage-event-processor.test.ts\"",
+    "test:model-cost-service": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"model-cost-service-e2e.test.ts\"",
+    "test:integration:http": "ts-node scripts/run-integration-tests.ts",
+    "test:safety": "ts-node test/integration/token-system/safety-guard-tests.ts",
+    "test:unified-tokens": "ts-node test/integration/token-system/test-unified-token-validation.ts",
+    "test:token-system": "pnpm run test:safety && pnpm run test:unified-tokens",
+    "test:watch": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --watch",
+    "test:coverage": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --coverage",
+    "clean": "rimraf dist gen coverage",
+    "cds:deploy": "cds deploy --to sqlite:db/admin.db",
+    "cds:build": "cds build",
+    "cds:serve": "cds serve --with-mocks",
+    "db:migrate": "cds deploy --to sqlite:db/admin.db",
+    "db:migrate:safe": "cds deploy --to sqlite:db/admin.db --auto-undeploy",
+    "db:reset": "rimraf \"db/admin.db\" \"db/admin.db-shm\" \"db/admin.db-wal\" && npm run db:migrate",
+    "db:seed": "cds run --in-memory",
+    "watch-admin-ui": "cds watch --open app/admin-ui/webapp/index.html?sap-ui-xx-viewCache=false --livereload false",
+    "watch-shell": "cds watch --open /shell/index.html?sap-ui-xx-viewCache=false",
+    "watch-api-keys": "cds watch --open /api-keys/index.html?sap-ui-xx-viewCache=false",
+    "watch-aws-creds": "cds watch --open app/aws-creds-app/webapp/index.html?sap-ui-xx-viewCache=false"
+  },
+  "dependencies": {
+    "@cap-js/postgres": "^1.14.1",
+    "@cap-js/sqlite": "^2.0.2",
+    "@sap/cds": "^8",
+    "@sap/cds-dk": "^8",
+    "@sap/cds-hana": "^2",
+    "@sap/xssec": "^4.8.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "axios": "^1.15.1",
+    "bcrypt": "^5.1.1",
+    "chokidar": "^4.0.3",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.3.1",
+    "express": "^4",
+    "express-session": "^1.18.2",
+    "iovalkey": "^0.3.3",
+    "jsonwebtoken": "^9.0.2",
+    "sqlite3": "^5.1.7",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.3",
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-typescript": "^7.27.1",
+    "@cap-js/cds-types": "^0.6.0",
+    "@sap-llm-gateway/test-utils": "workspace:*",
+    "@sap/ux-ui5-tooling": "^1.18.7",
+    "@types/bcrypt": "^5.0.2",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.18.2",
+    "@types/jest": "^29.5.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20.0.0",
+    "@types/supertest": "^6.0.3",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.44.1",
+    "@typescript-eslint/parser": "^8.44.1",
+    "axios": "^1.15.1",
+    "cds-plugin-ui5": "^0.13.4",
+    "cpy-cli": "^5.0.0",
+    "cross-env": "^7.0.3",
+    "jest": "^29.5.0",
+    "nodemon": "^3.1.10",
+    "rimraf": "^5.0.1",
+    "supertest": "^7.1.4",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.1",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.8.3",
+    "ui5-tooling-modules": "^3.30.8",
+    "ui5-tooling-transpile": "^3.9.0"
+  },
+  "cds": {
+    "requires": {
+      "[development]": {
+        "db": {
+          "kind": "sqlite",
+          "impl": "@cap-js/sqlite",
+          "credentials": {
+            "url": "db/admin.db"
+          },
+          "schema_evolution": "auto",
+          "model": [
+            "db"
+          ]
+        }
+      },
+      "[sqlite]": {
+        "db": {
+          "kind": "sqlite",
+          "impl": "@cap-js/sqlite",
+          "credentials": {
+            "url": "db/admin.db"
+          },
+          "schema_evolution": "auto",
+          "model": [
+            "db"
+          ]
+        }
+      },
+      "[postgres]": {
+        "db": {
+          "kind": "postgres",
+          "impl": "@cap-js/postgres",
+          "credentials": {
+            "host": "${env:POSTGRES_HOST:-postgres}",
+            "port": "${env:POSTGRES_PORT:-5432}",
+            "user": "${env:POSTGRES_USER:-admin_user}",
+            "password": "${env:POSTGRES_PASSWORD:-admin_password}",
+            "database": "${env:POSTGRES_DB:-sap_llm_gateway}"
+          },
+          "schema_evolution": "auto"
+        }
+      },
+      "[hana]": {
+        "db": {
+          "kind": "hana-cloud",
+          "impl": "@sap/cds-hana"
+        }
+      },
+      "db": {
+        "kind": "sqlite",
+        "impl": "@cap-js/sqlite",
+        "credentials": {
+          "url": "db/admin.db"
+        },
+        "schema_evolution": "auto"
+      },
+      "auth": {
+        "[development]": {
+          "kind": "mocked",
+          "users": {
+            "admin@test.com": {
+              "id": "admin@test.com",
+              "roles": [
+                "admin",
+                "user",
+                "gateway"
+              ],
+              "email": "admin@test.com"
+            },
+            "admin@example.com": {
+              "id": "admin@example.com",
+              "roles": [
+                "admin",
+                "user",
+                "gateway"
+              ],
+              "email": "admin@example.com"
+            },
+            "user@test.com": {
+              "id": "user@test.com",
+              "roles": [
+                "user"
+              ],
+              "email": "user@test.com"
+            },
+            "other@test.com": {
+              "id": "other@test.com",
+              "roles": [
+                "user"
+              ],
+              "email": "other@test.com"
+            },
+            "user@example.com": {
+              "id": "user@example.com",
+              "roles": [
+                "user"
+              ],
+              "email": "user@example.com"
+            }
+          }
+        },
+        "[production]": {
+          "kind": "jwt",
+          "jwt": {
+            "decode": true,
+            "verify": false
+          }
+        }
+      }
+    },
+    "[development]": {
+      "build": {
+        "target": "gen",
+        "tasks": [
+          {
+            "for": "nodejs"
+          }
+        ]
+      }
+    },
+    "odata": {
+      "version": "v4"
+    },
+    "fiori": {
+      "lean_draft": true
+    },
+    "drafts": {
+      "persistence": "split"
+    },
+    "build": {
+      "target": "gen"
+    },
+    "folders": {
+      "db": "src/db",
+      "srv": "src/srv"
+    },
+    "watch": {
+      "ignore": [
+        "test/**",
+        "coverage/**",
+        "node_modules/**",
+        "gen/**",
+        "dist/**"
+      ]
+    },
+    "cds-plugin-ui5": {
+      "modules": {
+        "shell": {
+          "path": "app/shell",
+          "configFile": "ui5.yaml",
+          "mountPath": "/shell",
+          "versionOverride": "1.136.0"
+        },
+        "api-keys-app": {
+          "path": "app/api-keys-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/api-keys",
+          "versionOverride": "1.136.0"
+        },
+        "aws-credentials-app": {
+          "path": "app/aws-credentials-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/aws-credentials",
+          "versionOverride": "1.136.0"
+        },
+        "usage-analytics-app": {
+          "path": "app/usage-analytics-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/usage-analytics",
+          "versionOverride": "1.136.0"
+        },
+        "security-notifications-app": {
+          "path": "app/security-notifications-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/security-notifications",
+          "versionOverride": "1.136.0"
+        },
+        "config-app": {
+          "path": "app/config-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/config",
+          "versionOverride": "1.136.0"
+        }
+      }
+    }
+  },
+  "sapux": [
+    "app/shell",
+    "app/api-keys-app",
+    "app/aws-credentials-app",
+    "app/usage-analytics-app",
+    "app/security-notifications-app",
+    "app/config-app"
+  ]
+}

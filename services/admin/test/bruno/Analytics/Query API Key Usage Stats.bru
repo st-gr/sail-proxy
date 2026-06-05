@@ -1,0 +1,26 @@
+meta {
+  name: Query API Key Usage Stats
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/ApiKeyUsageStats
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isType array
+}
+
+script:post-response {
+  console.log('Found', res.body.value.length, 'API key usage statistics');
+}

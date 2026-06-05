@@ -1,0 +1,79 @@
+meta {
+  name: REST API - Update Configuration
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{base_url}}/api/admin/api-config
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "api_config": {
+      "timeouts": {
+        "default": 180000,
+        "streaming": 360000
+      },
+      "logging": {
+        "defaultLevel": "INFO",
+        "payloadLoggingEnabled": false
+      },
+      "anthropic": {
+        "substitute_models": [
+          {
+            "from": "claude-3-5-haiku-20241022",
+            "to": "anthropic--claude-3-haiku--deployed"
+          },
+          {
+            "from": "claude-3-5-sonnet-20241022",
+            "to": "anthropic--claude-3.5-sonnet--deployed"
+          }
+        ]
+      },
+      "openai": {
+        "substitute_models": [
+          {
+            "from": "GPT-4",
+            "to": "o1"
+          },
+          {
+            "from": "GPT-3.5",
+            "to": "gpt-4"
+          }
+        ]
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+  res.body.success: eq true
+  res.body.version: isDefined
+  res.body.checksum: isDefined
+  res.body.activatedAt: isDefined
+}
+
+script:post-response {
+  console.log('✅ REST API configuration updated successfully');
+  console.log('New version:', res.body.version);
+  console.log('New checksum:', res.body.checksum);
+  console.log('Activated at:', res.body.activatedAt);
+  
+  if (res.body.warnings && res.body.warnings.length > 0) {
+    console.log('Warnings:', res.body.warnings);
+  }
+  
+  // Store updated config details
+  bru.setVar('updated_config_version', res.body.version);
+  bru.setVar('updated_config_checksum', res.body.checksum);
+}

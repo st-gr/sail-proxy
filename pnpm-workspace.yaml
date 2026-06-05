@@ -1,0 +1,21 @@
+packages:
+  - "services/*"
+  - "services/*/app/*"
+  - "libs/*"
+  - "npm-dist/*"
+
+# Use node-linker for better compatibility with Node.js modules
+node-linker: isolated
+
+# Enable hoisting for shared dependencies
+hoist-pattern: ["*"]
+
+# Shamefully hoist problematic packages if needed
+# shamefully-hoist: false
+
+# Use hard links for better performance
+package-import-method: hardlink
+
+# Build native dependencies
+onlyBuiltDependencies:
+  - better-sqlite3

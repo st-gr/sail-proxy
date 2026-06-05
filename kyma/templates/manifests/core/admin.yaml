@@ -1,0 +1,112 @@
+# Admin Service  
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin
+  namespace: sail-proxy
+  labels:
+    app: admin
+spec:
+  type: ClusterIP
+  selector:
+    app: admin
+  ports:
+  - name: http
+    port: 4004
+    targetPort: 4004
+---
+# Admin Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin
+  namespace: sail-proxy
+  labels:
+    app: admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin
+  template:
+    metadata:
+      labels:
+        app: admin
+        # Disable Istio injection for backend service
+        sidecar.istio.io/inject: "false"
+    spec:
+      imagePullSecrets:
+      - name: registry-secret
+      volumes:
+      - name: api-config
+        configMap:
+          name: admin-api-config
+      containers:
+      - name: admin
+        image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-admin:__CONTAINER_TAG__
+        imagePullPolicy: Always
+        command: 
+        - sh
+        - -c
+        - |
+          echo 'Waiting for PostgreSQL to be ready...'
+          while ! nc -z ${POSTGRES_SERVICE_HOST} ${POSTGRES_SERVICE_PORT}; do 
+            echo "Waiting for PostgreSQL at ${POSTGRES_SERVICE_HOST}:${POSTGRES_SERVICE_PORT}..."
+            sleep 1
+          done
+          echo 'PostgreSQL is ready!'
+          echo 'Deploying schema using cds-deploy (required for @cap-js/postgres)...'
+          cd /app/services/admin && /app/node_modules/.bin/cds-deploy --profile pg || { echo 'ERROR: cds-deploy failed; refusing to start with unmigrated schema'; exit 1; }
+          echo 'Starting CAP service with custom startup logic...'
+          exec node dist/services/admin/src/index.js
+        envFrom:
+        - secretRef:
+            name: admin-env
+        - configMapRef:
+            name: admin-config
+        volumeMounts:
+        - name: api-config
+          mountPath: /app/services/admin/api_config.json
+          subPath: api_config.json
+        ports:
+        - containerPort: 4004
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 4004
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 4004
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 4004
+          initialDelaySeconds: 45
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: DEPLOY_TARGET
+          value: "docker"  # Must be "docker" for production image without npx
+        - name: DISABLE_FILE_LOGGING
+          value: "true"

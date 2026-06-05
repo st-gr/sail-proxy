@@ -1,0 +1,91 @@
+{
+  "name": "@st-gr/sail-proxy",
+  "version": "0.9.0",
+  "description": "SAP AI Core Local LLM Proxy - A command-line tool to run a local proxy for SAP AI Core Foundation Models",
+  "keywords": [
+    "sap",
+    "ai-core",
+    "llm",
+    "proxy",
+    "cli",
+    "openai",
+    "anthropic",
+    "bedrock"
+  ],
+  "homepage": "https://github.com/st-gr/sail-proxy",
+  "bugs": {
+    "url": "https://github.com/st-gr/sail-proxy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/st-gr/sail-proxy.git"
+  },
+  "license": "AGPL-3.0",
+  "author": "st-gr",
+  "main": "dist/index.js",
+  "bin": {
+    "sail-proxy": "./bin/sail-proxy"
+  },
+  "files": [
+    "dist/",
+    "bundled/",
+    "bin/",
+    "templates/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run sync-version && npm run clean && npm run compile && npm run copy-templates && npm run bundle",
+    "build:local": "npm run clean:dist && npm run compile && npm run copy-templates",
+    "clean": "npx rimraf dist bundled",
+    "clean:dist": "npx rimraf dist",
+    "clean:bundled": "npx rimraf bundled",
+    "compile": "tsc",
+    "copy-templates": "npx mkdirp dist/templates && npx copyfiles -u 1 \"src/templates/**/*\" dist/",
+    "bundle": "npm run bundle:dependencies && npm run bundle:gateway && npm run bundle:ollama",
+    "bundle:dependencies": "cd ../../libs/service-key-parser && pnpm build && npx mkdirp ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser && npx copyfiles -u 1 \"dist/**/*\" ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser/ && npx copyfiles \"package.json\" ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser/",
+    "bundle:gateway": "cd ../../services/gateway && pnpm build && npx mkdirp ../../npm-dist/sail-proxy/bundled/gateway && npx copyfiles -u 1 \"dist/**/*\" ../../npm-dist/sail-proxy/bundled/gateway/ && node ../../npm-dist/sail-proxy/scripts/create-production-package-json.js ../../services/gateway/package.json ../../npm-dist/sail-proxy/bundled/gateway/package.json",
+    "postbundle": "cd bundled/gateway && npm install --production && cd ../ollama && npm install --production",
+    "bundle:ollama": "npx mkdirp bundled/ollama && npx copyfiles \"../../services/ollama/*.js\" bundled/ollama/ && node ../../npm-dist/sail-proxy/scripts/create-production-package-json.js ../../services/ollama/package.json ../../npm-dist/sail-proxy/bundled/ollama/package.json && npx copyfiles -u 2 \"../../services/ollama/routes/**/*\" \"../../services/ollama/services/**/*\" \"../../services/ollama/controllers/**/*\" bundled/ollama/",
+    "sync-version": "node ../../cli-tools/sync-version.js",
+    "check-version": "node ../../cli-tools/sync-version.js --check-only",
+    "check-workspace": "node ../../cli-tools/check-workspace-protocol.js",
+    "prepare-pack": "node ../../cli-tools/prepare-for-pack.js",
+    "restore-workspace": "node ../../cli-tools/restore-workspace-protocol.js",
+    "link:dev": "npm run build:local && npm run bundle:dependencies && npm link",
+    "unlink:dev": "npm unlink -g @st-gr/sail-proxy",
+    "prepack": "npm run prepare-pack",
+    "postpack": "npm run restore-workspace",
+    "dev": "tsx src/index.ts",
+    "dev:nobundle": "SKIP_BUNDLE=true tsx src/index.ts",
+    "prepublishOnly": "npm run build",
+    "test": "echo 'Tests will be implemented'"
+  },
+  "dependencies": {
+    "@sap-llm-gateway/service-key-parser": "workspace:*",
+    "axios": "^1.15.1",
+    "chalk": "^4.1.2",
+    "commander": "^14.0.0",
+    "dotenv": "^16.3.1",
+    "inquirer": "^8.2.6",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^8.2.12",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "copyfiles": "^2.4.1",
+    "eslint": "^9.15.0",
+    "mkdirp": "^3.0.1",
+    "rimraf": "^5.0.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

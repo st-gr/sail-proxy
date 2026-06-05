@@ -1,0 +1,28 @@
+<core:FragmentDefinition
+  xmlns="sap.m"
+  xmlns:core="sap.ui.core"
+  xmlns:macro="sap.fe.macros">
+
+  <!-- Simple form with FE Fields; we own the row where the key lives -->
+  <SimpleForm editable="false" layout="ResponsiveGridLayout">
+    <Label text="Key Name"/>
+    <macro:Field metaPath="Property:name"/>
+
+    <Label text="User Email"/>
+    <macro:Field metaPath="Property:email"/>
+
+    <Label text="Active"/>
+    <macro:Field metaPath="Property:isActive"/>
+
+    <Label text="API Key (Full)"/>
+    <HBox alignItems="Center" renderType="Bare">
+      <!-- FE retains edit/display/format/side-effects because we still use macro:Field -->
+      <macro:Field id="ApiKeyFullField" metaPath="Property:key"/>
+      <Button icon="sap-icon://copy"
+              type="Transparent"
+              tooltip="Copy API Key"
+              press="admin.app.ext.CopyApiKey.onCopyInline"
+              class="sapUiTinyMarginBegin"/>
+    </HBox>
+  </SimpleForm>
+</core:FragmentDefinition>

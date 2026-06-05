@@ -1,0 +1,97 @@
+# NGINX Service (Edge Proxy)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: sail-proxy
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# NGINX Deployment  
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: sail-proxy
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+        app.kubernetes.io/part-of: sail-proxy
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: nginx
+        image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-nginx:__CONTAINER_TAG__
+        ports:
+        - containerPort: 8080
+        # No volume mounts needed in template mode
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        env:
+        - name: NGINX_HOST
+          value: "0.0.0.0"
+        - name: NGINX_PORT
+          value: "8080"
+        - name: REQUEST_TIMEOUT_SECONDS
+          value: "900"
+        - name: CONFIG_MODE
+          value: "template"
+        - name: BASE_URL
+          value: "http://localhost:8080"
+        - name: JWT_ISSUER_URL
+          value: "http://localhost:8080/dex"
+        - name: JWT_AUDIENCE
+          value: "oauth2-proxy"
+        - name: OAUTH2_AUTH_PATH
+          value: "/oauth2/auth"
+        - name: OAUTH2_PROXY_PATH
+          value: ""
+        - name: OAUTH2_SIGN_OUT_PATH
+          value: "/oauth2/sign_out"
+      # No volumes needed in template mode

@@ -1,0 +1,200 @@
+# Kubernetes Deployment Example for Configurable Nginx
+# This example shows how to deploy the configurable Nginx image in Kubernetes
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-env-config
+  namespace: sap-llm-gateway
+data:
+  # Basic configuration
+  NGINX_PORT: "8080"
+  SERVER_NAME: "sail-proxy.example.com"
+  BASE_URL: "https://sail-proxy.example.com"
+  
+  # JWT configuration
+  JWT_ISSUER_URL: "https://sail-proxy.example.com/dex"
+  JWT_AUDIENCE: "oauth2-proxy"
+  
+  # Logout configuration
+  LOGOUT_REDIRECT_URL: "https://sail-proxy.example.com/admin/app/shell/"
+  
+  # Service discovery - Kubernetes service names
+  OAUTH2_PROXY_HOST: "oauth2-proxy"
+  OAUTH2_PROXY_PORT: "4180"
+  DEX_HOST: "dex"
+  DEX_PORT: "5556"
+  ADMIN_HOST: "admin"
+  ADMIN_PORT: "4004"
+  GATEWAY_HOST: "gateway"
+  GATEWAY_PORT: "3000"
+  
+  # JWKS configuration
+  JWKS_ENDPOINT: "http://dex:5556/dex/keys"
+  ENABLE_JWKS_CACHE: "true"
+  
+  # Configuration mode
+  CONFIG_MODE: "template"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: sap-llm-gateway
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: ghcr.io/your-org/sap-llm-gateway-nginx:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        envFrom:
+        - configMapRef:
+            name: nginx-env-config
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: sap-llm-gateway
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: nginx
+
+---
+# Optional: Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx
+  namespace: sap-llm-gateway
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  tls:
+  - hosts:
+    - sail-proxy.example.com
+    secretName: nginx-tls
+  rules:
+  - host: sail-proxy.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx
+            port:
+              number: 80
+
+---
+# Alternative: Using mounted configuration files instead of environment variables
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-files
+  namespace: sap-llm-gateway
+data:
+  nginx.conf: |
+    # Your complete nginx.conf here
+    # This would be the processed version with actual values
+    
+  jwt.js: |
+    // Your complete jwt.js here
+    // This would be the processed version with actual values
+
+---
+# Deployment using mounted files
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-volume-mode
+  namespace: sap-llm-gateway
+  labels:
+    app: nginx-volume
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-volume
+  template:
+    metadata:
+      labels:
+        app: nginx-volume
+    spec:
+      containers:
+      - name: nginx
+        image: ghcr.io/your-org/sap-llm-gateway-nginx:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: CONFIG_MODE
+          value: "volume"
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: nginx-config
+          mountPath: /etc/nginx/njs/jwt.js
+          subPath: jwt.js
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-files

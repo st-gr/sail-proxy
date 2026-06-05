@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="102.85914mm"
+   height="73.368385mm"
+   viewBox="0 0 102.85914 73.368385"
+   version="1.1"
+   id="svg1"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1">
+    <linearGradient
+       id="linearGradient39">
+      <stop
+         style="stop-color:#29a1f4;stop-opacity:1;"
+         offset="0"
+         id="stop39" />
+      <stop
+         style="stop-color:#29a1f4;stop-opacity:0;"
+         offset="1"
+         id="stop40" />
+    </linearGradient>
+    <linearGradient
+       id="linearGradient30"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="512"
+       gradientUnits="userSpaceOnUse"
+       spreadMethod="pad">
+      <stop
+         offset="0"
+         stop-color="#33B1FF"
+         id="stop29"
+         style="stop-color:#ffec33;stop-opacity:1;" />
+      <stop
+         offset="100%"
+         stop-color="#0A6ED1"
+         id="stop30" />
+    </linearGradient>
+    <!-- Brand blue gradient -->
+    <linearGradient
+       id="sailBlue"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="512"
+       gradientUnits="userSpaceOnUse"
+       xlink:href="#linearGradient30">
+      <stop
+         offset="0%"
+         stop-color="#33B1FF"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#0A6ED1"
+         id="stop2" />
+    </linearGradient>
+    <!-- Helper classes to apply the gradient -->
+    <style
+       id="style2">
+	  .fill-blue   { fill: url(#sailBlue); }
+	  .stroke-blue { stroke: url(#sailBlue); }
+    </style>
+    <linearGradient
+       xlink:href="#linearGradient39"
+       id="linearGradient40"
+       x1="81.800011"
+       y1="133.81857"
+       x2="60.70295"
+       y2="78.858856"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#textGrad"
+       id="linearGradient7"
+       x1="0"
+       y1="52.599113"
+       x2="0"
+       y2="147.27753"
+       gradientTransform="matrix(0.51655099,0,0,0.15845087,126.10158,69.123873)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       id="textGrad"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#33B1FF"
+         id="stop1-4" />
+      <stop
+         offset="100%"
+         stop-color="#0A6ED1"
+         id="stop2-8" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#sailBlue"
+       id="linearGradient1"
+       gradientUnits="userSpaceOnUse"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="512"
+       gradientTransform="matrix(1,0,0,0.9124837,0,5.1736619)" />
+    <linearGradient
+       xlink:href="#sailBlue"
+       id="linearGradient2"
+       gradientUnits="userSpaceOnUse"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="512" />
+  </defs>
+  <g
+     id="layer1"
+     transform="translate(-41.816565,-59.116548)">
+    <path
+       id="rect2"
+       style="fill:url(#linearGradient40);fill-opacity:1;stroke-width:0.223082"
+       d="m 100.629,80.192521 -5.459098,6.741191 0.02791,29.112948 h 5.488558 z M 89.661194,86.958 84.172123,93.736397 66.106042,116.04666 h 5.547465 l 12.518616,-15.38355 v 15.38355 h 5.583639 z m -39.334033,34.5488 -8.510592,10.97814 H 100.63934 V 121.5068 Z" />
+    <path
+       d="m 85.181846,122.82406 q 6.216656,0 9.796928,1.24607 3.580272,1.24608 3.580272,3.46735 0,2.34768 -2.245807,3.62988 h -5.728437 q 1.30192,-0.83975 2.05052,-1.833 0.748603,-1.00228 0.748603,-1.86912 0,-1.48084 -2.05052,-2.2303 -2.050521,-0.74945 -5.630792,-0.74945 -2.375999,0 -3.905751,0.27089 -1.529752,0.27089 -2.864218,0.91198 -1.334465,0.63207 -3.026957,1.92329 -2.408547,1.833 -5.663341,2.61857 -3.287339,0.78558 -8.462461,0.78558 -5.565696,0 -8.853035,-1.15579 -3.287343,-1.1648 -3.287343,-3.06101 0,-1.97747 2.668931,-3.63891 l 5.142573,0.51468 q -2.538738,1.69757 -2.538738,3.16035 0,1.17383 1.822682,1.84203 1.822685,0.65914 5.110025,0.65914 2.343452,0 3.905753,-0.25282 1.529751,-0.26185 2.799122,-0.83071 1.269369,-0.5779 2.896764,-1.80591 1.952877,-1.47181 3.808109,-2.19418 1.822685,-0.72236 4.231231,-1.06549 2.375999,-0.34312 5.695887,-0.34312 z"
+       id="text1"
+       style="font-size:41.8844px;fill:#ffffff;stroke-width:0.548586"
+       aria-label="S" />
+    <rect
+       style="fill:url(#linearGradient1);stroke-width:0.620602"
+       id="rect1"
+       width="5.4887118"
+       height="56.93"
+       x="106.12816"
+       y="59.11655" />
+    <path
+       style="fill:url(#linearGradient2);stroke-width:0.671617"
+       d="m 115.69823,-17.718035 0.10673,8.6364016 6.6e-4,0.065045 0.50093,63.5940654 4.23846,-3.487884 -0.43231,-54.8828009 4.30676,5.2229814 -0.0682,-8.6667983 -4.30699,-5.2167632 -2.2e-4,-0.05068 -0.0349,0.008 z"
+       transform="rotate(39.451399)"
+       id="rect3" />
+    <g
+       id="g1"
+       transform="matrix(0.77095114,0,0,0.73186664,8.9100046,64.817605)">
+      <rect
+         x="126.10158"
+         y="77.458244"
+         width="50"
+         height="15"
+         rx="1.7676947"
+         fill="url(#textGrad)"
+         id="rect4-2"
+         style="fill:url(#linearGradient7);stroke-width:0.286091" />
+      <text
+         x="128.86395"
+         y="89.666245"
+         font-family="'JetBrains Mono', Menlo, Consolas, monospace"
+         font-size="14.4462px"
+         font-weight="700"
+         fill="#ffffff"
+         letter-spacing="1"
+         id="text4"
+         style="stroke-width:0.277813">PROXY</text>
+    </g>
+  </g>
+</svg>

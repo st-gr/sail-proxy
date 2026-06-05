@@ -1,0 +1,56 @@
+{
+  "name": "ollama",
+  "version": "1.0.0",
+  "description": "Ollama API compatibility server for SAP AI Core proxy",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "cross-env NODE_ENV=test jest --config jest.config.json",
+    "test:unit": "cross-env NODE_ENV=test jest --config jest.config.json --testPathPattern=\"test/unit/\"",
+    "test:integration": "cross-env NODE_ENV=test jest --config jest.config.json --testPathPattern=\"test/integration/\"",
+    "test:watch": "cross-env NODE_ENV=test jest --config jest.config.json --watch",
+    "test:coverage": "cross-env NODE_ENV=test jest --config jest.config.json --coverage",
+    "health": "curl -s http://localhost:11434/health | jq",
+    "models": "curl -s http://localhost:11434/api/tags | jq",
+    "version": "curl -s http://localhost:11434/api/version | jq"
+  },
+  "keywords": [
+    "ollama",
+    "openai",
+    "api",
+    "proxy",
+    "sap",
+    "ai-core",
+    "llm",
+    "adapter"
+  ],
+  "author": "SAP AI Core Proxy Team",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.15.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.8",
+    "cross-env": "^7.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/sap-ai-core-proxy"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/sap-ai-core-proxy/issues"
+  },
+  "homepage": "https://github.com/your-org/sap-ai-core-proxy#readme"
+}

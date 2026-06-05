@@ -1,0 +1,206 @@
+{
+  "apiKeyUsage": [
+    {
+      "keyId": "92e202e0-004e-4ba5-b8eb-5402370680ac",
+      "totalRequests": 1247,
+      "totalInputTokens": 374100,
+      "totalOutputTokens": 186050,
+      "totalTokens": 560150,
+      "totalInputCost": 0.748,
+      "totalOutputCost": 0.558,
+      "totalCost": 1.306,
+      "avgResponseTime": 8499
+    },
+    {
+      "keyId": "d64372b4-e672-4058-bb33-3c7f21fd8d8e",
+      "totalRequests": 892,
+      "totalInputTokens": 267600,
+      "totalOutputTokens": 133800,
+      "totalTokens": 401400,
+      "totalInputCost": 0.535,
+      "totalOutputCost": 0.401,
+      "totalCost": 0.936,
+      "avgResponseTime": 8494
+    }
+  ],
+  "awsCredentialUsage": [
+    {
+      "credentialId": "a927aefe-7a8d-43f4-8247-4edc817bfb9b",
+      "totalRequests": 1834,
+      "totalInputTokens": 550200,
+      "totalOutputTokens": 275100,
+      "totalTokens": 825300,
+      "totalInputCost": 1.32,
+      "totalOutputCost": 0.825,
+      "totalCost": 2.145,
+      "avgResponseTime": 9154,
+      "errorCount": 12
+    }
+  ],
+  "providerUsage": [
+    {
+      "provider": "Anthropic",
+      "totalRequests": 2973,
+      "totalInputTokens": 891900,
+      "totalOutputTokens": 594950,
+      "totalTokens": 1486850,
+      "avgResponseTime": 8825,
+      "errorCount": 15
+    },
+    {
+      "provider": "OpenAI",
+      "totalRequests": 1568,
+      "totalInputTokens": 470400,
+      "totalOutputTokens": 235200,
+      "totalTokens": 705600,
+      "avgResponseTime": 7234,
+      "errorCount": 8
+    },
+    {
+      "provider": "Azure OpenAI",
+      "totalRequests": 892,
+      "totalInputTokens": 267600,
+      "totalOutputTokens": 133800,
+      "totalTokens": 401400,
+      "avgResponseTime": 9567,
+      "errorCount": 23
+    }
+  ],
+  "emailUsage": [
+    {
+      "email": "user@test.com",
+      "totalRequests": 2139,
+      "totalInputTokens": 641700,
+      "totalOutputTokens": 320850,
+      "totalTokens": 962550,
+      "totalInputCost": 1.283,
+      "totalOutputCost": 0.962,
+      "totalCost": 2.245,
+      "avgResponseTime": 8496,
+      "uniqueKeysUsed": 2,
+      "lastActivity": "2025-08-23T22:41:02.000Z"
+    },
+    {
+      "email": "aws-user@test.com",
+      "totalRequests": 1834,
+      "totalInputTokens": 550200,
+      "totalOutputTokens": 275100,
+      "totalTokens": 825300,
+      "totalInputCost": 1.32,
+      "totalOutputCost": 0.825,
+      "totalCost": 2.145,
+      "avgResponseTime": 9154,
+      "uniqueKeysUsed": 1,
+      "lastActivity": "2025-08-23T22:44:43.000Z"
+    },
+    {
+      "email": "power-user@company.com",
+      "totalRequests": 460,
+      "totalInputTokens": 138000,
+      "totalOutputTokens": 69000,
+      "totalTokens": 207000,
+      "totalInputCost": 0.276,
+      "totalOutputCost": 0.207,
+      "totalCost": 0.483,
+      "avgResponseTime": 7823,
+      "uniqueKeysUsed": 1,
+      "lastActivity": "2025-08-23T18:22:15.000Z"
+    }
+  ],
+  "endpointUsage": [
+    {
+      "endpoint": "/anthropic/v1/messages",
+      "totalRequests": 2973,
+      "totalInputTokens": 891900,
+      "totalOutputTokens": 594950,
+      "totalTokens": 1486850,
+      "avgResponseTime": 8825,
+      "errorCount": 15
+    },
+    {
+      "endpoint": "/openai/v1/chat/completions",
+      "totalRequests": 1568,
+      "totalInputTokens": 470400,
+      "totalOutputTokens": 235200,
+      "totalTokens": 705600,
+      "avgResponseTime": 7234,
+      "errorCount": 8
+    },
+    {
+      "endpoint": "/azure/openai/deployments/gpt-4/chat/completions",
+      "totalRequests": 892,
+      "totalInputTokens": 267600,
+      "totalOutputTokens": 133800,
+      "totalTokens": 401400,
+      "avgResponseTime": 9567,
+      "errorCount": 23
+    }
+  ],
+  "modelUsage": [
+    {
+      "modelId": "anthropic--claude-3-haiku--deployed",
+      "provider": "Anthropic",
+      "totalRequests": 1456,
+      "totalInputTokens": 436800,
+      "totalOutputTokens": 291200,
+      "totalTokens": 728000,
+      "totalInputCost": 0.437,
+      "totalOutputCost": 0.728,
+      "totalCost": 1.165,
+      "avgResponseTime": 7823,
+      "errorCount": 3
+    },
+    {
+      "modelId": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+      "provider": "Anthropic",
+      "totalRequests": 1517,
+      "totalInputTokens": 455100,
+      "totalOutputTokens": 303400,
+      "totalTokens": 758500,
+      "totalInputCost": 0.683,
+      "totalOutputCost": 1.214,
+      "totalCost": 1.897,
+      "avgResponseTime": 9834,
+      "errorCount": 12
+    },
+    {
+      "modelId": "gpt-4o",
+      "provider": "OpenAI",
+      "totalRequests": 892,
+      "totalInputTokens": 267600,
+      "totalOutputTokens": 133800,
+      "totalTokens": 401400,
+      "totalInputCost": 0.535,
+      "totalOutputCost": 0.401,
+      "totalCost": 0.936,
+      "avgResponseTime": 6894,
+      "errorCount": 2
+    },
+    {
+      "modelId": "gpt-3.5-turbo",
+      "provider": "OpenAI",
+      "totalRequests": 676,
+      "totalInputTokens": 202800,
+      "totalOutputTokens": 101400,
+      "totalTokens": 304200,
+      "totalInputCost": 0.101,
+      "totalOutputCost": 0.051,
+      "totalCost": 0.152,
+      "avgResponseTime": 7623,
+      "errorCount": 6
+    },
+    {
+      "modelId": "gpt-4-deployment",
+      "provider": "Azure OpenAI",
+      "totalRequests": 892,
+      "totalInputTokens": 267600,
+      "totalOutputTokens": 133800,
+      "totalTokens": 401400,
+      "totalInputCost": 0.535,
+      "totalOutputCost": 0.401,
+      "totalCost": 0.936,
+      "avgResponseTime": 9567,
+      "errorCount": 23
+    }
+  ]
+}

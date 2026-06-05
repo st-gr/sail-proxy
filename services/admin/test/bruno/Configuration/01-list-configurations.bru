@@ -1,0 +1,33 @@
+meta {
+  name: List API Configurations
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/ApiConfigurations
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isType array
+}
+
+script:post-response {
+  console.log('✅ All assertions passed');
+  console.log('Found', res.body.value.length, 'configurations');
+  
+  // Store first config ID if available for later tests
+  if (res.body.value.length > 0) {
+    bru.setVar('config_id', res.body.value[0].ID);
+    bru.setVar('config_version', res.body.value[0].version);
+  }
+}

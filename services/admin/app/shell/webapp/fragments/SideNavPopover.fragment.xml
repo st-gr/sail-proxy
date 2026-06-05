@@ -1,0 +1,40 @@
+<core:FragmentDefinition
+	xmlns="sap.m"
+	xmlns:core="sap.ui.core"
+	xmlns:tnt="sap.tnt">
+
+	<ResponsivePopover
+		id="sideNavPopover"
+		placement="Bottom"
+		verticalScrolling="false"
+		ariaLabelledBy="popoverLabel">
+
+		<core:InvisibleText id="popoverLabel" text="Main" />
+
+		<tnt:SideNavigation
+			id="sideNavInOverlay"
+			width="18rem"
+			selectedKey="home"
+			design="Plain"
+			itemSelect=".onItemSelect">
+			<tnt:NavigationList>
+				<tnt:NavigationListItem key="home" text="Home" icon="home" />
+				<tnt:NavigationListItem key="access" text="Access" icon="key" expanded="true"
+					selectable="false">
+					<tnt:NavigationListItem key="apiKeys" text="API Keys" />
+					<tnt:NavigationListItem key="awsCredentials" text="AWS Credentials" />
+				</tnt:NavigationListItem>
+				<tnt:NavigationListItem key="analytics" text="Analytics" icon="business-by-design" expanded="true"
+					selectable="false">
+					<tnt:NavigationListItem key="usage" text="Usage" />
+					<tnt:NavigationListItem key="securityEvents" text="Security Notifications" />
+				</tnt:NavigationListItem>
+			</tnt:NavigationList>
+			<tnt:fixedItem>
+				<tnt:NavigationList>
+					<tnt:NavigationListItem key="settings" text="Settings" icon="settings" />
+				</tnt:NavigationList>
+			</tnt:fixedItem>
+		</tnt:SideNavigation>
+	</ResponsivePopover>
+</core:FragmentDefinition>

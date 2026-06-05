@@ -1,0 +1,48 @@
+meta {
+  name: JSON Schema Validation - Hook Definitions
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{base_url}}/validateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configData": "{\"api_config\":{\"hookDefinitions\":{\"invalidHook\":{\"type\":\"header\"}},\"model_list_changes\":{\"test-model\":{\"hooks\":{\"chat/completions\":[{\"request\":{\"callback\":{\"id\":\"test-hook\"},\"match\":[]}}]}}}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.valid: isDefined
+  res.body.valid: eq false
+  res.body.errors: isDefined
+  res.body.errors: isType array
+  res.body.errors.length: gt 0
+}
+
+script:post-response {
+  console.log('✅ Hook definition validation test completed');
+  console.log('Valid:', res.body.valid);
+  console.log('Errors:', res.body.errors);
+  
+  // Check for hook-specific validation errors
+  const hasHookErrors = res.body.errors.some(error => 
+    error.includes('name') || error.includes('match') || error.includes('hook')
+  );
+  
+  if (hasHookErrors) {
+    console.log('✅ Hook validation working correctly');
+  } else {
+    console.log('❌ Expected hook validation errors not found');
+  }
+}

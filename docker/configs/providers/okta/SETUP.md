@@ -1,0 +1,375 @@
+# Okta SAML Integration Setup Guide
+
+## Prerequisites
+
+### 1. Okta Configuration Information Required
+
+Before starting, gather the following from your Okta administrator:
+
+**Required Information:**
+- **Okta Domain**: Your Okta organization domain (e.g., `company.okta.com`)
+- **SAML Application**: Access to create/configure SAML apps in Okta
+- **Groups**: Okta groups to grant access (e.g., `sap-llm-gateway-admin`)
+- **Attributes**: User attributes to map (email, name, groups)
+
+**Admin Permissions Needed:**
+- Create SAML applications
+- Assign users/groups to applications  
+- View/export SAML certificates
+- Configure group claims
+
+### 2. Okta Application Setup
+
+#### Step 1: Create SAML Application
+
+1. **Navigate to Okta Admin:**
+   ```
+   Okta Admin Console → Applications → Create App Integration
+   ```
+
+2. **Choose Integration Type:**
+   ```
+   Sign-in method: SAML 2.0
+   Application type: Web Application
+   ```
+
+3. **App Settings:**
+   ```
+   App name: SAP LLM Gateway
+   App logo: (optional company logo)
+   App visibility: Show in Okta dashboard
+   ```
+
+#### Step 2: SAML Configuration
+
+1. **Okta SSO / Single Sign-On URL:**
+   ```
+   Production: https://auth.company.com/dex/callback  
+   Development: http://localhost:8080/dex/callback
+   ```
+
+2. **Audience URI (SP Entity ID):**
+   ```
+   Production: https://auth.company.com/dex
+   Development: http://localhost:8080/dex
+   ```
+
+3. **Attribute Statements:**
+   ```
+   name:  user.displayName
+   email: user.email
+   groups: user.groups (Group attribute filter: matches regex .*)
+   ```
+
+4. **Group Attribute Statements:**
+   ```
+   Name: groups
+   Name format: Basic
+   Filter: Matches regex .* 
+   Value: getFilteredGroups({"app.name": "SAP LLM Gateway"}, "group.name", 50)
+   ```
+
+#### Step 3: Get Metadata URL
+
+1. **Copy Metadata URL:**
+   ```
+   Applications → SAP LLM Gateway → Sign On → SAML Signing Certificates
+   Copy the Metadata URL
+   Example: https://company.okta.com/app/abc123def456/sso/saml/metadata
+   ```
+
+### 3. Okta Group Setup
+
+1. **Create Groups:**
+   ```
+   Directory → Groups → Add Group
+   
+   Group Names:
+   - sap-llm-gateway-admin
+   - sap-llm-gateway-user
+   ```
+
+2. **Assign Users to Groups:**
+   ```
+   Directory → Groups → [Group Name] → Manage People → Add People
+   ```
+
+3. **Assign Groups to Application:**
+   ```
+   Applications → SAP LLM Gateway → Assignments → Assign to Groups
+   Select: sap-llm-gateway-admin, sap-llm-gateway-user
+   ```
+
+## Configuration Steps
+
+### 1. Run Interactive Setup
+
+```bash
+# Navigate to docker directory
+cd docker
+
+# Run the interactive setup script
+node setup-docker.js
+
+# Select option 4: Okta SAML
+# Enter the values when prompted:
+# - Okta SAML metadata URL: https://company.okta.com/app/abc123def456/sso/saml/metadata
+# - SAML certificate will be auto-fetched from metadata
+# - SSO URL will be auto-extracted from metadata
+```
+
+### 2. Deploy Services
+
+```bash
+# Rebuild nginx container (required for configuration changes)
+docker-compose build nginx
+
+# Start all services
+docker-compose up -d
+
+# Check Dex logs for SAML connector initialization
+docker-compose logs dex | grep -i saml
+
+# Verify oauth2-proxy can reach Dex
+docker-compose logs oauth2-proxy | grep -i oidc
+```
+
+### 3. Test Authentication Flow
+
+1. **Access the application:**
+   ```
+   http://localhost:8080/admin/app/shell (for local testing)
+   ```
+
+2. **Okta SAML Authentication Flow:**
+   ```
+   1. Redirected to oauth2-proxy authentication
+   2. Redirected to Dex for SAML authentication
+   3. Dex redirects to Okta SAML endpoint  
+   4. User authenticates with Okta credentials
+   5. Okta sends SAML response with group claims
+   6. Dex validates SAML response and issues JWT
+   7. Redirected back to application with group information
+   ```
+
+3. **Verify Group Claims:**
+   ```bash
+   # Check that Okta groups appear in application logs
+   docker-compose logs admin | grep -i group
+   
+   # Verify SAML response processing
+   docker-compose logs dex | grep -i "groups.*claim"
+   ```
+
+## Group Management
+
+### Adding New Groups
+
+1. **Create Okta Group:**
+   ```
+   Okta Admin → Directory → Groups → Add Group
+   Name: sap-llm-gateway-developer
+   Description: LLM Gateway Developer Access
+   ```
+
+2. **Assign to Application:**
+   ```
+   Applications → SAP LLM Gateway → Assignments → Assign to Groups
+   Select: sap-llm-gateway-developer
+   ```
+
+3. **Update Role Mapping in Admin Service:**
+   ```bash
+   # The admin service maps Okta groups to internal roles:
+   # "sap-llm-gateway-admin" → "admin" role
+   # "sap-llm-gateway-user" → "user" role
+   ```
+
+### Group Permission Matrix
+
+| Okta Group | Internal Role | Permissions |
+|------------|---------------|-------------|
+| `sap-llm-gateway-admin` | admin | Full system access, user management |
+| `sap-llm-gateway-user` | user | Basic LLM queries, limited access |
+
+## Docker-Specific Configuration
+
+### 1. Generated Files
+
+The setup script creates these files:
+
+```bash
+# Generated by setup-docker.js:
+# dex.config.yaml - Contains Okta SAML connector configuration
+# .env.auth - Contains OAuth2 configuration
+# okta-saml-ca.pem - SAML certificate file (auto-downloaded)
+# docker-compose.yml - Updated with certificate mount
+```
+
+### 2. Container Architecture
+
+```bash
+# Service communication flow:
+# User → nginx:8080 → oauth2-proxy:4180 → dex:5556 (SAML) → Okta
+# Certificate file mounted as: ./okta-saml-ca.pem:/etc/dex/saml-ca.pem:ro
+```
+
+### 3. SSL/TLS Configuration
+
+```bash
+# For production deployment:
+# 1. Update BASE_URL in setup-docker.js to https://your-domain.com
+# 2. Configure proper SSL certificates in nginx
+# 3. Update Okta SAML app callback URL to HTTPS
+```
+
+## Troubleshooting
+
+### Common SAML Issues
+
+1. **Certificate Problems:**
+   ```bash
+   # Check if certificate file was created
+   ls -la okta-saml-ca.pem
+   
+   # Verify certificate format and validity
+   openssl x509 -in okta-saml-ca.pem -text -noout
+   
+   # Check if Docker mount is working
+   docker-compose exec dex ls -la /etc/dex/saml-ca.pem
+   ```
+
+2. **Metadata URL Issues:**
+   ```bash
+   # Test metadata URL accessibility
+   curl -s "https://company.okta.com/app/abc123def456/sso/saml/metadata" | head -20
+   
+   # Should return XML starting with <md:EntityDescriptor>
+   ```
+
+3. **SSO URL Problems:**
+   ```bash
+   # Check that correct SSO URL was extracted
+   grep ssoURL dex.config.yaml
+   
+   # Should show Okta SSO URL, not callback URL
+   # Correct: ssoURL: https://company.okta.com/app/.../sso/saml
+   # Wrong:   ssoURL: http://localhost:8080/dex/callback
+   ```
+
+4. **Dex Container Crashes:**
+   ```bash
+   # Check Dex logs for SAML parsing errors
+   docker-compose logs dex | grep -i "panic\|error"
+   
+   # Common issues:
+   # - Invalid certificate format
+   # - Missing certificate file
+   # - Wrong SSO URL configuration
+   ```
+
+### Testing User Access
+
+```bash
+# Test SAML authentication flow manually:
+
+# 1. Access application and check redirect chain
+curl -v http://localhost:8080/admin/
+# Should redirect through: nginx → oauth2-proxy → dex → okta
+
+# 2. Check user groups in logs after successful authentication
+docker-compose logs admin | grep -i "mapped.*group"
+
+# 3. Verify admin vs user access levels
+# Admin user should see full interface
+# Regular user should see limited interface
+```
+
+### Okta Audit Logs
+
+```bash
+# Monitor authentication events in Okta Admin Console:
+# Admin → Reports → System Log → Filter by "Authentication"
+
+# Common events to monitor:
+# - app.generic.saml.sso_success
+# - app.generic.saml.sso_failure  
+# - group.user_membership.add
+# - group.user_membership.remove
+```
+
+## Security Best Practices
+
+### 1. Certificate Management
+
+```bash
+# SAML certificates are auto-fetched but should be monitored:
+# - Check certificate expiration dates regularly
+# - Update metadata URL if Okta certificates rotate  
+# - Re-run setup-docker.js to refresh certificates
+```
+
+### 2. SAML Security Settings
+
+The generated configuration includes:
+
+```yaml
+# Certificate-based signature validation enabled
+ca: /etc/dex/saml-ca.pem  # File-based certificate validation
+
+# Secure attribute mapping
+usernameAttr: name
+emailAttr: email  
+groupsAttr: groups
+```
+
+### 3. Monitoring and Alerting
+
+```bash
+# Monitor failed SAML authentications
+docker-compose logs dex | grep -i "saml.*error"
+
+# Set up alerts for:
+# - High authentication failure rates
+# - Certificate parsing errors
+# - Group membership changes in Okta
+```
+
+## Production Considerations
+
+### 1. High Availability
+
+```bash
+# For production deployment:
+# - Use external PostgreSQL for Dex storage instead of memory
+# - Configure proper SSL/TLS certificates
+# - Set up monitoring for all authentication services
+# - Implement backup procedures for certificates
+```
+
+### 2. Performance Optimization
+
+```bash
+# Production optimizations:
+# - Enable connection pooling in Dex configuration
+# - Use CDN for static assets in admin interface
+# - Configure appropriate timeout values
+# - Monitor SAML response processing times
+```
+
+### 3. Compliance and Auditing
+
+```bash
+# Enable comprehensive logging:
+logger:
+  level: info
+  format: json
+
+# Implement audit trails for:
+# - User authentication events
+# - Group membership changes  
+# - Administrative actions
+# - Certificate rotation events
+```
+
+This Okta SAML integration provides enterprise-grade SSO with automatic certificate management using the Docker deployment architecture!

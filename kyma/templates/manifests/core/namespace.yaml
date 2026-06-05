@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sail-proxy
+  labels:
+    app: sail-proxy
+    # Istio injection is disabled due to compatibility issues with network policies
+    # If you need Istio features, set to "enabled" and ensure proper network policies
+    istio-injection: disabled

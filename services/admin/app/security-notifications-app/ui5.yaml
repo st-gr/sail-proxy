@@ -1,0 +1,58 @@
+specVersion: "3.2"
+type: application
+metadata:
+  name: admin.security-notifications-app
+framework:
+  name: SAPUI5
+  version: "1.136.0"
+  libraries:
+    - name: sap.ui.core
+    - name: sap.m
+    - name: sap.f
+    - name: sap.ui.mdc
+    - name: sap.fe.core
+    - name: sap.fe.templates
+server:
+  customMiddleware:
+    - name: ui5-tooling-transpile-middleware
+      afterMiddleware: compression
+      configuration:
+        transformTypeScript: true
+        debug: false
+        prependPathMappings:
+          - /resources/
+        pluginOptions:
+          webcomponents:
+            includeAssets: true
+            packages:
+              - name: "@ui5/webcomponents"
+                resolve: true
+                reverseAlias: true
+              - name: "@ui5/webcomponents-fiori"
+                resolve: true
+                reverseAlias: true
+              - name: "@ui5/webcomponents-icons"
+                resolve: true
+                reverseAlias: true
+builder:
+  customTasks:
+    - name: ui5-tooling-transpile-task
+      afterTask: replaceVersion
+      configuration:
+        transformTypeScript: true
+        addToNamespace: true
+        prependPathMappings:
+          - /resources/
+        pluginOptions:
+          webcomponents:
+            includeAssets: true
+            packages:
+              - name: "@ui5/webcomponents"
+                resolve: true
+                reverseAlias: true
+              - name: "@ui5/webcomponents-fiori"
+                resolve: true
+                reverseAlias: true
+              - name: "@ui5/webcomponents-icons"
+                resolve: true
+                reverseAlias: true

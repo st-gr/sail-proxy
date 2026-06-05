@@ -1,0 +1,666 @@
+###############################################################################
+#  Dynamic module for JavaScript (njs) – already present in nginx:alpine
+###############################################################################
+load_module modules/ngx_http_js_module.so;
+
+events { worker_connections 1024; }
+
+http {
+    #######################################################################
+    # 1.  njs: JWT helpers – expose claims as nginx variables             #
+    #######################################################################
+    js_path   /etc/nginx/njs/;   # jwt.js is bind-mounted here
+    js_import jwt.js;            # namespace is "jwt"
+
+    js_set $jwt_user             jwt.user;
+    js_set $jwt_email            jwt.email;
+    js_set $jwt_groups           jwt.groups;
+    js_set $jwt_is_valid         jwt.isValid;
+    js_set $jwt_validation_error jwt.validationError;
+
+    #######################################################################
+    # 1.1 JWT claim caching and JWKS key caching                         #
+    #######################################################################
+    js_shared_dict_zone zone=jwks_cache:1m;
+    js_shared_dict_zone zone=jwt_claim_cache:2m;
+
+    #######################################################################
+    # 2.  Detect presence of a Bearer token once per request              #
+    #######################################################################
+    map $http_authorization $jwt_token       { "~^Bearer\s+(.+)$" $1; default ""; }
+    map $jwt_token          $is_bearer_token { default 0; "~.+" 1; }
+    map $jwt_is_valid       $is_valid_bearer { default 0; "1" 1; }
+    
+    # Deployment mode detection: Kyma uses empty OAUTH2_PROXY_PATH, Docker uses /oauth2
+    map "${OAUTH2_PROXY_PATH}" $is_kyma_mode { "" 1; default 0; }
+    
+    # Preserve X-Forwarded-Proto from Istio/Envoy, don't overwrite with $scheme
+    map $http_x_forwarded_proto $xfp { default $http_x_forwarded_proto; "" $scheme; }
+
+    #######################################################################
+    # 3.  Standard nginx boilerplate (logging, gzip, upstreams)           #
+    #######################################################################
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log /var/log/nginx/access.log main;
+    error_log  /var/log/nginx/error.log;
+
+    sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    gzip on; gzip_vary on; gzip_min_length 1024;
+    gzip_types text/plain text/css application/json application/javascript
+              text/xml application/xml application/xml+rss text/javascript;
+
+    # Client request limits for large AI payloads
+    client_max_body_size 50M;          # Allow up to 50MB requests
+
+    upstream oauth2_proxy    { server ${OAUTH2_PROXY_SERVICE_HOST}:${OAUTH2_PROXY_SERVICE_PORT}; }
+    upstream dex             { server ${DEX_SERVICE_HOST}:${DEX_SERVICE_PORT};          }
+    upstream admin_service   { server ${ADMIN_SERVICE_HOST}:${ADMIN_SERVICE_PORT};        }
+    upstream gateway_service { server ${GATEWAY_SERVICE_HOST}:${GATEWAY_SERVICE_PORT};      }
+
+
+    #######################################################################
+    # 4.  Server block                                                    #
+    #######################################################################
+    server {
+        listen ${NGINX_PORT};
+        server_name ${SERVER_NAME};
+
+        # --- Disable absolute redirects to work properly behind reverse proxies
+        absolute_redirect off;
+
+        # --- Security headers (unchanged)
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        ###################################################################
+        # 4.1 Internal auth decision                                      #
+        ###################################################################
+        location = /_bearer_or_cookie_auth {
+            internal;
+
+            # SECURITY FIX: Create auth decision variable
+            set $auth_decision "cookie";
+            
+            # If bearer token present and valid, authorize immediately  
+            if ($is_valid_bearer) {
+                set $auth_decision "jwt_valid";
+            }
+            
+            # If bearer token present but invalid, reject
+            if ($is_bearer_token) {
+                set $auth_decision "jwt_invalid";
+            }
+            if ($is_valid_bearer) {
+                set $auth_decision "jwt_valid";
+            }
+            
+            # Handle JWT validation results
+            if ($auth_decision = "jwt_valid") {
+                return 204;
+            }
+            if ($auth_decision = "jwt_invalid") {
+                add_header Content-Type application/json;
+                return 401 '{"error": "Invalid JWT token", "details": "$jwt_validation_error"}';
+            }
+
+            # Default: fall back to oauth2-proxy cookie check
+            proxy_pass http://oauth2_proxy${OAUTH2_AUTH_PATH};
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI    $request_uri;
+            proxy_set_header X-Original-Method $request_method;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $xfp;
+            proxy_set_header Host              $host;
+            proxy_set_header Cookie $http_cookie;
+        }
+
+        ###################################################################
+        # 4.2 Original oauth2-proxy auth endpoint (unchanged)             #
+        ###################################################################
+        location = /auth/oauth2/auth {
+            internal;
+            proxy_pass http://oauth2_proxy${OAUTH2_AUTH_PATH};
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI    $request_uri;
+            proxy_set_header X-Original-Method $request_method;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $xfp;
+            proxy_set_header Host              $host;
+        }
+
+        ###################################################################
+        # 4.3 Public oauth2-proxy & Dex endpoints (unchanged)             #
+        ###################################################################
+        location /auth/ { 
+            # Pure path alias to /oauth2/ without cookie manipulation
+            rewrite ^/auth/(.*)$ /oauth2/$1 break;
+            proxy_pass http://oauth2_proxy;
+            include proxy_params;
+            proxy_set_header Cookie $http_cookie;
+        }
+        # Handle OAuth2-proxy URLs - OAuth2-proxy v7.4.0 naturally uses /oauth2/ prefix
+        # Both Docker and Kyma now accommodate OAuth2-proxy's native behavior
+        location /oauth2/ {
+            proxy_pass http://oauth2_proxy/oauth2/;
+            include proxy_params;
+            proxy_set_header Cookie $http_cookie;
+        }
+        location /dex/  { 
+            proxy_pass http://dex/dex/;              
+            include proxy_params;
+        }
+
+        ###################################################################
+        # 4.3.1 Internal JWKS endpoint for JWT validation                 #
+        ###################################################################
+        location = /internal/jwks {
+            internal;
+            proxy_pass http://dex/dex/keys;
+            proxy_set_header Accept application/json;
+            proxy_set_header User-Agent SAP-LLM-Gateway-Nginx/1.0;
+        }
+
+        ###################################################################
+        # 4.4 Health check endpoints - restricted to internal access      #
+        ###################################################################
+        # Admin service health endpoint - unauthenticated for internal only
+        location = /admin/api/health {
+            # Restrict to internal sources only
+            # Kubernetes health checks come from internal pod network
+            allow 10.0.0.0/8;      # Kubernetes pod networks
+            allow 172.16.0.0/12;   # Docker/Kubernetes internal networks
+            allow 192.168.0.0/16;  # Additional private network range
+            allow 127.0.0.1;       # Localhost
+            deny all;              # Deny all external access
+            
+            # Custom error page for denied access
+            error_page 403 @health_denied;
+            
+            # If request passes IP check, proxy without authentication
+            proxy_pass http://admin_service/api/health;
+            include proxy_params;
+            
+            # Add header to identify internal health check
+            proxy_set_header X-Internal-Health-Check "true";
+        }
+        
+        # Gateway service health endpoint - already public but add same pattern for consistency
+        location = /gateway/health {
+            # Allow all sources as gateway health is already public
+            # But add same headers for consistency
+            proxy_pass http://gateway_service/health;
+            include proxy_params;
+            
+            # Timeout configuration
+            proxy_connect_timeout 30s;
+            proxy_send_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            proxy_read_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            # Return plain text for 504 errors
+            error_page 504 =504 @plain_504;
+            
+            # Add header to identify health check
+            proxy_set_header X-Internal-Health-Check "true";
+        }
+
+        ###################################################################
+        # 4.5 Protected locations                                         #
+        ###################################################################
+        # Helper macro removed - using direct auth_request_set in each location
+
+        # Server-Sent Events endpoint for notifications - MUST come before general /admin/api/
+        location /admin/api/notifications/stream {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Pass authentication headers
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            
+            # SSE-specific settings to disable buffering
+            proxy_set_header Connection '';
+            proxy_http_version 1.1;
+            chunked_transfer_encoding off;
+            proxy_buffering off;
+            proxy_cache off;
+            
+            # Long timeout for persistent SSE connections
+            proxy_read_timeout 86400s;
+            
+            # Strip /admin prefix and proxy to admin service
+            rewrite ^/admin/(.*)$ /$1 break;
+            proxy_pass http://admin_service;
+            include proxy_params;
+        }
+
+        location /admin/api/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+
+            proxy_pass http://admin_service/api/;
+            include proxy_params;
+        }
+
+        # Internal service-to-service validation endpoints (restricted access)
+        location /admin/odata/v4/validation/ {
+            # SECURITY: Only allow internal service-to-service calls
+            # Block external access by checking for internal network or service headers
+            
+            # Allow calls from internal Docker network (gateway service)
+            allow 172.16.0.0/12;   # Docker internal networks
+            allow 10.0.0.0/8;      # Docker internal networks  
+            allow 127.0.0.1;       # Localhost
+            deny all;              # Deny all other access
+            
+            # These are internal endpoints used by gateway for credential validation
+            proxy_pass http://admin_service/odata/v4/validation/;
+            include proxy_params;
+            
+            # Add internal service identifier
+            proxy_set_header X-Internal-Service "gateway";
+        }
+        
+        # Internal admin recordUsage endpoint (restricted access)
+        location /admin/recordUsage {
+            # SECURITY: Only allow internal service-to-service calls
+            allow 172.16.0.0/12;   # Docker internal networks
+            allow 10.0.0.0/8;      # Docker internal networks
+            allow 127.0.0.1;       # Localhost  
+            deny all;              # Deny all other access
+            
+            # Internal endpoint used by gateway for usage tracking
+            proxy_pass http://admin_service/admin/recordUsage;
+            include proxy_params;
+            
+            # Add internal service identifier
+            proxy_set_header X-Internal-Service "gateway";
+        }
+
+        # OData v4 admin service endpoints
+        location /odata/v4/admin/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+
+            proxy_pass http://admin_service/odata/v4/admin/;
+            include proxy_params;
+        }
+        
+        location /admin/odata/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+
+            proxy_pass http://admin_service/odata/;
+            include proxy_params;
+        }
+
+        location = /admin/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            return 302 /admin/app/shell/;
+        }
+
+        # Logout endpoint - simplified without method restrictions
+        location = /admin/logout {
+            # Debug: Add custom header to track if location is matched
+            add_header X-Debug-Location "admin-logout-matched" always;
+            
+            # All requests go to backend with authentication
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Pass authentication headers to admin service
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            
+            # Route to admin service's /api/logout endpoint
+            rewrite ^/admin/logout$ /api/logout break;
+            proxy_pass http://admin_service;
+            include proxy_params;
+            
+            # Pass cookies to admin service
+            proxy_set_header Cookie $http_cookie;
+        }
+
+
+
+        # Handle shared SAPUI5 resources at /admin/resources/ 
+        location /admin/resources/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Pass authentication headers to admin service
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            
+            # Strip /admin prefix when proxying to admin service
+            rewrite ^/admin/(.*)$ /$1 break;
+            proxy_pass http://admin_service;
+            include proxy_params;
+            
+            # Enable caching for SAPUI5 framework resources
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Handle UI5 app resources directories specifically
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app)/(resources|webapp|images)/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Pass authentication headers to admin service
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            
+            # Strip /admin prefix when proxying to admin service
+            rewrite ^/admin/(.*)$ /$1 break;
+            proxy_pass http://admin_service;
+            include proxy_params;
+            
+            # Enable caching for static resources
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # UI5 Applications - serve static files with authentication
+        location /admin/app/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
+            # Use the headers that the admin service expects
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+
+            # Forward to admin service - strip /admin prefix since admin service expects /app/*
+            rewrite ^/admin/(.*)$ /$1 break;
+            proxy_pass http://admin_service;
+            
+            # Fix redirect URLs to include /admin prefix
+            proxy_redirect ~^/(.*)$ /admin/$1;
+            
+            # Include other proxy headers
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $xfp;
+        }
+
+        # Handle UI5 resource paths that apps expect at root level
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app)/resources/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Extract oauth2-proxy headers when using cookie auth
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Pass authentication headers to admin service
+            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
+            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
+            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            
+            # Rewrite to the actual path and proxy to admin service
+            rewrite ^/([^/]+)/resources/(.*)$ /app/$1/resources/$2 break;
+            proxy_pass http://admin_service;
+            include proxy_params;
+            
+            # Enable caching for resources
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Handle cross-app webapp references (e.g., usage-analytics from shell)
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications)/webapp/ {
+            error_page 401 = @auth_required;
+            auth_request /_bearer_or_cookie_auth;
+            
+            # Map shortened names to full app names and proxy
+            rewrite ^/usage-analytics/webapp/(.*)$ /app/usage-analytics-app/webapp/$1 break;
+            rewrite ^/api-keys/webapp/(.*)$ /app/api-keys-app/webapp/$1 break;
+            rewrite ^/aws-credentials/webapp/(.*)$ /app/aws-credentials-app/webapp/$1 break;
+            rewrite ^/config/webapp/(.*)$ /app/config-app/webapp/$1 break;
+            rewrite ^/security-notifications/webapp/(.*)$ /app/security-notifications-app/webapp/$1 break;
+            
+            proxy_pass http://admin_service;
+            include proxy_params;
+        }
+
+        # Gateway routes with different authentication patterns
+        
+        # Public gateway endpoints (no authentication required)
+        # Note: /gateway/health is handled above in health check section
+        
+        location = /gateway/ {
+            # Timeout configuration
+            proxy_connect_timeout 30s;
+            proxy_send_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            proxy_read_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            # Return plain text for 504 errors
+            error_page 504 =504 @plain_504;
+            
+            proxy_pass http://gateway_service/;
+            include proxy_params;
+        }
+        
+        # Public OpenRouter models endpoint (no authentication required)
+        location = /gateway/openrouter/api/v1/models {
+            # Timeout configuration
+            proxy_connect_timeout 30s;
+            proxy_send_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            proxy_read_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            # Return plain text for 504 errors
+            error_page 504 =504 @plain_504;
+            
+            proxy_pass http://gateway_service/openrouter/api/v1/models;
+            include proxy_params;
+        }
+
+        ###################################################################
+        # 4.4.1 Internal auth decision for gateway routes               #
+        ###################################################################
+        location = /_gateway_auth_check {
+            internal;
+
+            # CORS preflight: Allow OPTIONS requests without authentication
+            # OPTIONS is a safe method that only returns metadata (allowed methods, headers)
+            # This enables browser CORS preflight to succeed before actual authenticated requests
+            if ($request_method = OPTIONS) {
+                return 204;
+            }
+
+            # Check for direct authentication (API keys, AWS SigV4)
+            # If any of these headers are present, allow through without OAuth2
+            if ($http_x_api_key != "") {
+                return 204;  # Allow - gateway will validate API key
+            }
+            if ($http_x_stainless_key != "") {
+                return 204;  # Allow - gateway will validate API key
+            }
+            if ($http_authorization ~ "^AWS4-HMAC-SHA256") {
+                return 204;  # Allow - gateway will validate AWS SigV4
+            }
+            if ($http_authorization ~ "^Bearer\s+sk-") {
+                return 204;  # Allow - gateway will validate API key
+            }
+            
+            # No direct auth found - fall back to OAuth2 check
+            proxy_pass http://oauth2_proxy${OAUTH2_AUTH_PATH};
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI    $request_uri;
+            proxy_set_header X-Original-Method $request_method;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $xfp;
+            proxy_set_header Host              $host;
+        }
+
+        # Gateway endpoints that support API keys, AWS SigV4, and OAuth2
+        location /gateway/ {
+            error_page 401 = @gateway_auth_required;
+            auth_request /_gateway_auth_check;
+            
+            # Extract oauth2-proxy headers when using cookie auth (only set when OAuth2 is used)
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            # Set auth headers (will be empty for direct auth, populated for OAuth2)
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
+
+            # Timeout configuration
+            proxy_connect_timeout 30s;
+            proxy_send_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            proxy_read_timeout ${REQUEST_TIMEOUT_SECONDS}s;
+            # Return plain text for 504 errors
+            error_page 504 =504 @plain_504;
+            
+            # Always pass through authentication headers to gateway service
+            proxy_pass http://gateway_service/;
+            include proxy_params;
+        }
+
+        ###################################################################
+        # 4.5 OAuth2-proxy sign out endpoint                             #
+        ###################################################################
+        location = ${OAUTH2_SIGN_OUT_PATH} {
+            # OAuth2-proxy's built-in sign out endpoint
+            proxy_pass http://oauth2_proxy${OAUTH2_SIGN_OUT_PATH};
+            include proxy_params;
+            proxy_set_header Cookie $http_cookie;
+        }
+        
+        # Optional: redirect old /auth/sign_out to new location for compatibility
+        location = /auth/sign_out { 
+            return 302 ${OAUTH2_SIGN_OUT_PATH}; 
+        }
+
+        ###################################################################
+        # 4.6 Helper locations                                            #
+        ###################################################################
+        # Plain text 504 error handler for /gateway endpoints
+        location @plain_504 {
+            internal;
+            add_header Content-Type text/plain always;
+            return 504 "504 Gateway Timeout";
+        }
+        
+        location @auth_required { return 302 /oauth2/start?rd=$request_uri; }
+        location @gateway_auth_required { return 302 /oauth2/start?rd=$request_uri; }
+        
+        # Custom error for health check access denied
+        location @health_denied {
+            internal;
+            add_header Content-Type application/json;
+            return 403 '{"error": "Access denied", "message": "Health check endpoint is restricted to internal sources only"}';
+        }
+
+        location /health { access_log off; return 200 "healthy\n"; add_header Content-Type text/plain; }
+        location = /      { return 301 /admin/; }
+        location /        { return 404 "Not Found"; }
+    }
+}
+
+###########################################################################
+# 5. Shared proxy header boilerplate (mounted as /etc/nginx/proxy_params) #
+###########################################################################
+#   proxy_set_header Host              $host;
+#   proxy_set_header X-Real-IP         $remote_addr;
+#   proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#   proxy_set_header X-Forwarded-Proto $scheme;
+#   proxy_redirect  off;

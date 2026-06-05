@@ -1,0 +1,38 @@
+meta {
+  name: Get Usage Statistics with Granularity
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/getUsageStatistics
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "startDate": "2025-01-01",
+    "endDate": "2025-12-31",
+    "granularity": "day"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.apiKeyUsage: isArray
+  res.body.awsCredentialUsage: isArray
+  res.body.providerUsage: isArray
+}
+
+script:post-response {
+  console.log('✓ Usage statistics retrieved successfully');
+  console.log('API Key Usage records:', res.body.apiKeyUsage.length);
+  console.log('AWS Credential Usage records:', res.body.awsCredentialUsage.length);
+  console.log('Provider Usage records:', res.body.providerUsage.length);
+}

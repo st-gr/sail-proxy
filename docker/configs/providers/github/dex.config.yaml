@@ -1,0 +1,66 @@
+# Dex configuration for GitHub/GitHub Enterprise integration
+# Prerequisites:
+# 1. Create GitHub OAuth App in organization settings
+# 2. Configure organization and team access
+# 3. Set up proper redirect URIs
+
+issuer: BASE_URL/dex
+
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: sap_llm_gateway
+    user: admin_user
+    password: admin_password
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins: ["BASE_URL", "http://localhost:5556"]
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  skipApprovalScreen: false
+  responseTypes: ["code"]
+  grantTypes: ["authorization_code", "refresh_token"]
+
+staticClients:
+- id: oauth2-proxy
+  redirectURIs:
+  - 'BASE_URL/auth/callback'
+  name: 'SAP LLM Gateway OAuth2 Proxy'
+  secret: __OAUTH2_PROXY_CLIENT_SECRET__
+  trustedPeers:
+  - oauth2-proxy
+
+connectors:
+- type: github
+  id: github-org
+  name: GitHub Organization
+  config:
+    # GitHub OAuth App credentials (created in org settings)
+    clientID: GITHUB_CLIENT_ID
+    clientSecret: GITHUB_CLIENT_SECRET
+    
+    # Callback URL (must match GitHub OAuth app config)
+    redirectURI: BASE_URL/dex/callback
+    
+    # Organization and team configuration
+    orgs:
+    # Your GitHub organization with specific teams
+    - name: GITHUB_ORG
+      # Specific teams that can access the system
+      teams:
+      - GITHUB_ADMIN_TEAM    # Maps to "GITHUB_ORG:GITHUB_ADMIN_TEAM" in groups claim
+      - GITHUB_USER_TEAM     # Maps to "GITHUB_ORG:GITHUB_USER_TEAM" in groups claim
+    
+    # Optional: Use GitHub organizations for user info
+    useLoginAsID: false  # Use GitHub username as user ID instead of numeric ID
+
+enablePasswordDB: false

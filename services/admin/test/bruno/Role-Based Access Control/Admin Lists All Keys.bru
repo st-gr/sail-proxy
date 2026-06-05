@@ -1,0 +1,56 @@
+meta {
+  name: Admin Lists All Keys
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{base_url}}/ApiKeys
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isArray
+}
+
+script:pre-request {
+  // Check if we have test API key IDs from RBAC tests
+  const userApiKeyId = bru.getVar('user_api_key_id');
+  const otherUserApiKeyId = bru.getVar('other_user_api_key_id');
+  if (!userApiKeyId || !otherUserApiKeyId) {
+    throw new Error('This test requires user_api_key_id and other_user_api_key_id from RBAC tests. Please run Create API Key tests first.');
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    const keys = res.body.value;
+    console.log(`Admin sees ${keys.length} API key(s)`);
+    
+    // Verify admin sees keys for multiple users
+    const emails = [...new Set(keys.map(k => k.email))];
+    console.log(`Admin sees keys for emails: ${emails.join(', ')}`);
+    
+    if (emails.length < 2) {
+      throw new Error('Admin should see keys for multiple users in test environment');
+    }
+    
+    // Verify unmasked keys are returned for admin
+    for (const key of keys) {
+      if (!key.key || !key.key.startsWith('sk-')) {
+        throw new Error('Admin should see unmasked key values for all keys');
+      }
+    }
+    
+    console.log('✓ Admin correctly sees all API keys with unmasked values');
+  } else {
+    throw new Error(`Expected status 200, got ${res.status}`);
+  }
+}

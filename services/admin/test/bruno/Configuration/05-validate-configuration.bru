@@ -1,0 +1,46 @@
+meta {
+  name: Validate Configuration
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{base_url}}/validateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configData": "{\"api_config\":{\"timeouts\":{\"default\":60000,\"streaming\":240000},\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\"}]}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.valid: isDefined
+  res.body.errors: isDefined
+  res.body.warnings: isDefined
+  res.body.errors: isType array
+  res.body.warnings: isType array
+}
+
+script:post-response {
+  console.log('✅ Validation completed');
+  console.log('Valid:', res.body.valid);
+  console.log('Errors:', res.body.errors.length);
+  console.log('Warnings:', res.body.warnings.length);
+  
+  if (res.body.errors.length > 0) {
+    console.log('Validation errors:', res.body.errors);
+  }
+  
+  if (res.body.warnings.length > 0) {
+    console.log('Validation warnings:', res.body.warnings);
+  }
+}

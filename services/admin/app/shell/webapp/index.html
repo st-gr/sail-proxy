@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+	<head>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta http-equiv="Cache-control" content="no-cache, no-store, must-revalidate" />
+		<meta http-equiv="Pragma" content="no-cache" />
+		<meta http-equiv="expires" content="0" />
+
+		<meta charset="utf-8" />
+
+		<title>SAIL-PROXY - Cockpit</title>
+
+		<link rel="apple-touch-icon" sizes="180x180" href="images/favicon/apple-touch-icon.png">
+		<link rel="icon" type="image/png" sizes="32x32" href="images/favicon/favicon-32x32.png">
+		<link rel="icon" type="image/png" sizes="16x16" href="images/favicon/favicon-16x16.png">
+		<link rel="icon" type="image/x-icon" href="images/favicon/favicon.ico">
+		<link rel="manifest" href="images/favicon/site.webmanifest">
+
+		<script
+			id="sap-ui-bootstrap"
+			src="resources/sap-ui-core.js"
+			data-sap-ui-theme="sap_horizon"
+			data-sap-ui-async="true"
+			data-sap-ui-language="en"
+			data-sap-ui-compat-version="edge"
+			data-sap-ui-oninit="module:sap/ui/core/ComponentSupport"
+			data-sap-ui-libs="sap.m,sap.f,sap.tnt,sap.ui.mdc,sap.ui.fl,sap.viz,sap.suite.ui.microchart,sap.ui.export"
+			data-sap-ui-resourceroots='{"admin.shell":"./", "admin.usageanalytics":"/usage-analytics/webapp/"}' 
+			data-sap-ui-flexibilityservices='[{"connector": "LocalStorageConnector"}]'
+			data-sap-ui-loglevel="DEBUG"
+		></script>
+	</head>
+
+	<body class="sapUiBody">
+		<script>
+			// Early UShell services setup to prevent NavigationService errors
+			window.sap = window.sap || {};
+			window.sap.ushell = window.sap.ushell || {};
+			
+			// Create NavigationService mock that FE components expect
+			const navigationServiceMock = {
+				storeInnerAppStateAsync: async function() {
+					console.log("[Global UShell Mock] storeInnerAppStateAsync called");
+					return Promise.resolve({ appStateKey: "" });
+				},
+				getInnerAppState: function() {
+					console.log("[Global UShell Mock] getInnerAppState called");
+					return Promise.resolve({});
+				},
+				getCurrentHash: function() {
+					return "";
+				},
+				parseShellHash: function() {
+					return { semanticObject: "", action: "", params: {} };
+				},
+				// Additional methods that FE might call
+				getAppState: function() {
+					console.log("[Global UShell Mock] getAppState called");
+					return Promise.resolve({});
+				},
+				createEmptyAppState: function() {
+					console.log("[Global UShell Mock] createEmptyAppState called");
+					return {
+						setData: function() {},
+						save: function() { return Promise.resolve(); },
+						getKey: function() { return ""; }
+					};
+				}
+			};
+			
+			window.sap.ushell.Container = window.sap.ushell.Container || {
+				getServiceAsync: async function(serviceName) {
+					console.log("[Global UShell Mock] getServiceAsync:", serviceName);
+					if (serviceName === "NavigationService") {
+						return navigationServiceMock;
+					}
+					if (serviceName === "CrossApplicationNavigation") {
+						return { 
+							toExternal: function() {}, 
+							hrefForExternal: function() { return ""; } 
+						};
+					}
+					if (serviceName === "AppState") {
+						return {
+							storeInnerAppStateAsync: async function() { 
+								return Promise.resolve({ appStateKey: "" }); 
+							},
+							createEmptyAppState: function() { 
+								return { 
+									saveAsPersisted: async function() {}, 
+									getKey: function() { return ""; } 
+								};
+							}
+						};
+					}
+					return {};
+				},
+				getService: function(serviceName) {
+					console.log("[Global UShell Mock] getService:", serviceName);
+					if (serviceName === "NavigationService") {
+						return navigationServiceMock;
+					}
+					return {};
+				}
+			};
+		</script>
+		<div data-sap-ui-component data-name="admin.shell"></div>
+	</body>
+</html>

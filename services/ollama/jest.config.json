@@ -1,0 +1,42 @@
+{
+  "testEnvironment": "node",
+  "roots": ["<rootDir>/test", "<rootDir>/"],
+  "testMatch": [
+    "**/__tests__/**/*.js",
+    "**/?(*.)+(spec|test).js"
+  ],
+  "collectCoverageFrom": [
+    "**/*.js",
+    "!**/node_modules/**",
+    "!**/dist/**",
+    "!**/coverage/**",
+    "!**/test/**",
+    "!**/tests/**",
+    "!jest.config.json",
+    "!**/index.js"
+  ],
+  "coverageDirectory": "coverage",
+  "coverageReporters": [
+    "text",
+    "lcov",
+    "html"
+  ],
+  "setupFilesAfterEnv": ["<rootDir>/test/setupTests.js"],
+  "testTimeout": 30000,
+  "moduleNameMapper": {
+    "^@libs/(.*)$": "<rootDir>/../../libs/$1",
+    "^@sap-llm-gateway/libs/(.*)$": "<rootDir>/../../libs/$1"
+  },
+  "moduleDirectories": ["node_modules", "<rootDir>"],
+  "verbose": true,
+  "collectCoverage": false,
+  "clearMocks": true,
+  "restoreMocks": true,
+  "testPathIgnorePatterns": [
+    "/node_modules/",
+    "/dist/",
+    "/tests/"
+  ],
+  "forceExit": true,
+  "detectOpenHandles": true
+}

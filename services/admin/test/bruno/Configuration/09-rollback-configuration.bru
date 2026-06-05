@@ -1,0 +1,44 @@
+meta {
+  name: Rollback Configuration
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{base_url}}/rollbackConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "reason": "API test rollback - testing rollback functionality"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+}
+
+script:post-response {
+  if (res.body.success) {
+    console.log('✅ Configuration rolled back successfully');
+    console.log('Rolled back from:', res.body.rolledBackFrom);
+    console.log('Rolled back to:', res.body.rolledBackTo);
+    console.log('Reason:', res.body.reason);
+    console.log('Rolled back at:', res.body.rolledBackAt);
+    
+    // Store rollback details
+    bru.setVar('rollback_from_version', res.body.rolledBackFrom);
+    bru.setVar('rollback_to_version', res.body.rolledBackTo);
+  } else {
+    console.log('❌ Configuration rollback failed');
+    console.log('Error:', res.body.error);
+  }
+}

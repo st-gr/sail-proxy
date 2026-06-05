@@ -1,0 +1,24 @@
+/* Custom tile styling using SAP UI5 theme parameters */
+.usageAnalyticsApp .tileModelName {
+  /* Use theme-aware font family with fallback */
+  font-family: var(--sapFontLightFamily, var(--sapFontFamily));
+  font-weight: 300;                /* Light weight for 72 font family */
+  line-height: 1.2;
+  color: var(--sapTextColor);      /* Theme-aware text color */
+  text-align: center;
+  width: 100%;
+  /* Responsive font size with clamp for better scaling */
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+}
+
+.usageAnalyticsApp .tileCostValue {
+  /* Use theme-aware numeric content font styling */
+  font-family: var(--sapFontLightFamily, var(--sapFontFamily));
+  font-weight: 300;                /* Light weight matching NumericContent */
+  line-height: 1.2;
+  color: var(--sapPositiveColor);  /* Good/positive color for cost savings */
+  text-align: center;
+  width: 100%;
+  /* Larger font size for numeric emphasis, matching NumericContent */
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+}

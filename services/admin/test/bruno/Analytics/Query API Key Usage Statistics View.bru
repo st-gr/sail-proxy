@@ -1,0 +1,37 @@
+meta {
+  name: Query API Key Usage Statistics View
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/ApiKeyUsageStats?$orderby=totalRequests desc&$top=10
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: oneOf [200, 404]
+}
+
+script:post-response {
+  if (res.status === 200) {
+    const stats = res.body.value || [];
+    console.log('✓ API Key Usage Statistics retrieved');
+    console.log('Total records:', stats.length);
+    
+    if (stats.length > 0) {
+      console.log('Top API key usage:');
+      stats.slice(0, 3).forEach((stat, index) => {
+        console.log(`${index + 1}. Key: ${stat.keyId || 'N/A'}, Requests: ${stat.totalRequests || 0}`);
+      });
+    }
+  } else {
+    console.log('✓ No usage statistics found (expected for new system)');
+  }
+}

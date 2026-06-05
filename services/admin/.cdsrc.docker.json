@@ -1,0 +1,27 @@
+{
+  "build": {
+    "target": "gen",
+    "tasks": [
+      {
+        "src": "src/srv",
+        "for": "nodejs",
+        "options": {
+          "model": ["src/db", "src/srv", "app"]
+        }
+      },
+      {
+        "src": "src/db", 
+        "for": "postgres",
+        "options": {
+          "model": ["src/db", "src/srv", "app"]
+        }
+      }
+    ]
+  },
+  "features": {
+    "drafts": true
+  },
+  "fiori": {
+    "lean_draft": true
+  }
+}

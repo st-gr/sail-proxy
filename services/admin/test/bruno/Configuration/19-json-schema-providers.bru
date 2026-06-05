@@ -1,0 +1,48 @@
+meta {
+  name: JSON Schema Validation - Provider Config
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{base_url}}/validateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configData": "{\"api_config\":{\"openrouter\":{\"default_pricing\":{\"completion\":\"invalid\",\"image\":\"also_invalid\"},\"model_mappings\":[{\"id_prefix\":\"test\",\"provider\":\"openrouter\"}]}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.valid: isDefined
+  res.body.valid: eq false
+  res.body.errors: isDefined
+  res.body.errors: isType array
+  res.body.errors.length: gt 0
+}
+
+script:post-response {
+  console.log('✅ Provider config validation test completed');
+  console.log('Valid:', res.body.valid);
+  console.log('Errors:', res.body.errors);
+  
+  // Check for provider-specific validation errors
+  const hasProviderErrors = res.body.errors.some(error => 
+    error.includes('pricing') || error.includes('model_mappings') || error.includes('default_context_length')
+  );
+  
+  if (hasProviderErrors) {
+    console.log('✅ Provider validation working correctly');
+  } else {
+    console.log('❌ Expected provider validation errors not found');
+  }
+}

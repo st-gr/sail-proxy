@@ -1,0 +1,35 @@
+meta {
+  name: Get Security Events
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/getSecurityEvents
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "startDate": "2024-01-01T00:00:00Z",
+    "endDate": "2024-12-31T23:59:59Z",
+    "severity": "high"
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    console.log('Security events retrieved successfully');
+    console.log('- Event count:', res.body.length);
+  } else if (res.status === 405) {
+    console.log('Security events function returns 405 - functions require different calling convention');
+  } else {
+    console.log('Security events may not be implemented, got status:', res.status);
+  }
+}

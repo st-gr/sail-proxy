@@ -1,0 +1,23 @@
+<core:FragmentDefinition
+  xmlns="sap.m"
+  xmlns:core="sap.ui.core"
+  xmlns:macro="sap.fe.macros">
+
+  <!--
+    FE passes the annotation path of the replaced DataField to the extension.
+    macro:Field can consume that directly, so your field keeps FE behavior
+    (labels, read-only, formatting, side-effects, etc.).
+  -->
+  <HBox alignItems="Center" renderType="Bare">
+    <!-- Render the original field (the replaced DataField) -->
+    <macro:Field id="ApiKeyFullField" metaPath="." />
+
+    <!-- Inline copy button -->
+    <Button
+      icon="sap-icon://copy"
+      type="Transparent"
+      tooltip="Copy API Key"
+      press="admin.app.ext.CopyApiKey.onCopyInline"
+      class="sapUiTinyMarginBegin"/>
+  </HBox>
+</core:FragmentDefinition>

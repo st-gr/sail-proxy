@@ -1,0 +1,25 @@
+{
+  "name": "admin.config",
+  "version": "1.0.0",
+  "description": "SAP UI5 Configuration Management App",
+  "author": "SAP SE",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "start": "ui5 serve --open /index.html",
+    "build": "ui5 build --dest dist",
+    "lint": "eslint webapp/",
+    "test": "npm run build"
+  },
+  "devDependencies": {
+    "@ui5/cli": "^4.0.16",
+    "ui5-tooling-modules": "^3.27.3",
+    "ui5-tooling-transpile": "^3.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.15.0"
+  },
+  "dependencies": {
+    "@types/node": "^20.0.0"
+  }
+}

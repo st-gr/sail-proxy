@@ -1,0 +1,40 @@
+# APIRule for Public HTTPS Access
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: sail-proxy
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+spec:
+  gateway: kyma-system/kyma-gateway
+  hosts:
+  - <%= domain %>
+  service:
+    name: nginx
+    port: 8080
+  rules:
+  - path: /*
+    methods: [GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD]
+    noAuth: true  # Auth is handled by nginx + oauth2-proxy + dex
+---
+# Alternative APIRule for Admin-only Access (commented out by default)
+# Uncomment and modify if you want separate admin access
+# apiVersion: gateway.kyma-project.io/v2
+# kind: APIRule
+# metadata:
+#   name: sail-proxy-admin
+#   namespace: sail-proxy
+#   labels:
+#     app: sail-proxy
+# spec:
+#   gateway: kyma-system/kyma-gateway
+#   hosts:
+#   - admin-sail-proxy
+#   service:
+#     name: admin
+#     port: 4004
+#   rules:
+#   - path: /.*
+#     methods: [GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD]
+#     noAuth: true

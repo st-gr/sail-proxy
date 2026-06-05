@@ -1,0 +1,116 @@
+/* Notifications */
+.notificationsPopover {
+	width: 27rem;
+	max-height: 40rem;
+}
+
+.notificationsPopover::part(header) {
+	padding: 0;
+	box-shadow: none;
+}
+
+.notificationsPopover::part(content) {
+	padding: 0;
+}
+
+.notificationsPopoverList {
+	height: 100%;
+}
+
+.notificationsPopoverBar,
+.notificationsPopoverBar::part(bar) {
+	box-shadow: none;
+}
+
+/* End notifications */
+
+
+/* Simple height management for FE component embedding */
+/* Back to the working approach - just make the offset dynamic */
+
+/* Proper height chain for FE floating footer support */
+html, body { 
+	height: 100%; 
+}
+
+/* Shell root components */
+#__component0---app--toolPage,
+#__component0---app--mainContent { 
+	height: 100%; 
+}
+
+/* Alternative selector for any shell app */
+[id*="toolPage"],
+[id*="mainContent"] {
+	height: 100%;
+}
+
+/* Flex layout optimized for FE apps with floating footers */
+.shellFlexGrow {
+	display: flex !important;
+	flex-direction: column !important;
+	flex: 1 1 auto !important;      /* Grow and shrink as needed */
+	min-height: 0 !important;       /* Crucial: allow flex children to shrink */
+}
+
+/* Ensure title has proper spacing but doesn't interfere with flex layout */
+.shellFlexGrow > .sapMTitle {
+	flex-shrink: 0 !important;      /* Title should not shrink */
+}
+
+/* FE container: constrained height to fix floating footer positioning */
+[id*="feContainer"] { 
+	flex: 1 1 auto !important;      /* Fill available space */
+	min-height: 0 !important;       /* Allow shrinking */
+	overflow: hidden !important;    /* Force FE app to respect height limits */
+}
+
+/* Shell root class for scoped styling */
+.shellRoot .shellFlexGrow {
+	height: 100%;
+	display: flex !important;
+	flex-direction: column !important;
+	min-height: 0 !important;
+}
+
+/* Logo styling */
+.shellLogoTextLight {
+	font-weight: 300;
+	font-size: 14px;
+	color: #32363a;
+	line-height: 1.2;
+}
+
+.shellLogoTextBold {
+	font-weight: 600;
+	font-size: 16px;
+	color: #0070f2;
+	line-height: 1.2;
+}
+
+/* ShellBar title styling to match original */
+/* Need to use the actual webcomponent tag name */
+[ui5-shellbar]::part(title) bdi,
+ui5-shellbar-ui5::part(title) bdi {
+	font-weight: 300 !important;
+	font-size: 14px !important;
+	color: #32363a !important;
+}
+
+[ui5-shellbar]::part(secondaryTitle),
+ui5-shellbar-ui5::part(secondaryTitle) {
+	font-weight: 700 !important;
+	font-size: 16px !important;
+	color: #0070f2 !important;
+}
+
+/* Avatar XS size support for proper circular shape */
+ui5-avatar[size="XS"],
+ui5-avatar-ui5[size="XS"],
+[ui5-avatar][size="XS"] {
+	width: 2rem !important;
+	height: 2rem !important;
+	min-width: 2rem !important;
+	min-height: 2rem !important;
+}
+

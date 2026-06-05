@@ -1,0 +1,103 @@
+# Dex Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: sail-proxy
+  labels:
+    app: dex
+spec:
+  type: ClusterIP
+  selector:
+    app: dex
+  ports:
+  - name: http
+    port: 5556
+    targetPort: 5556
+---
+# Dex Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: sail-proxy
+  labels:
+    app: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dex
+  template:
+    metadata:
+      labels:
+        app: dex
+      annotations:
+        # Disable Istio injection for Dex - causes communication issues with nginx
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: dex
+        image: ghcr.io/dexidp/dex:v2.37.0
+        args:
+        - dex
+        - serve
+        - /etc/dex/config.yaml
+        ports:
+        - containerPort: 5556
+        volumeMounts:
+        - name: dex-config
+          mountPath: /etc/dex
+          readOnly: true
+        - name: dex-storage
+          mountPath: /var/dex
+        # Mount SAML certificate for Okta provider
+        - name: dex-saml-cert
+          mountPath: /etc/dex/certs
+          readOnly: true
+        startupProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        env:
+        - name: KUBERNETES_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      volumes:
+      - name: dex-config
+        configMap:
+          name: dex-config
+      - name: dex-storage
+        emptyDir: {}
+      # SAML certificate volume for Okta provider
+      - name: dex-saml-cert
+        configMap:
+          name: dex-saml-cert
+          optional: true
+      serviceAccount: dex

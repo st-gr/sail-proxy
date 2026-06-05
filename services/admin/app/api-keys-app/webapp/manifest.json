@@ -1,0 +1,244 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.app",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": ["", "en"],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "API Keys",
+        "description": "Administration interface for API Keys, AWS Credentials and Configuration",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleUrl": "i18n/i18n.properties",
+                    "supportedLocales": ["", "en"],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "extends": {
+            "extensions": {
+                "sap.ui.controllerExtensions": {
+                    "sap.fe.templates.ObjectPage.ObjectPageController": {
+                        "controllerName": "admin.app.ext.controller.ResizeTick"
+                    }
+                }
+            }
+        },
+        "resources": {
+            "css": []
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "ApiKeysList",
+                    "target": "ApiKeysList"
+                },
+                {
+                    "pattern": "ApiKeys({key}):?query:",
+                    "name": "ApiKeysObjectPage",
+                    "target": "ApiKeysObjectPage"
+                },
+                {
+                    "pattern": "AwsCredentials:?query:",
+                    "name": "AwsCredentialsList", 
+                    "target": "AwsCredentialsList"
+                },
+                {
+                    "pattern": "AwsCredentials({key}):?query:",
+                    "name": "AwsCredentialsObjectPage",
+                    "target": "AwsCredentialsObjectPage"
+                }
+            ],
+            "targets": {
+                "ApiKeysList": {
+                    "type": "Component",
+                    "id": "ApiKeysList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ApiKeys",
+                            "entitySet": "ApiKeys",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None"
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "ApiKeys": {
+                                    "detail": {
+                                        "route": "ApiKeysObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "ApiKeysObjectPage": {
+                    "type": "Component",
+                    "id": "ApiKeysObjectPage", 
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ApiKeys",
+                            "editableHeaderContent": false,
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "SetApiKey": {
+                                            "press": "admin.app.ext.SetApiKey.onSetApiKey",
+                                            "visible": "admin.app.ext.SetApiKey.isVisible",
+                                            "enabled": true,
+                                            "text": "Set API Key",
+                                            "requiresSelection": false
+                                        },
+                                        "CopyApiKey": {
+                                            "id": "CopyApiKey",
+                                            "press": "admin.app.ext.CopyApiKey.onCopyApiKey",
+                                            "visible": true,
+                                            "text": "Copy API Key",
+                                            "enabled": true,
+                                            "requiresSelection": false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "AwsCredentialsList": {
+                    "type": "Component",
+                    "id": "AwsCredentialsList",
+                    "name": "sap.fe.templates.ListReport", 
+                    "options": {
+                        "settings": {
+                            "contextPath": "/AwsCredentials",
+                            "entitySet": "AwsCredentials",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None"
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "AwsCredentials": {
+                                    "detail": {
+                                        "route": "AwsCredentialsObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "AwsCredentialsObjectPage": {
+                    "type": "Component",
+                    "id": "AwsCredentialsObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/AwsCredentials",
+                            "editableHeaderContent": false
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

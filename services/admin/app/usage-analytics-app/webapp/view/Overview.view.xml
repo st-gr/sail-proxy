@@ -1,0 +1,557 @@
+<mvc:View
+    controllerName="admin.usageanalytics.controller.Overview"
+    displayBlock="true"
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:f="sap.f"
+    xmlns:viz="sap.viz.ui5.controls">
+
+    <f:DynamicPage id="dp" headerPinned="true" toggleHeaderOnTitleClick="false">
+        <f:title>
+            <f:DynamicPageTitle>
+                <f:heading>
+                    <Title text="Usage Analytics"/>
+                </f:heading>
+            </f:DynamicPageTitle>
+        </f:title>
+
+        <!-- Fixed, collapsible header -->
+        <f:header>
+            <f:DynamicPageHeader pinnable="true">
+                <VBox class="sapUiNoMargin">
+                    <!-- Tabs -->
+                    <IconTabBar id="analyticsTabBar" expanded="true" selectedKey="overview" select="onTabSelect">
+                        <items>
+                            <IconTabFilter key="overview" text="Overview" icon="sap-icon://pie-chart"/>
+                            <IconTabFilter key="costs" text="Cost" icon="sap-icon://money-bills"/>
+                            <IconTabFilter key="performance" text="Performance" icon="sap-icon://performance"/>
+                            <IconTabFilter key="models" text="Models" icon="sap-icon://database"/>
+                        </items>
+                    </IconTabBar>
+
+                    <!-- Time selector / actions -->
+                    <HBox alignItems="Center" justifyContent="SpaceBetween" class="sapUiMediumMarginBegin sapUiMediumMarginEnd sapUiSmallMarginTop sapUiSmallMarginBottom">
+                        <HBox alignItems="Center">
+                            <Label text="Time Period:" class="sapUiTinyMarginEnd"/>
+                            <Select id="timePeriodSelect" selectedKey="{viewModel>/selectedTimePeriod}" width="120px" change="onTimePeriodChange">
+                                <core:Item key="today" text="Today"/>
+                                <core:Item key="week" text="This Week"/>
+                                <core:Item key="month" text="This Month"/>
+                                <core:Item key="quarter" text="This Quarter"/>
+                                <core:Item key="year" text="This Year"/>
+                                <core:Item key="overall" text="Overall"/>
+                                <core:Item key="custom" text="Custom Range"/>
+                            </Select>
+                            <DateRangeSelection id="customDateRange" 
+                                                visible="{= ${viewModel>/selectedTimePeriod} === 'custom' }" 
+                                                change="onDateRangeChange"
+                                                value="{
+                                                    'type': 'sap.ui.model.type.DateInterval',
+                                                    'formatOptions': {
+                                                        'pattern': 'yyyy-MM-dd'
+                                                    },
+                                                    'parts': [
+                                                        {
+                                                            'type': 'sap.ui.model.type.Date',
+                                                            'path': 'viewModel>/customDateRangeStart'
+                                                        },
+                                                        {
+                                                            'type': 'sap.ui.model.type.Date',
+                                                            'path': 'viewModel>/customDateRangeEnd'
+                                                        }
+                                                    ]
+                                                }"
+                                                class="sapUiTinyMarginStart" />
+                        </HBox>
+                        <HBox alignItems="Center">
+                            <Text text="Last Updated: {viewModel>/lastUpdated}" class="sapUiTinyMarginEnd"/>
+                            <MenuButton icon="sap-icon://excel-attachment" tooltip="Export Data" type="Transparent" class="sapUiTinyMarginEnd">
+                                <menu>
+                                    <Menu>
+                                        <MenuItem text="Export API Key Usage" press="onExportApiKeyUsage" icon="sap-icon://key"/>
+                                        <MenuItem text="Export AWS Credential Usage" press="onExportAwsCredentialUsage" icon="sap-icon://cloud"/>
+                                    </Menu>
+                                </menu>
+                            </MenuButton>
+                            <Button icon="sap-icon://refresh" tooltip="Refresh Data" press="onRefreshData" type="Transparent"/>
+                        </HBox>
+                    </HBox>
+                </VBox>
+            </f:DynamicPageHeader>
+        </f:header>
+
+        <!-- Scrollable content -->
+        <f:content>
+            <VBox class="sapUiNoMargin sapUiMediumMargin">
+
+                <!-- Overview Tab Content -->
+                <VBox visible="{= ${viewModel>/selectedTab} === 'overview' || !${viewModel>/selectedTab} }" class="sapUiNoMargin">
+                    <!-- KPI Tiles - Dynamic Data -->
+                    <Panel headerText="Key Metrics" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <HBox wrap="Wrap" class="sapUiSmallMargin">
+                                <GenericTile header="Total Requests" subheader="Count" class="sapUiTinyMargin" width="300px">
+                                    <tileContent>
+                                        <TileContent>
+                                            <NumericContent value="{path: 'viewModel>/kpis/totalRequests', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
+                                        </TileContent>
+                                    </tileContent>
+                                </GenericTile>
+
+                                <GenericTile header="Total Cost" subheader="USD" class="sapUiTinyMargin" width="300px">
+                                    <tileContent>
+                                        <TileContent>
+                                            <NumericContent value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                        </TileContent>
+                                    </tileContent>
+                                </GenericTile>
+
+                                <GenericTile header="Response Time" subheader="ms" class="sapUiTinyMargin" width="300px">
+                                    <tileContent>
+                                        <TileContent>
+                                            <NumericContent value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
+                                        </TileContent>
+                                    </tileContent>
+                                </GenericTile>
+                            </HBox>
+                        </content>
+                    </Panel>
+
+                    <!-- Charts Section -->
+                    <Panel headerText="Usage Analytics Charts" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <VBox class="sapUiSmallMargin">
+                                <!-- Provider Usage Chart -->
+                                <VBox class="sapUiMediumMarginBottom">
+                                    <Title text="Requests by Provider" level="H3" class="sapUiSmallMarginBottom" />
+                                    <viz:Popover id="providerPopover"/>
+                                    <viz:VizFrame
+                                        id="providerChart"
+                                        uiConfig="{applicationSet:'fiori'}"
+                                        height='350px'
+                                        width="100%"
+                                        vizType='column'
+                                        class="sapUiNoMargin">
+                                    </viz:VizFrame>
+                                </VBox>
+                                
+                                <!-- Model Efficiency Chart -->
+                                <VBox class="sapUiMediumMarginTop">
+                                    <Title text="Model Performance Analysis" level="H3" class="sapUiSmallMarginBottom" />
+                                    <viz:Popover id="modelPopover"/>
+                                    <viz:VizFrame
+                                        id="modelChart"
+                                        uiConfig="{applicationSet:'fiori'}"
+                                        height='350px'
+                                        width="100%"
+                                        vizType='bubble'
+                                        class="sapUiNoMargin">
+                                    </viz:VizFrame>
+                                </VBox>
+                            </VBox>
+                        </content>
+                    </Panel>
+
+                    <!-- Data Table -->
+                    <Panel headerText="Provider Usage Details" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <Table class="sapUiSmallMargin" id="providerUsageTable" items="{viewModel>/charts/providerUsage}">
+                                <headerToolbar>
+                                    <Toolbar>
+                                        <Title text="Provider Usage Data" level="H2"/>
+                                        <ToolbarSpacer/>
+                                        <Button text="Export to Excel" press="onExportToExcel" icon="sap-icon://excel-attachment"/>
+                                    </Toolbar>
+                                </headerToolbar>
+                                <columns>
+                                    <Column><Text text="Provider" /></Column>
+                                    <Column hAlign="End"><Text text="Requests" /></Column>
+                                    <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                    <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                    <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                    <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                    <Column hAlign="End"><Text text="Avg Response Time" /></Column>
+                                    <Column hAlign="End"><Text text="Error Count" /></Column>
+                                </columns>
+                                <items>
+                                    <ColumnListItem>
+                                        <Text text="{viewModel>provider}" />
+                                        <Text text="{path: 'viewModel>totalRequests', formatter: '.formatNumber'}" textAlign="End" />
+                                        <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                        <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                        <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                        <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                        <Text text="{path: 'viewModel>avgResponseTime', formatter: '.formatDuration'}" textAlign="End" />
+                                        <Text text="{viewModel>errorCount}" textAlign="End" />
+                                    </ColumnListItem>
+                                </items>
+                            </Table>
+                        </content>
+                    </Panel>
+                </VBox>
+
+                <!-- Cost Analysis Tab Content -->
+                <VBox visible="{= ${viewModel>/selectedTab} === 'costs' }" class="sapUiNoMargin">
+                    <Panel headerText="Cost Analysis Dashboard" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <VBox class="sapUiSmallMargin">
+                                <!-- Cost KPIs -->
+                                <HBox wrap="Wrap" class="sapUiSmallMargin">
+                                    <GenericTile header="Total Cost" subheader="USD" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                    <GenericTile header="Average Cost per Request" subheader="USD" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <content>
+                                                    <HBox alignItems="Center" justifyContent="Center" width="100%" height="100%" class="sapMNCValue Good Loaded" 
+                                                          style="min-height: 48px;">
+                                                        <Text text="{path: 'viewModel>/kpis/avgCostPerRequest', formatter: '.formatCostPerRequest'}" 
+                                                              textAlign="Center" 
+                                                              class="tileCostValue"/>
+                                                    </HBox>
+                                                </content>
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                </HBox>
+                                
+                                <!-- Cost Charts -->
+                                <VBox class="sapUiMediumMarginTop">
+                                    <Title text="Cost Breakdown by Provider" level="H3" class="sapUiSmallMarginBottom" />
+                                    <viz:Popover id="costPopover"/>
+                                    <viz:VizFrame
+                                        id="costChart"
+                                        uiConfig="{applicationSet:'fiori'}"
+                                        height='350px'
+                                        width="100%"
+                                        vizType='pie'
+                                        class="sapUiNoMargin">
+                                    </viz:VizFrame>
+                                </VBox>
+                                
+                                <!-- Cost Details Table -->
+                                <Table class="sapUiMediumMarginTop" items="{viewModel>/charts/modelCostData}">
+                                    <headerToolbar>
+                                        <Toolbar>
+                                            <Title text="Cost Analysis by Model" level="H4"/>
+                                        </Toolbar>
+                                    </headerToolbar>
+                                    <columns>
+                                        <Column><Text text="Model" /></Column>
+                                        <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Input Cost" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Create Cost" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Read Cost" /></Column>
+                                        <Column hAlign="End"><Text text="Output Cost" /></Column>
+                                        <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                    </columns>
+                                    <items>
+                                        <ColumnListItem>
+                                            <Text text="{viewModel>modelId}" />
+                                            <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>inputCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheCreationCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheReadCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>outputCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                        </ColumnListItem>
+                                    </items>
+                                </Table>
+                                
+                                <!-- Global Top K Selector -->
+                                <Panel headerText="Top Credentials Analysis" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                                    <headerToolbar>
+                                        <Toolbar>
+                                            <Title text="Top Credentials Analysis" level="H4"/>
+                                            <ToolbarSpacer/>
+                                            <Label text="Show Top:" class="sapUiTinyMarginEnd"/>
+                                            <Select id="topKSelect" selectedKey="{viewModel>/cost/topK}" width="80px" change="onTopKChange">
+                                                <core:Item key="10" text="10"/>
+                                                <core:Item key="25" text="25"/>
+                                                <core:Item key="50" text="50"/>
+                                                <core:Item key="100" text="100"/>
+                                            </Select>
+                                        </Toolbar>
+                                    </headerToolbar>
+                                    <content>
+                                        <VBox class="sapUiSmallMargin">
+                                
+                                <!-- Top Emails by Cost -->
+                                <Panel headerText="Emails by Cost" class="sapUiMediumMarginBottom" expandable="true" expanded="true">
+                                    <content>
+                                        <Table items="{viewModel>/charts/topEmailsByUsage}" class="sapUiSmallMargin">
+                                            <headerToolbar>
+                                                <Toolbar>
+                                                    <Title text="Email Usage Cost Analysis" level="H5"/>
+                                                </Toolbar>
+                                            </headerToolbar>
+                                            <columns>
+                                                <Column><Text text="Email" /></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                                <Column hAlign="End"><Text text="Requests" /></Column>
+                                                <Column hAlign="End"><Text text="API Keys Used" /></Column>
+                                                <Column hAlign="End"><Text text="AWS Credentials Used" /></Column>
+                                                <Column hAlign="End"><Text text="Last Activity" /></Column>
+                                            </columns>
+                                            <items>
+                                                <ColumnListItem>
+                                                    <Text text="{viewModel>email}" />
+                                                    <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalRequests', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>uniqueApiKeysUsed', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>uniqueAwsCredentialsUsed', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>lastActivity', formatter: '.formatDateTime'}" textAlign="End" />
+                                                </ColumnListItem>
+                                            </items>
+                                        </Table>
+                                    </content>
+                                </Panel>
+                                
+                                <!-- Top API Keys by Cost -->
+                                <Panel headerText="API Keys by Cost" class="sapUiMediumMarginBottom" expandable="true" expanded="true">
+                                    <content>
+                                        <Table items="{viewModel>/charts/topApiKeys}" class="sapUiSmallMargin">
+                                            <headerToolbar>
+                                                <Toolbar>
+                                                    <Title text="API Key Cost Analysis" level="H5"/>
+                                                </Toolbar>
+                                            </headerToolbar>
+                                            <columns>
+                                                <Column><Text text="API Key Name" /></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                                <Column hAlign="End"><Text text="Requests" /></Column>
+                                                <Column hAlign="End"><Text text="Last Used" /></Column>
+                                            </columns>
+                                            <items>
+                                                <ColumnListItem>
+                                                    <Text text="{viewModel>keyName}" />
+                                                    <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalRequests', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>lastActivity', formatter: '.formatDateTime'}" textAlign="End" />
+                                                </ColumnListItem>
+                                            </items>
+                                        </Table>
+                                    </content>
+                                </Panel>
+                                
+                                <!-- Top AWS Credentials by Cost -->
+                                <Panel headerText="AWS Credentials by Cost" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                                    <content>
+                                        <Table items="{viewModel>/charts/topAwsCredentials}" class="sapUiSmallMargin">
+                                            <headerToolbar>
+                                                <Toolbar>
+                                                    <Title text="AWS Credential Cost Analysis" level="H5"/>
+                                                </Toolbar>
+                                            </headerToolbar>
+                                            <columns>
+                                                <Column><Text text="Credential Name" /></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                                <Column hAlign="End"><Text text="Requests" /></Column>
+                                                <Column hAlign="End"><Text text="Last Used" /></Column>
+                                            </columns>
+                                            <items>
+                                                <ColumnListItem>
+                                                    <Text text="{viewModel>credentialName}" />
+                                                    <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>totalRequests', formatter: '.formatNumber'}" textAlign="End" />
+                                                    <Text text="{path: 'viewModel>lastActivity', formatter: '.formatDateTime'}" textAlign="End" />
+                                                </ColumnListItem>
+                                            </items>
+                                        </Table>
+                                    </content>
+                                </Panel>
+                                        </VBox>
+                                    </content>
+                                </Panel>
+                            </VBox>
+                        </content>
+                    </Panel>
+                </VBox>
+
+                <!-- Performance Analysis Tab Content -->
+                <VBox visible="{= ${viewModel>/selectedTab} === 'performance' }" class="sapUiNoMargin">
+                    <Panel headerText="Performance Analysis Dashboard" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <VBox class="sapUiSmallMargin">
+                                <!-- Performance KPIs -->
+                                <HBox wrap="Wrap" class="sapUiSmallMargin">
+                                    <GenericTile header="Avg Response Time" subheader="ms" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                    <GenericTile header="Error Rate" subheader="%" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent value="{path: 'viewModel>/kpis/errorRate', formatter: '.formatPercent'}" indicator="Down" valueColor="Good" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                </HBox>
+                                
+                                <!-- Performance Charts -->
+                                <VBox class="sapUiMediumMarginTop">
+                                    <Title text="Response Time by Provider" level="H3" class="sapUiSmallMarginBottom" />
+                                    <viz:Popover id="performancePopover"/>
+                                    <viz:VizFrame
+                                        id="performanceChart"
+                                        uiConfig="{applicationSet:'fiori'}"
+                                        height='350px'
+                                        width="100%"
+                                        vizType='column'
+                                        class="sapUiNoMargin">
+                                    </viz:VizFrame>
+                                </VBox>
+                                
+                                <!-- Performance Table -->
+                                <Table class="sapUiMediumMarginTop" items="{viewModel>/charts/performanceData}">
+                                    <headerToolbar>
+                                        <Toolbar>
+                                            <Title text="Performance Metrics by Provider" level="H4"/>
+                                        </Toolbar>
+                                    </headerToolbar>
+                                    <columns>
+                                        <Column><Text text="Provider" /></Column>
+                                        <Column hAlign="End"><Text text="Avg Response Time" /></Column>
+                                        <Column hAlign="End"><Text text="Error Count" /></Column>
+                                        <Column hAlign="End"><Text text="Success Rate" /></Column>
+                                    </columns>
+                                    <items>
+                                        <ColumnListItem>
+                                            <Text text="{viewModel>provider}" />
+                                            <Text text="{path: 'viewModel>avgResponseTime', formatter: '.formatDuration'}" textAlign="End" />
+                                            <Text text="{viewModel>errorCount}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>successRate', formatter: '.formatPercent'}" textAlign="End" />
+                                        </ColumnListItem>
+                                    </items>
+                                </Table>
+                            </VBox>
+                        </content>
+                    </Panel>
+                </VBox>
+
+                <!-- Models Analysis Tab Content -->
+                <VBox visible="{= ${viewModel>/selectedTab} === 'models' }" class="sapUiNoMargin">
+                    <Panel headerText="Model Analysis Dashboard" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                        <content>
+                            <VBox class="sapUiSmallMargin">
+                                <!-- Model KPIs -->
+                                <HBox wrap="Wrap" class="sapUiSmallMargin">
+                                    <GenericTile header="Total Models" subheader="Count" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent value="{path: 'viewModel>/charts/modelUsage/length', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                    <GenericTile header="Most Used Model" subheader="Requests" class="sapUiTinyMargin" width="400px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <content>
+                                                    <HBox alignItems="Center" justifyContent="Center" width="100%" height="100%" class="sapMNCValue Neutral Loaded" 
+                                                          style="min-height: 48px;">
+                                                        <Text text="{viewModel>/topModel/displayName}" 
+                                                              textAlign="Center" 
+                                                              wrapping="true" 
+                                                              maxLines="2"
+                                                              class="tileModelName"/>
+                                                    </HBox>
+                                                </content>
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                </HBox>
+                                
+                                <!-- Model Charts -->
+                                <VBox class="sapUiMediumMarginTop">
+                                    <Title text="Model Usage Distribution" level="H3" class="sapUiSmallMarginBottom" />
+                                    <viz:Popover id="modelUsagePopover"/>
+                                    <viz:VizFrame
+                                        id="modelUsageChart"
+                                        uiConfig="{applicationSet:'fiori'}"
+                                        height='350px'
+                                        width="100%"
+                                        vizType='donut'
+                                        class="sapUiNoMargin">
+                                    </viz:VizFrame>
+                                </VBox>
+                                
+                                <!-- Model Details Table -->
+                                <Table class="sapUiMediumMarginTop" items="{viewModel>/charts/modelsWithEfficiency}">
+                                    <headerToolbar>
+                                        <Toolbar>
+                                            <Title text="Model Performance Details" level="H4"/>
+                                        </Toolbar>
+                                    </headerToolbar>
+                                    <columns>
+                                        <Column><Text text="Model" /></Column>
+                                        <Column><Text text="Provider" /></Column>
+                                        <Column hAlign="End"><Text text="Requests" /></Column>
+                                        <Column hAlign="End"><Text text="Input Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Output Tokens" /></Column>
+                                        <Column hAlign="End"><Text text="Avg Response Time" /></Column>
+                                        <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                    </columns>
+                                    <items>
+                                        <ColumnListItem>
+                                            <Text text="{viewModel>displayName}" />
+                                            <Text text="{viewModel>provider}" />
+                                            <Text text="{path: 'viewModel>totalRequests', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>avgResponseTime', formatter: '.formatDuration'}" textAlign="End" />
+                                            <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                        </ColumnListItem>
+                                    </items>
+                                </Table>
+                            </VBox>
+                        </content>
+                    </Panel>
+                </VBox>
+
+            </VBox>
+        </f:content>
+    </f:DynamicPage>
+</mvc:View>

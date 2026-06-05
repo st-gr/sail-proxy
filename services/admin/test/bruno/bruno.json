@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "SAP LLM Gateway Admin Service API",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}

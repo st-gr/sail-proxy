@@ -1,0 +1,82 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP - Docker Optimized",
+  "private": true,
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "mkdir -p dist/db dist/srv dist/schemas dist/config dist/services/admin/src/polyfills && CDS_CONFIG=.cdsrc.docker.json cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"src/config/**\" dist/config/ && cpy \"src/polyfills/**\" dist/services/admin/src/polyfills/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/config/*.js\" dist/config/",
+    "start": "node dist/services/admin/src/index.js",
+    "start:cds": "cds-serve",
+    "watch": "cds watch --profile pg",
+    "deploy": "cds-deploy --profile pg"
+  },
+  "dependencies": {
+    "@cap-js/postgres": "^1.14.1",
+    "@sap/cds": "^8",
+    "@sap/cds-hana": "^2",
+    "@sap/xssec": "^4.8.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "axios": "^1.15.1",
+    "bcrypt": "^5.1.1",
+    "body-parser": "^1.20.3",
+    "chokidar": "^4.0.3",
+    "dotenv": "^16.3.1",
+    "express": "^4.19.2",
+    "iovalkey": "^0.3.3",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@sap/cds-dk": "^8",
+    "@types/bcrypt": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20.0.0",
+    "@types/express": "^4.17.21",
+    "cpy-cli": "^5.0.0",
+    "typescript": "^5.8.3"
+  },
+  "cds": {
+    "requires": {
+      "db": {
+        "kind": "postgres",
+        "impl": "@cap-js/postgres",
+        "schema_evolution": "auto",
+        "dialect": "postgres"
+      },
+      "auth": {
+        "kind": "custom",
+        "impl": "./dist/services/admin/src/auth/cds-auth-adapter.js"
+      }
+    },
+    "[pg]": {
+      "requires": {
+        "db": {
+          "kind": "postgres",
+          "impl": "@cap-js/postgres",
+          "schema_evolution": "auto"
+        }
+      },
+      "sql": {
+        "dialect": "postgres"
+      }
+    },
+    "sql": {
+      "dialect": "postgres"
+    },
+    "odata": {
+      "version": "v4"
+    },
+    "build": {
+      "target": "gen"
+    },
+    "folders": {
+      "db": "src/db",
+      "srv": "src/srv"
+    }
+  }
+}

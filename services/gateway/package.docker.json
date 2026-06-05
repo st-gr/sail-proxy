@@ -1,0 +1,35 @@
+{
+  "name": "gateway",
+  "version": "1.0.0",
+  "description": "SAP AI Core Multi-Provider LLM Gateway Service - Docker Optimized",
+  "private": true,
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.15.1",
+    "body-parser": "^1.20.3",
+    "dotenv": "^16.3.1",
+    "eventsource-parser": "^3.0.2",
+    "express": "^4.19.2",
+    "gpt-tokenizer": "^3.4.0",
+    "iovalkey": "^0.3.3",
+    "morgan": "^1.10.0",
+    "qs": "^6.11.2",
+    "uuid": "^11.1.0",
+    "sharp": "^0.33.5",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.8.3"
+  }
+}

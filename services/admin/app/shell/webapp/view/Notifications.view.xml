@@ -1,0 +1,45 @@
+<mvc:View
+	controllerName="admin.shell.controller.Notifications"
+	displayBlock="true"
+	xmlns="sap.m"
+	xmlns:mvc="sap.ui.core.mvc"
+	xmlns:core="sap.ui.core"
+	xmlns:webc="sap.ui.webc.main"
+	xmlns:webcf="sap.ui.webc.fiori">
+
+	<webc:Popover
+		id="notificationsPopover"
+		class="notificationsPopover"
+		placementType="Bottom"
+		horizontalAlign="Center"
+		allowTargetOverlap="false"
+		hideArrow="false">
+
+		<webc:header>
+			<Bar class="notificationsPopoverBar">
+				<contentLeft>
+					<Title level="H5" text="Security Notifications" />
+				</contentLeft>
+
+				<contentRight>
+					<webc:Button design="Transparent" text="Clear All"
+						tooltip="Mark all notifications as seen" click="onClearAllNotifications" 
+						visible="{= ${notifications>/notifications}.length > 0}" />
+					<webc:Button design="Transparent" icon="action-settings" tooltip="Go to security notifications" />
+				</contentRight>
+			</Bar>
+		</webc:header>
+
+		<!-- Pure Web Components content - no UI5 controls -->
+		<core:HTML id="wcNotificationsList" content="&lt;div&gt;&lt;/div&gt;" />
+
+		<!-- Empty state message -->
+		<VBox id="emptyStateContainer" visible="{= ${notifications>/notifications}.length === 0 &amp;&amp; !${notifications>/loading} &amp;&amp; !${notifications>/error}}" class="sapUiContentPadding">
+			<VBox alignItems="Center" justifyContent="Center" height="200px">
+				<core:Icon src="sap-icon://bell" size="3rem" color="#0070f2" class="sapUiMediumMarginBottom" />
+				<Title text="No Security Notifications" textAlign="Center" />
+				<Text text="All security notifications have been seen" textAlign="Center" />
+			</VBox>
+		</VBox>
+	</webc:Popover>
+</mvc:View>

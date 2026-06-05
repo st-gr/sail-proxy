@@ -1,0 +1,90 @@
+# Dex configuration for external LDAP/Active Directory integration
+# Prerequisites:
+# 1. External LDAP server accessible with proper bind credentials
+# 2. User and group structure configured
+# 3. Group membership properly defined
+
+issuer: BASE_URL/dex
+
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: sap_llm_gateway
+    user: admin_user
+    password: admin_password
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins: ["BASE_URL", "http://localhost:5556"]
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  skipApprovalScreen: false
+  responseTypes: ["code"]
+  grantTypes: ["authorization_code", "refresh_token"]
+
+staticClients:
+- id: oauth2-proxy
+  redirectURIs:
+  - 'BASE_URL/auth/callback'
+  name: 'SAP LLM Gateway OAuth2 Proxy'
+  secret: __OAUTH2_PROXY_CLIENT_SECRET__
+  trustedPeers:
+  - oauth2-proxy
+
+connectors:
+- type: ldap
+  id: ldap-directory
+  name: LDAP Directory
+  config:
+    # External LDAP server connection
+    host: LDAP_HOST
+    insecureNoSSL: LDAP_INSECURE_NO_SSL  # Set to false for production SSL
+    # For SSL/TLS connection (recommended for production):
+    # insecureNoSSL: false
+    # rootCA: /etc/dex/ldap-ca.crt
+    
+    # Service account for LDAP bind (required for most LDAP servers)
+    bindDN: LDAP_BIND_DN
+    bindPW: LDAP_BIND_PASSWORD
+    
+    # User search configuration
+    userSearch:
+      # Base DN for user search
+      baseDN: LDAP_USER_BASE_DN
+      # LDAP filter to match users (customize for your LDAP schema)
+      filter: "LDAP_USER_FILTER"
+      # Username attribute (what users enter to login)
+      username: LDAP_USERNAME_ATTR
+      # Unique ID attribute
+      idAttr: LDAP_ID_ATTR
+      # Email attribute
+      emailAttr: LDAP_EMAIL_ATTR
+      # Display name attribute
+      nameAttr: LDAP_NAME_ATTR
+      # Preferred username for display
+      preferredUsernameAttr: LDAP_PREFERRED_USERNAME_ATTR
+    
+    # Group search configuration
+    groupSearch:
+      # Base DN for group search
+      baseDN: LDAP_GROUP_BASE_DN
+      # LDAP filter to match groups (customize for your LDAP schema)
+      filter: "LDAP_GROUP_FILTER"
+      # Group name attribute
+      nameAttr: LDAP_GROUP_NAME_ATTR
+      # User membership configuration (customize for your LDAP schema)
+      userMatchers:
+      # Match users by DN in the group member attribute
+      - userAttr: DN
+        groupAttr: LDAP_GROUP_MEMBER_ATTR
+
+# Disable password database (only LDAP authentication)
+enablePasswordDB: false

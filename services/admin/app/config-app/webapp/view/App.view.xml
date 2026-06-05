@@ -1,0 +1,15 @@
+<mvc:View
+    controllerName="admin.config.controller.App"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    displayBlock="true">
+    <App id="app" class="sapUiSizeCompact">
+        <pages>
+            <Page showHeader="false" enableScrolling="false">
+                <content>
+                    <!-- Content will be populated by router -->
+                </content>
+            </Page>
+        </pages>
+    </App>
+</mvc:View>

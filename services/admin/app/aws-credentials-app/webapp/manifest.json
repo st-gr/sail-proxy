@@ -1,0 +1,186 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.awscredentials",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": ["", "en"],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "AWS Credentials",
+        "description": "Administration interface for AWS Credentials management",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleUrl": "i18n/i18n.properties",
+                    "supportedLocales": ["", "en"],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "extends": {
+            "extensions": {
+                "sap.ui.controllerExtensions": {
+                    "sap.fe.templates.ObjectPage.ObjectPageController": {
+                        "controllerName": "admin.awscredentials.ext.controller.ResizeTick"
+                    }
+                }
+            }
+        },
+        "resources": {
+            "css": []
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "AwsCredentialsList",
+                    "target": "AwsCredentialsList"
+                },
+                {
+                    "pattern": "AwsCredentials({key}):?query:",
+                    "name": "AwsCredentialsObjectPage",
+                    "target": "AwsCredentialsObjectPage"
+                }
+            ],
+            "targets": {
+                "AwsCredentialsList": {
+                    "type": "Component",
+                    "id": "AwsCredentialsList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/AwsCredentials",
+                            "entitySet": "AwsCredentials",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None"
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "AwsCredentials": {
+                                    "detail": {
+                                        "route": "AwsCredentialsObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "AwsCredentialsObjectPage": {
+                    "type": "Component",
+                    "id": "AwsCredentialsObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/AwsCredentials",
+                            "editableHeaderContent": false,
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "CopyCredentials": {
+                                            "press": "admin.awscredentials.ext.CopyCredentials.onCopyCredentials",
+                                            "visible": true,
+                                            "text": "Copy Credentials",
+                                            "enabled": true,
+                                            "requiresSelection": false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

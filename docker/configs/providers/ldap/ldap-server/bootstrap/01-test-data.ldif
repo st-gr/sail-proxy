@@ -1,0 +1,124 @@
+# SAP LLM Gateway Demo LDAP Data
+# This file populates the LDAP server with test users and groups
+
+# Organizational Units
+dn: ou=people,dc=example,dc=com
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=com
+objectClass: organizationalUnit
+ou: groups
+
+# Groups for SAP LLM Gateway
+dn: cn=sap-llm-gateway-admin,ou=groups,dc=example,dc=com
+objectClass: groupOfUniqueNames
+cn: sap-llm-gateway-admin
+description: SAP LLM Gateway Administrators
+uniqueMember: uid=admin,ou=people,dc=example,dc=com
+uniqueMember: uid=alice,ou=people,dc=example,dc=com
+
+dn: cn=sap-llm-gateway-user,ou=groups,dc=example,dc=com
+objectClass: groupOfUniqueNames
+cn: sap-llm-gateway-user
+description: SAP LLM Gateway Regular Users
+uniqueMember: uid=user,ou=people,dc=example,dc=com
+uniqueMember: uid=bob,ou=people,dc=example,dc=com
+uniqueMember: uid=charlie,ou=people,dc=example,dc=com
+
+
+# Additional enterprise groups for testing
+dn: cn=developers,ou=groups,dc=example,dc=com
+objectClass: groupOfUniqueNames
+cn: developers
+description: Development Team
+uniqueMember: uid=alice,ou=people,dc=example,dc=com
+uniqueMember: uid=bob,ou=people,dc=example,dc=com
+
+dn: cn=security-team,ou=groups,dc=example,dc=com
+objectClass: groupOfUniqueNames
+cn: security-team
+description: Security Team
+uniqueMember: uid=admin,ou=people,dc=example,dc=com
+
+# Test Users
+dn: uid=admin,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: admin
+cn: Admin User
+sn: User
+givenName: Admin
+displayName: Admin User
+mail: admin@example.com
+userPassword: {SSHA}OzTAiYGDRmsBj8PzYNpSss9hOoHsyor90Ry23g==
+uidNumber: 1001
+gidNumber: 1001
+homeDirectory: /home/admin
+loginShell: /bin/bash
+
+dn: uid=alice,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: alice
+cn: Alice Johnson
+sn: Johnson
+givenName: Alice
+displayName: Alice Johnson
+mail: alice@example.com
+userPassword: {SSHA}OzTAiYGDRmsBj8PzYNpSss9hOoHsyor90Ry23g==
+uidNumber: 1002
+gidNumber: 1002
+homeDirectory: /home/alice
+loginShell: /bin/bash
+
+dn: uid=user,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: user
+cn: Regular User
+sn: User
+givenName: Regular
+displayName: Regular User
+mail: user@example.com
+userPassword: {SSHA}OzTAiYGDRmsBj8PzYNpSss9hOoHsyor90Ry23g==
+uidNumber: 1003
+gidNumber: 1003
+homeDirectory: /home/user
+loginShell: /bin/bash
+
+dn: uid=bob,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: bob
+cn: Bob Smith
+sn: Smith
+givenName: Bob
+displayName: Bob Smith
+mail: bob@example.com
+userPassword: {SSHA}OzTAiYGDRmsBj8PzYNpSss9hOoHsyor90Ry23g==
+uidNumber: 1004
+gidNumber: 1004
+homeDirectory: /home/bob
+loginShell: /bin/bash
+
+dn: uid=charlie,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: charlie
+cn: Charlie Brown
+sn: Brown
+givenName: Charlie
+displayName: Charlie Brown
+mail: charlie@example.com
+userPassword: {SSHA}OzTAiYGDRmsBj8PzYNpSss9hOoHsyor90Ry23g==
+uidNumber: 1005
+gidNumber: 1005
+homeDirectory: /home/charlie
+loginShell: /bin/bash
+

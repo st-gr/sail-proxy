@@ -1,0 +1,50 @@
+meta {
+  name: JSON Schema Validation - Valid Configuration
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{base_url}}/validateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configData": "{\"api_config\":{\"timeouts\":{\"default\":600000,\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INFO\",\"log_folder_path\":\"./logs\",\"payload_logging_enabled\":false,\"components\":{\"ConfigService\":\"DEBUG\"}},\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\",\"description\":\"Test substitution\"}]},\"openrouter\":{\"default_pricing\":{\"completion\":\"0.001\",\"image\":\"0.01\",\"prompt\":\"0.0005\"},\"model_mappings\":[{\"default_context_length\":128000,\"id_prefix\":\"openrouter/\",\"provider\":\"openrouter\",\"max_tokens\":4096}]},\"rate_limit_handling\":{\"enabled\":true,\"default_delay_seconds\":1,\"backoff_multiplier\":2,\"max_delay_seconds\":60}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.valid: isDefined
+  res.body.valid: eq true
+  res.body.errors: isDefined
+  res.body.errors: isType array
+  res.body.errors.length: eq 0
+  res.body.warnings: isDefined
+  res.body.warnings: isType array
+}
+
+script:post-response {
+  console.log('✅ Valid configuration test completed');
+  console.log('Valid:', res.body.valid);
+  console.log('Errors:', res.body.errors.length);
+  console.log('Warnings:', res.body.warnings.length);
+  
+  if (res.body.warnings.length > 0) {
+    console.log('Warnings:', res.body.warnings);
+  }
+  
+  if (res.body.valid) {
+    console.log('✅ Valid configuration passed schema validation');
+  } else {
+    console.log('❌ Valid configuration failed validation:', res.body.errors);
+  }
+}

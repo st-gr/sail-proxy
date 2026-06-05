@@ -1,0 +1,117 @@
+<mvc:View
+	controllerName="admin.shell.controller.App"
+	displayBlock="true"
+	height="100%"
+	xmlns="sap.m"
+	xmlns:mvc="sap.ui.core.mvc"
+	xmlns:core="sap.ui.core"
+	xmlns:tnt="sap.tnt"
+	xmlns:webc="sap.ui.webc.main"
+	xmlns:webcf="sap.ui.webc.fiori">
+	<App id="app">
+		<Page id="toolPageWrapper" showHeader="false">
+			<tnt:ToolPage id="toolPage" sideExpanded="{= !${device>/system/phone} &amp;&amp; ${ui>/sideExpanded} }">
+				<tnt:header>
+					<webcf:ShellBar
+						primaryTitle=""
+						secondaryTitle="Cockpit"
+						showNotifications="true"
+						notificationsCount="{appView>/notificationsCount}"
+						notificationsClick=".onNotificationsClick"
+						profileClick=".onProfileClick"
+						logoClick=".onLogoClick"
+						showProductSwitch="false"
+						showSearchField="false"
+					>
+						<webcf:startButton>
+							<webc:Button id="toggleMenu" icon="menu2" tooltip="Toggle Side Navigation"
+								click=".onMenuButtonClick" />
+						</webcf:startButton>
+
+						<webcf:logo>
+							<Image src="images/sail_proxy_logo.svg" width="48px" height="40px" />
+						</webcf:logo>
+
+						<webcf:profile>
+							<webc:Avatar id="profileAvatar" initials="{appView>/userInitials}" shape="Circle" size="XS" />
+						</webcf:profile>
+					</webcf:ShellBar>
+				</tnt:header>
+
+				<tnt:sideContent>
+					<tnt:SideNavigation
+						id="sideNavigation"
+						ariaLabel="Main"
+						expanded="true"
+						selectedKey="home"
+						width="18rem"
+						itemSelect=".onItemSelect">
+						<tnt:NavigationList>
+							<tnt:NavigationListItem key="home" text="Home" icon="home" />
+							<tnt:NavigationListItem key="access" text="Access" icon="key" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="apiKeys" text="API Keys" />
+								<tnt:NavigationListItem key="awsCredentials" text="AWS Credentials" />
+							</tnt:NavigationListItem>
+							<tnt:NavigationListItem key="analytics" text="Analytics" icon="business-by-design" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="usage" text="Usage" />
+								<tnt:NavigationListItem key="securityEvents" text="Security Notifications" />
+							</tnt:NavigationListItem>
+						</tnt:NavigationList>
+						<tnt:fixedItem>
+							<tnt:NavigationList>
+								<tnt:NavigationListItem key="settings" text="Settings" icon="settings" />
+							</tnt:NavigationList>
+						</tnt:fixedItem>
+					</tnt:SideNavigation>
+				</tnt:sideContent>
+
+				<tnt:mainContents>
+					<!-- Direct VBox without Page wrapper to avoid internal headers -->
+					<VBox id="mainContent" fitContainer="true" class="shellFlexGrow shellRoot sapUiMediumMargin">
+						<!-- Navigation breadcrumb area -->
+						<HBox id="navigationArea" visible="false" alignItems="Center" class="sapUiMediumMarginBottom">
+							<Button id="backButton" icon="sap-icon://nav-back" tooltip="Back" press=".onBackPress" type="Transparent" />
+							<Breadcrumbs id="breadcrumbs" class="sapUiTinyMarginBegin">
+								<Link id="homeLink" text="Home" press=".onHomeLinkPress" />
+							</Breadcrumbs>
+						</HBox>
+						
+						<!-- Title area (fixed height) -->
+						<Title id="contentTitle" text="LLM Gateway Administration" class="sapUiMediumMarginBottom" />
+						
+						<!-- Persistent FE container that fills the space -->
+						<core:ComponentContainer 
+							id="feContainer" 
+							async="true" 
+							width="100%" 
+							height="100%" 
+							visible="false">
+							<core:layoutData>
+								<FlexItemData growFactor="1"/>
+							</core:layoutData>
+						</core:ComponentContainer>
+						
+						<!-- Static content (does NOT grow) -->
+						<VBox id="staticContent" visible="true" class="sapUiResponsiveContentPadding">
+							<!-- Static content will be populated dynamically -->
+						</VBox>
+					</VBox>
+				</tnt:mainContents>
+			</tnt:ToolPage>
+
+			<!-- User Profile Popover -->
+			<webc:Popover id="userProfilePopover" placementType="Bottom" class="sapUiContentPadding" horizontalAlign="Center" allowTargetOverlap="false" hideArrow="false">
+				<VBox alignItems="Center" class="sapUiSmallMargin">
+					<webc:Avatar initials="{appView>/userInitials}" shape="Circle" size="L" class="sapUiSmallMarginBottom" />
+					<Text text="{appView>/userEmail}" class="sapUiSmallMarginBottom" />
+					<Text text="{appView>/userRole}" class="sapUiTinyMarginBottom" />
+					<webc:Button text="Sign Out" icon="log" click=".onSignOut" design="Emphasized" />
+				</VBox>
+			</webc:Popover>
+
+			<mvc:XMLView id="notificationsView" viewName="admin.shell.view.Notifications" />
+		</Page>
+	</App>
+</mvc:View>

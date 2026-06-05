@@ -1,0 +1,53 @@
+meta {
+  name: JSON Schema Validation Tests
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{base_url}}/validateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configData": "{\"api_config\":{\"timeouts\":{\"default\":\"not_a_number\",\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INVALID_LEVEL\"},\"anthropic\":{\"substitute_models\":[{\"from\":\"valid-model\"}]}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.valid: isDefined
+  res.body.valid: eq false
+  res.body.errors: isDefined
+  res.body.errors: isType array
+  res.body.errors.length: gt 0
+}
+
+script:post-response {
+  console.log('✅ JSON Schema validation test completed');
+  console.log('Valid:', res.body.valid);
+  console.log('Number of schema validation errors:', res.body.errors.length);
+  
+  // Log each error for debugging
+  res.body.errors.forEach((error, index) => {
+    console.log(`Error ${index + 1}:`, error);
+  });
+  
+  // Check that we get specific schema validation errors
+  const hasSchemaErrors = res.body.errors.some(error => 
+    error.includes('Schema validation error')
+  );
+  
+  if (hasSchemaErrors) {
+    console.log('✅ Schema validation errors detected correctly');
+  } else {
+    console.log('❌ Expected schema validation errors not found');
+  }
+}

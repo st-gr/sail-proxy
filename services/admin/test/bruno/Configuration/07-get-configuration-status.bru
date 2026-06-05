@@ -1,0 +1,47 @@
+meta {
+  name: Get Configuration Status
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{base_url}}/getConfigurationStatus
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+  res.body.success: eq true
+  res.body.status: isDefined
+  res.body.status.timestamp: isDefined
+  res.body.status.eventPublishing: isDefined
+  res.body.status.activeConfig: isDefined
+}
+
+script:post-response {
+  const status = res.body.status;
+  
+  console.log('✅ Configuration status retrieved');
+  console.log('Timestamp:', status.timestamp);
+  console.log('Event Publishing:', status.eventPublishing);
+  console.log('Active Config:', status.activeConfig);
+  
+  if (status.activeConfig.hasActiveConfig) {
+    console.log('Active version:', status.activeConfig.version);
+    console.log('Deployed at:', status.activeConfig.deployedAt);
+    console.log('Checksum:', status.activeConfig.checksum);
+  } else {
+    console.log('No active configuration found');
+  }
+}

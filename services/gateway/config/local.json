@@ -1,0 +1,10 @@
+{
+  "gateway": {
+    "port": 3000,
+    "logLevel": "debug",
+    "features": {
+      "enableMetrics": true,
+      "enableTracing": true
+    }
+  }
+}

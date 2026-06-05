@@ -1,0 +1,36 @@
+{
+  "xsappname": "sap-llm-gateway-admin",
+  "tenant-mode": "dedicated",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.user",
+      "description": "Regular user access to manage own API keys"
+    },
+    {
+      "name": "$XSAPPNAME.admin", 
+      "description": "Administrator access to manage all API keys and system configuration"
+    }
+  ],
+  "role-templates": [
+    {
+      "name": "User",
+      "description": "User role for managing own API keys",
+      "scope-references": [
+        "$XSAPPNAME.user"
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "Administrator role for full system access",
+      "scope-references": [
+        "$XSAPPNAME.user",
+        "$XSAPPNAME.admin"
+      ]
+    }
+  ],
+  "oauth2-configuration": {
+    "redirect-uris": [
+      "http://localhost:4004/oauth/callback"
+    ]
+  }
+}

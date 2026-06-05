@@ -1,0 +1,52 @@
+meta {
+  name: User Lists Own Keys Only
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{base_url}}/ApiKeys
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: user@test.com
+  password: user
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isArray
+}
+
+script:pre-request {
+  // Check if we have user API key ID from RBAC tests
+  const userApiKeyId = bru.getVar('user_api_key_id');
+  if (!userApiKeyId) {
+    //throw new Error('This test requires user_api_key_id from RBAC tests. Please run "Create User API Key" test first.');
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    const keys = res.body.value;
+    console.log(`User sees ${keys.length} API key(s)`);
+    
+    // Verify user only sees keys with their email
+    for (const key of keys) {
+      if (key.email !== 'user@test.com') {
+        throw new Error(`User should only see their own keys, but saw key for: ${key.email}`);
+      }
+      
+      // Verify unmasked key is returned for own keys
+      if (!key.key || !key.key.startsWith('sk-')) {
+        throw new Error('User should see unmasked key value for their own keys');
+      }
+    }
+    
+    console.log('✓ User correctly sees only their own API keys with unmasked values');
+  } else {
+    throw new Error(`Expected status 200, got ${res.status}`);
+  }
+}

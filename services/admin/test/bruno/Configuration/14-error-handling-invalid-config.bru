@@ -1,0 +1,41 @@
+meta {
+  name: Error Handling - Invalid Configuration
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{base_url}}/createConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "name": "Invalid Test Configuration",
+    "description": "Configuration with invalid data to test error handling",
+    "configData": "{\"api_config\":{\"anthropic\":{\"substitute_models\":[{\"from\":\"\",\"to\":\"\"}]}}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+  res.body.success: eq false
+  res.body.errors: isDefined
+  res.body.errors: isType array
+}
+
+script:post-response {
+  console.log('✅ Error handling working correctly');
+  console.log('Validation errors:', res.body.errors);
+  
+  if (res.body.warnings) {
+    console.log('Validation warnings:', res.body.warnings);
+  }
+}

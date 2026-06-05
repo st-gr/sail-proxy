@@ -1,0 +1,83 @@
+# Streaming-optimized VirtualService for Claude Code and other AI clients
+# This takes precedence over APIRule-generated VirtualService due to more specific matching
+# Addresses timeout issues in Istio service mesh by disabling retries and setting long timeouts
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: sail-proxy-streaming
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+    purpose: streaming-optimization
+    issue: claude-code-timeouts
+spec:
+  hosts:
+  - <%= domain %>
+  gateways:
+  - kyma-system/kyma-gateway
+  http:
+  # Anthropic Claude endpoints - optimized for streaming responses
+  - match:
+    - uri:
+        prefix: /gateway/anthropic/v1/messages
+    retries:
+      attempts: 0                 # Disable mesh retries for streaming
+    timeout: 86400s               # 24-hour timeout (effectively disabled)
+    headers:
+      request:
+        set:
+          x-forwarded-host: <%= domain %>
+      response:
+        remove:
+        - Access-Control-Allow-Origin
+        - Access-Control-Expose-Headers
+        - Access-Control-Allow-Headers
+        - Access-Control-Allow-Credentials
+        - Access-Control-Allow-Methods
+        - Access-Control-Max-Age
+    route:
+    - destination:
+        host: nginx.sail-proxy.svc.cluster.local
+        port:
+          number: 8080
+      weight: 100
+  # OpenAI streaming endpoints - same treatment
+  - match:
+    - uri:
+        prefix: /gateway/openai/v1/chat/completions
+    retries:
+      attempts: 0
+    timeout: 86400s
+    headers:
+      request:
+        set:
+          x-forwarded-host: <%= domain %>
+      response:
+        remove:
+        - Access-Control-Allow-Origin
+        - Access-Control-Expose-Headers
+        - Access-Control-Allow-Headers
+        - Access-Control-Allow-Credentials
+        - Access-Control-Allow-Methods
+        - Access-Control-Max-Age
+    route:
+    - destination:
+        host: nginx.sail-proxy.svc.cluster.local
+        port:
+          number: 8080
+      weight: 100
+  # Catch-all rule for all other paths (admin UI, authentication, etc.)
+  # This prevents APIRule conflicts while preserving standard behavior
+  - match:
+    - uri:
+        prefix: /
+    headers:
+      request:
+        set:
+          x-forwarded-host: <%= domain %>
+    route:
+    - destination:
+        host: nginx.sail-proxy.svc.cluster.local
+        port:
+          number: 8080
+      weight: 100

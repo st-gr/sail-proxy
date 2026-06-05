@@ -1,0 +1,94 @@
+{
+	"_version": "1.12.0",
+	"sap.app": {
+		"id": "admin.shell",
+		"type": "application",
+		"i18n": {
+			"bundleUrl": "i18n/i18n.properties",
+			"supportedLocales": ["", "en"],
+			"fallbackLocale": "en"
+		},
+		"title": "SAP AI Core - LLM Gateway Administration",
+		"description": "Administration interface for SAP AI Core LLM Gateway",
+		"applicationVersion": {
+			"version": "${version}"
+		},
+		"dataSources": {
+			"mainService": {
+				"uri": "/odata/v4/admin/",
+				"type": "OData",
+				"settings": {
+					"annotations": [],
+					"odataVersion": "4.0"
+				}
+			}
+		}
+	},
+	"sap.ui": {
+		"technology": "UI5",
+		"icons": {},
+		"deviceTypes": {
+			"desktop": true,
+			"tablet": true,
+			"phone": true
+		}
+	},
+	"sap.ui5": {
+		"rootView": {
+			"viewName": "admin.shell.view.App",
+			"type": "XML",
+			"id": "app"
+		},
+		"resources": {
+			"css": [
+				{
+					"uri": "css/style.css"
+				}
+			]
+		},
+		"dependencies": {
+			"minUI5Version": "1.136.0",
+			"libs": {
+				"sap.ui.core": {},
+				"sap.m": {},
+				"sap.f": {},
+				"sap.tnt": {},
+				"sap.ui.mdc": {},
+				"sap.ui.fl": {},
+				"sap.viz": {},
+				"sap.suite.ui.microchart": {},
+				"sap.ui.export": {},
+				"sap.ui.codeeditor": {},
+				"sap.ui.webc.main": {},
+				"sap.ui.webc.fiori": {},
+				"sap.ui.webc.common": {}
+			}
+		},
+		"handleValidation": true,
+		"contentDensities": {
+			"compact": true,
+			"cozy": true
+		},
+		"models": {
+			"i18n": {
+				"type": "sap.ui.model.resource.ResourceModel",
+				"settings": {
+					"bundleName": "admin.shell.i18n.i18n",
+					"supportedLocales": ["", "en"],
+					"fallbackLocale": "en",
+					"async": true
+				}
+			},
+			"": {
+				"dataSource": "mainService",
+				"type": "sap.ui.model.odata.v4.ODataModel",
+				"preload": true,
+				"settings": {
+					"operationMode": "Server",
+					"autoExpandSelect": true,
+					"earlyRequests": true
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,137 @@
+{
+    "_version": "1.12.0",
+    "sap.app": {
+        "id": "admin.usageanalytics",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": ["", "en"],
+            "fallbackLocale": "en"
+        },
+        "title": "Usage Analytics Dashboard",
+        "description": "Analytics dashboard for LLM Gateway usage statistics",
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [],
+                    "odataVersion": "4.0"
+                }
+            },
+            "mockDataJSON": {
+                "type": "JSON",
+                "uri": "mockData/usageStatistics.json"
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {},
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": false,
+        "resources": {
+            "css": [
+                {
+                    "uri": "css/tiles.css"
+                }
+            ]
+        },
+        "rootView": {
+            "viewName": "admin.usageanalytics.view.App",
+            "type": "XML",
+            "id": "app"
+        },
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.ui.core": {},
+                "sap.m": {},
+                "sap.suite.ui.microchart": {},
+                "sap.viz": {},
+                "sap.ui.export": {}
+            }
+        },
+        "routing": {
+            "config": {
+                "routerClass": "sap.m.routing.Router",
+                "viewType": "XML",
+                "async": true,
+                "viewPath": "admin.usageanalytics.view",
+                "controlAggregation": "pages",
+                "controlId": "app"
+            },
+            "routes": [
+                {
+                    "name": "overview",
+                    "pattern": "",
+                    "target": ["overview"]
+                },
+                {
+                    "name": "costs",
+                    "pattern": "costs",
+                    "target": ["overview"]
+                },
+                {
+                    "name": "performance",
+                    "pattern": "performance",
+                    "target": ["overview"]
+                },
+                {
+                    "name": "models",
+                    "pattern": "models",
+                    "target": ["overview"]
+                }
+            ],
+            "targets": {
+                "overview": {
+                    "viewType": "XML",
+                    "viewName": "Overview",
+                    "viewId": "overview",
+                    "viewLevel": 1
+                }
+            }
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleName": "admin.usageanalytics.i18n.i18n",
+                    "supportedLocales": ["", "en"],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "type": "sap.ui.model.odata.v4.ODataModel",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            },
+            "viewModel": {
+                "type": "sap.ui.model.json.JSONModel"
+            },
+            "mockData": {
+                "type": "sap.ui.model.json.JSONModel",
+                "dataSource": "mockDataJSON",
+                "preload": true,
+                "settings": {
+                    "sizeLimit": 100000
+                }
+            }
+        }
+    }
+}

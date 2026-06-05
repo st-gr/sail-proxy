@@ -1,0 +1,47 @@
+{
+  "name": "@sap-llm-gateway/libs",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "default": "./dist/config/index.js"
+    },
+    "./logger": {
+      "types": "./dist/logger/index.d.ts",
+      "default": "./dist/logger/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    },
+    "./test-utils": {
+      "types": "./dist/test-utils/index.d.ts",
+      "default": "./dist/test-utils/index.js"
+    },
+    "./service-auth": {
+      "types": "./dist/service-auth/index.d.ts",
+      "default": "./dist/service-auth/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rimraf dist",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "rimraf": "^5.0.1",
+    "@types/node": "^20.0.0",
+    "@types/jest": "^29.0.0"
+  },
+  "peerDependencies": {
+    "jest": "^29.0.0"
+  }
+}

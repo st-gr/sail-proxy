@@ -1,0 +1,66 @@
+# Istio AuthorizationPolicy to protect health check endpoints from external access
+# This provides network-level security in addition to nginx IP restrictions
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: health-check-external-deny
+  namespace: istio-system
+  labels:
+    app: sail-proxy
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway  # Apply to ingress gateway, not nginx directly
+  action: DENY
+  rules:
+  # Deny access to health endpoints from external traffic
+  - to:
+    - operation:
+        hosts:
+        - "__FULL_DOMAIN__"
+        paths: 
+        - "/admin/api/health"
+        - "/gateway/health"
+        methods: ["GET", "HEAD", "POST"]
+    when:
+    - key: source.namespace
+      notValues: ["kube-system", "istio-system", "kyma-system", "sail-proxy"]
+---
+# Alternative: Allow health checks only from specific sources</# This policy ensures internal traffic can still access health endpoints
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: health-check-allow-internal
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  action: ALLOW
+  rules:
+  # Allow health checks from Kubernetes system namespaces
+  - from:
+    - source:
+        namespaces: ["kube-system", "istio-system", "kyma-system"]
+    to:
+    - operation:
+        paths: 
+        - "/admin/api/health"
+        - "/gateway/health"
+  # Allow health checks from within the same namespace (pod-to-pod)
+  - from:
+    - source:
+        namespaces: ["sail-proxy"]
+    to:
+    - operation:
+        paths: 
+        - "/admin/api/health"
+        - "/gateway/health"
+  # Allow all other traffic (non-health endpoints)
+  - to:
+    - operation:
+        notPaths:
+        - "/admin/api/health"
+        - "/gateway/health"

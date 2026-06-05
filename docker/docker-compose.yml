@@ -1,0 +1,235 @@
+# SAP LLM Gateway - Docker Compose Configuration
+#
+# This configuration supports both local builds and pulling pre-built images from a container registry.
+#
+# Image Configuration:
+#   - DOCKER_REGISTRY: Container registry (default: ghcr.io)
+#   - DOCKER_ORGANIZATION: Registry organization (default: st-gr)
+#   - DOCKER_TAG: Image version tag (default: 1.0.0, from package.json)
+#
+# These can be set via:
+#   1. .env.docker file in this directory
+#   2. Environment variables: export DOCKER_TAG=1.2.3
+#   3. Inline: DOCKER_TAG=1.2.3 docker-compose up
+#
+# Usage Modes:
+#   Local builds (default):   docker-compose up --build
+#   Pull from registry:       DOCKER_BUILDKIT=0 docker-compose pull && docker-compose up
+#   Registry-only mode:       docker-compose -f docker-compose.yml -f docker-compose.registry.yml up
+#
+services:
+  gateway:
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-gateway:${DOCKER_TAG:-1.0.0}
+    build:
+      context: ..
+      dockerfile: docker/gateway.Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../services/gateway/.env
+    environment:
+      - DEPLOY_TARGET=docker
+      - NODE_ENV=production
+      - PORT=3000
+      # Override localhost URLs for Docker networking
+      - VALKEY_URL=redis://valkey:6379
+      - ADMIN_SERVICE_URL=http://nginx:8080/admin
+      # Enable unified token authentication system
+      - UNIFIED_TOKEN_SYSTEM_ENABLED=true
+      # Override debug settings for docker
+      - DEBUG=false
+    volumes:
+      - ../logs/gateway:/app/services/gateway/logs
+      - ../services/gateway/api_config.json:/app/services/gateway/api_config.json
+    networks:
+      - sap-llm-network
+    depends_on:
+      - postgres
+      - valkey
+      - admin
+    restart: unless-stopped
+
+  admin:
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-admin:${DOCKER_TAG:-1.0.0}
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    ports:
+      - "4004:4004"
+    env_file:
+      - ../services/admin/.env
+      - .env.postgres  # Add PostgreSQL configuration for Docker
+      - .env.auth
+    environment:
+      - DEPLOY_TARGET=docker
+      - NODE_ENV=production
+      - PORT=4004
+      - CDS_ENV=pg
+      - NODE_CONFIG_ENV=pg
+      # Override SQLite DB_PATH from .env file for Docker deployment
+      - DB_PATH=
+      # Override localhost URLs for Docker networking
+      - VALKEY_URL=redis://valkey:6379
+      - GATEWAY_URL=http://gateway:3000
+      # JWT Authentication Configuration
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=http://localhost:8080/dex
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL to be ready...'
+        while ! nc -z postgres 5432; do sleep 1; done
+        echo 'PostgreSQL is ready!'
+        echo 'Deploying schema using cds-deploy (required for @cap-js/postgres)...'
+        cd /app/services/admin && /app/node_modules/.bin/cds-deploy --profile pg || { echo 'ERROR: cds-deploy failed; refusing to start with unmigrated schema'; exit 1; }
+        echo 'Starting CAP service with custom startup logic...'
+        exec node dist/services/admin/src/index.js
+      "
+    volumes:
+      - ../logs/admin:/app/services/admin/logs
+      - ../services/admin/api_config.json:/app/services/admin/api_config.json
+    networks:
+      - sap-llm-network
+    depends_on:
+      - postgres
+      - valkey
+      - oauth2-proxy
+    restart: unless-stopped
+
+  ollama:
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-ollama:${DOCKER_TAG:-1.0.0}
+    build:
+      context: ..
+      dockerfile: docker/ollama.Dockerfile
+    ports:
+      - "11434:11434"
+    env_file:
+      - ../services/ollama/.env
+    environment:
+      - NODE_ENV=production
+      - PORT=11434
+    networks:
+      - sap-llm-network
+    depends_on:
+      - gateway
+    restart: unless-stopped
+    profiles:
+      - ollama
+
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    networks:
+      - sap-llm-network
+    restart: unless-stopped
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.37.0
+    ports:
+      - "5556:5556"      # HTTP OIDC endpoints
+    volumes:
+      - ./dex.config.yaml:/etc/dex/config.yaml:ro
+      - ./okta-saml-ca.pem:/etc/dex/saml-ca.pem:ro
+    env_file:
+      - .env.auth
+    networks:
+      - sap-llm-network
+    depends_on:
+      postgres:
+        condition: service_started  
+    command: >
+      sh -c "
+        echo 'Waiting for postgres to be ready...' &&
+        while ! nc -z postgres 5432; do sleep 1; done &&
+        echo 'PostgreSQL is ready, starting Dex...' &&
+        exec dex serve /etc/dex/config.yaml
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5556/dex/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      dex:
+        condition: service_healthy
+    env_file:
+      - .env.auth
+    ports:
+      - "4180:4180"
+    networks:
+      sap-llm-network:
+        aliases:
+          - oauth2-proxy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=sap_llm_gateway
+      - POSTGRES_USER=admin_user
+      - POSTGRES_PASSWORD=admin_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - sap-llm-network
+    restart: unless-stopped
+
+  nginx:
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-nginx:${DOCKER_TAG:-1.0.0}
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "${NGINX_PORT:-8080}:${NGINX_PORT:-8080}"
+      - "443:443"
+    env_file:
+      - .env.nginx  # Generated by setup-docker.js with BASE_URL
+    environment:
+      # Basic configuration
+      - NGINX_PORT=${NGINX_PORT:-8080}
+      - SERVER_NAME=${SERVER_NAME:-localhost}
+      - BASE_URL=${BASE_URL:-http://localhost:8080}
+      # JWT configuration
+      - JWT_ISSUER_URL=${JWT_ISSUER_URL:-http://localhost:8080/dex}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-oauth2-proxy}
+      # Logout configuration
+      - LOGOUT_REDIRECT_URL=${LOGOUT_REDIRECT_URL:-http://localhost:8080/admin/app/shell/}
+      # Service discovery (uses Docker Compose service names)
+      - OAUTH2_PROXY_HOST=oauth2-proxy
+      - OAUTH2_PROXY_PORT=4180
+      - DEX_HOST=dex
+      - DEX_PORT=5556
+      - ADMIN_HOST=admin
+      - ADMIN_PORT=4004
+      - GATEWAY_HOST=gateway
+      - GATEWAY_PORT=3000
+      # JWKS configuration
+      - JWKS_ENDPOINT=http://dex:5556/dex/keys
+      - ENABLE_JWKS_CACHE=true
+      # Configuration mode
+      - CONFIG_MODE=${CONFIG_MODE:-template}
+      # Request timeout configuration
+      - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-900}
+    depends_on:
+      - oauth2-proxy
+      - gateway
+      - admin
+    networks:
+      - sap-llm-network
+    restart: unless-stopped
+
+networks:
+  sap-llm-network:
+    driver: bridge
+
+volumes:
+  valkey_data:
+  postgres_data:

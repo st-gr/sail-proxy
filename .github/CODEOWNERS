@@ -1,0 +1,15 @@
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+
+# To protect a repository fully against unauthorized changes, 
+# you also need to define an owner for the CODEOWNERS file itself.
+
+/.github/CODEOWNERS @st-gr
+
+
+# These owners will be the default owners for everything in
+# the repo. Unless a later match takes precedence,
+# @st-gr will be requested for
+# review when someone opens a pull request.
+
+*       @st-gr

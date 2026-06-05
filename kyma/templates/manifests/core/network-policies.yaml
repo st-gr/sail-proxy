@@ -1,0 +1,494 @@
+# Default deny all ingress traffic in sail-proxy namespace
+# Following SAP "Secure development in Kyma" guidance
+# NOTE: When using Istio sidecars, this can cause issues with pod-to-pod communication
+# Consider removing this policy if using Istio service mesh
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: sail-proxy
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Allow NGINX to communicate with Gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nginx-to-gateway
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+# Allow NGINX to communicate with OAuth2-Proxy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nginx-to-oauth2-proxy
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 4180
+---
+# Allow OAuth2-Proxy to communicate with Dex
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-oauth2-proxy-to-dex
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: dex
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: oauth2-proxy
+    ports:
+    - protocol: TCP
+      port: 5556
+---
+# Allow Gateway and Admin to communicate with PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-postgres
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: gateway
+    - podSelector:
+        matchLabels:
+          app: admin
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+# Allow Gateway and Admin to communicate with Valkey
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-valkey
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: valkey
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: gateway
+    - podSelector:
+        matchLabels:
+          app: admin
+    ports:
+    - protocol: TCP
+      port: 6379
+---
+# Allow Istio ingress to reach NGINX (for public deployments)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-istio-to-nginx
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+# Allow DNS resolution (required for all pods)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: sail-proxy
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Allow Admin comprehensive egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admin-comprehensive-egress
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: admin
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow to Postgres
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow to Valkey
+  - to:
+    - podSelector:
+        matchLabels:
+          app: valkey
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow to Gateway  
+  - to:
+    - podSelector:
+        matchLabels:
+          app: gateway
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow to nginx (for internal health checks)
+  - to:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow to Istio system (for sidecar communication when enabled)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    ports:
+    - protocol: TCP
+      port: 15010
+    - protocol: TCP
+      port: 15011
+    - protocol: TCP
+      port: 15012
+    - protocol: TCP
+      port: 443
+---
+# Allow Gateway pods to connect to PostgreSQL (egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-egress-to-postgres
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Allow OAuth2-Proxy to connect to Dex (egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-oauth2-proxy-egress-to-dex
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: dex
+    ports:
+    - protocol: TCP
+      port: 5556
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Allow NGINX to connect to Gateway, OAuth2-Proxy, Dex and Admin (egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nginx-egress
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: gateway
+    ports:
+    - protocol: TCP
+      port: 8080
+  - to:
+    - podSelector:
+        matchLabels:
+          app: oauth2-proxy
+    ports:
+    - protocol: TCP
+      port: 4180
+  - to:
+    - podSelector:
+        matchLabels:
+          app: dex
+    ports:
+    - protocol: TCP
+      port: 5556
+  - to:
+    - podSelector:
+        matchLabels:
+          app: admin
+    ports:
+    - protocol: TCP
+      port: 4004
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Allow all pods to communicate with Istio control plane (required for sidecars)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-istio-sidecar-egress
+  namespace: sail-proxy
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    ports:
+    - protocol: TCP
+      port: 15010
+    - protocol: TCP
+      port: 15011
+    - protocol: TCP
+      port: 15012
+    - protocol: TCP
+      port: 443
+---
+# Allow Istio sidecar internal communication
+# This is required for health checks and service-to-service communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-istio-sidecar-internal
+  namespace: sail-proxy
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow all pods in the namespace to receive traffic on Envoy ports
+  - from:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 15001  # Envoy outbound
+    - protocol: TCP
+      port: 15006  # Envoy inbound
+    - protocol: TCP
+      port: 15020  # Envoy health check
+    - protocol: TCP
+      port: 15021  # Envoy health check
+    - protocol: TCP
+      port: 15090  # Envoy Prometheus metrics
+  egress:
+  # Allow all pods to connect to other pods on Envoy ports
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 15001
+    - protocol: TCP
+      port: 15006
+    - protocol: TCP
+      port: 15020
+    - protocol: TCP
+      port: 15021
+    - protocol: TCP
+      port: 15090
+---
+# Allow Dex to access Kubernetes API server (required for storage backend)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dex-k8s-api
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: dex
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 6443
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Allow ingress to NGINX from all pods in namespace
+# Critical for inter-service communication through the API gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nginx-ingress
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+# Allow NGINX to communicate with Admin service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admin-ingress-from-nginx
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: admin
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 4004
+---
+# Allow Gateway to connect to NGINX for internal testing
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-egress-to-nginx
+  namespace: sail-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

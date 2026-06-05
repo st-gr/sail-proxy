@@ -1,0 +1,110 @@
+# Web IDE, App Studio
+.che/
+.gen/
+.claude/
+.mcp.json
+
+# MTA
+*_mta_build_tmp
+*.mtar
+mta_archives/
+
+# CAP
+libs/dist/
+services/gateway/dist/
+services/admin/dist/
+services/admin/gen/
+*.db*
+
+# NPM
+npm-dist/*/services/
+
+_out
+*.db
+*.sqlite
+connection.properties
+default-*.json
+.cdsrc-private.json
+gen/
+target/
+
+# Other
+.DS_Store
+*.orig
+*.log
+
+*.iml
+*.flattened-pom.xml
+
+# IDEs
+# .vscode
+# .idea
+
+# @cap-js/cds-typer
+@cds-models
+
+# Reference implementations and drafts
+draft/
+example_payloads/
+
+# Logs
+logs/
+logs/payloads/
+services/gateway/logs/
+services/admin/logs/
+ci-logs/
+
+# CI backup and temp files
+ci/.ci-backup-*
+ci/.ci-backup-location
+
+# Workspace sub-lockfiles (root pnpm-lock.yaml is the source of truth)
+# Keep only: pnpm-lock.yaml (root), docker/pnpm-lock.yaml, npm-dist/sail-proxy/pnpm-lock.yaml
+libs/pnpm-lock.yaml
+libs/*/pnpm-lock.yaml
+services/*/pnpm-lock.yaml
+services/*/app/*/pnpm-lock.yaml
+kyma/scripts/pnpm-lock.yaml
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+dist/
+*.backup
+
+# IDE / OS specific
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+.env
+services/admin/.env
+services/gateway/.env
+test/.env
+ollama-adapter/.env
+.claude
+.claude/settings.local.json
+services/admin/db/*
+!services/admin/db/.gitkeep
+services/admin/db/admin.db
+admin-db-export/
+
+# Kubernetes & Kyma - Generated manifests and secrets (created by setup-kyma.js)
+kyma/manifests/
+kyma/templates/secrets/*.yaml
+kyma/templates/configmaps/*.yaml
+!kyma/templates/secrets/.gitkeep
+!kyma/templates/configmaps/.gitkeep
+
+# Docker configuration (user-specific and generated)
+docker/.env.auth
+docker/.env.docker
+docker/.env.nginx
+docker/.env.postgres
+docker/docker-compose.override.yml
+docker/docker-compose.override.yml.backup.*

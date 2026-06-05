@@ -1,0 +1,52 @@
+meta {
+  name: Enable API Key (After Disable)
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{base_url}}/enableApiKey
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "keyId": "{{created_api_key_id}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: eq true
+  res.body.message: contains "enabled successfully"
+}
+
+script:pre-request {
+  // Check if we have a created API key ID from previous tests
+  const apiKeyId = req.body.keyId;
+  if (!apiKeyId) {
+    throw new Error('This test requires created_api_key_id from "Create API Key" test. Please run that test first.');
+  }
+  
+  // Check if the key was disabled in previous test
+  const wasDisabled = bru.getVar('api_key_disabled');
+  if (!wasDisabled) {
+    console.log('Note: This test expects the API key to be disabled first');
+  }
+}
+
+script:post-response {
+  if (res.body.success) {
+    console.log('✓ API Key enabled successfully using proper action');
+    bru.setVar('api_key_enabled', true);
+    bru.setVar('enabled_api_key_id', req.body.keyId);
+  } else {
+    throw new Error(`API key enable failed: ${res.body.message}`);
+  }
+}

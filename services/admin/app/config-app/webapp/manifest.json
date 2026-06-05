@@ -1,0 +1,109 @@
+{
+    "_version": "1.12.0",
+    "sap.app": {
+        "id": "admin.config",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": ["", "en"],
+            "fallbackLocale": "en"
+        },
+        "title": "Configuration Management",
+        "description": "LLM Gateway Configuration Management Dashboard",
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [],
+                    "odataVersion": "4.0"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {},
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": false,
+        "resources": {
+            "css": [
+                {
+                    "uri": "css/style.css"
+                }
+            ]
+        },
+        "rootView": {
+            "viewName": "admin.config.view.App",
+            "type": "XML",
+            "id": "app"
+        },
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.ui.core": {},
+                "sap.m": {},
+                "sap.f": {},
+                "sap.ui.codeeditor": {}
+            }
+        },
+        "routing": {
+            "config": {
+                "routerClass": "sap.m.routing.Router",
+                "viewType": "XML",
+                "async": true,
+                "viewPath": "admin.config.view",
+                "controlAggregation": "pages",
+                "controlId": "app"
+            },
+            "routes": [
+                {
+                    "name": "main",
+                    "pattern": "",
+                    "target": ["main"]
+                }
+            ],
+            "targets": {
+                "main": {
+                    "viewType": "XML",
+                    "viewName": "Main",
+                    "viewId": "main",
+                    "viewLevel": 1
+                }
+            }
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleName": "admin.config.i18n.i18n",
+                    "supportedLocales": ["", "en"],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "type": "sap.ui.model.odata.v4.ODataModel",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            },
+            "viewModel": {
+                "type": "sap.ui.model.json.JSONModel"
+            }
+        }
+    }
+}

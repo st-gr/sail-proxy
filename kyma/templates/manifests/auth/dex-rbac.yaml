@@ -1,0 +1,39 @@
+# ServiceAccount for Dex
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dex
+  namespace: sail-proxy
+  labels:
+    app: dex
+---
+# ClusterRole for Dex Kubernetes storage
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sail-proxy-dex
+  labels:
+    app: dex
+rules:
+- apiGroups: ["dex.coreos.com"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["create"]
+---
+# ClusterRoleBinding for Dex
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sail-proxy-dex
+  labels:
+    app: dex
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sail-proxy-dex
+subjects:
+- kind: ServiceAccount
+  name: dex
+  namespace: sail-proxy

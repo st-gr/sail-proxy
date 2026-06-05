@@ -1,0 +1,12 @@
+<mvc:View
+    controllerName="admin.usageanalytics.controller.App"
+    displayBlock="true"
+    height="100%"
+    xmlns="sap.m"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:core="sap.ui.core">
+
+    <App id="app" busy="{viewModel>/busy}" class="usageAnalyticsApp">
+        <!-- Pages will be added by router targets -->
+    </App>
+</mvc:View>

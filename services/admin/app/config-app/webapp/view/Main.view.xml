@@ -1,0 +1,464 @@
+<mvc:View
+    controllerName="admin.config.controller.Main"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:f="sap.f"
+    xmlns:core="sap.ui.core"
+    xmlns:codeeditor="sap.ui.codeeditor"
+    xmlns:form="sap.ui.layout.form"
+    xmlns:layout="sap.ui.layout"
+    xmlns:mdc="sap.ui.mdc">
+    
+    <f:FlexibleColumnLayout id="fcl" 
+                                layout="OneColumn">
+        
+        <!-- Master Column - Configuration List -->
+        <f:beginColumnPages>
+            <f:DynamicPage id="dynamicPage">
+                <f:title>
+                    <f:DynamicPageTitle>
+                        <f:heading>
+                            <Title text="Configuration Management"/>
+                        </f:heading>
+                    </f:DynamicPageTitle>
+                </f:title>
+                <f:header>
+                    <f:DynamicPageHeader>
+                        <!-- Modern Inline FilterBar using HBox layout -->
+                        <HBox alignItems="Center" class="sapUiTinyMargin" wrap="Wrap">
+                            <!-- Search Field -->
+                            <VBox class="sapUiTinyMarginEnd">
+                                <Label text="Search" class="sapUiTinyMarginBottom"/>
+                                <SearchField id="searchField" 
+                                           placeholder="Search configurations..."
+                                           search="onSearchFieldSearch"
+                                           liveChange="onSearchFieldLiveChange"
+                                           width="20rem"/>
+                            </VBox>
+                            
+                            <!-- Status Filter -->
+                            <VBox class="sapUiTinyMarginEnd">
+                                <Label text="Status" class="sapUiTinyMarginBottom"/>
+                                <Select id="statusFilter" 
+                                      selectedKey="{viewModel>/filters/status}"
+                                      change="onFilterChange"
+                                      width="10rem">
+                                    <core:Item key="" text="All"/>
+                                    <core:Item key="active" text="Active"/>
+                                    <core:Item key="inactive" text="Inactive"/>
+                                </Select>
+                            </VBox>
+                            
+                            <!-- Validation Filter -->
+                            <VBox class="sapUiTinyMarginEnd">
+                                <Label text="Validation" class="sapUiTinyMarginBottom"/>
+                                <Select id="validationFilter" 
+                                      selectedKey="{viewModel>/filters/validation}"
+                                      change="onFilterChange"
+                                      width="10rem">
+                                    <core:Item key="" text="All"/>
+                                    <core:Item key="valid" text="Valid"/>
+                                    <core:Item key="invalid" text="Invalid"/>
+                                </Select>
+                            </VBox>
+                            
+                            <!-- Name Filter -->
+                            <VBox class="sapUiTinyMarginEnd">
+                                <Label text="Name" class="sapUiTinyMarginBottom"/>
+                                <Input id="nameFilter" 
+                                     value="{viewModel>/filters/name}" 
+                                     placeholder="Filter by name..."
+                                     liveChange="onFilterChange"
+                                     width="15rem"/>
+                            </VBox>
+                            
+                            <!-- Action Buttons with field-like spacing -->
+                            <VBox class="sapUiTinyMarginEnd">
+                                <Label text=" " class="sapUiTinyMarginBottom"/> <!-- Empty label for alignment -->
+                                <Button text="Go" 
+                                      press="onApplyFilters" 
+                                      type="Emphasized"/>
+                            </VBox>
+                            
+                            <VBox>
+                                <Label text=" " class="sapUiTinyMarginBottom"/> <!-- Empty label for alignment -->
+                                <Button text="Clear" 
+                                      icon="sap-icon://clear-filter"
+                                      press="onClearFilters"/>
+                            </VBox>
+                        </HBox>
+                    </f:DynamicPageHeader>
+                </f:header>
+                <f:content>
+                    <!-- Configuration Table -->
+                    <Table id="configTable" 
+                           items="{path: '/ApiConfigurations', sorter: {path: 'modifiedAt', descending: true}}"
+                           mode="MultiSelect"
+                           itemPress="onItemPress"
+                           selectionChange="onSelectionChange"
+                           growing="true"
+                           growingThreshold="50"
+                           sticky="ColumnHeaders,HeaderToolbar"
+                           class="sapUiResponsiveMargin">
+                        <headerToolbar>
+                            <OverflowToolbar>
+                                <Title text="Configurations" id="tableTitle"/>
+                                <ToolbarSpacer/>
+                                <Button text="Create" 
+                                        icon="sap-icon://add" 
+                                        press="onNewConfiguration" 
+                                        type="Emphasized"/>
+                                <Button text="Rollback" 
+                                        icon="sap-icon://undo" 
+                                        press="onRollbackConfiguration" 
+                                        type="Critical"
+                                        tooltip="Rollback to previous configuration"/>
+                                <ToolbarSeparator/>
+                                <Button text="Delete" 
+                                        icon="sap-icon://delete" 
+                                        press="onDeleteConfiguration" 
+                                        enabled="{= ${viewModel>/selectedConfigIds} &amp;&amp; ${viewModel>/selectedConfigIds}.length > 0 &amp;&amp; ${viewModel>/selectedConfigCanDelete}}"
+                                        type="Reject"/>
+                                <Button text="Duplicate" 
+                                        icon="sap-icon://copy" 
+                                        press="onDuplicateConfiguration" 
+                                        enabled="{= ${viewModel>/selectedConfigIds} &amp;&amp; ${viewModel>/selectedConfigIds}.length === 1}"
+                                        tooltip="Duplicate"/>
+                                <ToolbarSeparator/>
+                                <Button text="Activate" 
+                                        icon="sap-icon://activate" 
+                                        press="onActivateConfiguration" 
+                                        enabled="{= ${viewModel>/selectedConfigIds} &amp;&amp; ${viewModel>/selectedConfigIds}.length === 1 &amp;&amp; ${viewModel>/selectedConfigCanActivate}}"
+                                        type="Emphasized"/>
+                                <Button text="Refresh" 
+                                        icon="sap-icon://refresh" 
+                                        press="onRefresh"/>
+                            </OverflowToolbar>
+                        </headerToolbar>
+                        <columns>
+                            <Column width="20%" minScreenWidth="Tablet" demandPopin="true" hAlign="Left">
+                                <Text text="Configuration" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="8%" minScreenWidth="Desktop" demandPopin="true" popinDisplay="Inline" hAlign="Center">
+                                <Text text="Version" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="25%" minScreenWidth="Desktop" demandPopin="true" popinDisplay="Block" hAlign="Left">
+                                <Text text="Description" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="10%" minScreenWidth="Tablet" demandPopin="true" popinDisplay="Inline" hAlign="Center">
+                                <Text text="Status" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="8%" minScreenWidth="Desktop" demandPopin="true" popinDisplay="Inline" hAlign="Center">
+                                <Text text="Valid" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="15%" minScreenWidth="Desktop" demandPopin="true" popinDisplay="Inline" hAlign="Left">
+                                <Text text="Last Modified" class="sapMTextBold"/>
+                            </Column>
+                            <Column width="14%" minScreenWidth="Desktop" demandPopin="true" popinDisplay="Inline" hAlign="Left">
+                                <Text text="Created" class="sapMTextBold"/>
+                            </Column>
+                        </columns>
+                        <items>
+                            <ColumnListItem type="Active">
+                                <cells>
+                                    <!-- Configuration Name & ID -->
+                                    <VBox>
+                                        <Text text="{name}" class="sapMTextBold"/>
+                                        <Text text="{ID}" class="sapMTextSmall sapMTextMuted"/>
+                                    </VBox>
+                                    
+                                    <!-- Version -->
+                                    <Text text="{version}" class="sapMTextMonospace"/>
+                                    
+                                    <!-- Description -->
+                                    <Text text="{= ${description} ? ${description} : 'No description'}" 
+                                          maxLines="2" 
+                                          class="{= ${description} ? 'sapMTextWrap' : 'sapMTextSmall sapMTextMuted'}"/>
+                                    
+                                    <!-- Status -->
+                                    <ObjectStatus 
+                                        text="{ parts: [{path:'isActive'}], formatter: '.activeText' }"
+                                        state="{ parts: [{path:'isActive'}], formatter: '.activeState' }"
+                                        icon="{ parts: [{path:'isActive'}], formatter: '.activeIcon' }"/>
+                                    
+                                    <!-- Validation Status -->
+                                    <ObjectStatus 
+                                        text="{= ${isValid} ? 'Valid' : 'Invalid'}"
+                                        state="{= ${isValid} ? 'Success' : 'Error'}"
+                                        icon="{= ${isValid} ? 'sap-icon://message-success' : 'sap-icon://message-error'}"
+                                        visible="{= ${isValid} !== null &amp;&amp; ${isValid} !== undefined}"/>
+                                    
+                                    <!-- Last Modified -->
+                                    <VBox>
+                                        <Text text="{path: 'modifiedAt', formatter: '.formatDate'}" 
+                                              class="sapMTextSmall"/>
+                                        <Text text="by {modifiedBy}" 
+                                              class="sapMTextSmall sapMTextMuted"/>
+                                    </VBox>
+                                    
+                                    <!-- Created Date -->
+                                    <Text text="{path: 'createdAt', formatter: '.formatDate'}" 
+                                          class="sapMTextSmall"/>
+                                </cells>
+                            </ColumnListItem>
+                        </items>
+                    </Table>
+                </f:content>
+            </f:DynamicPage>
+        </f:beginColumnPages>
+
+        <!-- Detail Column - JSON Editor -->
+        <f:midColumnPages>
+            <f:DynamicPage id="detailDynamicPage">
+                <f:title>
+                    <f:DynamicPageTitle>
+                        <f:heading>
+                            <Title text="{
+                                parts: [
+                                    'viewModel>/selectedConfigName',
+                                    'viewModel>/selectedConfigVersion'
+                                ],
+                                formatter: '.formatConfigTitle'
+                            }"/>
+                        </f:heading>
+                        <f:actions>
+                            <Button text="Edit" 
+                                    icon="sap-icon://edit" 
+                                    press="onToggleEditMode" 
+                                    enabled="{= ${viewModel>/selectedConfigId} !== null &amp;&amp; !${viewModel>/selectedConfigIsActive}}"
+                                    visible="{= !${viewModel>/isEditMode}}"
+                                    type="Emphasized"/>
+                            <Button text="Cancel" 
+                                    icon="sap-icon://decline" 
+                                    press="onToggleEditMode" 
+                                    visible="{viewModel>/isEditMode}"/>
+                            <Button text="Validate" 
+                                    icon="sap-icon://validate" 
+                                    press="onValidateConfiguration" 
+                                    enabled="{= ${viewModel>/selectedConfigId} !== null}"
+                                    type="Ghost"/>
+                            <Button text="Save" 
+                                    icon="sap-icon://save" 
+                                    press="onSaveConfiguration" 
+                                    enabled="{= ${viewModel>/selectedConfigId} !== null &amp;&amp; !${viewModel>/selectedConfigIsActive}}"
+                                    visible="{viewModel>/isEditMode}"
+                                    type="Accept"/>
+                            <Button icon="sap-icon://decline" 
+                                    press="onCloseDetail" 
+                                    tooltip="Close"/>
+                        </f:actions>
+                    </f:DynamicPageTitle>
+                </f:title>
+                <f:content>
+                    <VBox visible="{viewModel>/selectedConfigId}" class="sapUiMediumMargin">
+                        
+                        <!-- Configuration Metadata -->
+                        <Panel headerText="Configuration Information" expandable="true" expanded="true">
+                            <content>
+                                <form:SimpleForm
+                                    editable="true"
+                                    layout="ResponsiveGridLayout"
+                                    labelSpanXL="3" labelSpanL="3" labelSpanM="3" labelSpanS="12"
+                                    adjustLabelSpan="false"
+                                    emptySpanXL="4" emptySpanL="4" emptySpanM="4" emptySpanS="0"
+                                    columnsXL="1" columnsL="1" columnsM="1"
+                                    singleContainerFullSize="false">
+                                    <form:content>
+                                        <Label text="Name"/>
+                                        <Input value="{name}" placeholder="Configuration name..."/>
+                                        
+                                        <Label text="Version"/>
+                                        <Input value="{version}" placeholder="Version (e.g., 1.0.0)"/>
+                                        
+                                        <Label text="Description"/>
+                                        <TextArea value="{description}" rows="2" placeholder="Optional description..."/>
+                                        
+                                        <Label text="Status"/>
+                                        <ObjectStatus 
+                                            text="{ parts: [{path:'isActive'}], formatter: '.activeText' }"
+                                            state="{ parts: [{path:'isActive'}], formatter: '.activeState' }"
+                                            icon="{ parts: [{path:'isActive'}], formatter: '.activeIcon' }"/>
+                                        
+                                        <Label text="Validation"/>
+                                        <ObjectStatus 
+                                            text="{= ${isValid} ? 'Valid' : 'Invalid'}"
+                                            state="{= ${isValid} ? 'Success' : 'Error'}"
+                                            icon="{= ${isValid} ? 'sap-icon://message-success' : 'sap-icon://message-error'}"
+                                            visible="{= ${isValid} !== undefined}"/>
+                                        
+                                        <Label text="Last Modified"/>
+                                        <Text text="{path: 'modifiedAt', formatter: '.formatDateTime'} by {modifiedBy}"/>
+                                        
+                                        <Label text="Checksum"/>
+                                        <Text text="{checksum}" class="sapMTextMonospace"/>
+                                    </form:content>
+                                </form:SimpleForm>
+                            </content>
+                        </Panel>
+
+                        <!-- Validation Results -->
+                        <Panel headerText="Validation Results" 
+                               expandable="true" 
+                               expanded="true"
+                               visible="{= ${validationErrors} || ${validationWarnings}}">
+                            <content>
+                                <MessageStrip 
+                                    text="{validationErrors}"
+                                    type="Error"
+                                    visible="{= ${validationErrors} !== null &amp;&amp; ${validationErrors} !== ''}"
+                                    class="sapUiMediumMarginBottom"/>
+                                <MessageStrip 
+                                    text="{validationWarnings}"
+                                    type="Warning"
+                                    visible="{= ${validationWarnings} !== null &amp;&amp; ${validationWarnings} !== ''}"/>
+                            </content>
+                        </Panel>
+
+                        <!-- JSON Editor -->
+                        <Panel headerText="Configuration Data (JSON)" expandable="true" expanded="true">
+                            <content>
+                                <!-- Read-only warning for active configurations -->
+                                <MessageStrip 
+                                    text="This configuration is currently active and therefore read-only. Deactivate it first to make changes."
+                                    type="Information"
+                                    visible="{viewModel>/selectedConfigIsActive}"
+                                    class="sapUiMediumMarginBottom"/>
+                                <codeeditor:CodeEditor 
+                                    id="jsonEditor"
+                                    type="json"
+                                    height="70vh"
+                                    width="100%"
+                                    editable="{viewModel>/isEditMode}"
+                                    change="onConfigDataChange"/>
+                            </content>
+                        </Panel>
+                        
+                    </VBox>
+
+                    <!-- Empty State -->
+                    <VBox visible="{= !${viewModel>/selectedConfigId}}" 
+                          alignItems="Center" 
+                          justifyContent="Center" 
+                          class="sapUiLargeMargin">
+                        <core:Icon src="sap-icon://settings" size="4rem" color="#666"/>
+                        <Title text="Configuration Details" level="H2" class="sapUiMediumMarginTop"/>
+                        <Text text="Choose a configuration from the list to view and edit its details" 
+                              class="sapUiMediumMarginTop"/>
+                    </VBox>
+                </f:content>
+            </f:DynamicPage>
+        </f:midColumnPages>
+        
+        <!-- End Column - Placeholder to silence warnings -->
+        <f:endColumnPages>
+            <f:DynamicPage id="endPlaceholder" visible="false"/>
+        </f:endColumnPages>
+    </f:FlexibleColumnLayout>
+    
+    <!-- Create Configuration Dialog -->
+    <Dialog id="createConfigDialog"
+            title="{viewModel>/dialogTitle}"
+            resizable="true" draggable="true"
+            contentWidth="70rem" contentHeight="45rem"
+            verticalScrolling="false" horizontalScrolling="false"
+            class="cfgDialog sapUiNoContentPadding sapUiResponsivePadding--content">
+        <content>
+            <!-- give it a hook; drop the explicit height and let flex handle it -->
+            <HBox width="100%" alignItems="Stretch" class="sapUiNoContentPadding dialogBody">
+                
+                <!-- Left column VBox – use % height, drop top margin -->
+                <VBox width="35%" height="100%" class="sapUiSmallMarginStart sapUiSmallMarginEnd">
+                    <!-- Left Panel – add the class so CSS applies -->
+                    <Panel headerText="Configuration Details" expandable="false" height="100%" class="fullHeightPanel">
+                        <content>
+                            <!-- Left inner VBox – this is the filling child (no height attr) -->
+                            <VBox class="columnFill padInner">
+                                <VBox>
+                                    <VBox class="sapUiSmallMarginBottom">
+                                        <Label text="Name" required="true" class="sapUiTinyMarginBottom"/>
+                                        <Input id="newConfigName"
+                                               value="{viewModel>/newConfig/name}"
+                                               placeholder="Configuration name..." required="true" width="100%"/>
+                                    </VBox>
+
+                                    <VBox class="sapUiSmallMarginBottom">
+                                        <Label text="Version" required="true" class="sapUiTinyMarginBottom"/>
+                                        <Input id="newConfigVersion"
+                                               value="{viewModel>/newConfig/version}"
+                                               placeholder="e.g., 1.0.0" required="true" width="100%"/>
+                                    </VBox>
+
+                                    <VBox>
+                                        <Label text="Description" class="sapUiTinyMarginBottom"/>
+                                        <TextArea id="newConfigDescription"
+                                                  value="{viewModel>/newConfig/description}"
+                                                  rows="15" width="100%"
+                                                  growing="true" growingMaxLines="20"
+                                                  placeholder="Optional description..."/>
+                                    </VBox>
+                                </VBox>
+                            </VBox>
+                        </content>
+                    </Panel>
+                </VBox>
+
+                <!-- Right column VBox + Panel + inner VBox -->
+                <VBox width="65%" height="100%" class="sapUiSmallMarginEnd">
+                    <Panel headerText="Configuration Data (JSON)" expandable="false" height="100%" class="fullHeightPanel">
+                        <content>
+                            <VBox class="columnFill padInner">
+                                <codeeditor:CodeEditor id="newConfigEditor" type="json"
+                                                       value="{viewModel>/newConfig/configData}"
+                                                       width="100%"/>
+                            </VBox>
+                        </content>
+                    </Panel>
+                </VBox>
+
+            </HBox>
+        </content>
+        <beginButton>
+            <Button text="Create" press="onCreateConfiguration" type="Emphasized"/>
+        </beginButton>
+        <endButton>
+            <Button text="Cancel" press="onCancelCreateConfiguration"/>
+        </endButton>
+    </Dialog>
+
+    <!-- Rollback Reason Dialog -->
+    <Dialog id="rollbackReasonDialog" 
+            title="Rollback Configuration" 
+            resizable="false" 
+            draggable="true"
+            contentWidth="30rem"
+            contentHeight="auto">
+        <content>
+            <VBox class="sapUiMediumMargin">
+                <MessageStrip 
+                    text="This will restore the earlier configuration. Please note: This action cannot be undone. The Gateway service will restart with the restored configuration, any active connections will be interrupted, and if the configuration contains errors, the Gateway service may become unavailable."
+                    type="Warning"
+                    class="sapUiMediumMarginBottom"/>
+                <VBox>
+                    <Label text="Reason for Rollback" required="true" class="sapUiTinyMarginBottom"/>
+                    <TextArea id="rollbackReasonInput" 
+                              value="{viewModel>/rollbackReason}" 
+                              placeholder="Please provide a mandatory reason for the rollback..."
+                              rows="3"
+                              required="true"
+                              width="100%"
+                              liveChange="onRollbackReasonChange"/>
+                </VBox>
+            </VBox>
+        </content>
+        <beginButton>
+            <Button text="Rollback" 
+                    press="onConfirmRollback" 
+                    type="Critical"
+                    enabled="{= ${viewModel>/rollbackReason} ? ${viewModel>/rollbackReason}.trim().length > 0 : false}"/>
+        </beginButton>
+        <endButton>
+            <Button text="Cancel" press="onCancelRollback"/>
+        </endButton>
+    </Dialog>
+
+</mvc:View>

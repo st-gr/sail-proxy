@@ -1,0 +1,76 @@
+# Admin Service Debug Environment Variables
+# Copy this to .env or set these in your Docker environment
+
+# ========================================
+# Deployment Configuration
+# ========================================
+DEPLOY_TARGET=docker
+NODE_ENV=production
+PORT=4004
+
+# ========================================
+# Authentication Configuration  
+# ========================================
+# OAuth2-proxy headers (these are set by nginx/oauth2-proxy)
+# X_AUTH_REQUEST_USER_HEADER=x-auth-request-user
+# X_AUTH_REQUEST_EMAIL_HEADER=x-auth-request-email
+# X_AUTH_REQUEST_GROUPS_HEADER=x-auth-request-groups
+# X_AUTH_REQUEST_ACCESS_TOKEN_HEADER=x-auth-request-access-token
+
+# Dex/OAuth2 Configuration
+OAUTH2_PROXY_OIDC_ISSUER_URL=http://dex:5556/dex
+
+# ========================================
+# Role Mapping Configuration
+# ========================================
+# Map Dex groups to CAP roles
+ROLE_MAPPING={
+  "sap-llm-gateway-admin": "admin",
+  "sap-llm-gateway-user": "user", 
+  "admin": "admin",
+  "user": "user",
+  "gateway": "service"
+}
+
+# ========================================
+# JWT Configuration
+# ========================================
+# Secret for validating gateway service tokens
+VALIDATION_TOKEN_SECRET=dev-secret-change-in-production
+
+# ========================================
+# Database Configuration
+# ========================================
+DATABASE_URL=postgres://admin_user:admin_password@postgres:5432/sap_llm_gateway
+
+# ========================================
+# Logging Configuration
+# ========================================
+LOG_LEVEL=debug
+LOG_FORMAT=json
+
+# ========================================
+# Debug Settings
+# ========================================
+# Enable detailed authentication debugging
+DEBUG_AUTH=true
+DEBUG_HEADERS=true
+DEBUG_ROLES=true
+
+# ========================================
+# Expected Headers from OAuth2-Proxy/Nginx
+# ========================================
+# These headers should be forwarded by nginx after oauth2-proxy authentication:
+#
+# x-auth-request-user: admin@example.com
+# x-auth-request-email: admin@example.com  
+# x-auth-request-groups: sap-llm-gateway-admin
+# x-auth-request-preferred-username: admin@example.com
+# x-auth-request-access-token: <JWT token>
+#
+# Example nginx configuration:
+# proxy_set_header X-Auth-Request-User $auth_request_user;
+# proxy_set_header X-Auth-Request-Email $auth_request_email;
+# proxy_set_header X-Auth-Request-Groups $auth_request_groups;
+# proxy_set_header X-Auth-Request-Preferred-Username $auth_request_preferred_username;
+# proxy_set_header X-Auth-Request-Access-Token $auth_request_access_token;

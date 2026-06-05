@@ -1,0 +1,68 @@
+# OPTIONAL: Production APIRule with custom domain and Gateway
+# 
+# ⚠️  This is an EXAMPLE configuration for advanced production deployments
+# ⚠️  For standard deployments, use the main apirule.yaml instead
+#
+# Purpose: Shows how to configure a custom domain (e.g., admin.api.yourcompany.com)
+# with your own TLS certificate and custom Gateway
+#
+# Prerequisites:
+# 1. Custom domain registered and pointing to your Kyma cluster
+# 2. TLS certificate for your domain
+# 3. Custom Gateway configured with the certificate
+#
+# Based on SAP tutorial: "Prepare for Deployment in the SAP BTP, Kyma Runtime"
+# Requires: Custom Gateway with TLS certificate (see examples/custom-gateway.yaml)
+
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: sail-proxy-custom-domain-example
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+    environment: production
+    type: example
+spec:
+  # Replace with your actual custom domain
+  hosts:
+  - admin.api.yourcompany.com
+  # Reference to your custom Gateway (created separately with TLS certificate)
+  # See: https://developers.sap.com/tutorials/prepare-btp-kyma..html
+  gateway: sail-proxy/custom-gateway  # namespace/gateway-name
+  service:
+    name: nginx
+    port: 8080
+  rules:
+  - path: /
+    methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+    noAuth: true  # Auth handled by nginx + oauth2-proxy + dex
+---
+# OPTIONAL: Alternative APIRule for testing multiple subdomains
+#
+# ⚠️  This is an EXAMPLE showing how to create additional endpoints
+# ⚠️  For standard deployments, use the main apirule.yaml instead
+#
+# Purpose: Shows how to expose the same service on a different subdomain
+# Use case: Testing different configurations or A/B testing
+#
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: sail-proxy-alternative-example
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+    environment: development
+    type: example
+spec:
+  hosts:
+  - sail-proxy-dev  # Will get cluster domain automatically
+  gateway: kyma-system/kyma-gateway  # Default Kyma gateway
+  service:
+    name: nginx
+    port: 8080
+  rules:
+  - path: /
+    methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+    noAuth: true

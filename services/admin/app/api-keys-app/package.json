@@ -1,0 +1,24 @@
+{
+  "name": "admin.apikeysapp",
+  "version": "1.0.0",
+  "description": "API Keys Management Fiori Elements App",
+  "main": "index.js",
+  "scripts": {
+    "build": "ui5 build --dest dist",
+    "start": "ui5 serve --port 8081"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.3",
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-typescript": "^7.27.1",
+    "@sap/ux-ui5-tooling": "^1.14.1",
+    "@ui5/cli": "^4.0.16",
+    "ui5-tooling-modules": "^3.30.0",
+    "ui5-tooling-transpile": "^3.9.0"
+  },
+  "ui5": {
+    "dependencies": [
+      "@sap/ux-ui5-tooling"
+    ]
+  }
+}

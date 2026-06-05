@@ -1,0 +1,45 @@
+meta {
+  name: REST API - Get Active Configuration
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{base_url}}/api/admin/api-config
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.api_config: isDefined
+  res.headers.x-config-version: isDefined
+  res.headers.x-config-checksum: isDefined
+  res.headers.etag: isDefined
+}
+
+script:post-response {
+  const apiConfig = res.body.api_config;
+  console.log('✅ REST API configuration retrieved');
+  console.log('Version:', res.headers['x-config-version']);
+  console.log('Checksum:', res.headers['x-config-checksum'].substring(0, 8) + '...');
+  console.log('Deployed at:', res.headers['x-config-deployed-at']);
+  
+  // Validate api_config structure (Gateway service expects this format)
+  if (apiConfig.timeouts) {
+    console.log('Timeouts configured:', apiConfig.timeouts);
+  }
+  
+  if (apiConfig.anthropic) {
+    console.log('Anthropic config found with', apiConfig.anthropic.substitute_models?.length || 0, 'model substitutions');
+  }
+  
+  // Store for next test
+  bru.setVar('rest_config_version', res.headers['x-config-version']);
+  bru.setVar('rest_config_checksum', res.headers['x-config-checksum']);
+}
