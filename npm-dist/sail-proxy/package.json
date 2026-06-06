@@ -1,6 +1,6 @@
 {
   "name": "@st-gr/sail-proxy",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "description": "SAP AI Core Local LLM Proxy - A command-line tool to run a local proxy for SAP AI Core Foundation Models",
   "keywords": [
     "sap",
@@ -42,11 +42,12 @@
     "clean:bundled": "npx rimraf bundled",
     "compile": "tsc",
     "copy-templates": "npx mkdirp dist/templates && npx copyfiles -u 1 \"src/templates/**/*\" dist/",
-    "bundle": "npm run bundle:dependencies && npm run bundle:gateway && npm run bundle:ollama",
-    "bundle:dependencies": "cd ../../libs/service-key-parser && pnpm build && npx mkdirp ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser && npx copyfiles -u 1 \"dist/**/*\" ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser/ && npx copyfiles \"package.json\" ../../npm-dist/sail-proxy/node_modules/@sap-llm-gateway/service-key-parser/",
+    "bundle": "npm run bundle:dependencies && npm run bundle:gateway && npm run bundle:ollama && npm run bundle:install-prod-deps && npm run bundle:gateway-aliases",
+    "bundle:dependencies": "node ../../cli-tools/bundle-service-key-parser.js",
     "bundle:gateway": "cd ../../services/gateway && pnpm build && npx mkdirp ../../npm-dist/sail-proxy/bundled/gateway && npx copyfiles -u 1 \"dist/**/*\" ../../npm-dist/sail-proxy/bundled/gateway/ && node ../../npm-dist/sail-proxy/scripts/create-production-package-json.js ../../services/gateway/package.json ../../npm-dist/sail-proxy/bundled/gateway/package.json",
-    "postbundle": "cd bundled/gateway && npm install --production && cd ../ollama && npm install --production",
-    "bundle:ollama": "npx mkdirp bundled/ollama && npx copyfiles \"../../services/ollama/*.js\" bundled/ollama/ && node ../../npm-dist/sail-proxy/scripts/create-production-package-json.js ../../services/ollama/package.json ../../npm-dist/sail-proxy/bundled/ollama/package.json && npx copyfiles -u 2 \"../../services/ollama/routes/**/*\" \"../../services/ollama/services/**/*\" \"../../services/ollama/controllers/**/*\" bundled/ollama/",
+    "bundle:install-prod-deps": "cd bundled/gateway && npm install --production && cd ../ollama && npm install --production",
+    "bundle:gateway-aliases": "node ../../cli-tools/bundle-gateway-libs.js",
+    "bundle:ollama": "npx mkdirp bundled/ollama && npx copyfiles -u 2 \"../../services/ollama/*.js\" bundled/ollama/ && node ../../npm-dist/sail-proxy/scripts/create-production-package-json.js ../../services/ollama/package.json ../../npm-dist/sail-proxy/bundled/ollama/package.json && npx copyfiles -u 2 \"../../services/ollama/routes/**/*\" \"../../services/ollama/services/**/*\" \"../../services/ollama/controllers/**/*\" bundled/ollama/",
     "sync-version": "node ../../cli-tools/sync-version.js",
     "check-version": "node ../../cli-tools/sync-version.js --check-only",
     "check-workspace": "node ../../cli-tools/check-workspace-protocol.js",
@@ -55,12 +56,14 @@
     "link:dev": "npm run build:local && npm run bundle:dependencies && npm link",
     "unlink:dev": "npm unlink -g @st-gr/sail-proxy",
     "prepack": "npm run prepare-pack",
-    "postpack": "npm run restore-workspace",
     "dev": "tsx src/index.ts",
     "dev:nobundle": "SKIP_BUNDLE=true tsx src/index.ts",
     "prepublishOnly": "npm run build",
     "test": "echo 'Tests will be implemented'"
   },
+  "bundledDependencies": [
+    "@sap-llm-gateway/service-key-parser"
+  ],
   "dependencies": {
     "@sap-llm-gateway/service-key-parser": "workspace:*",
     "axios": "^1.15.1",

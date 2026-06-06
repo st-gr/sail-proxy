@@ -5,7 +5,7 @@
 # Image Configuration:
 #   - DOCKER_REGISTRY: Container registry (default: ghcr.io)
 #   - DOCKER_ORGANIZATION: Registry organization (default: st-gr)
-#   - DOCKER_TAG: Image version tag (default: 1.0.0, from package.json)
+#   - DOCKER_TAG: Image version tag (default: latest)
 #
 # These can be set via:
 #   1. .env.docker file in this directory
@@ -19,7 +19,7 @@
 #
 services:
   gateway:
-    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-gateway:${DOCKER_TAG:-1.0.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-gateway:${DOCKER_TAG:-latest}
     build:
       context: ..
       dockerfile: docker/gateway.Dockerfile
@@ -50,7 +50,7 @@ services:
     restart: unless-stopped
 
   admin:
-    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-admin:${DOCKER_TAG:-1.0.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-admin:${DOCKER_TAG:-latest}
     build:
       context: ..
       dockerfile: docker/admin.Dockerfile
@@ -95,7 +95,7 @@ services:
     restart: unless-stopped
 
   ollama:
-    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-ollama:${DOCKER_TAG:-1.0.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-ollama:${DOCKER_TAG:-latest}
     build:
       context: ..
       dockerfile: docker/ollama.Dockerfile
@@ -183,7 +183,7 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-nginx:${DOCKER_TAG:-1.0.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-nginx:${DOCKER_TAG:-latest}
     build:
       context: .
       dockerfile: nginx/Dockerfile

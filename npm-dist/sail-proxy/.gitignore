@@ -20,3 +20,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Auth (never commit publish tokens)
+.npmrc

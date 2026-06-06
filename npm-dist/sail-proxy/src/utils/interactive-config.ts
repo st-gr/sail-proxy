@@ -1,7 +1,6 @@
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { writeFileSync, copyFileSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { parseServiceKey, formatAsEnvFile, ParsedConfig } from '@sap-llm-gateway/service-key-parser';
 import { getConfigPath, getTemplatePath } from './paths';
 
@@ -114,9 +113,11 @@ export async function runInteractiveConfig(): Promise<void> {
     copyFileSync(getTemplatePath('api_config.template.json'), getConfigPath('api_config.json'));
     console.log(chalk.green(`✓ API configuration saved to ${getConfigPath('api_config.json')}`));
     
-    // Copy ollama .env.sample and update the port
-    const ollamaEnvExample = join(__dirname, '..', '..', '..', '..', 'services', 'ollama', '.env.sample');
-    let ollamaEnvContent = readFileSync(ollamaEnvExample, 'utf-8');
+    // Copy bundled ollama.env.template and update the port. The bundle's
+    // dist/templates/ollama.env.template ships with the package and is
+    // production-safe; the previous services/ollama/.env.sample path only
+    // resolved in a workspace checkout.
+    let ollamaEnvContent = readFileSync(getTemplatePath('ollama.env.template'), 'utf-8');
     
     // Update MAIN_PROXY_URL with the correct port
     ollamaEnvContent = ollamaEnvContent.replace(

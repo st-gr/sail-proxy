@@ -1,6 +1,6 @@
 {
   "name": "admin",
-  "version": "1.0.0",
+  "version": "0.9.2",
   "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP",
   "private": true,
   "main": "dist/index.js",

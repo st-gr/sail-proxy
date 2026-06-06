@@ -1,6 +1,6 @@
 {
   "name": "sap-llm-gateway",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "description": "A proxy that allows applications to use OpenAI, Anthropic, and AWS Bedrock API formats to access SAP AI Core Foundation Models.",
   "repository": "https://github.com/st-gr/sail-proxy.git",
   "license": "GNU AGPLv3 License - see the LICENSE file for details.",
@@ -93,12 +93,13 @@
     "db:export": "cd admin-db-export && pnpm run export:all",
     "db:import": "cd admin-db-export && pnpm run import:all",
     "db:dev-setup": "cd admin-db-export && pnpm install && pnpm run dev:setup",
+    "version": "node cli-tools/sync-version.js --stage",
     "version:sync": "node cli-tools/sync-version.js",
     "version:check": "node cli-tools/sync-version.js --check-only",
-    "version:bump:patch": "npm version patch && npm run version:sync",
-    "version:bump:minor": "npm version minor && npm run version:sync",
-    "version:bump:major": "npm version major && npm run version:sync",
-    "publish:npm": "cd npm-dist/sail-proxy && npm run check-version && npm publish"
+    "version:bump:patch": "npm version patch",
+    "version:bump:minor": "npm version minor",
+    "version:bump:major": "npm version major",
+    "publish:npm": "node cli-tools/publish-npm.js"
   },
   "packageManager": "pnpm@10.12.4+sha512.5ea8b0deed94ed68691c9bad4c955492705c5eeb8a87ef86bc62c74a26b037b08ff9570f108b2e4dbd1dd1a9186fea925e527f141c648e85af45631074680184",
   "pnpm": {

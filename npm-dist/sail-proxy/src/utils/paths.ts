@@ -46,26 +46,41 @@ export function getPidPath(service: 'gateway' | 'ollama'): string {
   return getConfigPath(`${service}.pid`);
 }
 
+// __dirname is dist/utils/ (compiled) or src/utils/ (tsx). Both walk up the same.
+// Bundled tarball: bundled/ is sibling of dist/, so go up 2 to reach package root.
+// Repo dev tree: services/ is at <repo>/, so go up 4 to reach repo root.
+const BUNDLED_GATEWAY_ENTRY = ['..', '..', 'bundled', 'gateway', 'services', 'gateway', 'src', 'index.js'];
+const DEV_GATEWAY_ENTRY = ['..', '..', '..', '..', 'services', 'gateway', 'dist', 'services', 'gateway', 'src', 'index.js'];
+const BUNDLED_GATEWAY_ROOT = ['..', '..', 'bundled', 'gateway'];
+const DEV_GATEWAY_ROOT = ['..', '..', '..', '..', 'services', 'gateway'];
+const BUNDLED_OLLAMA_ENTRY = ['..', '..', 'bundled', 'ollama', 'services', 'ollama', 'index.js'];
+const DEV_OLLAMA_ENTRY = ['..', '..', '..', '..', 'services', 'ollama', 'index.js'];
+
 /**
- * Get the path to the bundled gateway service
+ * Get the path to the gateway service entry script.
+ * Picks bundled (production npm install) or dev (linked / from-source) based
+ * on which one actually exists on disk. NODE_ENV is unreliable here — npm
+ * doesn't set it on the parent CLI process.
  */
 export function getGatewayPath(): string {
-  // In development, use the actual services directory
-  if (process.env.NODE_ENV !== 'production') {
-    return join(__dirname, '..', '..', '..', '..', 'services', 'gateway', 'dist', 'services', 'gateway', 'src', 'index.js');
-  }
-  return join(__dirname, '..', 'bundled', 'gateway', 'index.js');
+  const bundled = join(__dirname, ...BUNDLED_GATEWAY_ENTRY);
+  return existsSync(bundled) ? bundled : join(__dirname, ...DEV_GATEWAY_ENTRY);
 }
 
 /**
- * Get the path to the bundled ollama service
+ * Get the gateway service root (cwd for the spawned process).
+ */
+export function getGatewayCwd(): string {
+  const bundled = join(__dirname, ...BUNDLED_GATEWAY_ROOT);
+  return existsSync(bundled) ? bundled : join(__dirname, ...DEV_GATEWAY_ROOT);
+}
+
+/**
+ * Get the path to the ollama service entry script.
  */
 export function getOllamaPath(): string {
-  // In development, use the actual services directory
-  if (process.env.NODE_ENV !== 'production') {
-    return join(__dirname, '..', '..', '..', '..', 'services', 'ollama', 'index.js');
-  }
-  return join(__dirname, '..', 'bundled', 'ollama', 'index.js');
+  const bundled = join(__dirname, ...BUNDLED_OLLAMA_ENTRY);
+  return existsSync(bundled) ? bundled : join(__dirname, ...DEV_OLLAMA_ENTRY);
 }
 
 /**

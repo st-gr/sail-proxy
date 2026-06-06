@@ -2,8 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { spawn, ChildProcess } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync } from 'fs';
-import { join } from 'path';
-import { getPidPath, getConfigPath, getGatewayPath, getLogPath, ensureLogDir } from '../utils/paths';
+import { getPidPath, getConfigPath, getGatewayPath, getGatewayCwd, getLogPath, ensureLogDir } from '../utils/paths';
 import { createLogStream, formatLogLine, rotateLogsIfNeeded } from '../utils/log-manager';
 import { getStoredApiKeys } from '../utils/apikey-storage';
 import { getStoredAwsCredentials } from '../utils/aws-credentials-storage';
@@ -56,9 +55,9 @@ export async function runServer(): Promise<void> {
     const envConfig = dotenv.parse(readFileSync(envPath, 'utf-8'));
     const port = envConfig.PORT || '3000';
     
-    // Start the gateway process
-    // For development, start from the gateway directory itself using pnpm
-    const gatewayDir = join(__dirname, '..', '..', '..', '..', 'services', 'gateway');
+    // Resolve gateway entry/cwd against the actual layout (bundled or dev).
+    const gatewayPath = getGatewayPath();
+    const gatewayCwd = getGatewayCwd();
     
     // Configure stdio based on debug mode
     let stdio: any;
@@ -73,14 +72,13 @@ export async function runServer(): Promise<void> {
       stdio = ['ignore', logFile, errFile];
     }
     
-    gatewayProcess = spawn('node', ['-r', 'tsconfig-paths/register', 'dist/services/gateway/src/index.js'], {
-      cwd: gatewayDir,
+    gatewayProcess = spawn('node', [gatewayPath], {
+      cwd: gatewayCwd,
       env: {
         ...process.env,
         ...envConfig,
         CONFIG_FILE_PATH: getConfigPath('api_config.json'),
         NODE_ENV: 'production',
-        TS_NODE_BASEURL: './dist'
       },
       detached: true,
       stdio: stdio

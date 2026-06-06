@@ -91,7 +91,7 @@ async function parseDockerComposeConfig() {
       config.volumes.valkey = valkeyMatch[1];
     }
 
-    // Parse image names (format: "image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-NAME:${DOCKER_TAG:-1.0.0}")
+    // Parse image names (format: "image: ${DOCKER_REGISTRY:-ghcr.io}/${DOCKER_ORGANIZATION:-st-gr}/sail-proxy-NAME:${DOCKER_TAG:-latest}")
     const imageRegex = /image:\s*\$\{DOCKER_REGISTRY:-([^}]+)\}\/\$\{DOCKER_ORGANIZATION:-([^}]+)\}\/(sail-proxy-\w+):\$\{DOCKER_TAG:-[^}]+\}/g;
     let match;
     while ((match = imageRegex.exec(content)) !== null) {

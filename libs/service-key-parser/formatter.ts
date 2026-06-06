@@ -13,6 +13,9 @@ export function formatAsEnvFile(config: ParsedConfig): string {
 SAP_AI_CORE_URL=${config.SAP_AI_CORE_URL}
 SAP_AI_RESOURCE_GROUP=${config.SAP_AI_RESOURCE_GROUP}
 SAP_AI_REGION=${config.SAP_AI_REGION}
+# Auto-discover an available deployment instead of requiring SAP_AI_DEPLOYMENT_ID.
+# Set SAP_AI_DEPLOYMENT_ID and remove this line to pin a specific deployment.
+SAP_AI_AUTO_DISCOVER_DEPLOYMENT=true
 
 # SAP Authentication (OAuth2)
 AUTH_URL=${config.AUTH_URL}

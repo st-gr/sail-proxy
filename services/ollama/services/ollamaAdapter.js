@@ -395,19 +395,24 @@ async function fetchModelMetadata(modelName) {
 exports.handleStreamingChat = async (ollamaRequest, res) => {
   const openaiRequest = transformChatRequest(ollamaRequest);
   const model = ollamaRequest.model || 'gpt-3.5-turbo';
-  
+
   try {
     const response = await shared.callMainProxyStreaming('/openai/v1/chat/completions', openaiRequest);
-    
+
     let isFirst = true;
-    
+    let chunksEmitted = 0;
+    let buffer = '';
+
     response.data.on('data', (chunk) => {
-      const lines = chunk.toString().split('\n');
-      
+      if (res.writableEnded) return;
+      const text = chunk.toString();
+      buffer += text;
+      const lines = text.split('\n');
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6).trim();
-          
+
           if (data === '[DONE]') {
             // Send final chunk
             const finalChunk = transformStreamingChatResponse(null, model, false, true);
@@ -415,11 +420,12 @@ exports.handleStreamingChat = async (ollamaRequest, res) => {
             res.end();
             return;
           }
-          
+
           try {
             const openaiChunk = JSON.parse(data);
             const ollamaChunk = transformStreamingChatResponse(openaiChunk, model, isFirst);
             res.write(JSON.stringify(ollamaChunk) + '\n');
+            chunksEmitted++;
             isFirst = false;
           } catch (parseError) {
             console.error('Error parsing OpenAI chunk:', parseError);
@@ -427,22 +433,40 @@ exports.handleStreamingChat = async (ollamaRequest, res) => {
         }
       }
     });
-    
+
     response.data.on('end', () => {
-      if (!res.writableEnded) {
-        const finalChunk = transformStreamingChatResponse(null, model, false, true);
-        res.write(JSON.stringify(finalChunk) + '\n');
-        res.end();
+      if (res.writableEnded) return;
+
+      // Fallback: gateway returned a complete chat.completion (not SSE chunks)
+      // because the upstream deployment doesn't natively stream. Translate the
+      // single JSON body into one Ollama NDJSON line so the client gets the
+      // full content + done in one chunk instead of an empty done-message.
+      if (chunksEmitted === 0 && buffer.trim()) {
+        try {
+          const fullResponse = JSON.parse(buffer);
+          if (fullResponse && fullResponse.choices && fullResponse.choices[0]) {
+            const ollamaResponse = transformNonStreamingChatResponse(fullResponse, model);
+            res.write(JSON.stringify(ollamaResponse) + '\n');
+            res.end();
+            return;
+          }
+        } catch (parseError) {
+          console.error('Streaming chat: non-SSE body did not parse as JSON:', parseError.message);
+        }
       }
+
+      const finalChunk = transformStreamingChatResponse(null, model, false, true);
+      res.write(JSON.stringify(finalChunk) + '\n');
+      res.end();
     });
-    
+
     response.data.on('error', (error) => {
       console.error('Streaming error:', error);
       if (!res.writableEnded) {
         res.status(500).end();
       }
     });
-    
+
   } catch (error) {
     console.error('Error in streaming chat:', error);
     if (!res.writableEnded) {
@@ -475,30 +499,36 @@ exports.handleNonStreamingChat = async (ollamaRequest) => {
 exports.handleStreamingGenerate = async (ollamaRequest, res) => {
   const openaiRequest = transformGenerateRequest(ollamaRequest);
   const model = ollamaRequest.model || 'gpt-3.5-turbo';
-  
+
   try {
     const response = await shared.callMainProxyStreaming('/openai/v1/chat/completions', openaiRequest);
-    
+
     let isFirst = true;
-    
+    let chunksEmitted = 0;
+    let buffer = '';
+
     response.data.on('data', (chunk) => {
-      const lines = chunk.toString().split('\n');
-      
+      if (res.writableEnded) return;
+      const text = chunk.toString();
+      buffer += text;
+      const lines = text.split('\n');
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6).trim();
-          
+
           if (data === '[DONE]') {
             const finalChunk = transformStreamingGenerateResponse(null, model, false, true);
             res.write(JSON.stringify(finalChunk) + '\n');
             res.end();
             return;
           }
-          
+
           try {
             const openaiChunk = JSON.parse(data);
             const ollamaChunk = transformStreamingGenerateResponse(openaiChunk, model, isFirst);
             res.write(JSON.stringify(ollamaChunk) + '\n');
+            chunksEmitted++;
             isFirst = false;
           } catch (parseError) {
             console.error('Error parsing OpenAI chunk:', parseError);
@@ -506,22 +536,39 @@ exports.handleStreamingGenerate = async (ollamaRequest, res) => {
         }
       }
     });
-    
+
     response.data.on('end', () => {
-      if (!res.writableEnded) {
-        const finalChunk = transformStreamingGenerateResponse(null, model, false, true);
-        res.write(JSON.stringify(finalChunk) + '\n');
-        res.end();
+      if (res.writableEnded) return;
+
+      // Fallback: gateway returned a complete chat.completion (not SSE chunks).
+      // Translate the single JSON body into one Ollama NDJSON line so the
+      // client receives the full content + done instead of an empty done.
+      if (chunksEmitted === 0 && buffer.trim()) {
+        try {
+          const fullResponse = JSON.parse(buffer);
+          if (fullResponse && fullResponse.choices && fullResponse.choices[0]) {
+            const ollamaResponse = transformNonStreamingGenerateResponse(fullResponse, model);
+            res.write(JSON.stringify(ollamaResponse) + '\n');
+            res.end();
+            return;
+          }
+        } catch (parseError) {
+          console.error('Streaming generate: non-SSE body did not parse as JSON:', parseError.message);
+        }
       }
+
+      const finalChunk = transformStreamingGenerateResponse(null, model, false, true);
+      res.write(JSON.stringify(finalChunk) + '\n');
+      res.end();
     });
-    
+
     response.data.on('error', (error) => {
       console.error('Streaming error:', error);
       if (!res.writableEnded) {
         res.status(500).end();
       }
     });
-    
+
   } catch (error) {
     console.error('Error in streaming generate:', error);
     if (!res.writableEnded) {
