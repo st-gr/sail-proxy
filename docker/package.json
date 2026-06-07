@@ -1,6 +1,6 @@
 {
   "name": "sap-llm-gateway",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "SAP LLM Gateway - Docker Production Build",
   "private": true,
   "dependencies": {

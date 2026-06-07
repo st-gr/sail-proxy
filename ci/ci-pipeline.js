@@ -1689,6 +1689,18 @@ async function runCIPipeline() {
       description: 'Running Ollama full test suite...'
     });
     
+    // Phase 6.5: sail-proxy CLI End-to-End
+    // Packs the npm tarball, installs in a tmpdir, exercises run/status/
+    // apikey/inference/stop using SAP_AI_CORE_SERVICE_KEY. Runs after the
+    // service test suite (so the bundled artefacts reflect tested code) and
+    // before docker build (so a tarball regression fails fast — packing is
+    // cheap; rebuilding 4 docker images is not).
+    logger.phase('Phase 6.5: sail-proxy CLI End-to-End');
+
+    await executeCommand('node cli-tools/test-sail-proxy-cli.js', {
+      description: 'Running packaged sail-proxy E2E smoke (pack + install + run + inference + stop)...'
+    });
+
     // Phase 7: Docker Build Validation
     logger.phase('Phase 7: Docker Build Validation');
 

@@ -9,7 +9,7 @@ overrides:
   body-parser: 1.20.3
   path-to-regexp: 0.1.13
   router: 1.3.8
-  axios: 1.15.1
+  axios: 1.16.1
   qs: 6.15.0
   cookie: 0.7.0
   send: 0.19.0
@@ -24,6 +24,8 @@ overrides:
   '@cap-js/sqlite': 2.0.4
   '@cap-js/postgres': 1.14.2
   '@cap-js/db-service': <=2.6.0
+  jws: 3.2.3
+  fast-uri: 3.1.2
 
 importers:
 
@@ -36,8 +38,8 @@ importers:
         specifier: ^0.1.1
         version: 0.1.2(@ui5/builder@4.1.2)
       axios:
-        specifier: 1.15.1
-        version: 1.15.1
+        specifier: 1.16.1
+        version: 1.16.1
       body-parser:
         specifier: 1.20.3
         version: 1.20.3
@@ -130,8 +132,8 @@ importers:
         specifier: workspace:*
         version: link:../../libs/service-key-parser
       axios:
-        specifier: 1.15.1
-        version: 1.15.1
+        specifier: 1.16.1
+        version: 1.16.1
       chalk:
         specifier: ^4.1.2
         version: 4.1.2
@@ -206,8 +208,8 @@ importers:
         specifier: ^3.0.1
         version: 3.0.1(ajv@8.17.1)
       axios:
-        specifier: 1.15.1
-        version: 1.15.1
+        specifier: 1.16.1
+        version: 1.16.1
       bcrypt:
         specifier: ^5.1.1
         version: 5.1.1(encoding@0.1.13)
@@ -461,8 +463,8 @@ importers:
   services/gateway:
     dependencies:
       axios:
-        specifier: 1.15.1
-        version: 1.15.1
+        specifier: 1.16.1
+        version: 1.16.1
       body-parser:
         specifier: 1.20.3
         version: 1.20.3
@@ -562,8 +564,8 @@ importers:
   services/ollama:
     dependencies:
       axios:
-        specifier: 1.15.1
-        version: 1.15.1
+        specifier: 1.16.1
+        version: 1.16.1
       cors:
         specifier: ^2.8.5
         version: 2.8.5
@@ -2961,8 +2963,8 @@ packages:
     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
     engines: {node: '>= 0.4'}
 
-  axios@1.15.1:
-    resolution: {integrity: sha512-WOG+Jj8ZOvR0a3rAn+Tuf1UQJRxw5venr6DgdbJzngJE3qG7X0kL83CZGpdHMxEm+ZK3seAbvFsw4FfOfP9vxg==}
+  axios@1.16.1:
+    resolution: {integrity: sha512-caYkukvroVPO8KrzuJEb50Hm07KwfBZPEC3VeFHTsqWHvKTsy54hjJz9BS/cdaypROE2rH6xvm9mHX4fgWkr3A==}
 
   babel-jest@29.7.0:
     resolution: {integrity: sha512-BrvGY3xZSwEcCzKvKsCi2GgHqDqsYkOP4/by5xCgIwGXQxIEh+8ew3gmrE1y7XRR6LHZIj6yLYnUi/mm2KXKBg==}
@@ -3977,8 +3979,8 @@ packages:
   fast-safe-stringify@2.1.1:
     resolution: {integrity: sha512-W+KJc2dmILlPplD/H4K9l9LcAHAfPtP6BY84uVLXQ6Evcz9Lcg33Y2z1IVblT6xdY54PXYVHEv+0Wpq8Io6zkA==}
 
-  fast-uri@3.1.0:
-    resolution: {integrity: sha512-iPeeDKJSWf4IEOasVVrknXpaBV0IApz/gp7S2bb7Z4Lljbl2MGJRqInZiUrQwV16cpzw/D3S5j5Julj/gT52AA==}
+  fast-uri@3.1.2:
+    resolution: {integrity: sha512-rVjf7ArG3LTk+FS6Yw81V1DLuZl1bRbNrev6Tmd/9RaroeeRRJhAt7jg/6YFxbvAQXUCavSoZhPPj6oOx+5KjQ==}
 
   fast-xml-parser@4.4.1:
     resolution: {integrity: sha512-xkjOecfnKGkSsOwtZ5Pz7Us/T6mrbPQrq0nh+aCO5V9nk5NLWmasAHumTKjiPJPWANe+kAZ84Jc8ooJkzZ88Sw==}
@@ -5049,8 +5051,8 @@ packages:
   jwa@1.4.2:
     resolution: {integrity: sha512-eeH5JO+21J78qMvTIDdBXidBd6nG2kZjg5Ohz/1fpa28Z4CcsWUzJ1ZZyFq/3z3N17aZy+ZuBoHljASbL1WfOw==}
 
-  jws@3.2.2:
-    resolution: {integrity: sha512-YHlZCB6lMTllWDtSPHz/ZXTsi8S00usEV6v1tjq8tOUZzw7DpSDWVXjXDre6ed1w/pd495ODpHZYSdkRTsa0HA==}
+  jws@3.2.3:
+    resolution: {integrity: sha512-byiJ0FLRdLdSVSReO/U4E7RoEyOCKnEnEPMjq3HxWtvzLsV08/i5RQKsFVNkCldrCaPr2vDNAOMsfs8T/Hze7g==}
 
   jwt-decode@4.0.0:
     resolution: {integrity: sha512-+KJGIyHgkGuIq3IEBNftfhW/LfWhXUIY6OmyVWjliu5KH1y0fw7VQ8YndE2O4qZdMSd9SqbnC8GOcZEy0Om7sA==}
@@ -7374,7 +7376,7 @@ snapshots:
       '@azure/core-tracing': 1.3.1
       '@azure/core-util': 1.2.0
       '@azure/logger': 1.3.0
-      form-data: 4.0.4
+      form-data: 4.0.5
       http-proxy-agent: 5.0.0
       https-proxy-agent: 5.0.1
       tslib: 2.8.1
@@ -9097,7 +9099,7 @@ snapshots:
       '@sap-ux/ui5-info': 0.13.0
       '@sap/cf-tools': 0.8.1
       adm-zip: 0.5.10
-      axios: 1.15.1
+      axios: 1.16.1
       ejs: 3.1.10
       i18next: 25.3.0(typescript@5.9.3)
       inquirer: 8.2.7(@types/node@20.19.19)
@@ -9126,7 +9128,7 @@ snapshots:
       '@sap-ux/feature-toggle': 0.3.3
       '@sap-ux/logger': 0.7.0
       '@xmldom/xmldom': 0.8.10
-      axios: 1.15.1
+      axios: 1.16.1
       detect-content-type: 1.2.0
       fast-xml-parser: 4.4.1
       http-proxy-agent: 7.0.2
@@ -9146,10 +9148,11 @@ snapshots:
     dependencies:
       '@sap/bas-sdk': 3.12.0
       '@sap/cf-tools': 3.2.2
-      axios: 1.15.1
+      axios: 1.16.1
     transitivePeerDependencies:
       - bufferutil
       - debug
+      - supports-color
       - utf-8-validate
 
   '@sap-ux/control-property-editor@0.7.1': {}
@@ -9211,7 +9214,7 @@ snapshots:
       '@sap-ux/telemetry': 0.6.35(typescript@5.9.3)
       '@sap-ux/ui5-info': 0.13.0
       '@sap/cf-tools': 3.2.2
-      axios: 1.15.1
+      axios: 1.16.1
       chalk: 4.1.2
       figures: 3.2.0
       fuzzy: 0.1.3
@@ -9243,6 +9246,7 @@ snapshots:
       mem-fs-editor: 9.4.0(mem-fs@2.1.0)
     transitivePeerDependencies:
       - debug
+      - supports-color
       - typescript
 
   '@sap-ux/nodejs-utils@0.2.7':
@@ -9254,6 +9258,7 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - debug
+      - supports-color
       - utf-8-validate
 
   '@sap-ux/odata-service-writer@0.27.28(typescript@5.9.3)':
@@ -9270,6 +9275,7 @@ snapshots:
       semver: 7.5.4
     transitivePeerDependencies:
       - debug
+      - supports-color
       - typescript
 
   '@sap-ux/preview-middleware@0.23.40(@types/node@20.19.19)(express@4.20.0)(typescript@5.9.3)':
@@ -9309,6 +9315,7 @@ snapshots:
       semver: 7.5.4
     transitivePeerDependencies:
       - debug
+      - supports-color
 
   '@sap-ux/project-input-validator@0.6.29(typescript@5.9.3)':
     dependencies:
@@ -9317,6 +9324,7 @@ snapshots:
       validate-npm-package-name: 5.0.0
     transitivePeerDependencies:
       - debug
+      - supports-color
       - typescript
 
   '@sap-ux/store@1.3.1(typescript@5.9.3)':
@@ -9353,7 +9361,7 @@ snapshots:
       '@sap-ux/store': 1.3.1(typescript@5.9.3)
       '@sap-ux/ui5-config': 0.29.8
       applicationinsights: 2.9.2
-      axios: 1.15.1
+      axios: 1.16.1
       performance-now: 2.1.0
       yaml: 2.3.3
     transitivePeerDependencies:
@@ -9372,20 +9380,22 @@ snapshots:
     dependencies:
       '@sap-ux/yaml': 0.17.1
       ajv: 8.17.1
-      axios: 1.15.1
+      axios: 1.16.1
       js-yaml: 4.1.1
       lodash: 4.17.21
       semver: 7.5.4
     transitivePeerDependencies:
       - debug
+      - supports-color
 
   '@sap-ux/ui5-info@0.13.0':
     dependencies:
       '@sap-ux/logger': 0.7.0
-      axios: 1.15.1
+      axios: 1.16.1
       semver: 7.5.4
     transitivePeerDependencies:
       - debug
+      - supports-color
 
   '@sap-ux/vocabularies-types@0.13.0': {}
 
@@ -9396,7 +9406,7 @@ snapshots:
 
   '@sap/bas-sdk@3.12.0':
     dependencies:
-      axios: 1.15.1
+      axios: 1.16.1
       cross-spawn: 7.0.5
       fs-extra: 11.2.0
       jwt-decode: 4.0.0
@@ -9406,6 +9416,7 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - debug
+      - supports-color
       - utf-8-validate
 
   '@sap/cds-compiler@5.9.12':
@@ -9421,7 +9432,7 @@ snapshots:
       '@sap/cds-mtxs': 2.7.6(hdb@0.19.12)
       '@sap/eslint-plugin-cds': 3.2.0(@eslint/js@9.39.1)(eslint@9.39.1)(express@4.20.0)(tar@7.5.2)
       '@sap/hdi-deploy': 5.5.1(hdb@0.19.12)
-      axios: 1.15.1
+      axios: 1.16.1
       eslint: 9.39.1
       express: 4.20.0
       hdb: 0.19.12
@@ -9462,7 +9473,7 @@ snapshots:
   '@sap/cds-mtxs@2.7.6(hdb@0.19.12)':
     dependencies:
       '@sap/hdi-deploy': 5.5.1(hdb@0.19.12)
-      axios: 1.15.1
+      axios: 1.16.1
     transitivePeerDependencies:
       - '@sap/hana-client'
       - debug
@@ -10226,7 +10237,7 @@ snapshots:
   ajv@8.17.1:
     dependencies:
       fast-deep-equal: 3.1.3
-      fast-uri: 3.1.0
+      fast-uri: 3.1.2
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
@@ -10379,13 +10390,15 @@ snapshots:
     dependencies:
       possible-typed-array-names: 1.1.0
 
-  axios@1.15.1:
+  axios@1.16.1:
     dependencies:
       follow-redirects: 1.16.0(debug@4.4.3)
       form-data: 4.0.5
+      https-proxy-agent: 5.0.1
       proxy-from-env: 2.1.0
     transitivePeerDependencies:
       - debug
+      - supports-color
 
   babel-jest@29.7.0(@babel/core@7.28.5):
     dependencies:
@@ -11666,7 +11679,7 @@ snapshots:
 
   fast-safe-stringify@2.1.1: {}
 
-  fast-uri@3.1.0: {}
+  fast-uri@3.1.2: {}
 
   fast-xml-parser@4.4.1:
     dependencies:
@@ -12954,7 +12967,7 @@ snapshots:
 
   jsonwebtoken@9.0.2:
     dependencies:
-      jws: 3.2.2
+      jws: 3.2.3
       lodash.includes: 4.3.0
       lodash.isboolean: 3.0.3
       lodash.isinteger: 4.0.4
@@ -12973,7 +12986,7 @@ snapshots:
       ecdsa-sig-formatter: 1.0.11
       safe-buffer: 5.2.1
 
-  jws@3.2.2:
+  jws@3.2.3:
     dependencies:
       jwa: 1.4.2
       safe-buffer: 5.2.1

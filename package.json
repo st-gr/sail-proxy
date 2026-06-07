@@ -1,6 +1,6 @@
 {
   "name": "sap-llm-gateway",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "A proxy that allows applications to use OpenAI, Anthropic, and AWS Bedrock API formats to access SAP AI Core Foundation Models.",
   "repository": "https://github.com/st-gr/sail-proxy.git",
   "license": "GNU AGPLv3 License - see the LICENSE file for details.",
@@ -103,13 +103,13 @@
   },
   "packageManager": "pnpm@10.12.4+sha512.5ea8b0deed94ed68691c9bad4c955492705c5eeb8a87ef86bc62c74a26b037b08ff9570f108b2e4dbd1dd1a9186fea925e527f141c648e85af45631074680184",
   "pnpm": {
-    "comment": "Note on glob vulnerability (CVE - command injection via -c/--cmd): glob@10.4.5 cannot be upgraded due to breaking changes in glob v11 (ES modules) that break copyfiles@2.4.1 (unmaintained since 2019, requires CommonJS). This vulnerability is dev-only (copyfiles is a build tool, @ui5/mcp-server is dev-only) and not exploitable in production Docker images. Risk accepted: attacker would need control over build-time command-line arguments.",
+    "comment": "Production CVE patches via overrides: axios 1.16.1 (CVE-2026-42264/44488/44494/44495/44496/44486/44487 — proxy/cookie/redirect/ReDoS), jws 3.2.3 (CVE-2025-65945 — HMAC verification, transitive via jsonwebtoken@9 in admin and @sap/xssec), fast-uri 3.1.2 (CVE-2026-6321/6322 — path traversal + host confusion via ajv in admin). Other overrides (express/body-parser/path-to-regexp/router/qs/cookie/send/serve-static/tmp/got/tar/js-yaml/minimatch/follow-redirects) are silent CVE patches. @cap-js/* pins are supply-chain attack guards from April 2025 (NOT CVE patches). Dev-only acceptances (still in tree, not shipped to production): glob 10.4.5 via copyfiles+@ui5/mcp-server (cannot upgrade without breaking copyfiles@2.4.1 ESM gap), path-to-regexp 0.1.13 ReDoS (router@2.x compat, route patterns are static), plus 50+ transitive dev highs through @ui5/mcp-server, nodemon, npm-run-all, ts-jest, eslint, @babel/preset-env, ui5-tooling-modules, @sap/ux-ui5-tooling — none ship to Docker images or the npm tarball.",
     "overrides": {
       "express": "4.20.0",
       "body-parser": "1.20.3",
       "path-to-regexp": "0.1.13",
       "router": "1.3.8",
-      "axios": "1.15.1",
+      "axios": "1.16.1",
       "qs": "6.15.0",
       "cookie": "0.7.0",
       "send": "0.19.0",
@@ -123,7 +123,9 @@
       "follow-redirects": ">=1.16.0",
       "@cap-js/sqlite": "2.0.4",
       "@cap-js/postgres": "1.14.2",
-      "@cap-js/db-service": "<=2.6.0"
+      "@cap-js/db-service": "<=2.6.0",
+      "jws": "3.2.3",
+      "fast-uri": "3.1.2"
     },
     "onlyBuiltDependencies": [
       "@cap-js/cds-types",
