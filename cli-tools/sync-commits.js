@@ -149,14 +149,16 @@ function getFullCommitMessage(sourceDir, hash) {
   return gitExec(`git log -1 --format=%B ${hash}`, sourceDir, { silent: true });
 }
 
-// Get recent commit messages from destination (to detect duplicates)
-function getRecentCommitMessages(destDir, since) {
-  // Get commits from the last 24 hours or since timestamp, whichever is more recent
-  const oneDayAgo = Math.floor(Date.now() / 1000) - 86400;
-  const sinceTimestamp = Math.max(since - 300, oneDayAgo); // Look back 5 min before timestamp
-
+// Get commit messages from destination (to detect duplicates)
+function getRecentCommitMessages(destDir) {
+  // Scan the full destination history by subject. A time-windowed lookback
+  // misses already-synced commits when source commits were re-timestamped
+  // (rebased/recommitted), so their copies in dest are older than the window.
+  // These repos are small, so reading all subjects is cheap.
+  // Tradeoff: a genuinely new source commit that reuses an old subject would
+  // be skipped — acceptable given the distinctive subjects used here.
   const logOutput = gitExec(
-    `git log --format=%s --since=${sinceTimestamp}`,
+    `git log --format=%s`,
     destDir,
     { silent: true, allowFailure: true }
   );
@@ -358,7 +360,7 @@ async function main() {
 
   // Get recent commit messages from destination to filter duplicates
   console.log('🔍 Checking for duplicate commits...');
-  const destMessages = getRecentCommitMessages(args.dest, lastTimestamp);
+  const destMessages = getRecentCommitMessages(args.dest);
 
   // Filter out commits that already exist in destination
   const commits = allCommits.filter(commit => {
