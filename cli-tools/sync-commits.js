@@ -116,12 +116,21 @@ function getLastCommitTimestamp(destDir) {
   return parseInt(timestamp);
 }
 
-// Get commits from source repo after the given timestamp
-function getCommitsAfter(sourceDir, timestamp) {
-  const sinceSec = timestamp + 1; // Start from 1 second after to avoid including the last dest commit
+// Get source commits that are not yet present in the destination.
+//
+// Selection is by commit *subject*: walk the source history newest-first and
+// stop at the first commit whose subject already exists in the destination —
+// that is the last point the two repos share, so everything newer is unsynced.
+// The new commits are returned in chronological (oldest-first) order for replay.
+//
+// This deliberately does NOT use commit/author dates. Source commits are often
+// rebased/recommitted (changing their dates), and the destination's HEAD date
+// can be advanced by unrelated commits — either makes a timestamp window over-
+// or under-select. Subjects are stable across a copy-based sync.
+function getCommitsAfter(sourceDir, destSubjects) {
   const format = '%H|%ct|%an|%ae|%s';
   const logOutput = gitExec(
-    `git log --format="${format}" --reverse --since=${sinceSec}`,
+    `git log --format="${format}"`,
     sourceDir,
     { silent: true, allowFailure: true }
   );
@@ -130,18 +139,26 @@ function getCommitsAfter(sourceDir, timestamp) {
     return [];
   }
 
-  const commits = logOutput.split('\n').map(line => {
+  const newCommits = [];
+  for (const line of logOutput.split('\n')) {
     const [hash, timestamp, authorName, authorEmail, ...messageParts] = line.split('|');
-    return {
+    const subject = messageParts.join('|').trim(); // In case subject contains |
+    // First source commit already in the destination = the shared boundary.
+    // Everything past it is already synced, so stop walking.
+    if (destSubjects.has(subject)) {
+      break;
+    }
+    newCommits.push({
       hash,
       timestamp: parseInt(timestamp),
       authorName,
       authorEmail,
-      message: messageParts.join('|') // In case message contains |
-    };
-  });
+      message: subject
+    });
+  }
 
-  return commits;
+  // git log is newest-first; replay oldest-first.
+  return newCommits.reverse();
 }
 
 // Get the full commit message (may be multiline)
@@ -169,13 +186,6 @@ function getRecentCommitMessages(destDir) {
 
   // Return Set of commit subjects (first line of message)
   return new Set(logOutput.split('\n').map(line => line.trim()).filter(Boolean));
-}
-
-// Check if a commit already exists in destination based on message
-function isDuplicateCommit(destMessages, sourceMessage) {
-  // Compare just the first line (subject) of the commit message
-  const sourceSubject = sourceMessage.split('\n')[0].trim();
-  return destMessages.has(sourceSubject);
 }
 
 // Get file changes for a specific commit
@@ -345,40 +355,26 @@ async function main() {
     console.log('✅ Destination working tree is clean\n');
   }
 
-  // Phase 2: Timestamp Discovery
+  // Phase 2: Destination state
   console.log('🔍 Finding last commit timestamp...');
-  const lastTimestamp = getLastCommitTimestamp(args.dest);
+  getLastCommitTimestamp(args.dest); // informational only
+
+  // Index destination subjects to locate the shared boundary (see getCommitsAfter).
+  console.log('🔍 Indexing destination commit subjects...');
+  const destMessages = getRecentCommitMessages(args.dest);
 
   // Phase 3: Commit Discovery
   console.log('\n🔍 Finding commits to sync...');
-  const allCommits = getCommitsAfter(args.source, lastTimestamp);
-
-  if (allCommits.length === 0) {
-    console.log('✅ No new commits to sync. Repositories are up to date.');
-    process.exit(0);
-  }
-
-  // Get recent commit messages from destination to filter duplicates
-  console.log('🔍 Checking for duplicate commits...');
-  const destMessages = getRecentCommitMessages(args.dest);
-
-  // Filter out commits that already exist in destination
-  const commits = allCommits.filter(commit => {
-    if (isDuplicateCommit(destMessages, commit.message)) {
-      console.log(`   ⏭️  Skipping duplicate: ${commit.hash.substring(0, 8)} - ${commit.message}`);
-      return false;
-    }
-    return true;
-  });
+  const commits = getCommitsAfter(args.source, destMessages);
 
   if (commits.length === 0) {
-    console.log('✅ No new commits to sync (all commits already exist in destination).');
+    console.log('✅ No new commits to sync. Repositories are up to date.');
     process.exit(0);
   }
 
   const firstDate = new Date(commits[0].timestamp * 1000).toISOString();
   const lastDate = new Date(commits[commits.length - 1].timestamp * 1000).toISOString();
-  console.log(`📦 Found ${commits.length} commit(s) to sync (${allCommits.length - commits.length} duplicate(s) skipped)`);
+  console.log(`📦 Found ${commits.length} commit(s) to sync`);
   console.log(`   Date range: ${firstDate} to ${lastDate}`);
 
   if (args.dryRun) {
