@@ -1324,7 +1324,8 @@
       "anthropic_bedrock_version": "bedrock-2023-05-31",
       "excluded_beta_headers": [
         "prompt-caching-scope-2026-01-05",
-        "redact-thinking-2026-02-12"
+        "redact-thinking-2026-02-12",
+        "thinking-token-count-2026-05-13"
       ],
       "emulate_streaming_for_models": [
         "anthropic--claude-4-opus"
