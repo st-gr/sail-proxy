@@ -284,6 +284,17 @@ For internet-accessible deployment with IP allowlisting:
 - Authentication at application level
 - Secrets stored in Kubernetes Secrets
 
+> **Istio deny-by-default & the SAP Connectivity Proxy (SCC) tunnel.** The IP allowlist is an Istio
+> `AuthorizationPolicy` with `action: ALLOW` on the **shared** ingress gateway. The moment any ALLOW
+> targets that gateway it flips to deny-by-default, which also strands every other host on it — notably the
+> SCC tunnel (`cp.*` / `healthcheck.cp.*`). Setup/deploy therefore generate host-scoped ALLOW policies
+> (`allowlist-cp-tunnel`, `allowlist-cp-healthcheck`) that keep those hosts reachable **without** widening
+> access to `sail-proxy` (ALLOW rules are matched on the request host, so they cannot grant the app host).
+> The deploy-time step only acts when the gateway is already deny-by-default and validates the cp hosts
+> read from the live Gateway against a strict `cp.*` pattern (fail-closed). See
+> [`templates/manifests/networking/README.md`](templates/manifests/networking/README.md#istio-deny-by-default-and-the-sap-connectivity-proxy-scc-tunnel)
+> for the full scenario table and the safety rule.
+
 ### Internal-Only Deployment
 
 For enterprise environments with SAP Cloud Connector:

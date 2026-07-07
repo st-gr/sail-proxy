@@ -18,10 +18,12 @@ spec:
     - operation:
         hosts:
         - "__FULL_DOMAIN__"
-        paths: 
+        paths:
         - "/admin/api/health"
         - "/gateway/health"
         methods: ["GET", "HEAD", "POST"]
+        # Scope to 443 so this HTTP-only DENY does not implicitly deny all TCP traffic (Istio IST0133)
+        ports: ["443"]
     when:
     - key: source.namespace
       notValues: ["kube-system", "istio-system", "kyma-system", "sail-proxy"]

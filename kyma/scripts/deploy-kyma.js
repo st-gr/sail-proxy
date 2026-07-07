@@ -9,6 +9,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const execAsync = promisify(exec);
 
@@ -85,6 +86,118 @@ async function cleanupAndApplyIstioSystemPolicies(templatesPath) {
     `kubectl apply -f ${istioSystemManifestsPath}/ --force-conflicts=true --server-side`,
     'Force applying istio-system IP allowlist configuration'
   );
+}
+
+// Fail-closed boundary: only unambiguous cp.* / healthcheck.cp.* hosts may ever be turned into
+// an ALLOW. A wildcard or the app's own host here would defeat the IP allowlist, so it is dropped.
+const CP_HOST = /^(healthcheck\.)?cp\.[a-z0-9-]+\.kyma\.ondemand\.com$/;
+
+// Ensure the SAP Connectivity Proxy (SCC tunnel) hosts have ALLOW policies whenever the shared
+// ingress gateway is ALREADY in deny-by-default. Reads the live Gateway so it also works for
+// internal-only deployments (where the cluster subdomain was never collected at setup) and for
+// deny-by-default caused by other apps.
+//
+// SECURITY: cp ALLOW policies are host-scoped, so they only ever grant the dedicated cp.* /
+// healthcheck.cp.* hosts (which route to the Connectivity Proxy, NOT to sail-proxy). Every host
+// read from the live Gateway is validated against CP_HOST before use, so a wildcard or unexpected
+// host can never become an ALLOW that widens app access. It also refuses to act on an
+// unrestricted gateway (which would itself strand every other host).
+async function ensureConnectivityProxyAllowlist(savedConfig) {
+  if (savedConfig && savedConfig.sccTunnel === false) {
+    console.log('SCC tunnel support disabled by config, skipping cp allowlist');
+    return;
+  }
+
+  // 1) Is the Connectivity Proxy present? Read its Gateway hosts (authoritative source).
+  let hosts = [];
+  try {
+    const { stdout } = await execAsync(
+      "kubectl get gateway connectivity-proxy-tunnel -n kyma-system -o jsonpath='{.spec.servers[*].hosts[*]}'");
+    hosts = stdout.split(/\s+/).map(h => h.trim()).filter(Boolean);
+  } catch (e) {
+    console.log('No connectivity-proxy-tunnel Gateway found, skipping cp allowlist (no SCC tunnel in this cluster)');
+    return;
+  }
+
+  // Fail-closed validation: strip any "namespace/" prefix, then keep ONLY recognizable cp.* hosts.
+  // This is the security boundary — a wildcard or the app host here would defeat the IP allowlist.
+  hosts = hosts
+    .map(h => (h.includes('/') ? h.split('/').pop() : h).trim())
+    .filter(h => CP_HOST.test(h));
+  if (hosts.length === 0) {
+    console.log('connectivity-proxy-tunnel Gateway exposed no recognizable cp.* host; refusing to add ALLOW (fail-closed)');
+    return;
+  }
+
+  // 2) Is the shared ingress gateway already deny-by-default? Only then is it SAFE to add cp ALLOWs.
+  //    (Adding the first ALLOW to an unrestricted gateway would strand every other host.)
+  //    The check EXCLUDES allowlist-cp-* so a re-run cannot treat its own policies as justification.
+  let denyByDefault = false;
+  try {
+    const { stdout } = await execAsync('kubectl get authorizationpolicy -n istio-system -o json');
+    const items = (JSON.parse(stdout).items || []);
+    denyByDefault = items.some(p => {
+      const name = p.metadata?.name || '';
+      const ml = p.spec?.selector?.matchLabels || {};
+      const targetsGw = ml['istio'] === 'ingressgateway' || ml['app'] === 'istio-ingressgateway';
+      return p.spec?.action === 'ALLOW' && targetsGw && !name.startsWith('allowlist-cp-');
+    });
+  } catch (e) { /* treat as not deny-by-default */ }
+  if (!denyByDefault) {
+    console.log('Shared ingress gateway is not deny-by-default; cp ALLOW policies not needed (and would be unsafe)');
+    return;
+  }
+
+  // 3) Apply the two ALLOW policies from the validated live hosts (host + host:443).
+  const tunnelHosts = hosts.filter(h => !h.startsWith('healthcheck.'));
+  const hcHosts     = hosts.filter(h =>  h.startsWith('healthcheck.'));
+  const withPort = hs => hs.flatMap(h => [h, `${h}:443`]);
+  const q = arr => arr.map(h => `"${h}"`).join(', ');
+  const docs = [];
+  if (tunnelHosts.length) docs.push(
+`apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allowlist-cp-tunnel
+  namespace: istio-system
+  labels: { app: connectivity-proxy }
+spec:
+  selector: { matchLabels: { istio: ingressgateway } }
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts: [${q(withPort(tunnelHosts))}]`);
+  if (hcHosts.length) docs.push(
+`apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allowlist-cp-healthcheck
+  namespace: istio-system
+  labels: { app: connectivity-proxy }
+spec:
+  selector: { matchLabels: { istio: ingressgateway } }
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts: [${q(withPort(hcHosts))}]
+        methods: ["GET", "HEAD"]
+        paths: ["/healthcheck", "/"]`);
+  if (!docs.length) return;
+
+  // Write to a temp file and apply server-side (matches cleanupAndApplyIstioSystemPolicies and
+  // avoids any shell-quoting of the generated manifest).
+  const manifest = docs.join('\n---\n');
+  const tmpPath = path.join(os.tmpdir(), 'connectivity-proxy-allow.yaml');
+  fs.writeFileSync(tmpPath, manifest);
+  try {
+    await runCommand(
+      `kubectl apply -f ${tmpPath} --force-conflicts=true --server-side`,
+      'Applying SCC Connectivity Proxy ALLOW policies (cp tunnel + healthcheck)');
+  } finally {
+    fs.unlinkSync(tmpPath);
+  }
 }
 
 async function deployToKyma() {
@@ -184,6 +297,10 @@ spec:
   
   // Clean up any existing authorization policies and apply new ones
   await cleanupAndApplyIstioSystemPolicies(templatesPath);
+
+  // Keep the SAP Connectivity Proxy (SCC tunnel) hosts reachable when the shared ingress gateway
+  // is deny-by-default. Runs for BOTH deployment types and only acts when already locked down.
+  await ensureConnectivityProxyAllowlist(savedConfig);
 
   // 4. Label edge services for Istio injection
   const step4Label = savedConfig.imagePullSecrets ? 'Step 4' : 'Step 3';

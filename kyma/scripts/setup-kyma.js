@@ -1763,7 +1763,8 @@ class KymaSetup {
       return {
         domain: 'sail-proxy',
         clusterSubdomain: 'c-XXXXX',
-        ipAllowlist: []
+        ipAllowlist: [],
+        sccTunnel: true
         // allowIstioSystemChanges not set - will skip IP restrictions in CI mode
       };
     }
@@ -1817,6 +1818,12 @@ class KymaSetup {
         message: 'Allow deployment to manage IP restrictions in istio-system namespace? (Required for IP allowlist)',
         default: true,
         when: (answers) => answers.ipAllowlist && answers.ipAllowlist.trim()
+      },
+      {
+        type: 'confirm',
+        name: 'sccTunnel',
+        message: 'Does this cluster use the SAP Cloud Connector / Connectivity Proxy tunnel? (keeps cp.* reachable)',
+        default: true
       }
     ]);
     
@@ -2629,8 +2636,57 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
     const authPolicyPath = path.join(istioSystemDir, 'authorization-policy.yaml');
     fs.writeFileSync(authPolicyPath, authPolicyContent);
     console.log(`✅ manifests/istio-system/authorization-policy.yaml created with IP allowlist: ${config.ipAllowlist.join(', ')}`);
+
+    this.generateConnectivityProxyAllowlist(istioSystemDir, config);
   }
-  
+
+  // Emit ALLOW policies for the SAP Connectivity Proxy (SCC tunnel) hosts so they are not
+  // stranded by the deny-by-default that the app's own IP allowlist creates on the shared
+  // ingress gateway. SAFE to call here only because this runs alongside
+  // generateIstioSystemAuthPolicy (scenario 1: the app itself creates that deny-by-default).
+  // Hosts derive from the CLUSTER SUBDOMAIN, never the app domain.
+  //
+  // SECURITY: these ALLOW policies are host-scoped, so they only ever grant access to the
+  // dedicated cp.* / healthcheck.cp.* hosts (which route to the Connectivity Proxy, NOT to
+  // sail-proxy). We additionally validate every derived host against CP_HOST and assert it
+  // differs from the app's own host, so these policies can never widen access to the app.
+  generateConnectivityProxyAllowlist(istioSystemDir, config) {
+    if (config.sccTunnel === false) return;            // explicit opt-out
+    if (!config.clusterSubdomain) return;              // cannot derive host without it
+
+    // Fail-closed boundary: only unambiguous cp.* / healthcheck.cp.* hosts are ever allowed.
+    const CP_HOST = /^(healthcheck\.)?cp\.[a-z0-9-]+\.kyma\.ondemand\.com$/;
+    const shoot  = `${config.clusterSubdomain}.kyma.ondemand.com`;
+    const cpHost = `cp.${shoot}`;
+    const hcHost = `healthcheck.${cpHost}`;
+
+    // The app's own host must stay IP-restricted: never emit a cp ALLOW that collides with it,
+    // and never emit one for anything that is not a recognizable cp host.
+    const appHost = config.baseUrl
+      ? new URL(config.baseUrl).hostname
+      : `${config.domain}.${config.clusterSubdomain}.kyma.ondemand.com`;
+    if (!CP_HOST.test(cpHost) || !CP_HOST.test(hcHost) || cpHost === appHost || hcHost === appHost) {
+      console.log('⚠️  Skipping SCC tunnel ALLOW: derived cp host failed validation (would not be safe)');
+      return;
+    }
+
+    const sel = { matchLabels: { istio: 'ingressgateway' } };
+    const docs = [
+      { apiVersion: 'security.istio.io/v1', kind: 'AuthorizationPolicy',
+        metadata: { name: 'allowlist-cp-tunnel', namespace: 'istio-system', labels: { app: 'connectivity-proxy' } },
+        spec: { selector: sel, action: 'ALLOW',
+          rules: [{ to: [{ operation: { hosts: [cpHost, `${cpHost}:443`] } }] }] } },
+      { apiVersion: 'security.istio.io/v1', kind: 'AuthorizationPolicy',
+        metadata: { name: 'allowlist-cp-healthcheck', namespace: 'istio-system', labels: { app: 'connectivity-proxy' } },
+        spec: { selector: sel, action: 'ALLOW',
+          rules: [{ to: [{ operation: {
+            hosts: [hcHost, `${hcHost}:443`], methods: ['GET', 'HEAD'], paths: ['/healthcheck', '/'] } }] }] } },
+    ];
+    const content = docs.map(d => yaml.dump(d, { indent: 2, lineWidth: -1, noRefs: true })).join('---\n');
+    fs.writeFileSync(path.join(istioSystemDir, 'connectivity-proxy-allow.yaml'), content);
+    console.log(`✅ manifests/istio-system/connectivity-proxy-allow.yaml created for SCC tunnel (${cpHost})`);
+  }
+
   async runDockerSetup(config) {
     console.log('\n🔧 Preparing Docker configuration for nginx build...');
     
