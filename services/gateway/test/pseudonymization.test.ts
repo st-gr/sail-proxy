@@ -116,13 +116,45 @@ describe('Pseudonymization Plugin', () => {
       expect(matches[0].original).toBe('456 Oak Avenue');
     });
 
-    it('should detect URLs', () => {
+    it('should detect URLs and mask only the origin (path stays composable)', () => {
       const matches = detectRegexEntities(
         'Visit https://example.com/path?q=1 for info',
         [{ type: 'profile-url' }]
       );
       expect(matches).toHaveLength(1);
-      expect(matches[0].original).toBe('https://example.com/path?q=1');
+      expect(matches[0].original).toBe('https://example.com'); // origin only, never the path
+    });
+
+    it('should NOT mask loopback / private / template URLs', () => {
+      const skip = [
+        'http://127.0.0.1:7231/mcp',
+        'http://localhost:8080/x',
+        'http://10.0.0.5/a',
+        'http://192.168.1.9/b',
+        'http://172.20.3.4/y',
+        'http://[::1]:9000/a',
+        'http://foo.local/x',
+        'http://svc.internal/y',
+        'http://127.0.0.1:<port>/file',
+        'http://host:{PORT}/x',
+        'http://host:${PORT}/x',
+      ];
+      for (const url of skip) {
+        expect(detectRegexEntities(url, [{ type: 'profile-url' }])).toHaveLength(0);
+      }
+    });
+
+    it('should still mask real external hosts (incl. 172.32.x which is public)', () => {
+      const expected: Record<string, string> = {
+        'https://api.acme.com/v1': 'https://api.acme.com',
+        'wss://stream.example.org/live': 'wss://stream.example.org',
+        'http://172.32.0.1/z': 'http://172.32.0.1',
+      };
+      for (const [url, origin] of Object.entries(expected)) {
+        const m = detectRegexEntities(url, [{ type: 'profile-url' }]);
+        expect(m).toHaveLength(1);
+        expect(m[0].original).toBe(origin); // origin only, path dropped
+      }
     });
 
     it('should detect credentials', () => {
@@ -131,6 +163,17 @@ describe('Pseudonymization Plugin', () => {
         [{ type: 'profile-username-password' }]
       );
       expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should detect JSON-style credentials and capture only the value', () => {
+      const text = '{ "auth": { "type": "bearer", "token": "1783412749.76c1ef1fadd18a2b24fba7c03e52c7" } }';
+      const matches = detectRegexEntities(text, [{ type: 'profile-username-password' }]);
+      const values = matches.map(m => m.original);
+      expect(values).toContain('1783412749.76c1ef1fadd18a2b24fba7c03e52c7');
+      // Only the value inside the quotes — masking must not eat the JSON structure
+      for (const m of matches) {
+        expect(m.original).not.toContain('"');
+      }
     });
 
     it('should detect dictionary entities (nationality)', () => {
@@ -167,6 +210,23 @@ describe('Pseudonymization Plugin', () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   describe('Detection Pipeline', () => {
+    it('should never re-mask an existing placeholder (no double-masking)', () => {
+      const config: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-url' }, { type: 'profile-person' }, { type: 'profile-username-password' }],
+      };
+      // URL-shaped pseudo-URL placeholder must not be re-detected as a URL
+      expect(detectEntities('server at http://masked-url-41031677.invalid/mcp', config)
+        .filter(m => m.original.includes('masked-url'))).toHaveLength(0);
+      // MASKED_* family must not be re-detected either
+      expect(detectEntities('token MASKED_USER_PASSWORD_12345678 in use', config)
+        .filter(m => m.original.startsWith('MASKED_'))).toHaveLength(0);
+      // A real URL alongside a placeholder is still masked
+      const mixed = detectEntities('old http://masked-url-41031677.invalid new https://acme.example.com/x', config);
+      expect(mixed.map(m => m.original)).toContain('https://acme.example.com');
+      expect(mixed.some(m => m.original.includes('masked-url'))).toBe(false);
+    });
+
     it('should resolve overlaps: longer match wins', () => {
       const config: MaskingConfig = {
         method: 'pseudonymization',
@@ -212,12 +272,24 @@ describe('Pseudonymization Plugin', () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   describe('ReplacementMap', () => {
-    it('should assign incrementing placeholders per type', () => {
+    it('should assign stable content-derived placeholders (pseudonymization)', () => {
       const map = new ReplacementMap('pseudonymization');
       const p1 = map.getPlaceholder('profile-person', 'John Smith');
       const p2 = map.getPlaceholder('profile-person', 'Jane Doe');
-      expect(p1).toBe('MASKED_PERSON_1');
-      expect(p2).toBe('MASKED_PERSON_2');
+      expect(p1).toMatch(/^MASKED_PERSON_\d{8}$/);
+      expect(p2).toMatch(/^MASKED_PERSON_\d{8}$/);
+      expect(p1).not.toBe(p2);
+    });
+
+    it('should mint the SAME placeholder for the same value across independent requests', () => {
+      // Cross-request stability is the core guarantee: it makes echoed tokens from
+      // earlier turns resolvable and cached masked responses safely replayable.
+      const mapA = new ReplacementMap('pseudonymization');
+      const mapB = new ReplacementMap('pseudonymization');
+      // different detection order must not matter
+      mapB.getPlaceholder('profile-person', 'Someone Else');
+      expect(mapA.getPlaceholder('profile-person', 'John Smith'))
+        .toBe(mapB.getPlaceholder('profile-person', 'John Smith'));
     });
 
     it('should be idempotent: same input returns same placeholder', () => {
@@ -230,11 +302,11 @@ describe('Pseudonymization Plugin', () => {
 
     it('should maintain reverse mapping', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
-      expect(map.reverse.get('MASKED_PERSON_1')).toBe('John Smith');
+      const p = map.getPlaceholder('profile-person', 'John Smith');
+      expect(map.reverse.get(p)).toBe('John Smith');
     });
 
-    it('should not maintain reverse map in anonymization mode', () => {
+    it('should keep incrementing (unlinkable) placeholders in anonymization mode', () => {
       const map = new ReplacementMap('anonymization');
       const p1 = map.getPlaceholder('profile-person', 'John Smith');
       const p2 = map.getPlaceholder('profile-person', 'Jane Doe');
@@ -274,7 +346,9 @@ describe('Pseudonymization Plugin', () => {
       const map = new ReplacementMap('pseudonymization');
       const masked = replaceEntities(text, matches, map, config);
 
-      expect(masked).toBe('MASKED_PERSON_1 went home. Later, MASKED_PERSON_1 returned.');
+      const p = map.forward.get('John Smith');
+      expect(p).toMatch(/^MASKED_PERSON_\d{8}$/);
+      expect(masked).toBe(`${p} went home. Later, ${p} returned.`);
     });
   });
 
@@ -285,10 +359,10 @@ describe('Pseudonymization Plugin', () => {
   describe('Unmasker', () => {
     it('should replace all placeholders with original values', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
-      map.getPlaceholder('profile-email', 'john@example.com');
+      const pPerson = map.getPlaceholder('profile-person', 'John Smith');
+      const pEmail = map.getPlaceholder('profile-email', 'john@example.com');
 
-      const text = 'MASKED_PERSON_1 can be reached at MASKED_EMAIL_1';
+      const text = `${pPerson} can be reached at ${pEmail}`;
       const result = unmaskText(text, map);
 
       expect(result).toBe('John Smith can be reached at john@example.com');
@@ -296,9 +370,9 @@ describe('Pseudonymization Plugin', () => {
 
     it('should handle multiple occurrences of same placeholder', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
+      const p = map.getPlaceholder('profile-person', 'John Smith');
 
-      const text = 'MASKED_PERSON_1 went home. MASKED_PERSON_1 returned.';
+      const text = `${p} went home. ${p} returned.`;
       const result = unmaskText(text, map);
 
       expect(result).toBe('John Smith went home. John Smith returned.');
@@ -320,36 +394,36 @@ describe('Pseudonymization Plugin', () => {
   describe('StreamUnmaskBuffer', () => {
     it('should handle placeholder split across chunks', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
+      const p = map.getPlaceholder('profile-person', 'John Smith');
 
       const buffer = new StreamUnmaskBuffer(map);
 
-      expect(buffer.append('I recommend ')).toBe('I recommend ');
-      expect(buffer.append('MASKED_')).toBe(''); // held in buffer
-      expect(buffer.append('PERSON_1')).toBe('John Smith'); // unmasked
-      expect(buffer.append(' call back')).toBe(' call back');
-      expect(buffer.flush()).toBe('');
+      let out = '';
+      out += buffer.append('I recommend ');
+      out += buffer.append(p.slice(0, 7));   // 'MASKED_' — held in buffer
+      out += buffer.append(p.slice(7));      // completes the token
+      out += buffer.append(' call back');
+      out += buffer.flush();
+      expect(out).toBe('I recommend John Smith call back');
     });
 
     it('should flush remaining text at end of stream', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
+      const p = map.getPlaceholder('profile-person', 'John Smith');
 
       const buffer = new StreamUnmaskBuffer(map);
-      buffer.append('Hello MASKED_PERSON_1');
-      const flushed = buffer.flush();
+      const out = buffer.append(`Hello ${p}`) + buffer.flush();
 
-      // Should have flushed "Hello John Smith" across append+flush
-      expect(flushed).toBe(''); // already flushed in append
+      expect(out).toBe('Hello John Smith');
     });
 
     it('should unmask complete tokens immediately', () => {
       const map = new ReplacementMap('pseudonymization');
-      map.getPlaceholder('profile-person', 'John Smith');
-      map.getPlaceholder('profile-email', 'john@example.com');
+      const pPerson = map.getPlaceholder('profile-person', 'John Smith');
+      const pEmail = map.getPlaceholder('profile-email', 'john@example.com');
 
       const buffer = new StreamUnmaskBuffer(map);
-      const result = buffer.append('Contact MASKED_PERSON_1 at MASKED_EMAIL_1 now');
+      const result = buffer.append(`Contact ${pPerson} at ${pEmail} now`) + buffer.flush();
 
       expect(result).toContain('John Smith');
       expect(result).toContain('john@example.com');
@@ -361,6 +435,53 @@ describe('Pseudonymization Plugin', () => {
 
       expect(buffer.append('Hello world')).toBe('Hello world');
       expect(buffer.flush()).toBe('');
+    });
+
+    it('should not corrupt a longer placeholder split where a shorter one is its prefix', () => {
+      // Two map keys where one is a strict prefix of the other (legacy numeric residue
+      // keys, or hash ids extended by collision probing). Eager replacement must NOT
+      // substitute the shorter token prematurely when the split leaves it ambiguous.
+      const map = new ReplacementMap('pseudonymization');
+      map.reverse.set('MASKED_PERSON_ab12cd34', 'Short Person');
+      map.reverse.set('MASKED_PERSON_ab12cd34ef', 'Long Person');
+      map.forward.set('Short Person', 'MASKED_PERSON_ab12cd34');
+      map.forward.set('Long Person', 'MASKED_PERSON_ab12cd34ef');
+
+      const buffer = new StreamUnmaskBuffer(map);
+      let out = '';
+      out += buffer.append('- MAS');
+      out += buffer.append('KED_PERS');
+      out += buffer.append('ON_ab12cd34'); // could be the short token OR a prefix of the long one
+      out += buffer.append('ef');          // resolves to the LONG token
+      out += buffer.append(': done');
+      out += buffer.flush();
+
+      expect(out).toBe('- Long Person: done');
+      expect(out).not.toContain('Short Person');
+      expect(out).not.toContain('MASKED');
+    });
+
+    it('should still unmask the shorter placeholder when the stream ends on it', () => {
+      const map = new ReplacementMap('pseudonymization');
+      map.reverse.set('MASKED_PERSON_ab12cd34', 'Short Person');
+      map.reverse.set('MASKED_PERSON_ab12cd34ef', 'Long Person');
+
+      const buffer = new StreamUnmaskBuffer(map);
+      let out = '';
+      out += buffer.append('see MASKED_PERSON_ab12cd34'); // ambiguous → retained
+      out += buffer.flush();                              // stream over → resolves to the short token
+      expect(out).toBe('see Short Person');
+    });
+
+    it('should resolve stable hash tokens split across chunks', () => {
+      const map = new ReplacementMap('pseudonymization');
+      const p = map.getPlaceholder('profile-person', 'Quinn Zephyr');
+      const buffer = new StreamUnmaskBuffer(map);
+      let out = '';
+      out += buffer.append(`hi ${p.slice(0, p.length - 3)}`);
+      out += buffer.append(`${p.slice(p.length - 3)} there`);
+      out += buffer.flush();
+      expect(out).toBe('hi Quinn Zephyr there');
     });
   });
 
@@ -587,6 +708,389 @@ describe('Pseudonymization Plugin', () => {
       expect(req.body.messages[0].content).not.toContain('John Smith');
       expect(req.body.messages[0].content).toContain('MASKED_');
       expect(req.__pseudonymization).toBeDefined();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SSE Unmask Interceptor Tests (res.write wire path — Bedrock native streaming)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('SSE unmask interceptor', () => {
+    const beforeRule = (pluginRules as any[]).find((r: any) => r.strategy === 'before');
+    const beforeHandler = beforeRule?.handler;
+
+    // Runs beforeHandler over `content` so the plugin masks it, installs the wire
+    // interceptor on a mock res, and returns everything needed to replay SSE writes.
+    async function setup(content: string) {
+      const written: string[] = [];
+      const res: any = {
+        write: (chunk: any) => { written.push(String(chunk)); return true; },
+        end: (chunk?: any) => { if (typeof chunk === 'string') written.push(chunk); },
+      };
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }, { type: 'profile-email' }] },
+        },
+      };
+      await beforeHandler({ req, res, utils: { logger: mockLogger } });
+      const map = req.__pseudonymizationMap;
+      return { req, res, written, map };
+    }
+
+    // Reassemble the text/tool content per block index from the written SSE stream
+    function reassemble(written: string[]) {
+      const blocks: Record<string, string> = {};
+      for (const w of written) {
+        for (const m of w.matchAll(/data: (\{.*?\})\n/g)) {
+          let ev: any; try { ev = JSON.parse(m[1]); } catch { continue; }
+          const d = ev.delta || {};
+          const idx = ev.index ?? 0;
+          if (d.type === 'text_delta' && typeof d.text === 'string') blocks[`text:${idx}`] = (blocks[`text:${idx}`] || '') + d.text;
+          if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') blocks[`tool:${idx}`] = (blocks[`tool:${idx}`] || '') + d.partial_json;
+        }
+      }
+      return blocks;
+    }
+
+    const evt = (obj: any) => `event: ${obj.type}\ndata: ${JSON.stringify(obj)}\n\n`;
+    const textDelta = (idx: number, text: string) => evt({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text } });
+    const toolDelta = (idx: number, partial_json: string) => evt({ type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json } });
+    const blockStop = (idx: number) => evt({ type: 'content_block_stop', index: idx });
+    const messageStop = () => evt({ type: 'message_stop' });
+
+    it('unmasks text_delta split across events (production leak scenario)', async () => {
+      const { res, written, map } = await setup('John Smith will review');
+      const placeholder = map.forward.get('John Smith');
+      expect(placeholder).toBeDefined();
+
+      // Fragmentation pattern copied from the logged stream: 'MAS'|'KED_PERS'|'ON_1'
+      const [a, b, c] = [placeholder.slice(0, 3), placeholder.slice(3, 11), placeholder.slice(11)];
+      res.write(textDelta(0, `- ${a}`));
+      res.write(textDelta(0, b));
+      res.write(textDelta(0, c));
+      res.write(textDelta(0, ': done'));
+      res.write(blockStop(0));
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe('- John Smith: done');
+    });
+
+    it('unmasks input_json_delta split across events', async () => {
+      const { res, written, map } = await setup('Jane Doe and John Smith met');
+      const p = map.forward.get('Jane Doe');
+      res.write(toolDelta(1, `{"content":"- ${p.slice(0, 5)}`));
+      res.write(toolDelta(1, p.slice(5)));
+      res.write(toolDelta(1, ' wrote it"}'));
+      res.write(blockStop(1));
+
+      const blocks = reassemble(written);
+      expect(blocks['tool:1']).toBe('{"content":"- Jane Doe wrote it"}');
+    });
+
+    it('flushes a retained fragment on content_block_stop', async () => {
+      const { res, written, map } = await setup('John Smith will review');
+      const placeholder = map.forward.get('John Smith');
+      res.write(textDelta(0, `see ${placeholder.slice(0, 8)}`)); // tail retained as partial placeholder
+      res.write(blockStop(0)); // must flush the retained 'MASKED_P…' before the stop
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe(`see ${placeholder.slice(0, 8)}`); // not resolvable — emitted as-is, not dropped
+      expect(written.join('')).toContain('content_block_stop');
+    });
+
+    it('flushes all buffers on message_stop (Anthropic streams have no finish_reason)', async () => {
+      const { res, written, map } = await setup('John Smith will review');
+      const placeholder = map.forward.get('John Smith');
+      res.write(textDelta(0, `by ${placeholder}`)); // complete but ambiguous tail → retained
+      res.write(messageStop());
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe('by John Smith');
+    });
+
+    it('handles multiple SSE events in a single res.write', async () => {
+      const { res, written, map } = await setup('John Smith will review');
+      const placeholder = map.forward.get('John Smith');
+      const batched = textDelta(0, `hi ${placeholder.slice(0, 6)}`) + textDelta(0, placeholder.slice(6)) + blockStop(0);
+      res.write(batched);
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe('hi John Smith');
+    });
+
+    it('handles an SSE event split mid-JSON across res.write calls', async () => {
+      const { res, written, map } = await setup('John Smith will review');
+      const placeholder = map.forward.get('John Smith');
+      const whole = textDelta(0, `hi ${placeholder} bye`) + blockStop(0);
+      // split in the middle of the JSON payload
+      const cut = Math.floor(whole.length / 2);
+      res.write(whole.slice(0, cut));
+      res.write(whole.slice(cut));
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe('hi John Smith bye');
+    });
+
+    it('flushes a trailing partial block on res.end', async () => {
+      const { res, written } = await setup('John Smith will review');
+      res.write('data: {"type":"content_block_de'); // incomplete block, no \n\n
+      res.end();
+      expect(written.join('')).toContain('data: {"type":"content_block_de');
+    });
+
+    it('passes non-SSE and non-JSON writes through unchanged', async () => {
+      const { res, written } = await setup('John Smith will review');
+      res.write('data: [DONE]\n\n');
+      res.write(': ping\n\n');
+      expect(written).toContain('data: [DONE]\n\n');
+      expect(written).toContain(': ping\n\n');
+    });
+
+    it('unmasks res.json bodies (non-streaming cache-hit path)', async () => {
+      // awsBedrockResponseCache serves non-streaming cache hits via res.json() and
+      // returns { stop: true }, bypassing res.write and the after-handler. The
+      // interceptor must patch res.json so a cached masked tool_use still unmasks.
+      const jsonBodies: any[] = [];
+      const res: any = {
+        write: () => true,
+        end: () => {},
+        json: (b: any) => { jsonBodies.push(b); return res; },
+        status: () => res,
+      };
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'John Smith wrote the report' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req, res, utils: { logger: mockLogger } });
+      const placeholder = req.__pseudonymizationMap.forward.get('John Smith');
+      expect(placeholder).toBeDefined();
+
+      // Simulate a cached (masked) non-streaming Anthropic message served via res.json
+      res.json({
+        type: 'message',
+        content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/x.md', content: `- ${placeholder}: author` } }],
+      });
+
+      const served = jsonBodies[0];
+      const s = JSON.stringify(served);
+      expect(s).toContain('John Smith');
+      expect(s).not.toContain('MASKED_');
+    });
+
+    it('leaves unknown (residue) tokens in a res.json body untouched', async () => {
+      const jsonBodies: any[] = [];
+      const res: any = { write: () => true, end: () => {}, json: (b: any) => { jsonBodies.push(b); return res; } };
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'John Smith wrote it' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req, res, utils: { logger: mockLogger } });
+      res.json({ type: 'message', content: [{ type: 'text', text: 'earlier: MASKED_PERSON_999' }] });
+      // Not in this request's map → must remain (cannot invent a name)
+      expect(JSON.stringify(jsonBodies[0])).toContain('MASKED_PERSON_999');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Residue counter guard
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('Residue handling & stable tokens', () => {
+    const beforeRule = (pluginRules as any[]).find((r: any) => r.strategy === 'before');
+    const beforeHandler = beforeRule?.handler;
+
+    it('re-mints the SAME token for a value echoed from an earlier turn (residue resolves)', async () => {
+      // Turn 1: mask a request containing John Smith → token T.
+      const req1: any = {
+        body: {
+          messages: [{ role: 'user', content: 'John Smith should review it' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req: req1, res: {}, utils: { logger: mockLogger } });
+      const t1 = req1.__pseudonymizationMap.forward.get('John Smith');
+      expect(t1).toMatch(/^MASKED_PERSON_\d{8}$/);
+
+      // Turn 2 (separate request): history carries the literal token T; the value is
+      // also present. Masking must mint the identical token, so T resolves via the map.
+      const req2: any = {
+        body: {
+          messages: [
+            { role: 'assistant', content: `${t1} owns the doc` },
+            { role: 'user', content: 'Remind John Smith about the deadline' },
+          ],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req: req2, res: {}, utils: { logger: mockLogger } });
+      const t2 = req2.__pseudonymizationMap.forward.get('John Smith');
+      expect(t2).toBe(t1);
+      expect(req2.__pseudonymizationMap.reverse.get(t1)).toBe('John Smith');
+      const unmasked = unmaskText(`${t1} owns the doc`, req2.__pseudonymizationMap);
+      expect(unmasked).toBe('John Smith owns the doc');
+    });
+
+    it('leaves legacy numeric residue untouched and does not crash the residue scan', async () => {
+      const req: any = {
+        body: {
+          messages: [
+            { role: 'assistant', content: 'MASKED_PERSON_54 owns the doc' },
+            { role: 'user', content: 'John Smith should review it' },
+          ],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      // Legacy numeric residue cannot be re-minted by the hash scheme → stays literal
+      expect(req.body.messages[0].content).toContain('MASKED_PERSON_54');
+      // Fresh value gets a stable hash token, which can never equal the numeric residue
+      const placeholder = req.__pseudonymizationMap.forward.get('John Smith');
+      expect(placeholder).toMatch(/^MASKED_PERSON_\d{8}$/);
+      expect(placeholder).not.toBe('MASKED_PERSON_54');
+    });
+
+    it('reserveMinCount keeps anonymization counters clear of numeric residue', () => {
+      const map = new ReplacementMap('anonymization');
+      map.reserveMinCount('MASKED_PERSON', 10);
+      const person = map.getPlaceholder('profile-person', 'John Smith');
+      const email = map.getPlaceholder('profile-email', 'a@b.com');
+      expect(person).toBe('MASKED_PERSON_11');
+      expect(email).toBe('MASKED_EMAIL_1');
+    });
+
+    it('probes to a wider id on an in-request hash collision', () => {
+      const map = new ReplacementMap('pseudonymization');
+      const pA = map.getPlaceholder('profile-person', 'Value A');
+      // Simulate an id collision: pre-seed reverse with pA's token mapped to a
+      // DIFFERENT value, then mint — the new token must widen, not overwrite.
+      const map2 = new ReplacementMap('pseudonymization');
+      map2.reverse.set(pA, 'Different Value');
+      const pB = map2.getPlaceholder('profile-person', 'Value A');
+      expect(pB).not.toBe(pA);
+      expect(pB).toMatch(/^MASKED_PERSON_\d{10}$/); // widened (deterministic per value)
+      expect(map2.reverse.get(pB)).toBe('Value A');
+      expect(map2.reverse.get(pA)).toBe('Different Value'); // untouched
+
+      // Determinism of the widened id: a third map with the same collision yields the same pB
+      const map3 = new ReplacementMap('pseudonymization');
+      map3.reverse.set(pA, 'Different Value');
+      expect(map3.getPlaceholder('profile-person', 'Value A')).toBe(pB);
+    });
+
+    it('masks URL origins as composable pseudo-URLs and unmasks composed variants', async () => {
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'The MCP endpoint is http://mcp.acme.example:7231/mcp — use it.' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-url' }] },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      const map = req.__pseudonymizationMap;
+      const placeholder = map.forward.get('http://mcp.acme.example:7231');
+      expect(placeholder).toMatch(/^http:\/\/masked-url-\d{8}\.invalid$/);
+      // Masked message keeps the path composable
+      expect(req.body.messages[0].content).toContain(`${placeholder}/mcp`);
+      expect(req.body.messages[0].content).not.toContain('mcp.acme.example');
+
+      // The model composes a NEW URL from the masked host (path + query it invents)
+      const composed = `curl --upload-file f.py "${placeholder}/file?path=C%3A%5Cws%5Cserver.py"`;
+      expect(unmaskText(composed, map)).toBe(
+        'curl --upload-file f.py "http://mcp.acme.example:7231/file?path=C%3A%5Cws%5Cserver.py"'
+      );
+
+      // Scheme-less reproduction (e.g. JSON-escaped or scheme dropped) still unmasks via alias
+      const bare = placeholder.replace(/^http:\/\//, '');
+      expect(unmaskText(`host is ${bare}/health`, map)).toBe('host is mcp.acme.example:7231/health');
+
+      // Streaming: composed URL split across chunks round-trips too
+      const buffer = new StreamUnmaskBuffer(map);
+      const whole = `GET ${placeholder}/file?x=1 now`;
+      let out = '';
+      for (let i = 0; i < whole.length; i += 7) out += buffer.append(whole.slice(i, i + 7));
+      out += buffer.flush();
+      expect(out).toBe('GET http://mcp.acme.example:7231/file?x=1 now');
+    });
+
+    it('preserves the URL scheme and supports model-initiated scheme switches', async () => {
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'API at https://api.public.example:8443/v1 and stream at wss://api.public.example:8443/live' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-url' }] },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      const map = req.__pseudonymizationMap;
+      const https = map.forward.get('https://api.public.example:8443');
+      const wss = map.forward.get('wss://api.public.example:8443');
+      // Scheme is preserved on the placeholder itself (distinct tokens per scheme)
+      expect(https).toMatch(/^https:\/\/masked-url-\d{8}\.invalid$/);
+      expect(wss).toMatch(/^wss:\/\/masked-url-\d{8}\.invalid$/);
+
+      // Exact reproduction unmasks with the original scheme
+      expect(unmaskText(`connect ${wss}/live`, map)).toBe('connect wss://api.public.example:8443/live');
+
+      // Model SWITCHES scheme on a masked host (e.g. https host upgraded to wss):
+      // the bare-host alias substitutes just the origin, keeping the model's scheme.
+      const bare = https!.replace(/^https:\/\//, '');
+      expect(unmaskText(`upgrade to wss://${bare}/socket`, map)).toBe('upgrade to wss://api.public.example:8443/socket');
+    });
+
+    it('mints the same pseudo-URL host across requests (stable)', async () => {
+      const mk = () => ({
+        body: {
+          messages: [{ role: 'user', content: 'see https://internal.corp.example:8443/a/b' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-url' }] },
+        },
+      });
+      const r1: any = mk(); const r2: any = mk();
+      await beforeHandler({ req: r1, res: {}, utils: { logger: mockLogger } });
+      await beforeHandler({ req: r2, res: {}, utils: { logger: mockLogger } });
+      expect(r1.__pseudonymizationMap.forward.get('https://internal.corp.example:8443'))
+        .toBe(r2.__pseudonymizationMap.forward.get('https://internal.corp.example:8443'));
+    });
+
+    it('injects a verbatim-copy instruction into the system prompt when masking is active', async () => {
+      const req: any = {
+        body: {
+          system: [{ type: 'text', text: 'You are a helpful assistant.' }],
+          messages: [{ role: 'user', content: 'John Smith wrote the report' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      const sys = req.body.system;
+      expect(Array.isArray(sys)).toBe(true);
+      expect(sys[sys.length - 1].text).toContain('copy its token EXACTLY');
+
+      // string-form system prompt
+      const req2: any = {
+        body: {
+          system: 'Base prompt.',
+          messages: [{ role: 'user', content: 'John Smith wrote it' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req: req2, res: {}, utils: { logger: mockLogger } });
+      expect(typeof req2.body.system).toBe('string');
+      expect(req2.body.system).toContain('Base prompt.');
+      expect(req2.body.system).toContain('copy its token EXACTLY');
+
+      // no injection when nothing was masked
+      const req3: any = {
+        body: {
+          messages: [{ role: 'user', content: 'nothing sensitive here 12' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-person' }] },
+        },
+      };
+      await beforeHandler({ req: req3, res: {}, utils: { logger: mockLogger } });
+      if (req3.__pseudonymizationMap?.size ? false : true) {
+        expect(req3.body.system === undefined || !String(req3.body.system).includes('copy its token')).toBe(true);
+      }
     });
   });
 });

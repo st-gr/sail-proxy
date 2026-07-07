@@ -1,8 +1,17 @@
 # PII Pseudonymization Plugin — Security Assessment
 
-**Date:** 2026-05-13
+**Date:** 2026-05-13 (updated 2026-07-07)
 **Component:** SAP LLM Gateway — Pseudonymization Plugin
 **Purpose:** Evidence that PII is intercepted and masked before reaching external LLM providers
+
+---
+
+> **2026-07-07 redesign — security-relevant changes.** The masking→LLM direction and its guarantees are unchanged (the LLM still receives only masked content). The following changed on the unmasking/response side and in token generation; example tokens below of the form `MASKED_PERSON_1` are now illustrative of *behavior*, not format:
+> - **Placeholder format is now content-derived and stable.** Ids are `SHA-256(value)`-derived (8 decimal digits), so the same value maps to the same token in every request (e.g. `MASKED_PERSON_48213307`). This fixes cross-request/residue unmasking and makes response caching safe. **New residual risk:** stable tokens make the same entity *linkable across requests* by anyone observing masked traffic (acceptable for reversible pseudonymization; use anonymization mode — which keeps random per-request counters — where unlinkability is required). See §11.
+> - **URLs mask origin-only as a URL-shaped placeholder** (`http://masked-url-<id>.invalid`), and **loopback/private/link-local/template URLs are not masked** (data-minimization: no privacy value, and masking them broke agent edit workflows). See §11.
+> - **JSON-style credentials** (`"token": "..."`) are now detected (value-only capture).
+> - **No double-masking:** existing placeholders are excluded from re-detection.
+> - Unmasking now also covers streamed assistant text, non-streaming `res.json`/cache-hit bodies, and multi-turn residue; a leak audit logs any placeholder that reaches the client.
 
 ---
 
@@ -277,12 +286,12 @@ The plugin adds zero perceptible latency. When no `masking` field is present in 
 
 ## 10. Testing Methodology
 
-### Unit Tests (33 tests)
+### Unit Tests (65 tests)
 ```bash
 pnpm test:pseudonymization
 ```
 
-Covers: entity detection accuracy, Luhn validation, overlap resolution, allow-list filtering, idempotent replacement, streaming buffer (split token handling), anonymization mode, and plugin handler lifecycle.
+Covers: entity detection accuracy, Luhn validation, overlap resolution, allow-list filtering, idempotent replacement, streaming buffer (split-token & prefix-collision handling), anonymization mode, plugin handler lifecycle, content-derived stable tokens (cross-request stability, collision probing), URL origin masking (composable pseudo-URLs, scheme switches, loopback/private/template skip), no-double-masking, JSON-credential detection, and non-streaming `res.json`/cache-hit unmasking.
 
 ### Integration Tests (12 tests)
 ```bash
@@ -322,7 +331,10 @@ grep "John Smith" ./logs/payloads/*01_original_bedrock_request*.json  # should r
 | Address detection covers US street patterns only | International addresses may pass through | Supplement with custom regex for target locales |
 | Short dictionary terms may false-positive | Common words in dictionaries (e.g., "Liberal" in political context) | Allow-list can exempt specific terms |
 | Context-free detection | "Apple" as company vs. fruit not distinguishable | NER + overlap resolution handles most cases |
-| Stateless per-request | Multi-turn conversations re-mask each time | Consistent results since same input → same placeholder |
+| Stateless per-request | Multi-turn conversations re-mask each time | Content-derived tokens keep this consistent (same value → same token); a token whose value is absent from the current request cannot be unmasked and is flagged by the leak audit |
+| Stable tokens are linkable | The same entity yields the same token across requests, allowing correlation by an observer of masked traffic | Inherent to reversible pseudonymization; use anonymization mode for unlinkability |
+| Loopback/private/template URLs not masked | Local/dev/infra endpoints reach the LLM unmasked | Deliberate data-minimization — these carry no personal data and masking them broke edit workflows; public hosts are still masked |
+| Unmask depends on verbatim token reproduction | A model that garbles a placeholder id produces an unrecoverable value | Copy-friendly decimal ids, a verbatim-copy system instruction, and composable URL placeholders; leak audit flags misses |
 | No image/file PII detection | PII in uploaded images is not detected | Out of scope for text-based masking |
 
 ---

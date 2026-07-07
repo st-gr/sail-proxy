@@ -13,6 +13,25 @@ import { detectNerEntities } from './nerDetector';
 import { detectDictionaryEntities } from './dictionaryDetector';
 
 /**
+ * Matches placeholders that ALREADY exist in the text so they are never re-masked.
+ * Covers the `MASKED_<TYPE>_<id>` family and the URL-shaped `masked-url-<id>.invalid`
+ * form. Re-masking a placeholder produces layered tokens ("keeps getting re-masked")
+ * that can never be unmasked back to the original value.
+ */
+const EXISTING_PLACEHOLDER = /MASKED_[A-Z_]+_[0-9a-f]+|(?:(?:https?|wss?|ftps?):\/\/)?masked-url-\d+\.invalid/g;
+
+/** Spans in `text` occupied by placeholders that must be excluded from detection. */
+function placeholderSpans(text: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  EXISTING_PLACEHOLDER.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = EXISTING_PLACEHOLDER.exec(text)) !== null) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return spans;
+}
+
+/**
  * Check if a match is in the allow list
  */
 function isAllowed(matchedText: string, allowList?: string[]): boolean {
@@ -75,8 +94,14 @@ export function detectEntities(text: string, config: MaskingConfig): EntityMatch
   // Tier 3: Dictionary
   allMatches.push(...detectDictionaryEntities(text, config.entities));
 
+  // Never re-mask an existing placeholder: drop any match overlapping one.
+  const reserved = placeholderSpans(text);
+  const notPlaceholder = reserved.length === 0
+    ? allMatches
+    : allMatches.filter(m => !reserved.some(s => m.start < s.end && m.end > s.start));
+
   // Filter allow-list
-  const filtered = allMatches.filter(m => !isAllowed(m.original, config.allow_list));
+  const filtered = notPlaceholder.filter(m => !isAllowed(m.original, config.allow_list));
 
   // Resolve overlaps
   return resolveOverlaps(filtered);

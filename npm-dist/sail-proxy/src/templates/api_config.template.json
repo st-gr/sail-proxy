@@ -1283,6 +1283,170 @@
         ],
         "supports_prompt_caching": true
       },
+      "anthropic--claude-4.8-opus--deployed": {
+        "anthropic_version": "bedrock-2023-05-31",
+        "inject_beta_features": [],
+        "contextLength": 1048576,
+        "cachePricing": {
+          "cacheReadInputCostPer1K": "0.00037",
+          "cacheCreationInputCostPer1K": "0.00459"
+        },
+        "hooks": {
+          "invoke": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "webSearchPlugin"
+                },
+                "match": [
+                  "tools:hasWebSearch"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "resizeOversizedImages"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "stripCacheControlScope"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "repairToolBlocks"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "removeEmptyAssistantMessages"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "awsBedrockResponseCache"
+                },
+                "match": [
+                  "size:min61kb"
+                ]
+              }
+            }
+          ],
+          "invoke-with-response-stream": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "webSearchPlugin"
+                },
+                "match": [
+                  "tools:hasWebSearch"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "resizeOversizedImages"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "stripCacheControlScope"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "repairToolBlocks"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "removeEmptyAssistantMessages"
+                },
+                "match": [
+                  "header:x-app=cli"
+                ]
+              }
+            },
+            {
+              "request": {
+                "callback": {
+                  "id": "awsBedrockResponseCache"
+                },
+                "match": [
+                  "size:min61kb"
+                ]
+              }
+            }
+          ]
+        },
+        "streamingSupported": true,
+        "subpaths_emulated": [],
+        "subpaths_native": [
+          "invoke",
+          "invoke-with-response-stream",
+          "converse",
+          "converse-stream"
+        ],
+        "supports_prompt_caching": true
+      },
       "amazon--titan-text-express": {
         "streamingSupported": false
       },
@@ -1374,6 +1538,10 @@
         {
           "from": "claude-opus-4-7",
           "to": "anthropic--claude-4.7-opus--deployed"
+        },
+        {
+          "from": "claude-opus-4-8",
+          "to": "anthropic--claude-4.8-opus--deployed"
         }
       ]
     },
@@ -1426,6 +1594,10 @@
         {
           "from": "anthropic.claude-opus-4-7",
           "to": "anthropic--claude-4.7-opus--deployed"
+        },
+        {
+          "from": "anthropic.claude-opus-4-8",
+          "to": "anthropic--claude-4.8-opus--deployed"
         }
       ]
     },
@@ -1496,7 +1668,8 @@
         "anthropic--claude-4.5-opus--deployed": 90,
         "anthropic--claude-4.6-sonnet--deployed": 17,
         "anthropic--claude-4.6-opus--deployed": 90,
-        "anthropic--claude-4.7-opus--deployed": 90
+        "anthropic--claude-4.7-opus--deployed": 90,
+        "anthropic--claude-4.8-opus--deployed": 90
       },
       "subpath_specific_delays": {
         "converse-stream": 25,

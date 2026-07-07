@@ -425,10 +425,26 @@ initializeGatewayService().then(() => {
     logger.info('Gateway Service', '');
     logger.info('Gateway Service', '💡 Press Ctrl+C to gracefully shutdown the service');
   });
-  
+
+  // Fail loudly if the port is taken: otherwise a stale gateway instance keeps serving
+  // requests while this (newer) process dies quietly — old code masquerades as the
+  // current build, which makes debugging almost impossible.
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error('Gateway Service',
+        `FATAL: ${config.host}:${config.port} is already in use — ANOTHER gateway instance is running. ` +
+        `Requests are being served by THAT process (possibly stale code), not this one. ` +
+        `Find it with: lsof -nP -iTCP:${config.port} -sTCP:LISTEN`);
+    } else {
+      logger.error('Gateway Service', 'HTTP server error:',
+        error instanceof Error ? error : new Error(String(error)));
+    }
+    process.exit(1);
+  });
+
   // Store server reference for cleanup
   cleanupResources.server = server;
-  
+
 }).catch((error) => {
   logger.error('Gateway Service', 'Failed to initialize Gateway Service:', 
     error instanceof Error ? error : new Error('Unknown error'));

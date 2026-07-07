@@ -19,6 +19,7 @@
  */
 
 import { Request, Response } from 'express';
+import { getDefaultLogger } from '@libs/logger';
 import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch } from './types';
 import { ReplacementMap } from './replacementMap';
 import { detectEntities } from './detectors';
@@ -101,6 +102,12 @@ function extractResponseText(response: any): string | null {
   if (response?.final_result?.choices?.[0]?.delta?.content) {
     return response.final_result.choices[0].delta.content;
   }
+  // Anthropic native streaming: content_block_delta with text_delta
+  if (response?.type === 'content_block_delta'
+      && response?.delta?.type === 'text_delta'
+      && typeof response.delta.text === 'string') {
+    return response.delta.text;
+  }
   // Anthropic format
   if (response?.content && Array.isArray(response.content)) {
     for (const block of response.content) {
@@ -125,6 +132,10 @@ function setResponseText(response: any, newText: string): void {
     response.final_result.choices[0].message.content = newText;
   } else if (response?.final_result?.choices?.[0]?.delta?.content !== undefined) {
     response.final_result.choices[0].delta.content = newText;
+  } else if (response?.type === 'content_block_delta'
+      && response?.delta?.type === 'text_delta'
+      && response.delta.text !== undefined) {
+    response.delta.text = newText;
   } else if (response?.content && Array.isArray(response.content)) {
     for (const block of response.content) {
       if (block.type === 'text') {
@@ -347,6 +358,26 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     const maskedInputs: string[] = [];
     const messages = req.body.messages || [];
 
+    // Residue guard: the incoming request may contain literal MASKED_* tokens from
+    // earlier turns/sessions. With content-derived (hash) placeholders these resolve
+    // on their own whenever the underlying value is present in this request (the same
+    // value re-mints the identical token). Legacy NUMERIC residue (from the old
+    // counter scheme) can never be re-minted; reserve those numbers so anonymization
+    // counters cannot collide with them, and log the residue for visibility.
+    try {
+      const rawBody = JSON.stringify(req.body);
+      const residue = new Set<string>(rawBody.match(/MASKED_[A-Z_]+_[0-9a-f]+|(?:https?:\/\/)?masked-url-\d+\.invalid/g) || []);
+      if (residue.size > 0) {
+        for (const token of residue) {
+          const m = token.match(/^(MASKED_[A-Z_]+)_(\d+)$/);
+          // Cap the reservation so a digits-only hash id cannot blow up the counters.
+          if (m && m[2].length <= 6) map.reserveMinCount(m[1], parseInt(m[2], 10));
+        }
+        const sample = Array.from(residue).slice(0, 10).join(', ');
+        logger.info(`Request contains ${residue.size} masked token(s) carried in from earlier turns (hash-stable tokens resolve automatically when their value is present): ${sample}${residue.size > 10 ? ', …' : ''}`);
+      }
+    } catch { /* non-fatal: residue guard is best-effort */ }
+
     // Process system messages (Anthropic format)
     if (Array.isArray(req.body.system)) {
       for (let i = 0; i < req.body.system.length; i++) {
@@ -392,6 +423,26 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
             }
           }
         }
+      }
+    }
+
+    // Tell the model to treat placeholder tokens as opaque and copy them verbatim.
+    // A garbled id cannot be unmasked (the value is unrecoverable), so copy fidelity
+    // is part of the design; observed in practice: models occasionally rewrite ids
+    // when reproducing them in generated files unless explicitly instructed not to.
+    if (maskingConfig.method === 'pseudonymization' && map.size > 0) {
+      const copyNote = 'Some values in this conversation are pseudonymized as placeholder tokens of the form '
+        + 'MASKED_<TYPE>_<id>. Treat each token as an opaque identifier: when you refer to a masked value, '
+        + 'copy its token EXACTLY, character for character. Never invent, alter, shorten, or merge token ids. '
+        + 'Masked URLs appear as hosts like https://masked-url-<id>.invalid — you MAY append paths and query '
+        + 'parameters to such a host to form new URLs, but never invent a masked-url host that is not present '
+        + 'in the conversation.';
+      if (Array.isArray(req.body.system)) {
+        req.body.system.push({ type: 'text', text: copyNote });
+      } else if (typeof req.body.system === 'string') {
+        req.body.system = `${req.body.system}\n\n${copyNote}`;
+      } else if (req.body.system === undefined || req.body.system === null) {
+        req.body.system = copyNote;
       }
     }
 
@@ -494,114 +545,271 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
  * directly without going through the after-plugin chain per chunk (e.g., AWS Bedrock
  * native streaming via BedrockStreamParser).
  *
- * Each event is an `event: <name>\ndata: <json>\n\n` block written via a single res.write.
- * We parse, mutate input_json_delta.partial_json and tool_calls.function.arguments deltas
- * through per-block StreamUnmaskBuffer instances, and re-serialize.
+ * The patched write re-frames arbitrary write boundaries into complete SSE blocks
+ * (`[event: <name>\n]data: <json>\n\n`), holding a partial tail across writes, so it
+ * also covers pipelines that pipe multiple or partial events per write (e.g. the
+ * converse-stream direct passthrough). Assistant text (text_delta), tool input
+ * (input_json_delta), and OpenAI tool_calls argument deltas are unmasked through
+ * per-content-block StreamUnmaskBuffer instances; retained fragments are flushed on
+ * content_block_stop / message_stop / finish_reason / res.end.
+ *
+ * Diagnostics: when a completed block still contains MASKED_* placeholders, an error
+ * (token was in the map — a genuine unmask miss) or warning (token unknown — residue
+ * leaked into the conversation by an earlier session) is logged, so leaks are never
+ * silent again.
  */
 function installSseUnmaskInterceptor(req: Request, res: Response, map: ReplacementMap): void {
   if ((res as any).__pseudoSseInterceptorInstalled) return;
+  if (typeof (res as any).write !== 'function' || typeof (res as any).end !== 'function') return;
   (res as any).__pseudoSseInterceptorInstalled = true;
 
-  const toolBuffers = new Map<string, StreamUnmaskBuffer>();
+  // Patch res.json so NON-streaming responses that bypass res.write are still unmasked.
+  // The awsBedrockResponseCache plugin serves non-streaming cache hits via res.status().json()
+  // and returns { stop: true }, which short-circuits the after-handler AND never touches
+  // res.write — so without this, cached placeholders reach the client masked. The cache stores
+  // the masked upstream response (pseudonymization unmasks at the wire, after caching); for an
+  // identical request the placeholder numbers are deterministic, so this request's map resolves
+  // them. Tokens not in the map (residue) are left untouched by unmaskText.
+  const logger = getDefaultLogger();
+  if (typeof (res as any).json === 'function') {
+    const originalJson = (res as any).json.bind(res);
+    (res as any).json = function patchedJson(body: any): Response {
+      try {
+        if (body && typeof body === 'object' && map.reverse.size > 0) {
+          const serialized = JSON.stringify(body);
+          if (serialized.includes('MASKED_')) {
+            const unmasked = unmaskText(serialized, map);
+            if (unmasked !== serialized) {
+              body = JSON.parse(unmasked);
+              logger.debug('Pseudonymization', `Unmasked non-streaming JSON response body (requestId=${(req as any)?.debugRequestId || 'unknown'})`);
+            }
+          }
+        }
+      } catch { /* fall through with original body */ }
+      return originalJson(body);
+    };
+  }
+
+  const requestId = (req as any)?.debugRequestId || 'unknown';
+
+  const buffers = new Map<string, StreamUnmaskBuffer>();
   const getBuf = (key: string): StreamUnmaskBuffer => {
-    let b = toolBuffers.get(key);
-    if (!b) { b = new StreamUnmaskBuffer(map); toolBuffers.set(key, b); }
+    let b = buffers.get(key);
+    if (!b) { b = new StreamUnmaskBuffer(map); buffers.set(key, b); }
     return b;
   };
 
+  // Per-block emitted content, used only for the leak audit below.
+  const emitted = new Map<string, string>();
+  const track = (key: string, s: string): void => {
+    if (s) emitted.set(key, (emitted.get(key) || '') + s);
+  };
+  const auditBlock = (key: string): void => {
+    const content = emitted.get(key);
+    emitted.delete(key);
+    if (!content) return;
+    for (const token of new Set(content.match(/MASKED_[A-Z_]+_[0-9a-f]+|(?:https?:\/\/)?masked-url-\d+\.invalid/g) || [])) {
+      if (map.reverse.has(token)) {
+        logger.error('Pseudonymization', `Unmask miss on streaming block ${key}: ${token} was in the replacement map but reached the client masked (requestId=${requestId})`);
+      } else {
+        logger.warn('Pseudonymization', `Unresolvable masked residue in streaming block ${key}: ${token} is not in this request's map — its value is absent from this request (leaked by an earlier session) (requestId=${requestId})`);
+      }
+    }
+  };
+
   const originalWrite = res.write.bind(res);
+  const originalEnd = res.end.bind(res);
+
+  // Partial SSE block carried across write() calls (re-framing buffer).
+  let pending = '';
+
+  // Process one complete SSE block; returns the (possibly rewritten) block.
+  const processBlock = (block: string): string => {
+    // Two SSE formats are emitted by this gateway:
+    //   1) "event: <name>\ndata: <json>\n\n" (writeEventStream)
+    //   2) "data: <json>\n\n" (writeChunk — used by BedrockStreamParser)
+    let eventName: string | null = null;
+    let jsonStr: string | null = null;
+    const m1 = block.match(/^event: ([^\n]+)\ndata: (.+)\n\n$/s);
+    if (m1) {
+      eventName = m1[1];
+      jsonStr = m1[2];
+    } else {
+      const m2 = block.match(/^data: (.+)\n\n$/s);
+      if (m2) {
+        jsonStr = m2[1];
+      }
+    }
+    if (!jsonStr) return block;
+
+    let event: any;
+    try { event = JSON.parse(jsonStr); } catch { return block; }
+
+    let modified = false;
+    let syntheticPrefix = '';
+
+    // Serialize a synthetic delta in the same format as the surrounding stream,
+    // emitted BEFORE the current event for correct ordering.
+    const synth = (idx: number, delta: any): string => {
+      const ev = { type: 'content_block_delta', index: idx, delta };
+      const prefix = eventName ? 'event: content_block_delta\n' : '';
+      return `${prefix}data: ${JSON.stringify(ev)}\n\n`;
+    };
+
+    // Anthropic content_block_delta with text_delta (assistant prose)
+    if (event.type === 'content_block_delta'
+        && event.delta?.type === 'text_delta'
+        && typeof event.delta.text === 'string') {
+      const idx = event.index ?? 0;
+      const buf = getBuf(`text:${idx}`);
+      event.delta.text = buf.append(event.delta.text);
+      track(`text:${idx}`, event.delta.text);
+      modified = true;
+    }
+
+    // Anthropic content_block_delta with input_json_delta (tool call input)
+    if (event.type === 'content_block_delta'
+        && event.delta?.type === 'input_json_delta'
+        && typeof event.delta.partial_json === 'string') {
+      const idx = event.index ?? 0;
+      const buf = getBuf(`tool_use:${idx}`);
+      event.delta.partial_json = buf.append(event.delta.partial_json);
+      track(`tool_use:${idx}`, event.delta.partial_json);
+      modified = true;
+    }
+
+    // Anthropic content_block_stop — flush retained suffixes of this block's buffers
+    // as synthetic deltas emitted before the stop, then audit the block for leaks.
+    if (event.type === 'content_block_stop') {
+      const idx = event.index ?? 0;
+      const textBuf = buffers.get(`text:${idx}`);
+      if (textBuf) {
+        const remainder = textBuf.flush();
+        if (remainder) {
+          syntheticPrefix += synth(idx, { type: 'text_delta', text: remainder });
+          track(`text:${idx}`, remainder);
+        }
+        buffers.delete(`text:${idx}`);
+      }
+      const toolBuf = buffers.get(`tool_use:${idx}`);
+      if (toolBuf) {
+        const remainder = toolBuf.flush();
+        if (remainder) {
+          syntheticPrefix += synth(idx, { type: 'input_json_delta', partial_json: remainder });
+          track(`tool_use:${idx}`, remainder);
+        }
+        buffers.delete(`tool_use:${idx}`);
+      }
+      auditBlock(`text:${idx}`);
+      auditBlock(`tool_use:${idx}`);
+    }
+
+    // Anthropic message_stop — safety flush of ALL remaining buffers (Anthropic streams
+    // have no choices[].finish_reason, so anything not flushed by a stop lands here).
+    if (event.type === 'message_stop') {
+      for (const [key, buf] of Array.from(buffers.entries())) {
+        const remainder = buf.flush();
+        if (remainder) {
+          const idx = parseInt(key.split(':')[1], 10) || 0;
+          const deltaType = key.startsWith('text:') ? 'text_delta' : 'input_json_delta';
+          syntheticPrefix += synth(idx, deltaType === 'text_delta'
+            ? { type: 'text_delta', text: remainder }
+            : { type: 'input_json_delta', partial_json: remainder });
+          track(key, remainder);
+        }
+        buffers.delete(key);
+      }
+      for (const key of Array.from(emitted.keys())) auditBlock(key);
+    }
+
+    // OpenAI streaming via SSE (less common with this controller, but handle just in case)
+    if (Array.isArray(event?.choices?.[0]?.delta?.tool_calls)) {
+      const finishReason = event?.choices?.[0]?.finish_reason;
+      for (const call of event.choices[0].delta.tool_calls) {
+        if (typeof call?.function?.arguments === 'string') {
+          const idx = call.index ?? 0;
+          const key = `oai_tool_call:${idx}`;
+          const buf = getBuf(key);
+          if (finishReason) {
+            call.function.arguments = buf.append(call.function.arguments) + buf.flush();
+            track(key, call.function.arguments);
+            buffers.delete(key);
+            auditBlock(key);
+          } else {
+            call.function.arguments = buf.append(call.function.arguments);
+            track(key, call.function.arguments);
+          }
+          modified = true;
+        }
+      }
+    }
+
+    if (modified) {
+      const newStr = eventName
+        ? `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`
+        : `data: ${JSON.stringify(event)}\n\n`;
+      return syntheticPrefix + newStr;
+    }
+    return syntheticPrefix + block;
+  };
+
+  // Split accumulated data into complete SSE blocks, keep the partial tail pending.
+  const processIncoming = (str: string): string => {
+    pending += str;
+    let out = '';
+    let sep: number;
+    while ((sep = pending.indexOf('\n\n')) !== -1) {
+      const block = pending.slice(0, sep + 2);
+      pending = pending.slice(sep + 2);
+      out += processBlock(block);
+    }
+    return out;
+  };
 
   // Patch res.write. The Express Response.write signature has overloads; we accept any.
   (res as any).write = function patchedWrite(chunk: any, ...args: any[]): boolean {
     try {
       const str = typeof chunk === 'string' ? chunk : (Buffer.isBuffer(chunk) ? chunk.toString('utf8') : null);
-      if (!str) return originalWrite(chunk, ...args);
+      if (str === null) return originalWrite(chunk, ...args);
 
-      // Two SSE formats are emitted by this gateway:
-      //   1) "event: <name>\ndata: <json>\n\n" (writeEventStream)
-      //   2) "data: <json>\n\n" (writeChunk — used by BedrockStreamParser)
-      let eventName: string | null = null;
-      let jsonStr: string | null = null;
-      const m1 = str.match(/^event: ([^\n]+)\ndata: (.+)\n\n$/s);
-      if (m1) {
-        eventName = m1[1];
-        jsonStr = m1[2];
-      } else {
-        const m2 = str.match(/^data: (.+)\n\n$/s);
-        if (m2) {
-          jsonStr = m2[1];
-        }
+      const out = processIncoming(str);
+      // Strip a callback argument if present — it must fire even when we buffer.
+      const cb = typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
+      if (out) {
+        const result = originalWrite(out, ...args);
+        if (cb) cb();
+        return result;
       }
-      if (!jsonStr) return originalWrite(chunk, ...args);
-
-      let event: any;
-      try { event = JSON.parse(jsonStr); } catch { return originalWrite(chunk, ...args); }
-
-      let modified = false;
-      const extraWrites: string[] = [];
-
-      // Anthropic content_block_delta with input_json_delta
-      if (event.type === 'content_block_delta'
-          && event.delta?.type === 'input_json_delta'
-          && typeof event.delta.partial_json === 'string') {
-        const idx = event.index ?? 0;
-        const buf = getBuf(`tool_use:${idx}`);
-        event.delta.partial_json = buf.append(event.delta.partial_json);
-        modified = true;
-      }
-
-      // Anthropic content_block_stop — flush any retained suffix as a synthetic delta
-      // emitted before the stop.
-      if (event.type === 'content_block_stop') {
-        const idx = event.index ?? 0;
-        const buf = toolBuffers.get(`tool_use:${idx}`);
-        if (buf) {
-          const remainder = buf.flush();
-          if (remainder) {
-            const synthetic = {
-              type: 'content_block_delta',
-              index: idx,
-              delta: { type: 'input_json_delta', partial_json: remainder },
-            };
-            // Match the source format (event: prefix only when present in the original write)
-            const prefix = eventName ? `event: content_block_delta\n` : '';
-            extraWrites.push(`${prefix}data: ${JSON.stringify(synthetic)}\n\n`);
-          }
-          toolBuffers.delete(`tool_use:${idx}`);
-        }
-      }
-
-      // OpenAI streaming via SSE (less common with this controller, but handle just in case)
-      if (Array.isArray(event?.choices?.[0]?.delta?.tool_calls)) {
-        const finishReason = event?.choices?.[0]?.finish_reason;
-        for (const call of event.choices[0].delta.tool_calls) {
-          if (typeof call?.function?.arguments === 'string') {
-            const idx = call.index ?? 0;
-            const buf = getBuf(`oai_tool_call:${idx}`);
-            if (finishReason) {
-              call.function.arguments = buf.append(call.function.arguments) + buf.flush();
-              toolBuffers.delete(`oai_tool_call:${idx}`);
-            } else {
-              call.function.arguments = buf.append(call.function.arguments);
-            }
-            modified = true;
-          }
-        }
-      }
-
-      // Emit any synthetic events first (they come before the original event for correct ordering)
-      for (const extra of extraWrites) originalWrite(extra);
-
-      if (modified) {
-        const newStr = eventName
-          ? `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`
-          : `data: ${JSON.stringify(event)}\n\n`;
-        return originalWrite(newStr, ...args);
-      }
-      return originalWrite(chunk, ...args);
+      // Entire chunk retained as a partial block — report success, emit on next write/end.
+      if (cb) cb();
+      return true;
     } catch {
       return originalWrite(chunk, ...args);
     }
+  };
+
+  // Patch res.end so a trailing partial block (and any retained buffer content) is not lost.
+  (res as any).end = function patchedEnd(chunk?: any, ...args: any[]): Response {
+    try {
+      if (chunk && (typeof chunk === 'string' || Buffer.isBuffer(chunk))) {
+        const out = processIncoming(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+        if (out) originalWrite(out);
+        chunk = undefined;
+      }
+      if (pending) {
+        // Incomplete final block — pass through as-is (best effort).
+        originalWrite(pending);
+        pending = '';
+      }
+      // Streams that ended without content_block_stop/message_stop: audit what remains.
+      for (const [key, buf] of Array.from(buffers.entries())) {
+        const remainder = buf.flush();
+        if (remainder) track(key, remainder);
+        buffers.delete(key);
+      }
+      for (const key of Array.from(emitted.keys())) auditBlock(key);
+    } catch { /* fall through to originalEnd */ }
+    return chunk !== undefined ? originalEnd(chunk, ...args) : originalEnd(...args);
   };
 }
 
@@ -710,13 +918,27 @@ function handleStreamingChunk(
     const idx = chunk.index ?? 0;
     const key = `tool_use:${idx}`;
     const buf = toolBuffers.get(key);
+    let toolFlushed = false;
     if (buf) {
       const remainder = buf.flush();
       if (remainder) {
         if (!chunk.delta) chunk.delta = { type: 'input_json_delta', partial_json: '' };
         chunk.delta.partial_json = (chunk.delta.partial_json || '') + remainder;
+        toolFlushed = true;
       }
       toolBuffers.delete(key);
+    }
+    // Text blocks: Anthropic streams never set choices[].finish_reason, so the shared
+    // text buffer's retained tail would otherwise be stranded. Flush it here, unless
+    // this stop already carries a tool remainder (don't mix delta types).
+    if (!toolFlushed) {
+      const textRemainder = buffer.flush();
+      if (textRemainder) {
+        if (!chunk.delta) chunk.delta = { type: 'text_delta', text: '' };
+        if (chunk.delta.type === 'text_delta') {
+          chunk.delta.text = (chunk.delta.text || '') + textRemainder;
+        }
+      }
     }
   }
 

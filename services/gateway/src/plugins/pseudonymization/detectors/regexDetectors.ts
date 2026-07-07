@@ -14,6 +14,46 @@ interface DetectorDef {
   validate?: (match: string) => boolean;
 }
 
+/**
+ * Decide whether a URL is worth masking. We SKIP:
+ *  - loopback / private / link-local hosts (localhost, 127.x, ::1, 10.x,
+ *    192.168.x, 172.16-31.x, *.local, *.internal) — these are dev/infra
+ *    endpoints with ~no privacy value, and masking them breaks agent edit
+ *    workflows (the model must reproduce an opaque token to match file text);
+ *  - template / non-literal URLs containing <...>, {...}, ${...} or an
+ *    unresolved-looking host — masking these fragments one logical endpoint
+ *    into many bogus tokens.
+ * Real external hosts still get masked.
+ */
+function isMaskableUrl(fullMatch: string): boolean {
+  // Template markers anywhere in the matched URL → not a real value.
+  if (/[<>{}]|\$\{/.test(fullMatch)) return false;
+
+  // Trailing colon = incomplete authority, i.e. the port was a template variable
+  // (`http://host:{PORT}` matches only up to `http://host:` since `{` is excluded).
+  if (/:$/.test(fullMatch)) return false;
+
+  const m = fullMatch.match(/^(?:(?:https?|wss?|ftps?):\/\/)?([^/?#]+)/);
+  const authority = (m ? m[1] : fullMatch).toLowerCase();
+
+  // Authority must be a well-formed host[:port] (or [ipv6][:port]). Anything else —
+  // e.g. a leftover `http://host:$` from `${PORT}`, or a bare scheme — is a template
+  // fragment, not a real endpoint.
+  if (!/^(?:\[[0-9a-f:]+\]|[a-z0-9._-]+)(?::\d+)?$/.test(authority)) return false;
+
+  const host = authority.replace(/:\d*$/, '').replace(/^\[|\]$/g, '');
+
+  if (host === '' || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
+  if (host === '::1' || host.startsWith('127.') || host.startsWith('0.')) return false;
+  if (host.startsWith('10.') || host.startsWith('192.168.')) return false;
+  // 172.16.0.0 – 172.31.255.255
+  const m172 = host.match(/^172\.(\d{1,3})\./);
+  if (m172) { const o = Number(m172[1]); if (o >= 16 && o <= 31) return false; }
+  // 169.254.0.0/16 link-local
+  if (host.startsWith('169.254.')) return false;
+  return true;
+}
+
 // Luhn algorithm for credit card validation
 function luhnCheck(digits: string): boolean {
   const nums = digits.split('').map(Number);
@@ -94,7 +134,7 @@ const DETECTORS: DetectorDef[] = [
   },
   {
     type: 'profile-url',
-    pattern: /(?:https?:\/\/|www\.)[^\s<>"{}|\\^`\[\]]+/g,
+    pattern: /(?:(?:https?|wss?|ftps?):\/\/|www\.)[^\s<>"{}|\\^`\[\]]+/g,
   },
   {
     type: 'profile-nationalid',
@@ -124,6 +164,12 @@ const DETECTORS: DetectorDef[] = [
   {
     type: 'profile-username-password',
     pattern: /(?:user(?:name)?|login|pass(?:word|wd)?|pwd|secret|token|api[_\-]?key)\s*[:=]\s*\S+/gi,
+  },
+  {
+    type: 'profile-username-password',
+    // JSON-style credentials: "token": "value" — the quoted key defeats the pattern
+    // above. Capture ONLY the value so masking preserves the JSON structure.
+    pattern: /"(?:user(?:name)?|login|pass(?:word|wd)?|pwd|secret|token|api[_\-]?key|access[_\-]?token|auth[_\-]?token|bearer)"\s*:\s*"([^"]+)"/gi,
   },
   {
     type: 'profile-address',
@@ -162,9 +208,26 @@ export function detectRegexEntities(text: string, enabledEntities: EntityConfig[
       const capturedGroup = match[1]; // Some patterns use capture groups
 
       // Use captured group if available (for context-anchored patterns)
-      const entityText = capturedGroup || fullMatch;
+      let entityText = capturedGroup || fullMatch;
       const start = capturedGroup ? match.index + fullMatch.indexOf(capturedGroup) : match.index;
-      const end = start + entityText.length;
+      let end = start + entityText.length;
+
+      // URLs: mask only the ORIGIN (scheme://host[:port]), never the path/query.
+      // The placeholder is URL-shaped (see ReplacementMap), so the model can still
+      // compose variants (append paths, add query params) and the composed URL
+      // remains unmaskable — masking the full URL made composition impossible and
+      // pushed models into fabricating placeholder ids.
+      if (detector.type === 'profile-url') {
+        // Skip loopback/private/template URLs entirely (see isMaskableUrl).
+        if (!isMaskableUrl(entityText)) {
+          continue;
+        }
+        const originMatch = entityText.match(/^(?:(?:https?|wss?|ftps?):\/\/)?[^/?#]+/);
+        if (originMatch) {
+          entityText = originMatch[0];
+          end = start + entityText.length;
+        }
+      }
 
       // Run post-detection validation if defined
       if (detector.validate && !detector.validate(entityText)) {

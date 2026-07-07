@@ -152,9 +152,13 @@ class BedrockStreamParser {
       }
       
       // Check if this is an SSE data chunk
-      const isSseFormat = chunkStr.startsWith('data:') || 
-                          chunkStr.includes('\ndata:') || 
-                          chunkStr.includes('event:') || 
+      // TODO: this heuristic misroutes network chunks that split an SSE event mid-JSON
+      // (a fragment not starting with 'data:'/'event:' is treated as direct data and can
+      // emit corrupted events). parser.feed() below already reassembles across chunk
+      // boundaries — partial SSE fragments should be fed to it rather than handleData.
+      const isSseFormat = chunkStr.startsWith('data:') ||
+                          chunkStr.includes('\ndata:') ||
+                          chunkStr.includes('event:') ||
                           chunkStr.startsWith(':');
       
       if (!isSseFormat) {

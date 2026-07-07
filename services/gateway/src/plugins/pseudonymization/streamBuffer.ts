@@ -42,8 +42,17 @@ export class StreamUnmaskBuffer {
         this.maxPrefixLength = p.length;
       }
     }
-    // Add some buffer for the digits after the prefix
-    this.maxPrefixLength += 5; // e.g., "_123" at most
+    // Add room for the id after the prefix: hash-stable ids are 8 digits
+    // (up to a few more under collision probing); legacy numeric ids are shorter.
+    this.maxPrefixLength += 16;
+
+    // Retention must also cover the longest exact key (URL-shaped placeholders like
+    // "https://masked-url-12345678.invalid" carry no MASKED_ prefix family).
+    for (const placeholder of map.reverse.keys()) {
+      if (placeholder.length > this.maxPrefixLength) {
+        this.maxPrefixLength = placeholder.length;
+      }
+    }
 
     // Build regex for complete placeholders
     const placeholders = Array.from(map.reverse.keys())
@@ -63,16 +72,22 @@ export class StreamUnmaskBuffer {
   append(text: string): string {
     this.buffer += text;
 
-    // Unmask any complete placeholders in buffer
+    // Find the safe flush point on the RAW buffer first, then unmask only the
+    // flushed slice. Replacing before choosing the flush point corrupted longer
+    // placeholders split at a digit boundary: with both MASKED_PERSON_11 and
+    // MASKED_PERSON_113 in the map, a chunk ending in '…MASKED_PERSON_11'
+    // followed by '3…' must NOT be eagerly replaced as _11 plus a stray '3'.
+    // couldBePartialPlaceholder retains a complete placeholder that is a strict
+    // prefix of a longer one, so the ambiguous tail stays buffered until the
+    // next chunk (or flush) disambiguates it.
+    const safePoint = this.findSafeFlushPoint();
+    let flushed = this.buffer.slice(0, safePoint);
+    this.buffer = this.buffer.slice(safePoint);
+
     this.placeholderRegex.lastIndex = 0;
-    this.buffer = this.buffer.replace(this.placeholderRegex, (match) =>
+    flushed = flushed.replace(this.placeholderRegex, (match) =>
       this.reverseMap.get(match) || match
     );
-
-    // Find safe flush point
-    const safePoint = this.findSafeFlushPoint();
-    const flushed = this.buffer.slice(0, safePoint);
-    this.buffer = this.buffer.slice(safePoint);
 
     return flushed;
   }
@@ -95,7 +110,11 @@ export class StreamUnmaskBuffer {
    * Any suffix that could be the beginning of a known placeholder must be retained.
    */
   private findSafeFlushPoint(): number {
-    if (this.knownPrefixes.length === 0) return this.buffer.length;
+    // No placeholders at all → nothing can ever match, flush everything.
+    // (knownPrefixes alone is not sufficient: URL-shaped placeholders like
+    // "https://masked-url-<id>.invalid" have no MASKED_*_ prefix family but
+    // still require suffix retention via the exact-key check below.)
+    if (this.knownPrefixes.length === 0 && this.reverseMap.size === 0) return this.buffer.length;
 
     const maxCheck = Math.min(this.buffer.length, this.maxPrefixLength);
 

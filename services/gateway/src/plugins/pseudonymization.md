@@ -4,7 +4,18 @@
 
 The pseudonymization plugin intercepts LLM API calls, detects Personally Identifiable Information (PII) in message content, replaces it with pseudonymized placeholders before forwarding to the LLM, and unmasks placeholders in the response before returning to the caller.
 
-This protects sensitive data from being exposed to third-party LLM providers while maintaining conversational coherence (the LLM sees consistent placeholders like `MASKED_PERSON_1` across messages).
+This protects sensitive data from being exposed to third-party LLM providers while maintaining conversational coherence (the LLM sees consistent placeholders like `MASKED_PERSON_48213307` for a given value across messages **and across requests**).
+
+### Placeholder format
+
+Pseudonymization placeholders are **content-derived and stable**: the id is an 8-digit decimal derived from `SHA-256(value)`, so the *same value maps to the same token in every request* (e.g. `MASKED_PERSON_48213307`). This is central to correctness:
+
+- **Residue resolves.** A token echoed from an earlier turn/file re-mints identically as long as its value is present in the current request, so it unmasks instead of leaking.
+- **The response cache is safe.** A masked response cached for an equivalent request replays correctly — its tokens are reproducible from content alone.
+- **Copy fidelity.** Decimal (not hex) ids because models reproduce digit runs far more reliably; a garbled id is unrecoverable. The plugin also injects a short system instruction telling the model to copy placeholder tokens verbatim. On an in-request id collision the id widens deterministically (8 → 10 → 12 digits).
+- **Anonymization** keeps per-request incrementing counters (`MASKED_PERSON_1`) — a content-derived token would make the same entity linkable across requests, defeating anonymization.
+
+URLs use a **URL-shaped** placeholder instead of a bare token (see the URL note under Detection).
 
 ## Problem Statement
 
@@ -24,25 +35,33 @@ A gateway plugin that:
 Client Request (with masking config)
     |
     v
-[BEFORE handler] ─── Detect PII ─── Replace with placeholders ─── Store map on req
+[BEFORE handler] ── Detect PII ── Replace with placeholders ── Store map on req
+                                                              ── Install res.write / res.json unmask interceptor
     |
     v
 Upstream LLM (sees only masked content)
     |
     v
-[AFTER handler] ─── Scan for placeholders ─── Unmask using reverse map ─── Attach masking_info
+[AFTER handler / wire interceptor] ── Unmask via reverse map ── Attach masking_info
     |
     v
 Client Response (original PII restored, + diagnostic info)
 ```
 
+Unmasking happens on **every** response path:
+- **Non-streaming (after handler):** unmask the full body, including tool-call inputs.
+- **Streaming wire interceptor (`res.write`):** unmask assistant text (`text_delta`) *and* tool input (`input_json_delta`) as SSE events are written; required for pipelines (e.g. AWS Bedrock native streaming) where the after handler does not fire per chunk.
+- **Non-streaming cache hits (`res.json`):** the response cache serves some hits via `res.json` with `{ stop: true }`, bypassing both `res.write` and the after handler — so the interceptor also patches `res.json` to unmask those bodies.
+
+A **leak audit** logs any placeholder that still reaches the client: an error if it was in the map (a genuine unmask miss) or a warning if it was unresolvable residue.
+
 ### Streaming Flow
 
-For `stream: true` requests, the AFTER handler fires per-chunk. A `StreamUnmaskBuffer` accumulates text that might be a partial placeholder, only flushing safe text to the client:
+The `StreamUnmaskBuffer` accumulates output that might be a partial placeholder and only flushes text that can no longer be the start of a token. It computes the safe flush point *before* replacing, so a longer token split at a boundary is never corrupted by a shorter prefix.
 
 ```
-Chunks: ["I recommend ", "MASKED_", "PERSON_1", " call back"]
-Client: ["I recommend ", "", "John Smith", " call back"]
+Chunks: ["I recommend ", "MASKED_", "PERSON_48213", "307", " call back"]
+Client: ["I recommend ", "",       "",             "John Smith", " call back"]
 ```
 
 ## Detection Pipeline (4 Tiers)
@@ -56,22 +75,28 @@ Client: ["I recommend ", "", "John Smith", " call back"]
 
 **Overlap resolution**: When detections overlap, higher priority wins. Within same tier, longest match wins.
 
+**Never re-masks a placeholder**: any span already occupied by an existing placeholder (`MASKED_*_<id>` or a `masked-url-<id>.invalid` URL) is excluded from detection, preventing a double-masking loop where a placeholder gets masked again into a new, unresolvable token.
+
+**URL handling**: URLs mask **origin only** (`scheme://host[:port]`), never the path/query, using a URL-shaped placeholder like `http://masked-url-48213307.invalid`. This lets the model compose new URLs from a masked host (append paths / query params) while the composed URL still unmasks; a scheme-less alias also covers model-initiated scheme switches (e.g. `http` → `wss`). `ws`/`wss`/`ftp(s)` are recognized. URLs whose host is **loopback / private / link-local** (`localhost`, `127.x`, `10.x`, `192.168.x`, `172.16–31.x`, `169.254.x`, `::1`, `*.local`, `*.internal`) or that are **templates** (`<...>`, `{...}`, `${...}`, or a malformed authority) are **not masked** — they carry no privacy value and masking them breaks edit-by-match workflows. `.invalid` is an RFC 2606 reserved TLD, so an unresolved pseudo-URL can never route traffic.
+
+**JSON credentials**: `"token": "..."`, `"password": "..."`, `"api_key": "..."`, etc. are detected with the quoted value captured only (masking preserves the surrounding JSON structure).
+
 ## Modes
 
 ### Pseudonymization (default)
-- Entities get unique IDs: `MASKED_PERSON_1`, `MASKED_PERSON_2`
+- Content-derived stable IDs: `MASKED_PERSON_48213307` (same value → same token in every request)
 - Response is unmasked (placeholders replaced with originals)
-- Same entity always gets the same placeholder within a request (idempotent)
+- Same value always gets the same placeholder (idempotent within a request, stable across requests)
 
 ### Anonymization
-- Entities get unique IDs: `MASKED_PERSON_1`, `MASKED_PERSON_2` (LLM can distinguish them)
+- Per-request incrementing IDs: `MASKED_PERSON_1`, `MASKED_PERSON_2` (LLM can distinguish them; not linkable across requests)
 - Response is NOT unmasked (placeholders remain — irreversible)
 - No reverse map is maintained
 
 ## Replacement Strategies
 
 ### Constant (default)
-Replaces with `{PREFIX}_{N}`: `MASKED_PERSON_1`, `MASKED_EMAIL_1`
+Replaces with a stable, content-derived placeholder `{PREFIX}_{id}` (pseudonymization) or `{PREFIX}_{N}` (anonymization): `MASKED_PERSON_48213307`, `MASKED_EMAIL_11924883`. URL origins use the URL-shaped `http://masked-url-{id}.invalid` form.
 
 ### Fabricated Data
 Replaces with realistic fake values: `Maria Garcia`, `maria456@example.com`
@@ -141,7 +166,7 @@ For fine-grained control over entity types, replacement strategy, allow-list, an
 | `profile-ssn` | Regex (US SSN, Canada SIN) | `MASKED_SOCIAL_SECURITY_NUMBER` |
 | `profile-credit-card-number` | Regex + Luhn validation | `MASKED_CREDIT_CARD_NUMBER` |
 | `profile-iban` | Regex + mod-97 validation | `MASKED_IBAN` |
-| `profile-url` | Regex | `MASKED_URL` |
+| `profile-url` | Regex (origin only; skips loopback/private/template) | `http://masked-url-<id>.invalid` |
 | `profile-address` | Regex (US street patterns) | `MASKED_ADDRESS` |
 | `profile-username-password` | Regex | `MASKED_USER_PASSWORD` |
 | `profile-nationalid` | Regex (UK NI, Mexico CURP) | `MASKED_NATIONAL_ID` |
@@ -238,10 +263,10 @@ The response includes a `masking_info` diagnostic field:
 {
   "content": [{"type": "text", "text": "John Smith lives at 123 Main St..."}],
   "masking_info": {
-    "masked_input": "MASKED_PERSON_1 lives at MASKED_ADDRESS_1...",
+    "masked_input": "MASKED_PERSON_48213307 lives at MASKED_ADDRESS_71620094...",
     "entities_detected": [
-      {"placeholder": "MASKED_PERSON_1", "type": "profile-person", "start": 0, "end": 10},
-      {"placeholder": "MASKED_ADDRESS_1", "type": "profile-address", "start": 20, "end": 31}
+      {"placeholder": "MASKED_PERSON_48213307", "type": "profile-person", "start": 0, "end": 10},
+      {"placeholder": "MASKED_ADDRESS_71620094", "type": "profile-address", "start": 20, "end": 31}
     ],
     "method": "pseudonymization"
   }
@@ -352,4 +377,8 @@ tail -f logs/gateway.log | grep -i pseudonym
 - NER is English-only (wink-eng-lite-web-model)
 - Address detection uses US street patterns; international addresses may need custom regex
 - Dictionary matching is case-insensitive but may produce false positives for short common words
-- The proxy is stateless per-request; multi-turn conversations re-mask each time
+- The proxy is stateless per-request; multi-turn conversations re-mask each time. Content-derived tokens keep this correct — the same value re-masks to the same token — but a token whose **value is no longer present** in the request (e.g. context truncated/compacted, or a token echoed from a session that used an older token scheme) cannot be unmasked; it is left as-is and flagged by the leak audit.
+- Unmasking depends on the model reproducing placeholder tokens verbatim. This is mitigated (copy-friendly decimal ids, a verbatim-copy system instruction, composable URL placeholders), but a badly garbled id is unrecoverable.
+- Loopback/private/template URLs are intentionally **not** masked (see URL handling).
+- Pseudonymization tokens are stable per value, which makes the same entity **linkable across requests** by anyone observing the masked traffic. This is acceptable (and required) for reversible pseudonymization; use anonymization mode where unlinkability matters.
+- The gateway fails fast on `EADDRINUSE`, so a stale instance cannot silently serve old plugin code (a past source of "unmasking looks broken" reports).
