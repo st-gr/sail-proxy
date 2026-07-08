@@ -10,6 +10,7 @@ import { getDefaultLogger, createSafePreview, createHeadersPreview } from '@libs
 const logger = getDefaultLogger();
 import rateLimitManager from './rateLimitManager';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from '../utils/betaFeatureFilter';
 
 // Type definitions
 interface ModelDetails {
@@ -146,42 +147,42 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
     if (processedRequestBody.anthropic_version === undefined && isInvokeSubpath) {
       processedRequestBody.anthropic_version = modelDetails.anthropic_version;
     }
-    // Add anthropic_beta from header if present (for beta features like extended thinking)
-    const anthropicBetaHeader = options.headers['anthropic-beta'];
-    if (anthropicBetaHeader && isInvokeSubpath) {
-      // Bedrock expects anthropic_beta as an array of strings
-      let betaFeatures = typeof anthropicBetaHeader === 'string'
-        ? anthropicBetaHeader.split(',').map(s => s.trim())
-        : Array.isArray(anthropicBetaHeader) ? anthropicBetaHeader : [];
+    // Assemble anthropic_beta for invoke subpaths from all sources, then filter
+    // through the configured allowlist (supported_beta_headers) and denylist
+    // (excluded_beta_headers) so no unsupported flag can reach SAP AI Core —
+    // including flags injected via inject_beta_features or supplied in the body.
+    if (isInvokeSubpath) {
+      const headerFeatures = parseAnthropicBetaHeader(options.headers['anthropic-beta']);
+      // Header takes precedence over a body-supplied anthropic_beta (legacy behavior);
+      // body flags are now filtered too instead of passing through untouched.
+      const bodyFeatures = headerFeatures.length === 0 && Array.isArray(processedRequestBody.anthropic_beta)
+        ? processedRequestBody.anthropic_beta.map(String)
+        : [];
+      const injectedFeatures = Array.isArray(modelDetails.inject_beta_features)
+        ? modelDetails.inject_beta_features.map(String)
+        : [];
 
-      // Filter out unsupported beta headers based on configuration
-      const excludedBetaHeaders = configService.getExcludedBetaHeaders();
-      if (excludedBetaHeaders.length > 0) {
-        const originalCount = betaFeatures.length;
-        betaFeatures = betaFeatures.filter(feature => !excludedBetaHeaders.includes(feature));
+      const candidates = mergeBetaFeatures(headerFeatures, bodyFeatures, injectedFeatures);
+      const filterOptions = {
+        supported: configService.getSupportedBetaHeaders(),
+        excluded: configService.getExcludedBetaHeaders()
+      };
+      const betaFeatures = filterBetaFeatures(candidates, filterOptions);
 
-        if (betaFeatures.length !== originalCount) {
-          const filtered = originalCount - betaFeatures.length;
-          logger.debug('AwsBedrockService', `Filtered ${filtered} unsupported beta feature(s): ${excludedBetaHeaders.filter(h => !betaFeatures.includes(h)).join(', ')}`);
-        }
+      const dropped = candidates.filter(feature => !betaFeatures.includes(feature));
+      if (dropped.length > 0) {
+        logger.debug('AwsBedrockService', `Filtered ${dropped.length} unsupported beta feature(s): ${dropped.join(', ')}`);
+      }
+      if (injectedFeatures.length > 0) {
+        logger.debug('AwsBedrockService', `Injected model-specific beta features: ${injectedFeatures.join(', ')}`);
       }
 
       if (betaFeatures.length > 0) {
         processedRequestBody.anthropic_beta = betaFeatures;
         logger.debug('AwsBedrockService', `Adding anthropic_beta features: ${betaFeatures.join(', ')}`);
+      } else {
+        delete processedRequestBody.anthropic_beta;
       }
-    }
-    // Inject model-specific beta features from configuration (e.g., context-1m for Opus/Sonnet 4.6)
-    if (isInvokeSubpath && modelDetails.inject_beta_features && Array.isArray(modelDetails.inject_beta_features)) {
-      if (!processedRequestBody.anthropic_beta) {
-        processedRequestBody.anthropic_beta = [];
-      }
-      for (const feature of modelDetails.inject_beta_features) {
-        if (!processedRequestBody.anthropic_beta.includes(feature)) {
-          processedRequestBody.anthropic_beta.push(feature);
-        }
-      }
-      logger.debug('AwsBedrockService', `Injected model-specific beta features: ${modelDetails.inject_beta_features.join(', ')}`);
     }
     if (isInvokeSubpath && isNativeSubpath) {
       // Check if model explicitly disables prompt caching - if so, filter out cache_control parameters
