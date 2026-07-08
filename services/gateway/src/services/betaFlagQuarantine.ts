@@ -15,10 +15,6 @@ const logger = getDefaultLogger();
 
 const quarantinedByModel = new Map<string, Set<string>>();
 
-// Matches Anthropic beta flag tokens (name + date suffix) inside an error
-// body, e.g. "claude-code-20250219" or "context-1m-2025-08-07".
-const FLAG_PATTERN = /[a-z0-9][a-z0-9-]*-20\d{2}(?:-\d{2}){0,2}/g;
-
 export function getQuarantinedFlags(modelId: string): string[] {
   return Array.from(quarantinedByModel.get(modelId) ?? []);
 }
@@ -68,9 +64,9 @@ export function resolveRejectedFlags(errorData: any, sentFlags: string[]): strin
   if (sentFlags.length === 0) {
     return [];
   }
-  const named = (serializeErrorData(errorData).match(FLAG_PATTERN) ?? [])
-    .filter(flag => sentFlags.includes(flag));
-  return named.length > 0 ? Array.from(new Set(named)) : [...sentFlags];
+  const serialized = serializeErrorData(errorData);
+  const named = sentFlags.filter(flag => serialized.includes(flag));
+  return named.length > 0 ? named : [...sentFlags];
 }
 
 /**

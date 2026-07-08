@@ -64,6 +64,24 @@ describe('betaFlagQuarantine', () => {
     expect(resolveRejectedFlags(BEDROCK_ERROR, sent)).toEqual(sent);
   });
 
+  it('quarantines only the named compact-date flag (e.g. claude-code-20250219)', () => {
+    const err = {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'Unexpected value(s) `claude-code-20250219` for the `anthropic-beta` header.' },
+    };
+    const sent = ['claude-code-20250219', 'effort-2025-11-24'];
+    expect(resolveRejectedFlags(err, sent)).toEqual(['claude-code-20250219']);
+  });
+
+  it('does not treat a sent flag as named when the error mentions a different flag', () => {
+    const err = {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'Unexpected value(s) `some-other-flag-2026-01-01` for the `anthropic-beta` header.' },
+    };
+    const sent = ['claude-code-20250219', 'effort-2025-11-24'];
+    expect(resolveRejectedFlags(err, sent)).toEqual(sent); // falls back to all-sent
+  });
+
   it('recordBetaFlagRejection stores flags retrievable for filtering', () => {
     recordBetaFlagRejection('anthropic--claude-4.7-opus--deployed', BEDROCK_ERROR, ['claude-code-20250219']);
     expect(getQuarantinedFlags('anthropic--claude-4.7-opus--deployed')).toEqual(['claude-code-20250219']);
