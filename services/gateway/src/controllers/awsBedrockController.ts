@@ -9,6 +9,7 @@ import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExe
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { isPayloadLoggingEnabled } from '../utils/payloadLogger';
 
 interface BedrockRequest extends Request {
   params: {
@@ -38,7 +39,10 @@ interface PluginResult {
  * Handle AWS Bedrock requests for all model operations
  */
 export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _next: NextFunction): Promise<void> => {
-  const debugRequestId = process.env.DEBUG === 'true' ? uuidv4() : undefined;
+  // Generate a debug request ID whenever payload logging can occur — via the
+  // legacy DEBUG env or the dynamic config switch (hot-reloadable per request).
+  const payloadLoggingActive = process.env.DEBUG === 'true' || isPayloadLoggingEnabled();
+  const debugRequestId = payloadLoggingActive ? (req.debugRequestId || uuidv4()) : undefined;
   req.debugRequestId = debugRequestId;
   logger.info('AwsBedrockController', `Processing request for model: ${req.params.modelId}, subpath: ${req.params.subpath}, Debug ID: ${debugRequestId}`);
 

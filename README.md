@@ -987,7 +987,7 @@ Plugins have access to a `utils` object with the following helpers:
 ### Application Settings  
 - `PORT` - Port to run the server on (default: 3000)
 - `CONFIG_FILE_PATH` - Path to store the API configuration (default: './api_config.json')
-- `DEBUG` - Set to `true` for verbose logging (e.g., `DEBUG=true`) that also activates a hard coded AWS API Key, see claude code example.
+- `DEBUG` - Set to `true` for verbose logging (e.g., `DEBUG=true`) that also activates a hard coded AWS API Key, see claude code example. Payload logging no longer requires `DEBUG` — it is controlled by `api_config.logging.payload_logging_enabled` (hot-reloadable via the admin UI; the `PAYLOAD_LOGGING_ENABLED` env var, if set, overrides the config in both directions).
 
 ### Gateway Operation Mode
 - `GATEWAY_STANDALONE` - Set to `true` to force standalone mode, disabling all distributed services (Valkey, admin service) regardless of other configuration. Useful for local development or testing without dependencies. (default: `false`)

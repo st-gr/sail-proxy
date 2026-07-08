@@ -123,29 +123,32 @@ function ensureLogDirExists(): { success: boolean; logDir: string } {
   return { success: true, logDir };
 }
 
+/**
+ * Whether payload logging is currently enabled. Re-reads the dynamic config
+ * on every call (with the PAYLOAD_LOGGING_ENABLED env override applied), so
+ * an api_config.json change takes effect on the next request — no restart.
+ */
+export const isPayloadLoggingEnabled = (): boolean => {
+  return getLoggingConfig().payloadLoggingEnabled;
+};
+
 // Enhanced payload logger with headers and HTTP method support
 export const savePayload = (
-  requestId: string | number, 
-  stage: string, 
-  data: any, 
-  req?: Request, 
+  requestId: string | number,
+  stage: string,
+  data: any,
+  req?: Request,
   res?: Response
 ): void => {
-  const currentDebugEnv = process.env.DEBUG;
   const { payloadLoggingEnabled } = getLoggingConfig();
-  
+
   // Skip debug logging for disabled payload logging to avoid log noise at INFO level
   if (!payloadLoggingEnabled) {
     return;
   }
-  
-  logger.debug('PayloadLogger', `Enhanced save called for requestId: ${requestId}, stage: ${stage}, DEBUG_ENV: '${currentDebugEnv}', PAYLOAD_LOGGING_ENABLED: ${payloadLoggingEnabled}`);
-  
-  if (currentDebugEnv !== 'true') {
-    logger.debug('PayloadLogger', `Skipping enhanced save, process.env.DEBUG is not the string 'true'.`);
-    return;
-  }
-  
+
+  logger.debug('PayloadLogger', `Enhanced save called for requestId: ${requestId}, stage: ${stage}, PAYLOAD_LOGGING_ENABLED: ${payloadLoggingEnabled}`);
+
   if (!requestId) {
     logger.debug('PayloadLogger', `Skipping enhanced save, no requestId provided.`);
     return;

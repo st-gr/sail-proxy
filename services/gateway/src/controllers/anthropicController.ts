@@ -722,7 +722,7 @@ function logStructuredEvent(event: LogEvent): void {
  * Save SSE stream data directly to a text file
  */
 function saveSSEStreamToFile(requestId: string, sseEvents: string[]): void {
-  if (!requestId || !process.env.DEBUG || process.env.DEBUG !== 'true') {
+  if (!requestId || !payloadLogger.isPayloadLoggingEnabled()) {
     return;
   }
 
