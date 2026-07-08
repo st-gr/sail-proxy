@@ -66,6 +66,9 @@ function post(endpoint: string, body: any): Promise<any> {
         'Content-Length': Buffer.byteLength(data),
         'x-api-key': API_KEY,
         'anthropic-version': '2023-06-01',
+        // This is the pseudonymization diagnostic harness — opt into the
+        // masking_info debug diagnostic (off by default for pseudonymization).
+        'x-sail-proxy-masking-debug': 'on',
       },
       timeout: 30000,
     };

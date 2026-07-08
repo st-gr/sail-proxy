@@ -15,15 +15,17 @@
  *
  * Strategies: before + after + stream
  *
- * @see pseudonymization-proxy-prompt.md - Full specification
+ * @see ../pseudonymization.md - Usage, activation methods, and category configuration
+ * @see ../../../../../docs/security/pseudonymization-security-assessment.md - Security assessment
  */
 
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
-import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch } from './types';
+import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityConfig } from './types';
 import { ReplacementMap } from './replacementMap';
 import { detectEntities } from './detectors';
-import { replaceEntities, maskJsonValue } from './replacer';
+import { replaceEntities, maskJsonValue, propagateMaskedValues } from './replacer';
+import { applyEntityToggles, buildKnownEntityTypes } from './entityToggles';
 import { unmaskText, unmaskJsonValue } from './unmasker';
 import { StreamUnmaskBuffer } from './streamBuffer';
 import { entityCache } from './entityCache';
@@ -171,6 +173,10 @@ const DEFAULT_MASKING_CONFIG: MaskingConfig = {
     { type: 'profile-url' },
     { type: 'profile-address' },
     { type: 'profile-username-password' },
+    { type: 'profile-nationalid' },
+    { type: 'profile-passport' },
+    { type: 'profile-driverlicense' },
+    { type: 'profile-pronouns-gender' },
     { type: 'profile-nationality' },
     { type: 'profile-ethnicity' },
     { type: 'profile-gender' },
@@ -182,6 +188,42 @@ const DEFAULT_MASKING_CONFIG: MaskingConfig = {
     { type: 'profile-location' },
   ],
 };
+
+// All category types the pseudonymizationPlugin understands, for toggle validation.
+const KNOWN_ENTITY_TYPES = buildKnownEntityTypes(DEFAULT_MASKING_CONFIG.entities);
+
+/**
+ * Resolve the DEFAULT entity set for this request by layering api_config.json
+ * toggles over DEFAULT_MASKING_CONFIG: global (api_config.pseudonymization.entities)
+ * → per-endpoint (defaultHooks[endpoint].pseudonymization.entities) → per-model
+ * (model_list_changes[model].pseudonymization.entities); later layers win.
+ * Reads dynamic config per request (hot in distributed mode; standalone requires
+ * a restart, as for all plugin config). Falls back to the code defaults on any error.
+ */
+function resolveDefaultEntities(req: any): EntityConfig[] {
+  try {
+    const configService = require('../../services/configService').default || require('../../services/configService');
+    const apiConfig = configService.getConfig()?.api_config;
+    if (!apiConfig) return DEFAULT_MASKING_CONFIG.entities;
+
+    let entities = applyEntityToggles(DEFAULT_MASKING_CONFIG.entities, apiConfig.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+
+    const endpoint = req?.__endpoint;
+    if (endpoint) {
+      entities = applyEntityToggles(entities, apiConfig.defaultHooks?.[endpoint]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+    }
+
+    const modelName = req?.body?.model;
+    if (modelName) {
+      const substituted = configService.getSubstitutedModel('anthropic', modelName) || modelName;
+      entities = applyEntityToggles(entities, apiConfig.model_list_changes?.[substituted]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+    }
+
+    return entities;
+  } catch {
+    return DEFAULT_MASKING_CONFIG.entities;
+  }
+}
 
 /**
  * Scan messages for triggerword, strip it, and return masking config if found
@@ -233,7 +275,7 @@ function scanAndStripTriggerword(req: any): MaskingConfig | null {
 
   if (!found) return null;
 
-  return { ...DEFAULT_MASKING_CONFIG, method: found };
+  return { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method: found };
 }
 
 interface ForcedConfigResolution {
@@ -261,7 +303,7 @@ function getModelForcedConfig(req: any): ForcedConfigResolution | null {
       if (modelConfig?.pseudonymization?.enabled) {
         const method = modelConfig.pseudonymization.method || 'pseudonymization';
         const allowBypass = modelConfig.pseudonymization.allow_user_bypass === true;
-        return { config: { ...DEFAULT_MASKING_CONFIG, method }, allowBypass, source: 'model' };
+        return { config: { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method }, allowBypass, source: 'model' };
       }
     }
 
@@ -272,7 +314,7 @@ function getModelForcedConfig(req: any): ForcedConfigResolution | null {
       if (endpointConfig?.pseudonymization?.enabled) {
         const method = endpointConfig.pseudonymization.method || 'pseudonymization';
         const allowBypass = endpointConfig.pseudonymization.allow_user_bypass === true;
-        return { config: { ...DEFAULT_MASKING_CONFIG, method }, allowBypass, source: 'endpoint' };
+        return { config: { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method }, allowBypass, source: 'endpoint' };
       }
     }
 
@@ -426,6 +468,12 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       }
     }
 
+    // Value-consistency propagation: mask every remaining exact occurrence of each
+    // detected value across the request, including nodes where no detector fired
+    // (e.g. the same secret riding through in an `Authorization: Bearer` header).
+    // Prevents the model from seeing the raw value alongside its mask.
+    const propagated = propagateMaskedValues(req.body, map);
+
     // Tell the model to treat placeholder tokens as opaque and copy them verbatim.
     // A garbled id cannot be unmasked (the value is unrecoverable), so copy fidelity
     // is part of the design; observed in practice: models occasionally rewrite ids
@@ -434,6 +482,10 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       const copyNote = 'Some values in this conversation are pseudonymized as placeholder tokens of the form '
         + 'MASKED_<TYPE>_<id>. Treat each token as an opaque identifier: when you refer to a masked value, '
         + 'copy its token EXACTLY, character for character. Never invent, alter, shorten, or merge token ids. '
+        + 'Only use MASKED_* tokens that appear verbatim in this conversation — NEVER invent, guess, or '
+        + 'construct a new MASKED_* token or id under any circumstances; a token you did not see in the input '
+        + 'is meaningless and will break the user\'s workflow. If a value you need appears unmasked in the '
+        + 'conversation, use that unmasked value as-is; do not create a token for it. '
         + 'Masked URLs appear as hosts like https://masked-url-<id>.invalid — you MAY append paths and query '
         + 'parameters to such a host to form new URLs, but never invent a masked-url host that is not present '
         + 'in the conversation.';
@@ -445,6 +497,16 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         req.body.system = copyNote;
       }
     }
+
+    // Capture the masking_info debug opt-in before the config is stripped. The
+    // full masked-input diagnostic is off by default for pseudonymization (it
+    // bloats every client response); attach it only when explicitly requested via
+    // `masking.debug: true` or the out-of-band `x-sail-proxy-masking-debug: on`
+    // header (same channel pattern as the bypass header).
+    const maskingDebug = (req.body?.masking as any)?.debug === true
+      || (typeof req.headers?.['x-sail-proxy-masking-debug'] === 'string'
+        && (req.headers['x-sail-proxy-masking-debug'] as string).toLowerCase() === 'on');
+    (req as any).__pseudonymizationDebug = maskingDebug;
 
     // Remove the masking config from the body before forwarding upstream
     delete req.body.masking;
@@ -467,7 +529,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       installSseUnmaskInterceptor(req, res, map);
     }
 
-    logger.info(`Masked ${allEntities.length} entities (${map.size} unique) across ${messages.length} messages`);
+    logger.info(`Masked ${allEntities.length} entities (${map.size} unique) across ${messages.length} messages; propagated ${propagated} additional occurrence(s)`);
 
     // Async: store detected entities in learned cache (non-blocking)
     if (allEntities.length > 0) {
@@ -532,7 +594,12 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
 
     unmaskToolBlocks(upstreamResponse, map);
 
-    return attachMaskingInfo(upstreamResponse, state);
+    // Residue audit (the non-streaming path had none — this is the incident path).
+    // Scan the fully-unmasked client-facing body for surviving MASKED_* tokens and
+    // log per-token detail plus one aggregated, grep-stable counter line.
+    auditResponseResidue(upstreamResponse, map, (req as any)?.debugRequestId || 'unknown', logger);
+
+    return maybeAttachMaskingInfo(upstreamResponse, state, req);
   } catch (error: any) {
     logger.error(`Error in pseudonymization after handler: ${error.message}`, { stack: error.stack });
     return upstreamResponse;
@@ -562,6 +629,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   if ((res as any).__pseudoSseInterceptorInstalled) return;
   if (typeof (res as any).write !== 'function' || typeof (res as any).end !== 'function') return;
   (res as any).__pseudoSseInterceptorInstalled = true;
+
 
   // Patch res.json so NON-streaming responses that bypass res.write are still unmasked.
   // The awsBedrockResponseCache plugin serves non-streaming cache hits via res.status().json()
@@ -753,6 +821,19 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     return syntheticPrefix + block;
   };
 
+  // Final safety net: unmask any COMPLETE placeholder still present in outgoing bytes.
+  // The structured per-block handling above only unmasks events it recognizes as
+  // content_block_delta text_delta / input_json_delta; text emitted through other
+  // shapes (notably the BedrockStreamParser raw-text fallback, which writes bare
+  // `data: <text>` on a parse miss) would otherwise reach the client masked. This is
+  // idempotent on already-unmasked output (no reverse-map keys remain to match) and
+  // only touches whole tokens, so it never disturbs the buffer's partial-retention.
+  const safetyNetUnmask = (s: string): string => {
+    if (map.reverse.size === 0) return s;
+    if (!s.includes('MASKED_') && !s.includes('masked-url-')) return s;
+    return unmaskText(s, map);
+  };
+
   // Split accumulated data into complete SSE blocks, keep the partial tail pending.
   const processIncoming = (str: string): string => {
     pending += str;
@@ -763,7 +844,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       pending = pending.slice(sep + 2);
       out += processBlock(block);
     }
-    return out;
+    return safetyNetUnmask(out);
   };
 
   // Patch res.write. The Express Response.write signature has overloads; we accept any.
@@ -797,8 +878,8 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         chunk = undefined;
       }
       if (pending) {
-        // Incomplete final block — pass through as-is (best effort).
-        originalWrite(pending);
+        // Incomplete final block — pass through (best effort), still safety-net unmasked.
+        originalWrite(safetyNetUnmask(pending));
         pending = '';
       }
       // Streams that ended without content_block_stop/message_stop: audit what remains.
@@ -1005,6 +1086,52 @@ function attachMaskingInfo(response: any, state: PseudonymizationState): any {
   }
 
   return response;
+}
+
+/**
+ * Attach masking_info, but for pseudonymization only when the request opted into the
+ * debug diagnostic (`masking.debug: true` or `x-sail-proxy-masking-debug: on`).
+ * Anonymization keeps its documented behavior of always attaching it.
+ */
+function maybeAttachMaskingInfo(response: any, state: PseudonymizationState, req: any): any {
+  if (state.config.method === 'pseudonymization' && !(req as any)?.__pseudonymizationDebug) {
+    return response;
+  }
+  return attachMaskingInfo(response, state);
+}
+
+// Placeholder-residue pattern (hash-hex ids and masked-url hosts), shared by the
+// streaming and non-streaming leak audits.
+const RESIDUE_REGEX = /MASKED_[A-Z_]+_[0-9a-f]+|(?:https?:\/\/)?masked-url-\d+\.invalid/g;
+
+/**
+ * Scan a fully-unmasked non-streaming response for surviving MASKED_* tokens.
+ * Logs per-token detail (ERROR if the token was in the map — a genuine unmask miss;
+ * WARN if it is unknown residue from an earlier session) plus one aggregated,
+ * grep-stable counter line so leak rates can be monitored.
+ */
+function auditResponseResidue(response: any, map: ReplacementMap, requestId: string, logger: any): void {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(response) || '';
+  } catch { return; }
+  if (!serialized.includes('MASKED_') && !serialized.includes('masked-url-')) return;
+
+  const tokens = new Set(serialized.match(RESIDUE_REGEX) || []);
+  if (tokens.size === 0) return;
+
+  const byType: Record<string, number> = {};
+  for (const token of tokens) {
+    const type = token.match(/^(MASKED_[A-Z_]+)_/)?.[1] || 'MASKED_URL';
+    byType[type] = (byType[type] || 0) + 1;
+    if (map.reverse.has(token)) {
+      logger.error('Pseudonymization', `Unmask miss on response: ${token} was in the replacement map but reached the client masked (requestId=${requestId})`);
+    } else {
+      logger.warn('Pseudonymization', `Unresolvable masked residue in response: ${token} is not in this request's map — its value is absent from this request (leaked by an earlier session) (requestId=${requestId})`);
+    }
+  }
+  const byTypeStr = Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(',');
+  logger.warn('Pseudonymization', `pseudonymization_residue_unresolved_total=${tokens.size} by_type=${byTypeStr} requestId=${requestId}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

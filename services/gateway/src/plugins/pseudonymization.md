@@ -232,6 +232,38 @@ In `api_config.json`, add a `pseudonymization` block to a `defaultHooks` endpoin
 
 This activates masking for **every** model accessed via that endpoint with the default entity set, including models that have no per-model entry. Per-model takes precedence over per-endpoint when both apply.
 
+## Configuring which categories are masked
+
+> **Plugin-bound scope:** these keys configure the pseudonymizationPlugin. They do **not** activate masking on their own — pseudonymization only runs when the plugin is wired into the endpoint/model hook chain (`callback.id: "pseudonymizationPlugin"`) **and** an activation source fires (force-config `enabled: true`, triggerword, or an explicit body `masking`). If the plugin is absent from the hook chain, these toggles have no effect.
+
+When masking is activated via force-config or triggerword, the entity set comes from the plugin's built-in defaults. `api_config.json` can enable/disable individual categories with an `entities` map (`{ "<category>": true | false }`) at three layers, applied in order — **later layers win**:
+
+1. **Global** — `api_config.pseudonymization.entities`
+2. **Per-endpoint** — `defaultHooks.<endpoint>.pseudonymization.entities`
+3. **Per-model** — `model_list_changes.<model>.pseudonymization.entities`
+
+```json
+"pseudonymization": {
+  "entities": { "profile-person": true, "profile-address": false }
+},
+"defaultHooks": {
+  "anthropic": { "pseudonymization": { "enabled": true, "entities": { "profile-address": true } } }
+},
+"model_list_changes": {
+  "anthropic--claude-4-sonnet--deployed": { "pseudonymization": { "enabled": true, "entities": { "profile-url": false } } }
+}
+```
+
+Semantics:
+- `false` disables masking of that category; `true` enables it (adding non-default categories such as `profile-sensitive-data` is supported).
+- Categories not listed keep their current state. An absent `entities` map at every layer means the built-in defaults apply — identical to prior behavior.
+- Unknown category names are ignored (logged once as a WARN), never fatal.
+- These toggles shape only the **default** entity set. A caller who sends an explicit `masking` object in the request body (Method 2) controls their own entity list, and the config toggles do not filter it.
+
+**Available categories** (all `profile-`-prefixed, all enabled by default): `person`, `email`, `phone`, `ssn`, `credit-card-number`, `iban`, `url`, `address`, `username-password`, `nationalid`, `passport`, `driverlicense`, `pronouns-gender`, `nationality`, `ethnicity`, `gender`, `religious-group`, `political-group`, `sexual-orientation`, `trade-union`, `org`, `location`.
+
+**Hot reload:** the config is read per request, so changes apply on the next request in distributed mode (admin-service-notified). In standalone mode the gateway must be restarted for `api_config.json` changes to take effect (as for all plugin config).
+
 ## Bypassing forced pseudonymization
 
 When pseudonymization is forced via Method 3 or Method 4, callers can opt out for individual requests **only if the operator has explicitly opted in** by setting the `allow_user_bypass: true` flag on the matching block. Default is `false`.
@@ -257,7 +289,18 @@ Every applied bypass and every rejected attempt is logged at INFO/WARN with the 
 
 ## Response Format
 
-The response includes a `masking_info` diagnostic field:
+By default the response body is the plain unmasked model response with **no** extra
+fields. The `masking_info` diagnostic (the full masked input plus the detected-entity
+list) is **opt-in for pseudonymization** — it is large and echoes every mask token, so
+it is attached only when the request asks for it via either:
+
+- body field `masking.debug: true`, or
+- header `x-sail-proxy-masking-debug: on` (out-of-band, works with triggerword activation).
+
+Anonymization always attaches `masking_info` (it is that mode's primary diagnostic and
+carries no reversible mapping).
+
+When requested, the field looks like:
 
 ```json
 {

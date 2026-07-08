@@ -76,6 +76,7 @@ The plugin system supports all major provider endpoints:
 - `stripCacheControlScope.ts` - Claude Code compatibility fix (strips unsupported cache_control fields)
 - `repairToolBlocks.ts` - Repairs compressed tool_use/tool_result blocks missing required fields (id, name, tool_use_id)
 - `resizeOversizedImages.ts` - Resizes images exceeding per-model dimension limits in multi-image requests
+- `pseudonymization/` - Detects and masks PII/secrets in outbound requests and unmasks them in responses; activation and per-category masking are configurable in `api_config.json`. See [`services/gateway/src/plugins/pseudonymization.md`](../../services/gateway/src/plugins/pseudonymization.md) for activation methods and category toggles.
 
 ## Creating a Plugin
 

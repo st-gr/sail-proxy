@@ -11,6 +11,89 @@ import { generateFakeValue } from './fabricatedData';
 import { detectEntities } from './detectors';
 
 /**
+ * Minimum length of a detected value for it to be propagated (masked at ALL its
+ * exact occurrences across the request). Short values are masked only where a
+ * detector actually fired — propagating them risks carpet-masking common strings.
+ */
+export const MIN_PROPAGATION_LENGTH = 12;
+
+const REGEX_META = /[.*+?^${}()|[\]\\]/g;
+const WORD_CHAR = /[A-Za-z0-9_]/;
+
+/**
+ * Propagate already-minted masks to EVERY exact occurrence of each detected value
+ * across the request's string nodes — including places no detector fired (e.g. a
+ * secret that was caught as `token=<secret>` in one node but rode through as
+ * `Authorization: Bearer <secret>` in another). This is the primary security fix:
+ * one value → one token → masked everywhere.
+ *
+ * Operates on parsed string nodes (system + messages subtree), so JSON-escaping in
+ * embedded tool_result strings is a non-issue. For values containing `"` or `\`, the
+ * JSON-escaped form is also searched (an identical secret embedded inside a
+ * JSON-in-string blob is escaped there). Mutates `body` in place; returns the number
+ * of occurrences replaced.
+ */
+export function propagateMaskedValues(
+  body: any,
+  map: ReplacementMap,
+  opts: { minLength?: number } = {}
+): number {
+  const minLength = opts.minLength ?? MIN_PROPAGATION_LENGTH;
+
+  // Build (needle → placeholder) pairs. Include the JSON-escaped form of any value
+  // containing escapable characters so it also matches inside JSON-in-string blobs.
+  const needles: Array<{ text: string; placeholder: string }> = [];
+  for (const [value, placeholder] of map.forward) {
+    if (typeof value !== 'string' || value.length < minLength) continue;
+    needles.push({ text: value, placeholder });
+    const escaped = JSON.stringify(value).slice(1, -1);
+    if (escaped !== value && escaped.length >= minLength) {
+      needles.push({ text: escaped, placeholder });
+    }
+  }
+  if (needles.length === 0) return 0;
+
+  // Longest needle first so a value that is a substring of another is not shadowed.
+  needles.sort((a, b) => b.text.length - a.text.length);
+  const byText = new Map(needles.map(n => [n.text, n.placeholder]));
+  const alternation = new RegExp(
+    needles.map(n => n.text.replace(REGEX_META, '\\$&')).join('|'),
+    'g'
+  );
+
+  let replaced = 0;
+  const replaceInString = (s: string): string =>
+    s.replace(alternation, (matchStr, offset: number, whole: string) => {
+      // Word-boundary guard: don't fire mid-identifier when the value's own edge is
+      // a word char and the adjacent text char is too (would corrupt an identifier).
+      const before = whole[offset - 1];
+      const after = whole[offset + matchStr.length];
+      if (WORD_CHAR.test(matchStr[0]) && before !== undefined && WORD_CHAR.test(before)) return matchStr;
+      if (WORD_CHAR.test(matchStr[matchStr.length - 1]) && after !== undefined && WORD_CHAR.test(after)) return matchStr;
+      replaced++;
+      return byText.get(matchStr) ?? matchStr;
+    });
+
+  const walk = (value: any): any => {
+    if (typeof value === 'string') return replaceInString(value);
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) value[i] = walk(value[i]);
+      return value;
+    }
+    if (value && typeof value === 'object') {
+      for (const k of Object.keys(value)) value[k] = walk(value[k]);
+      return value;
+    }
+    return value;
+  };
+
+  if (body?.system !== undefined) body.system = walk(body.system);
+  if (Array.isArray(body?.messages)) walk(body.messages);
+
+  return replaced;
+}
+
+/**
  * Get the replacement strategy for an entity type from config
  */
 function getStrategy(entityType: string, config: MaskingConfig): 'constant' | 'fabricated_data' {

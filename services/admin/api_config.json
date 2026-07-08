@@ -92,58 +92,94 @@
     },
     "defaultHooks": {
       "anthropic": {
-        "pseudonymization": { "enabled": true, "method": "pseudonymization", "allow_user_bypass": false },
+        "pseudonymization": {
+          "enabled": true,
+          "method": "pseudonymization",
+          "allow_user_bypass": false
+        },
         "invoke": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ],
         "invoke-with-response-stream": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ]
       },
       "openai": {
-        "pseudonymization": { "enabled": true, "method": "pseudonymization", "allow_user_bypass": false },
+        "pseudonymization": {
+          "enabled": true,
+          "method": "pseudonymization",
+          "allow_user_bypass": false
+        },
         "invoke": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ],
         "invoke-with-response-stream": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ]
       },
       "aws-bedrock": {
-        "pseudonymization": { "enabled": true, "method": "pseudonymization", "allow_user_bypass": false },
+        "pseudonymization": {
+          "enabled": true,
+          "method": "pseudonymization",
+          "allow_user_bypass": false
+        },
         "invoke": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ],
         "invoke-with-response-stream": [
           {
             "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+              "callback": {
+                "id": "pseudonymizationPlugin"
+              },
+              "match": [
+                "header:contentTypeJson"
+              ]
             }
           }
         ]
@@ -1482,6 +1518,32 @@
       },
       "sonar-pro": {
         "streamingSupported": false
+      }
+    },
+    "pseudonymization": {
+      "entities": {
+        "profile-person": true,
+        "profile-email": true,
+        "profile-phone": true,
+        "profile-ssn": true,
+        "profile-credit-card-number": true,
+        "profile-iban": true,
+        "profile-url": true,
+        "profile-address": true,
+        "profile-username-password": true,
+        "profile-nationalid": true,
+        "profile-passport": true,
+        "profile-driverlicense": true,
+        "profile-pronouns-gender": true,
+        "profile-nationality": true,
+        "profile-ethnicity": true,
+        "profile-gender": true,
+        "profile-religious-group": true,
+        "profile-political-group": true,
+        "profile-sexual-orientation": true,
+        "profile-trade-union": true,
+        "profile-org": true,
+        "profile-location": true
       }
     },
     "anthropic": {

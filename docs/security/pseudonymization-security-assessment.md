@@ -172,7 +172,9 @@ When `PAYLOAD_LOGGING_ENABLED=true`, the gateway writes timestamped JSON files c
 - Entities get unique identifiers: `MASKED_PERSON_1`, `MASKED_PERSON_2`
 - A reverse map is maintained for the lifetime of the request
 - The LLM response is unmasked before returning to the client
-- `masking_info` audit field is attached to the response
+- All exact occurrences of a detected value are masked with the same token across the whole request (value-consistency propagation), so a secret caught in one place cannot ride through unmasked in another (e.g. an `Authorization: Bearer` header)
+- `masking_info` audit field is attached to the response only when explicitly requested (body `masking.debug: true` or header `x-sail-proxy-masking-debug: on`); it is off by default for pseudonymization
+- Which categories are masked is operator-configurable in `api_config.json` (`pseudonymization.entities` toggles, layered global → endpoint → model) with the plugin's built-in category set as the fallback default; toggles apply to force-config/triggerword activation, not to explicit caller `masking` requests
 
 ### Anonymization Mode
 - Entities get unique identifiers (for LLM comprehension): `MASKED_PERSON_1`, `MASKED_PERSON_2`

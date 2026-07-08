@@ -221,12 +221,32 @@
                 "anthropic_version": {
                   "type": "string",
                   "pattern": "^(bedrock-)?\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "pseudonymization": {
+                  "$ref": "#/$defs/pseudonymizationConfig"
                 }
               },
               "additionalProperties": true
             }
           },
           "additionalProperties": false
+        },
+        "pseudonymization": {
+          "description": "Global configuration for the pseudonymizationPlugin. These keys configure the plugin only; if the plugin is not wired into the endpoint/model hook chain, no pseudonymization occurs and the toggles have no effect.",
+          "$ref": "#/$defs/pseudonymizationConfig"
+        },
+        "defaultHooks": {
+          "description": "Per-endpoint default hooks. The optional 'pseudonymization' key force-activates and configures the pseudonymizationPlugin for that endpoint.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "pseudonymization": {
+                "$ref": "#/$defs/pseudonymizationConfig"
+              }
+            },
+            "additionalProperties": true
+          }
         },
         "anthropic": {
           "$ref": "#/$defs/providerConfig"
@@ -368,6 +388,33 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "pseudonymizationConfig": {
+      "description": "pseudonymizationPlugin configuration. Activation ('enabled') and category toggles ('entities') apply only to this plugin; masking occurs only when the plugin runs for the request (registered in the hook chain AND an activation source fires).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["pseudonymization", "anonymization"]
+        },
+        "allow_user_bypass": {
+          "type": "boolean"
+        },
+        "entities": {
+          "description": "Per-category masking toggles. true enables masking of that category, false disables it. Categories not listed keep their plugin default. Unknown category names are ignored.",
+          "type": "object",
+          "patternProperties": {
+            "^profile-[a-z-]+$": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "providerConfig": {
       "type": "object",
       "properties": {
