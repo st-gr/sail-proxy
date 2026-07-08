@@ -62,7 +62,7 @@ This package uses pnpm's `workspace:*` protocol for internal dependencies. The c
 **What happens during builds:**
 - `npm run link:dev` → Temporarily replaces `workspace:*` with `0.9.1` for npm compatibility
 - `npm run unlink:dev` → Automatically restores `workspace:*` via surgical replacement
-- `npm pack`/`npm publish` → `prepack` hook replaces, `postpack` hook restores automatically
+- `npm pack`/`npm publish` → `prepack` hook replaces. There is deliberately **no `postpack` hook**: npm re-reads `package.json` from disk after packing, so a postpack restore would poison the registry manifest with `workspace:*`. Restoration is handled by the publish wrapper (`pnpm publish:npm` from the repo root); after a bare `npm pack`, restore manually with `npm run restore-workspace`.
 
 **Surgical Restoration:**
 The `restore-workspace` script surgically replaces ONLY the dependency protocol, preserving:
@@ -260,19 +260,27 @@ grep "version" ../../package.json
 
 ### Publishing to npm
 
+**Always publish via the hardened wrapper from the repo root — never raw `npm publish`:**
+
 ```bash
 # 1. Ensure you're logged in
 npm login
 
-# 2. Publish (prepack/postpack hooks handle workspace:* automatically)
-npm publish --access public
+# 2. Publish via the wrapper (safe workspace:* handling)
+cd ../..            # repo root
+pnpm publish:npm
 ```
 
+Why the wrapper: `npm publish` re-reads `package.json` from disk *after* packing and ships that manifest to the registry. A `postpack` hook restoring `workspace:*` would therefore poison the registry metadata (consumers hit `EUNSUPPORTEDPROTOCOL`) while the tarball looks correct. `cli-tools/publish-npm.js` refuses to run if a `postpack` hook exists, pre-rewrites and verifies the dependency state, and restores `workspace:*` in a `finally` block whether publish succeeds, fails, or is interrupted.
+
 **What happens during publish:**
-1. `prepublishOnly` runs `npm run build` (full build with bundling)
-2. `prepack` hook runs `sync-version` (replaces `workspace:*` → `0.9.1`)
-3. Package is packed and published with concrete version
-4. `postpack` hook runs `restore-workspace` (surgically restores `workspace:*`)
+1. The wrapper rewrites `workspace:*` → concrete versions and verifies the on-disk state
+2. `prepublishOnly` runs `npm run build` (full build with gateway/ollama bundling)
+3. `prepack` hook runs `prepare-pack` (defense in depth for the `workspace:*` rewrite)
+4. Package is packed and published with concrete versions
+5. The wrapper restores `workspace:*` (there is intentionally no `postpack` hook)
+
+For the full release sequence (version bump → npm publish → Docker build/push), see `docs/developer/chapter-14-release.md` — `pnpm release:patch|minor|major` runs all of it.
 
 ### Testing the Package Before Publishing
 
@@ -287,9 +295,11 @@ tar -xzf st-gr-sail-proxy-0.9.1.tgz
 cat package/package.json | grep service-key-parser
 # Should show: "0.9.1" (not workspace:*)
 
-# After testing, verify workspace:* was restored
+# After testing, restore workspace:* yourself — a bare `npm pack` leaves
+# concrete versions in package.json (there is deliberately no postpack hook)
+npm run restore-workspace
 git diff package.json
-# Should show no changes
+# Should show no changes after restoring
 ```
 
 ## Troubleshooting
