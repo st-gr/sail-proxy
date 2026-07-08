@@ -394,7 +394,13 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
   } catch (error: any) {
     logger.error('AwsBedrockService', `Error in native request: ${error.message}`);
     if (error.response) {
-      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, error.response.data);
+      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: error.response.data });
+      if (debugRequestId) {
+        payloadLogger.savePayload(debugRequestId, '03_native_error_from_sap', {
+          status: error.response.status,
+          data: error.response.data
+        }, req, res);
+      }
     }
     throw error;
   }
@@ -496,7 +502,13 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
     });
     if (error.response) {
-      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, error.response.data);
+      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: error.response.data });
+      if (debugRequestId) {
+        payloadLogger.savePayload(debugRequestId, '03_emulated_error_from_sap', {
+          status: error.response.status,
+          data: error.response.data
+        }, req, res);
+      }
     }
     throw error;
   }
