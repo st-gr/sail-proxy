@@ -5,7 +5,7 @@
  * that request are quarantined in memory (per model) so subsequent requests
  * omit them and succeed.
  */
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
 jest.mock('@libs/logger', () => ({
   getDefaultLogger: () => ({
@@ -35,6 +35,8 @@ const FIRST_PARTY_ERROR = {
 
 describe('betaFlagQuarantine', () => {
   beforeEach(() => clearQuarantine());
+
+  afterEach(() => { jest.restoreAllMocks(); });
 
   it('starts empty and isolates quarantine per model', () => {
     expect(getQuarantinedFlags('model-a')).toEqual([]);
@@ -94,5 +96,35 @@ describe('betaFlagQuarantine', () => {
       excluded: mergeBetaFeatures([], getQuarantinedFlags('model-a')),
     });
     expect(result).toEqual(['good-flag-2025-01-01']);
+  });
+
+  it('expires a quarantined flag after the 30-minute TTL', () => {
+    const start = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(start);
+    quarantineFlags('model-a', ['flag-2026-01-01']);
+    expect(getQuarantinedFlags('model-a')).toEqual(['flag-2026-01-01']);
+
+    const TTL_MS = 30 * 60 * 1000;
+    nowSpy.mockReturnValue(start + TTL_MS - 1);
+    expect(getQuarantinedFlags('model-a')).toEqual(['flag-2026-01-01']);
+
+    nowSpy.mockReturnValue(start + TTL_MS + 1);
+    expect(getQuarantinedFlags('model-a')).toEqual([]);
+  });
+
+  it('refreshes the timestamp when a flag is re-quarantined', () => {
+    const start = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(start);
+    quarantineFlags('model-a', ['flag-2026-01-01']);
+
+    const TTL_MS = 30 * 60 * 1000;
+    nowSpy.mockReturnValue(start + TTL_MS - 1);
+    quarantineFlags('model-a', ['flag-2026-01-01']); // refresh
+
+    nowSpy.mockReturnValue(start + TTL_MS - 1 + TTL_MS - 1);
+    expect(getQuarantinedFlags('model-a')).toEqual(['flag-2026-01-01']);
+
+    nowSpy.mockReturnValue(start + TTL_MS - 1 + TTL_MS + 1);
+    expect(getQuarantinedFlags('model-a')).toEqual([]);
   });
 });

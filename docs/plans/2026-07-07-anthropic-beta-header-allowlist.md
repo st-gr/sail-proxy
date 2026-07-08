@@ -993,6 +993,8 @@ git commit -m "feat(gateway): make payload logging a pure api_config toggle with
 
 ### Task 8: Runtime quarantine — self-heal on "invalid beta flag" 400s
 
+> **Implementation note (post-review):** the shipped code supersedes this task's `FLAG_PATTERN` regex with direct substring intersection of `sentFlags` against the serialized error body — the regex could not match compact-date flags like `claude-code-20250219` and would have over-quarantined. Entries also auto-expire after 30 minutes (false-positive containment). See `betaFlagQuarantine.ts` for the authoritative behavior.
+
 **Files:**
 - Create: `services/gateway/src/services/betaFlagQuarantine.ts`
 - Modify: `services/gateway/src/services/awsBedrockService.ts` — import block; the Task 3 filtering block in `processBedrockRequest`; the two non-streaming catch blocks (as left by Task 4); the two **streaming** catch blocks at `handleNativeStreamingRequest` (~line 1178) and `handleEmulatedStreamingRequest` (~line 1591)

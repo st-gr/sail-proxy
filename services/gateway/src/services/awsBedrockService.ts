@@ -522,6 +522,7 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
           data: error.response.data
         }, req, res);
       }
+      // Converse payloads carry no anthropic_beta today — this hook is defense-in-depth should the transform ever forward beta flags.
       const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
         ? requestBody.anthropic_beta.map(String)
         : [];
@@ -1636,12 +1637,12 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
       code: error.code,
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
     });
-    
+
     // Enhanced error logging for auth issues
     if (error.response && error.response.status === 401) {
       logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
       logger.error('AwsBedrockService', 'Error details:', undefined, { data: error.response.data });
-      
+
       // Log auth details if DEBUG is enabled
       if (process.env.DEBUG === 'true') {
         logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
@@ -1650,6 +1651,7 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
     }
 
     if (error.response) {
+      // Converse payloads carry no anthropic_beta today — this hook is defense-in-depth should the transform ever forward beta flags.
       const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
         ? requestBody.anthropic_beta.map(String)
         : [];

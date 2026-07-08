@@ -7,27 +7,54 @@
  * because Bedrock's flag acceptance differs per model version.
  *
  * Process-local and reset on restart — a self-healing stopgap, not
- * configuration. Operators should promote quarantined flags to
+ * configuration. Entries also auto-expire after 30 minutes so a
+ * false-positive detection can't silently degrade capabilities forever.
+ * Operators should promote quarantined flags to
  * anthropic.excluded_beta_headers (admin UI, hot-reloaded) permanently.
  */
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
-const quarantinedByModel = new Map<string, Set<string>>();
+// False positives happen: an unrelated 400 whose body merely mentions
+// "anthropic_beta" would otherwise quarantine valid flags forever (until
+// pod restart), silently degrading capabilities like the 1M context window.
+// A 30-minute TTL bounds the blast radius of any single misdetection. The
+// permanent mechanism for genuinely unsupported flags is the config
+// denylist (anthropic.excluded_beta_headers), not this in-memory cache.
+const QUARANTINE_TTL_MS = 30 * 60 * 1000;
+
+const quarantinedByModel = new Map<string, Map<string, number>>();
 
 export function getQuarantinedFlags(modelId: string): string[] {
-  return Array.from(quarantinedByModel.get(modelId) ?? []);
+  const flags = quarantinedByModel.get(modelId);
+  if (!flags) {
+    return [];
+  }
+  const now = Date.now();
+  const live: string[] = [];
+  for (const [flag, quarantinedAt] of flags) {
+    if (now - quarantinedAt >= QUARANTINE_TTL_MS) {
+      flags.delete(flag);
+    } else {
+      live.push(flag);
+    }
+  }
+  if (flags.size === 0) {
+    quarantinedByModel.delete(modelId);
+  }
+  return live;
 }
 
 export function quarantineFlags(modelId: string, flags: string[]): void {
   if (flags.length === 0) {
     return;
   }
-  const set = quarantinedByModel.get(modelId) ?? new Set<string>();
+  const now = Date.now();
+  const map = quarantinedByModel.get(modelId) ?? new Map<string, number>();
   for (const flag of flags) {
-    set.add(flag);
+    map.set(flag, now);
   }
-  quarantinedByModel.set(modelId, set);
+  quarantinedByModel.set(modelId, map);
 }
 
 export function clearQuarantine(): void {
@@ -78,7 +105,7 @@ export function recordBetaFlagRejection(modelId: string, errorData: any, sentFla
   quarantineFlags(modelId, rejected);
   logger.warn('BetaFlagQuarantine',
     `Quarantined ${rejected.length} beta flag(s) for model ${modelId} after upstream 400: ${rejected.join(', ')}. ` +
-    `Subsequent requests omit them (in-memory, resets on restart). ` +
+    `Subsequent requests omit them (in-memory, resets on restart or after 30 minutes). ` +
     `Add them to anthropic.excluded_beta_headers via the admin UI to make this permanent.`);
   return rejected;
 }
