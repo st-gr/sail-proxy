@@ -34,6 +34,14 @@ describe('Beta Header Filtering', () => {
     });
   });
 
+  describe('configService.getSupportedBetaHeaders', () => {
+    it('returns an array of strings (empty when the key is absent)', () => {
+      const supported = configService.getSupportedBetaHeaders();
+      expect(Array.isArray(supported)).toBe(true);
+      supported.forEach(flag => expect(typeof flag).toBe('string'));
+    });
+  });
+
   describe('beta header filtering logic', () => {
     const filterBetaHeaders = (headers: string[], excluded: string[]): string[] => {
       return headers.filter(h => !excluded.includes(h));

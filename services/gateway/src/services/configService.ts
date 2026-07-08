@@ -1103,6 +1103,22 @@ export const getExcludedBetaHeaders = (): string[] => {
   }
 };
 
+/**
+ * Get supported (allowlisted) beta headers for Anthropic requests to SAP AI Core.
+ * When non-empty, only these beta flags are forwarded; the excluded_beta_headers
+ * denylist is still applied on top. Empty/absent means no allowlist filtering.
+ * @returns Array of allowlisted beta header values
+ */
+export const getSupportedBetaHeaders = (): string[] => {
+  try {
+    const config = getConfig();
+    return config?.api_config?.anthropic?.supported_beta_headers || [];
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting supported beta headers: ${error.message}`);
+    return [];
+  }
+};
+
 export const getOpenAIDeploymentApiVersion = (): string | undefined => {
   try {
     const config = getConfig();
@@ -1434,6 +1450,7 @@ export default {
   shouldEmulateStreaming,
   getAnthropicBedrockVersion,
   getExcludedBetaHeaders,
+  getSupportedBetaHeaders,
   getOpenAIDeploymentApiVersion,
   getAllProviderConfigs,
   getModelListChanges,
