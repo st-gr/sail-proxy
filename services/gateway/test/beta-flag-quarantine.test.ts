@@ -1,0 +1,80 @@
+/**
+ * Runtime beta-flag quarantine tests.
+ *
+ * When SAP AI Core returns HTTP 400 "invalid beta flag", the flags sent on
+ * that request are quarantined in memory (per model) so subsequent requests
+ * omit them and succeed.
+ */
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+
+jest.mock('@libs/logger', () => ({
+  getDefaultLogger: () => ({
+    error: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn(),
+    debug: jest.fn(),
+    trace: jest.fn(),
+  }),
+}));
+
+import {
+  getQuarantinedFlags,
+  quarantineFlags,
+  isInvalidBetaFlagError,
+  resolveRejectedFlags,
+  recordBetaFlagRejection,
+  clearQuarantine,
+} from '../src/services/betaFlagQuarantine';
+import { filterBetaFeatures, mergeBetaFeatures } from '../src/utils/betaFeatureFilter';
+
+const BEDROCK_ERROR = { type: 'error', error: { type: 'invalid_request_error', message: 'invalid beta flag' } };
+const FIRST_PARTY_ERROR = {
+  type: 'error',
+  error: { type: 'invalid_request_error', message: 'Unexpected value(s) `structured-outputs-2025-12-15` for the `anthropic-beta` header.' },
+};
+
+describe('betaFlagQuarantine', () => {
+  beforeEach(() => clearQuarantine());
+
+  it('starts empty and isolates quarantine per model', () => {
+    expect(getQuarantinedFlags('model-a')).toEqual([]);
+    quarantineFlags('model-a', ['flag-2026-01-01']);
+    expect(getQuarantinedFlags('model-a')).toEqual(['flag-2026-01-01']);
+    expect(getQuarantinedFlags('model-b')).toEqual([]);
+  });
+
+  it('detects Bedrock-style invalid beta flag 400s', () => {
+    expect(isInvalidBetaFlagError(400, BEDROCK_ERROR)).toBe(true);
+    expect(isInvalidBetaFlagError(400, FIRST_PARTY_ERROR)).toBe(true);
+  });
+
+  it('ignores non-400s and unrelated 400s', () => {
+    expect(isInvalidBetaFlagError(429, BEDROCK_ERROR)).toBe(false);
+    expect(isInvalidBetaFlagError(400, { error: { message: 'max_tokens is required' } })).toBe(false);
+    expect(isInvalidBetaFlagError(undefined, BEDROCK_ERROR)).toBe(false);
+  });
+
+  it('quarantines only the named flag when the error names one', () => {
+    const sent = ['claude-code-20250219', 'structured-outputs-2025-12-15'];
+    expect(resolveRejectedFlags(FIRST_PARTY_ERROR, sent)).toEqual(['structured-outputs-2025-12-15']);
+  });
+
+  it('quarantines all sent flags when the error names none (Bedrock)', () => {
+    const sent = ['claude-code-20250219', 'effort-2025-11-24'];
+    expect(resolveRejectedFlags(BEDROCK_ERROR, sent)).toEqual(sent);
+  });
+
+  it('recordBetaFlagRejection stores flags retrievable for filtering', () => {
+    recordBetaFlagRejection('anthropic--claude-4.7-opus--deployed', BEDROCK_ERROR, ['claude-code-20250219']);
+    expect(getQuarantinedFlags('anthropic--claude-4.7-opus--deployed')).toEqual(['claude-code-20250219']);
+  });
+
+  it('subsequent request drops quarantined flags via the standard filter chain', () => {
+    recordBetaFlagRejection('model-a', BEDROCK_ERROR, ['bad-flag-2026-01-01']);
+    const result = filterBetaFeatures(['good-flag-2025-01-01', 'bad-flag-2026-01-01'], {
+      supported: [],
+      excluded: mergeBetaFeatures([], getQuarantinedFlags('model-a')),
+    });
+    expect(result).toEqual(['good-flag-2025-01-01']);
+  });
+});

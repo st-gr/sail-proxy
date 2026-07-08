@@ -11,6 +11,7 @@ const logger = getDefaultLogger();
 import rateLimitManager from './rateLimitManager';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from '../utils/betaFeatureFilter';
+import * as betaFlagQuarantine from './betaFlagQuarantine';
 
 // Type definitions
 interface ModelDetails {
@@ -165,7 +166,12 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
       const candidates = mergeBetaFeatures(headerFeatures, bodyFeatures, injectedFeatures);
       const filterOptions = {
         supported: configService.getSupportedBetaHeaders(),
-        excluded: configService.getExcludedBetaHeaders()
+        // Config denylist plus flags quarantined at runtime after upstream
+        // "invalid beta flag" 400s for this model (see betaFlagQuarantine).
+        excluded: mergeBetaFeatures(
+          configService.getExcludedBetaHeaders(),
+          betaFlagQuarantine.getQuarantinedFlags(modelId)
+        )
       };
       const betaFeatures = filterBetaFeatures(candidates, filterOptions);
 
@@ -401,6 +407,13 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
           data: error.response.data
         }, req, res);
       }
+      const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
+        ? requestBody.anthropic_beta.map(String)
+        : [];
+      if (sentBetaFlags.length > 0
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
+      }
     }
     throw error;
   }
@@ -508,6 +521,13 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
           status: error.response.status,
           data: error.response.data
         }, req, res);
+      }
+      const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
+        ? requestBody.anthropic_beta.map(String)
+        : [];
+      if (sentBetaFlags.length > 0
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
       }
     }
     throw error;
@@ -1205,7 +1225,17 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
         logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
       }
     }
-    
+
+    if (error.response) {
+      const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
+        ? requestBody.anthropic_beta.map(String)
+        : [];
+      if (sentBetaFlags.length > 0
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
+      }
+    }
+
     if (!res.writableEnded) {
       sseWriter.writeError(res, error);
     }
@@ -1618,7 +1648,17 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
         logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
       }
     }
-    
+
+    if (error.response) {
+      const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
+        ? requestBody.anthropic_beta.map(String)
+        : [];
+      if (sentBetaFlags.length > 0
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
+      }
+    }
+
     if (!res.writableEnded) {
       const message = error.response?.data?.message || error.message || "Failed to establish stream";
       const status = error.response?.status || 500;
