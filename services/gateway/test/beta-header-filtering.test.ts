@@ -40,6 +40,12 @@ describe('Beta Header Filtering', () => {
       expect(Array.isArray(supported)).toBe(true);
       supported.forEach(flag => expect(typeof flag).toBe('string'));
     });
+
+    it('includes the shipped SAP AI Core allowlist entries', () => {
+      const supported = configService.getSupportedBetaHeaders();
+      expect(supported).toContain('context-1m-2025-08-07');
+      expect(supported).toContain('claude-code-20250219');
+    });
   });
 
   describe('beta header filtering logic', () => {

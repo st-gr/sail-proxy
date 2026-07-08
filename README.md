@@ -613,25 +613,41 @@ Example configuration:
 
 Please note that Claude Code uses the above model names that need to be substituted so that Claude Code can make use of SAP AI Core Foundation models. Sonnet 4 and Opus 4 obviously have different model names (see services/admin/api_config.json). You must deploy the Claude models that your Claude code version uses, e. g. Claude Sonnet 4.5 to get the best user experience. You can use the `sail-model-deploy.js` script in the `/cli-tools` folder to deploy or use the SAP AI Launchpad.
 
-### Excluded Beta Headers
+### Beta Header Filtering (Allowlist + Denylist)
 
-When using Claude Code or other Anthropic clients, they may send beta feature flags in the `anthropic-beta` header that SAP AI Core doesn't yet support. The `excluded_beta_headers` configuration filters these unsupported flags:
+Anthropic clients such as Claude Code send beta feature flags in the `anthropic-beta` header. SAP AI Core rejects the entire request with HTTP 400 "invalid beta flag" if it sees a flag its Anthropic deployments don't recognize. The gateway filters the outbound `anthropic_beta` array with two hot-reloadable settings under `api_config.anthropic` (no restart needed — changes apply on the next request):
 
 ```json
 {
   "api_config": {
     "anthropic": {
+      "supported_beta_headers": [
+        "claude-code-20250219",
+        "context-1m-2025-08-07",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27",
+        "effort-2025-11-24",
+        "mid-conversation-system-2026-04-07",
+        "afk-mode-2026-01-31",
+        "fine-grained-tool-streaming-2025-05-14"
+      ],
       "excluded_beta_headers": [
-        "prompt-caching-scope-2026-01-05"
+        "prompt-caching-scope-2026-01-05",
+        "redact-thinking-2026-02-12",
+        "thinking-token-count-2026-05-13",
+        "structured-outputs-2025-12-15",
+        "fallback-credit-2026-06-01"
       ]
     }
   }
 }
 ```
 
-**Purpose:** Prevents "invalid beta flag" errors from SAP AI Core by removing unsupported beta headers from incoming requests before forwarding them.
+**`supported_beta_headers` (allowlist):** when present and non-empty, only these flags are forwarded — anything else (including flags injected via a model's `inject_beta_features` or supplied in the request body) is dropped. New, unknown Claude Code flags are therefore filtered out automatically instead of breaking requests. Remove the key (or set `[]`) to disable allowlist filtering.
 
-**Default:** The default configuration includes `prompt-caching-scope-2026-01-05` which is sent by Claude Code 2.1.30+ but not yet supported by SAP AI Core.
+**`excluded_beta_headers` (denylist):** always applied on top of the allowlist. A flag listed in both is dropped.
+
+**Default:** the shipped allowlist contains the flags currently accepted by SAP AI Core Bedrock Anthropic deployments. If SAP adds support for a new beta feature, add its flag to `supported_beta_headers` via the admin UI.
 
 ### Model Capability Validation
 
@@ -1024,7 +1040,7 @@ Use the Amazon Bedrock Runtime API proxy to route Claude Code requests to SAP AI
 If the environment variable DEBUG=true then the following static AWS credentials are usable (defined in .env file):
 
 ```bash
-`$ CLAUDE_CODE_USE_BEDROCK=1 AWS_ACCESS_KEY_ID='AKIAIOSFODNN7EXAMPLE' AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' ANTHROPIC_BEDROCK_BASE_URL='http://localhost:3000/aws-bedrock' claude
+`$ CLAUDE_CODE_USE_BEDROCK=1 AWS_ACCESS_KEY_ID='AKIA915EEB0628415319' AWS_SECRET_ACCESS_KEY='5062004d811ea076cb736630afcea6415ee7b13d' ANTHROPIC_BEDROCK_BASE_URL='http://localhost:3000/aws-bedrock' claude
 ```
 
 You can also create your own aws api key using the `/aws/api-keys` endpoint:
