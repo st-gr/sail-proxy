@@ -375,6 +375,20 @@
           "type": "string",
           "pattern": "^bedrock-\\d{4}-\\d{2}-\\d{2}$"
         },
+        "excluded_beta_headers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+$"
+          }
+        },
+        "supported_beta_headers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+$"
+          }
+        },
         "emulate_streaming_for_models": {
           "type": "array",
           "items": {
