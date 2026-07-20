@@ -6,6 +6,12 @@
 
 import Redis from 'iovalkey';
 
+// Test-scoped channel: the LIVE gateway subscribes to the production channel on
+// this same shared Valkey, and publishing there once wiped its active config
+// mid-session. This suite only verifies its OWN pub/sub round-trip, so the
+// channel name carries no test value — keep it isolated.
+const TEST_CONFIG_CHANNEL = 'sap-llm-gateway:config-changed-test';
+
 describe('Configuration Management Integration', () => {
   let valkeyClient: Redis | null = null;
   
@@ -59,7 +65,7 @@ describe('Configuration Management Integration', () => {
       timestamp: new Date().toISOString()
     };
     
-    await valkeyClient.publish('sap-llm-gateway:config-changed', JSON.stringify(event));
+    await valkeyClient.publish(TEST_CONFIG_CHANNEL, JSON.stringify(event));
   };
 
   describe('Configuration Service Integration', () => {
@@ -83,9 +89,9 @@ describe('Configuration Management Integration', () => {
       const eventSubscriber = new Redis(VALKEY_URL);
       const receivedEvents: any[] = [];
 
-      await eventSubscriber.subscribe('sap-llm-gateway:config-changed');
+      await eventSubscriber.subscribe(TEST_CONFIG_CHANNEL);
       eventSubscriber.on('message', (channel, message) => {
-        if (channel === 'sap-llm-gateway:config-changed') {
+        if (channel === TEST_CONFIG_CHANNEL) {
           const event = JSON.parse(message);
           receivedEvents.push(event);
         }

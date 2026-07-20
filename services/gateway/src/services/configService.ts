@@ -10,6 +10,7 @@ import pluginLoader from './pluginLoader';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
+import { selectPluginCacheKeysToClear } from '../utils/pluginCacheSelector';
 
 interface ModelSubstitution {
   from: string;
@@ -93,7 +94,11 @@ let valkeyPublisher: any = null;
 let valkeyInitialized = false;
 
 // Event channels
-const CONFIG_CHANGE_CHANNEL = 'sap-llm-gateway:config-changed';
+// Env-overridable so integration tests can isolate a spawned gateway on a
+// test-scoped channel instead of broadcasting on the production channel (a
+// test publishing here once wiped the live gateway's config mid-session —
+// Valkey pub/sub channels are global, they are NOT scoped by database index).
+const CONFIG_CHANGE_CHANNEL = process.env.CONFIG_CHANGE_CHANNEL || 'sap-llm-gateway:config-changed';
 const MODEL_LIST_CHANNEL = 'sap-llm-gateway:model-list-updated';
 const STARTUP_READY_CHANNEL = 'sap-llm-gateway:service-ready';
 
@@ -465,6 +470,37 @@ const requestInitialConfiguration = async (): Promise<void> => {
 };
 
 /**
+ * Reload plugin modules on a configuration change.
+ *
+ * Evicts ONLY the plugins subtree from require.cache (plugin entry files plus
+ * their plugin-internal helper modules, e.g. plugins/pseudonymization/*), then
+ * lets pluginLoader rebuild the registry. Gateway SERVICE modules are never
+ * evicted: doing so caused split-brain state — Express handlers registered at
+ * startup kept referencing the old module instances while later require()
+ * calls created fresh ones with empty caches, and the two worlds disagreed
+ * (observed as model substitution silently failing after a config-activation
+ * event until a manual restart). Service code changes are picked up by nodemon
+ * (dev) or a deploy restart (prod), never by config pushes.
+ */
+const reloadPluginModules = (): void => {
+  try {
+    const pluginsDirPrefix = path.join(__dirname, '..', 'plugins');
+    const keys = selectPluginCacheKeysToClear(Object.keys(require.cache), pluginsDirPrefix);
+    for (const key of keys) {
+      delete require.cache[key];
+    }
+    if (keys.length > 0) {
+      logger.info('ConfigService', `Cleared require cache for ${keys.length} plugin modules`);
+    }
+    const pluginLoader = require('./pluginLoader');
+    pluginLoader.reloadAll('./src/plugins');
+    logger.info('ConfigService', 'Plugins reloaded successfully');
+  } catch (pluginError: any) {
+    logger.error('ConfigService', `Error reloading plugins: ${pluginError.message}`);
+  }
+};
+
+/**
  * Trigger configuration reload mechanisms (plugins, model service cache, etc.)
  */
 const triggerConfigurationReload = async (): Promise<void> => {
@@ -475,31 +511,8 @@ const triggerConfigurationReload = async (): Promise<void> => {
       logger.info('ConfigService', 'Logger reinitialized with updated configuration');
     }
     
-    // Reload plugins and all gateway service modules to pick up code changes on disk
-    try {
-      // Clear require cache for all gateway modules so updated code on disk is loaded.
-      // This enables hot-reload of service files during config push without a full process restart.
-      // Exclude configService itself — it owns startup coordination state (configurationReceived,
-      // isWaitingForAdminEvents, startupRequestSent, cachedConfig) that must survive reloads.
-      const gatewayDistPrefix = path.join(__dirname, '..').replace(/\\/g, '/');
-      const ownModulePath = __filename.replace(/\\/g, '/');
-      let cleared = 0;
-      for (const key of Object.keys(require.cache)) {
-        const normalizedKey = key.replace(/\\/g, '/');
-        if (normalizedKey.startsWith(gatewayDistPrefix) && !normalizedKey.includes('node_modules') && normalizedKey !== ownModulePath) {
-          delete require.cache[key];
-          cleared++;
-        }
-      }
-      if (cleared > 0) {
-        logger.info('ConfigService', `Cleared require cache for ${cleared} gateway modules`);
-      }
-      const pluginLoader = require('./pluginLoader');
-      pluginLoader.reloadAll('./src/plugins');
-      logger.info('ConfigService', 'Plugins reloaded successfully');
-    } catch (pluginError: any) {
-      logger.error('ConfigService', `Error reloading plugins: ${pluginError.message}`);
-    }
+    // Reload PLUGIN modules to pick up plugin code/config changes.
+    reloadPluginModules();
 
     // Clear model service caches to force reapplication of config
     try {
@@ -911,30 +924,9 @@ export const updateConfig = (newConfig: Config): Config => {
       logger.info('ConfigService', 'Logger reinitialized with updated configuration');
     }
     
-    // Reload plugins and all gateway service modules to pick up code changes on disk
-    try {
-      // Clear require cache for all gateway modules so updated code on disk is loaded.
-      // This enables hot-reload of service files during config push without a full process restart.
-      // Exclude configService itself — it owns startup coordination state that must survive reloads.
-      const gatewayDistPrefix = path.join(__dirname, '..').replace(/\\/g, '/');
-      const ownModulePath = __filename.replace(/\\/g, '/');
-      let cleared = 0;
-      for (const key of Object.keys(require.cache)) {
-        const normalizedKey = key.replace(/\\/g, '/');
-        if (normalizedKey.startsWith(gatewayDistPrefix) && !normalizedKey.includes('node_modules') && normalizedKey !== ownModulePath) {
-          delete require.cache[key];
-          cleared++;
-        }
-      }
-      if (cleared > 0) {
-        logger.info('ConfigService', `Cleared require cache for ${cleared} gateway modules`);
-      }
-      const pluginLoader = require('./pluginLoader');
-      pluginLoader.reloadAll('./src/plugins');
-      logger.info('ConfigService', 'Plugins reloaded successfully');
-    } catch (pluginError: any) {
-      logger.error('ConfigService', `Error reloading plugins: ${pluginError.message}`);
-    }
+    // Reload PLUGIN modules to pick up plugin code/config changes (services are
+    // never evicted — see reloadPluginModules for the split-brain rationale).
+    reloadPluginModules();
 
     // Clear model service caches to force reapplication of config
     try {

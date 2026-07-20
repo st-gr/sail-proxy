@@ -19,7 +19,25 @@ interface StreamState {
   finalFirstByteLatency: number | null;
   toolFragmentBuffers: Map<number, string[]>;
   processedFragmentCount: number;
+  // True once a terminal message_stop has been written to the client (either via
+  // the Anthropic passthrough or a transform), so end-of-stream finalization
+  // never emits a second one.
+  terminalMessageStopEmitted: boolean;
 }
+
+// Anthropic Messages streaming event types. SAP native invoke-with-response-stream
+// for deployed Anthropic models emits events ALREADY in this format — they must be
+// passed through with proper `event: <type>` SSE framing, not transformed.
+const ANTHROPIC_STREAM_EVENTS = new Set([
+  'message_start',
+  'content_block_start',
+  'content_block_delta',
+  'content_block_stop',
+  'message_delta',
+  'message_stop',
+  'ping',
+  'error',
+]);
 
 interface BedrockEvent {
   messageStart?: {
@@ -105,8 +123,9 @@ class BedrockStreamParser {
       finalFirstByteLatency: null,
       // Tool fragment buffering state
       toolFragmentBuffers: new Map(), // Map of contentBlockIndex -> array of fragments
-      processedFragmentCount: 0
-    };    
+      processedFragmentCount: 0,
+      terminalMessageStopEmitted: false
+    };
     
     // Create our event source parser with the correct v3.0.2 API
     this.parser = createParser({
@@ -346,9 +365,21 @@ class BedrockStreamParser {
         }
       }
       
+      // Already-Anthropic events (SAP native streams for deployed Anthropic models)
+      // must be passed through with proper `event: <type>` SSE framing.
+      // transformBedrockEvent only understands the Bedrock camelCase envelope, so
+      // until this branch existed these all fell through to the raw `data:`-only
+      // fallback below — SSE without `event:` headers, which claude-cli >= 2.1.215
+      // cannot parse (perceived as a lost connection / ECONNRESET on every stream).
+      if (typeof (bedrockEvent as any).type === 'string'
+          && ANTHROPIC_STREAM_EVENTS.has((bedrockEvent as any).type)) {
+        this.emitAnthropicPassthroughEvent(bedrockEvent as any);
+        return;
+      }
+
       // Transform the event
       const events = this.transformBedrockEvent(bedrockEvent);
-      
+
       if (events && events.length > 0) {
         events.forEach(event => {
           if (this.res && !this.res.writableEnded) {
@@ -411,14 +442,54 @@ class BedrockStreamParser {
   }
 
   /**
+   * Emit an event that is already in Anthropic Messages streaming format with
+   * proper `event: <type>` SSE framing. Records upstream message id and terminal
+   * usage metrics into streamState so downstream bookkeeping (usage tracking,
+   * end-of-stream finalization) stays consistent. Passthrough events never feed
+   * the tool-fragment reconstruction buffers — those exist only for Bedrock
+   * camelCase envelope streams.
+   */
+  private emitAnthropicPassthroughEvent(event: { type: string; [key: string]: any }): void {
+    if (!this.res || this.res.writableEnded) return;
+
+    // Adopt the upstream message id so later fallback paths never mint a second
+    // message_start for a stream that already has one.
+    if (event.type === 'message_start' && event.message?.id && !this.streamState.messageId) {
+      this.streamState.messageId = event.message.id;
+    }
+
+    if (event.type === 'message_stop') {
+      const metrics = event['amazon-bedrock-invocationMetrics'];
+      if (metrics) {
+        this.streamState.finalInputTokens = metrics.inputTokenCount || 0;
+        this.streamState.finalOutputTokens = metrics.outputTokenCount || 0;
+        this.streamState.finalCacheCreationTokens = metrics.cacheWriteInputTokenCount || 0;
+        this.streamState.finalCacheReadTokens = metrics.cacheReadInputTokenCount || 0;
+        this.streamState.finalLatencyMs = metrics.invocationLatency || 0;
+        this.streamState.finalFirstByteLatency = metrics.firstByteLatency || 0;
+        if (this.outputFormat === 'anthropic') {
+          // Anthropic clients get a clean message_stop; the metrics live in streamState.
+          const { ['amazon-bedrock-invocationMetrics']: _metrics, ...clean } = event;
+          event = clean as { type: string;[key: string]: any };
+        }
+      }
+      this.streamState.terminalMessageStopEmitted = true;
+    }
+
+    logger.debug('BedrockStreamParser', `Passthrough Anthropic event: ${event.type}`);
+    sseWriter.writeEventStream(this.res, event.type, JSON.stringify(event));
+  }
+
+  /**
    * Handle end of stream
    */
   private handleDone(): void {
     // Process any remaining tool fragments in buffers
     this.processAllToolFragmentBuffers();
 
-    // Send final message_stop if needed
-    if (this.streamState.messageId && this.res && !this.res.writableEnded) {
+    // Send final message_stop if needed (never after a passthrough already sent one)
+    if (this.streamState.messageId && !this.streamState.terminalMessageStopEmitted
+        && this.res && !this.res.writableEnded) {
       if (this.outputFormat === 'anthropic') {
         // Anthropic format: clean message_stop without Bedrock-specific metrics
         sseWriter.writeEventStream(this.res, 'message_stop', JSON.stringify({

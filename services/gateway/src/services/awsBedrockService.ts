@@ -12,6 +12,7 @@ import rateLimitManager from './rateLimitManager';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from '../utils/betaFeatureFilter';
 import * as betaFlagQuarantine from './betaFlagQuarantine';
+import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
 
 // Type definitions
 interface ModelDetails {
@@ -1214,26 +1215,35 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
       code: error.code,
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
     });
-    
-    // Enhanced error logging for auth issues
-    if (error.response && error.response.status === 401) {
-      logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
-      logger.error('AwsBedrockService', 'Error details:', undefined, { data: error.response.data });
-      
-      // Log auth details if DEBUG is enabled
-      if (process.env.DEBUG === 'true') {
-        logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
-        logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
-      }
-    }
 
     if (error.response) {
+      // responseType:'stream' delivers the error body as a Readable — drain it so
+      // SAP's actual error is loggable, persisted, and quarantine-matchable.
+      const upstreamErrorBody = await readUpstreamErrorBody(error.response);
+      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: upstreamErrorBody });
+      if (debugRequestId) {
+        payloadLogger.savePayload(debugRequestId, '03_native_streaming_error_from_sap', {
+          status: error.response.status,
+          data: upstreamErrorBody
+        }, req, res);
+      }
+
+      // Enhanced error logging for auth issues
+      if (error.response.status === 401) {
+        logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
+        // Log auth details if DEBUG is enabled
+        if (process.env.DEBUG === 'true') {
+          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
+          logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
+        }
+      }
+
       const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
         ? requestBody.anthropic_beta.map(String)
         : [];
       if (sentBetaFlags.length > 0
-          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
-        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, upstreamErrorBody)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, upstreamErrorBody, sentBetaFlags);
       }
     }
 
@@ -1638,31 +1648,42 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
     });
 
-    // Enhanced error logging for auth issues
-    if (error.response && error.response.status === 401) {
-      logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
-      logger.error('AwsBedrockService', 'Error details:', undefined, { data: error.response.data });
-
-      // Log auth details if DEBUG is enabled
-      if (process.env.DEBUG === 'true') {
-        logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
-        logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
-      }
-    }
-
+    let upstreamErrorBody: any;
     if (error.response) {
+      // responseType:'stream' delivers the error body as a Readable — drain it so
+      // SAP's actual error is loggable, persisted, and quarantine-matchable.
+      upstreamErrorBody = await readUpstreamErrorBody(error.response);
+      logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: upstreamErrorBody });
+      if (debugRequestId) {
+        payloadLogger.savePayload(debugRequestId, '03_emulated_streaming_error_from_sap', {
+          status: error.response.status,
+          data: upstreamErrorBody
+        }, req, res);
+      }
+
+      // Enhanced error logging for auth issues
+      if (error.response.status === 401) {
+        logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
+        // Log auth details if DEBUG is enabled
+        if (process.env.DEBUG === 'true') {
+          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
+          logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
+        }
+      }
+
       // Converse payloads carry no anthropic_beta today — this hook is defense-in-depth should the transform ever forward beta flags.
       const sentBetaFlags: string[] = Array.isArray(requestBody?.anthropic_beta)
         ? requestBody.anthropic_beta.map(String)
         : [];
       if (sentBetaFlags.length > 0
-          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, error.response.data)) {
-        betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
+          && betaFlagQuarantine.isInvalidBetaFlagError(error.response.status, upstreamErrorBody)) {
+        betaFlagQuarantine.recordBetaFlagRejection(modelId, upstreamErrorBody, sentBetaFlags);
       }
     }
 
     if (!res.writableEnded) {
-      const message = error.response?.data?.message || error.message || "Failed to establish stream";
+      const message = upstreamErrorBody?.error?.message || upstreamErrorBody?.message
+        || error.message || "Failed to establish stream";
       const status = error.response?.status || 500;
       const errToSend = new Error(message) as any;
       errToSend.status = status;

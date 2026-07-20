@@ -14,6 +14,12 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
+
+// Test-scoped config channel: publishing on the production channel of the shared
+// Valkey would deliver test config events to any LIVE gateway on this machine
+// (this once wiped a live gateway's active config). The spawned gateway under
+// test is pointed at this channel via the CONFIG_CHANGE_CHANNEL env override.
+const TEST_CONFIG_CHANNEL = 'sap-llm-gateway:config-changed-test';
 import axios from 'axios';
 import Redis from 'iovalkey';
 import { getAvailablePorts } from '../../../../libs/test-utils/src/port-utils';
@@ -116,6 +122,7 @@ describe('Gateway Startup Behavior', () => {
       NODE_ENV: 'test',
       PORT: GATEWAY_PORT.toString(),
       HOST: 'localhost',
+      CONFIG_CHANGE_CHANNEL: TEST_CONFIG_CHANNEL,
       ...env
     };
 
@@ -377,7 +384,7 @@ describe('Gateway Startup Behavior', () => {
         }
       };
 
-      await valkeyClient.publish('sap-llm-gateway:config-changed', JSON.stringify(configEvent));
+      await valkeyClient.publish(TEST_CONFIG_CHANNEL, JSON.stringify(configEvent));
 
       // Now the gateway should start
       const isReady = await Promise.race([

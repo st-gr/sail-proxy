@@ -202,9 +202,11 @@ export const writePing = (res: Response): void => {
     
     // Write a comment as ping (standard SSE practice)
     res.write(': ping\n\n');
-    
-    // Also write a data event for clients that might not properly handle comments
-    res.write('data: {"type":"ping"}\n\n');
+
+    // Also write a ping event for clients that might not properly handle comments.
+    // Framed with `event: ping` like Anthropic's wire format — strict SSE parsers
+    // (claude-cli >= 2.1.215) require the event: field on every data block.
+    res.write('event: ping\ndata: {"type":"ping"}\n\n');
   } catch (writeError: any) {
     logger.error('SSEWriter', 'Error writing ping to client:', writeError);
   }
