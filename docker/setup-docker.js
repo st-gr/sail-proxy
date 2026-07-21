@@ -122,6 +122,16 @@ function tryLoadInquirer() {
 
 inquirer = tryLoadInquirer();
 
+if (!inquirer && ciMode) {
+  // CI mode must never block on stdin: an unanswered prompt in a headless
+  // shell hangs forever and the whole pipeline gets reaped from outside.
+  // Fail loudly with the actual remedy instead.
+  console.error('\n❌ inquirer not found and --ci mode cannot prompt to install it.');
+  console.error('   Run "pnpm install" at the repo root first (it provides');
+  console.error('   npm-dist/sail-proxy/node_modules/inquirer), then re-run.');
+  process.exit(1);
+}
+
 if (!inquirer && !configFromJson) {
   console.log('\n📦 The inquirer package is required but not found.');
   console.log('This package is needed for the interactive setup prompts.\n');
