@@ -460,60 +460,82 @@ class KymaSetup {
       let tags = [];
       
       if (registry === 'ghcr.io') {
-        // GitHub Container Registry
-        
-        // First, detect if it's a user or organization by checking the user endpoint
-        const checkUrl = `https://api.github.com/users/${organization}`;
-        const checkOptions = {
-          headers: {
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'sail-proxy-setup'
-          }
-        };
-        
-        // Add auth for the check request if credentials provided
+        // GitHub Container Registry.
+        //
+        // Two very different APIs are available:
+        //  - The GitHub Packages REST API (api.github.com) returns rich version
+        //    metadata but REQUIRES authentication on every request — there is
+        //    no anonymous access even for PUBLIC packages. Without a PAT it
+        //    always answers 401.
+        //  - The Docker Registry V2 API (ghcr.io/v2/...) issues anonymous pull
+        //    tokens for public packages, so tags can be listed with no
+        //    credentials at all.
+        // Therefore: use the REST API only when credentials were provided
+        // (needed for private packages), and fall back to the registry API —
+        // which is the only option that can work anonymously.
         if (dockerUsername && dockerPassword) {
-          checkOptions.headers['Authorization'] = `Bearer ${dockerPassword}`;
-        }
-        
-        let isOrganization = false;
-        try {
-          const checkResponse = await this.makeHttpRequest(checkUrl, checkOptions);
-          const userData = JSON.parse(checkResponse);
-          // GitHub returns type: "Organization" for orgs and type: "User" for users
-          isOrganization = userData.type === 'Organization';
-        } catch (error) {
-          // If the check fails, default to user
-          console.warn('Could not determine account type, defaulting to user endpoint');
-        }
-        
-        // Build the appropriate URL based on the account type
-        const urlPath = isOrganization ? 'orgs' : 'users';
-        const url = `https://api.github.com/${urlPath}/${organization}/packages/container/sail-proxy-gateway/versions`;
-        
-        const options = {
-          headers: {
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'sail-proxy-setup'
+          try {
+            // First, detect if it's a user or organization by checking the user endpoint
+            const checkUrl = `https://api.github.com/users/${organization}`;
+            const checkOptions = {
+              headers: {
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'User-Agent': 'sail-proxy-setup',
+                'Authorization': `Bearer ${dockerPassword}`
+              }
+            };
+
+            let isOrganization = false;
+            try {
+              const checkResponse = await this.makeHttpRequest(checkUrl, checkOptions);
+              const userData = JSON.parse(checkResponse);
+              // GitHub returns type: "Organization" for orgs and type: "User" for users
+              isOrganization = userData.type === 'Organization';
+            } catch (error) {
+              // If the check fails, default to user
+              console.warn('Could not determine account type, defaulting to user endpoint');
+            }
+
+            // Build the appropriate URL based on the account type
+            const urlPath = isOrganization ? 'orgs' : 'users';
+            const url = `https://api.github.com/${urlPath}/${organization}/packages/container/sail-proxy-gateway/versions`;
+
+            const options = {
+              headers: {
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'User-Agent': 'sail-proxy-setup',
+                'Authorization': `Bearer ${dockerPassword}`
+              }
+            };
+
+            const response = await this.makeHttpRequest(url, options);
+            const versions = JSON.parse(response);
+
+            // Extract tags from GitHub response
+            tags = versions
+              .filter(v => v.metadata && v.metadata.container && v.metadata.container.tags && v.metadata.container.tags.length > 0)
+              .flatMap(v => v.metadata.container.tags)
+              .filter(tag => this.isValidSemver(tag));
+          } catch (error) {
+            // Provided token may lack read:packages — the registry API with
+            // Basic auth (or anonymously, for public packages) can still work.
+            console.warn(`GitHub API listing failed, falling back to registry API...`);
+            try {
+              tags = await this.fetchGhcrTagsViaRegistry(organization, dockerUsername, dockerPassword);
+            } catch (registryError) {
+              // Even a bad/expired token must not block PUBLIC packages:
+              // retry with an anonymous pull token as the last resort.
+              console.warn('Authenticated registry listing failed, retrying anonymously (works for public packages)...');
+              tags = await this.fetchGhcrTagsViaRegistry(organization, null, null);
+            }
           }
-        };
-        
-        // Add authentication if credentials are provided (for private repositories)
-        if (dockerUsername && dockerPassword) {
-          options.headers['Authorization'] = `Bearer ${dockerPassword}`;
+        } else {
+          // No credentials: anonymous registry token (works for public packages)
+          tags = await this.fetchGhcrTagsViaRegistry(organization, null, null);
         }
-        
-        const response = await this.makeHttpRequest(url, options);
-        const versions = JSON.parse(response);
-        
-        // Extract tags from GitHub response
-        tags = versions
-          .filter(v => v.metadata && v.metadata.container && v.metadata.container.tags && v.metadata.container.tags.length > 0)
-          .flatMap(v => v.metadata.container.tags)
-          .filter(tag => this.isValidSemver(tag));
-          
+
       } else if (registry === 'docker.io' || registry.includes('docker.io')) {
         // Docker Hub
         const authToken = await this.getDockerHubToken(organization, 'sail-proxy-gateway', dockerUsername, dockerPassword);
@@ -590,6 +612,24 @@ class KymaSetup {
     const response = await this.makeHttpRequest(url, options);
     const data = JSON.parse(response);
     return data.token;
+  }
+
+  /**
+   * List image tags via the Docker Registry V2 API on ghcr.io.
+   * Unlike the GitHub Packages REST API, the registry issues anonymous pull
+   * tokens for public packages, so this works without any credentials.
+   */
+  async fetchGhcrTagsViaRegistry(organization, username, password) {
+    const authToken = await this.getGhcrToken(organization, 'sail-proxy-gateway', username, password);
+    const url = `https://ghcr.io/v2/${organization}/sail-proxy-gateway/tags/list`;
+    const response = await this.makeHttpRequest(url, {
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
+    const data = JSON.parse(response);
+    return (data.tags || []).filter(tag => this.isValidSemver(tag));
   }
 
   /**
