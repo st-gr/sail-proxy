@@ -377,6 +377,20 @@ class KymaSetup {
     };
   }
 
+  /**
+   * Quote a value for safe embedding in generated YAML.
+   * YAML's double-quoted scalar style is JSON-compatible, so JSON.stringify
+   * yields a valid, fully-escaped YAML string. Without this, a generated hex
+   * password that happens to look numeric (all digits, or digits with a
+   * single 'e' like 7522e0966 — a YAML float) is emitted unquoted, and
+   * kubectl rejects the Secret with "cannot unmarshal number into ...
+   * stringData of type string". Also protects values containing ':', '#',
+   * quotes, etc. (e.g. service-key CLIENT_SECRETs).
+   */
+  yamlQuote(value) {
+    return JSON.stringify(String(value ?? ''));
+  }
+
   generateSecureToken() {
     return crypto.randomBytes(32).toString('hex');
   }
@@ -1932,8 +1946,8 @@ metadata:
 type: Opaque
 stringData:
   POSTGRES_DB: sap_llm_gateway
-  POSTGRES_USER: ${config.POSTGRES_USER}
-  POSTGRES_PASSWORD: ${config.POSTGRES_PASSWORD}
+  POSTGRES_USER: ${this.yamlQuote(config.POSTGRES_USER)}
+  POSTGRES_PASSWORD: ${this.yamlQuote(config.POSTGRES_PASSWORD)}
 `;
     
     // Gateway secret  
@@ -1941,17 +1955,17 @@ stringData:
 PORT: "8080"
 DEPLOY_TARGET: docker
 ADMIN_SERVICE_URL: http://admin:4004
-VALIDATION_TOKEN_SECRET: ${this.sharedSecrets.VALIDATION_TOKEN_SECRET}
-METADATA_ENCRYPTION_KEY: ${this.sharedSecrets.METADATA_ENCRYPTION_KEY}`;
-    
+VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
+METADATA_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}`;
+
     if (config.SAP_AI_CORE_URL) {
       gatewayEnvData += `
-SAP_AI_CORE_URL: ${config.SAP_AI_CORE_URL}
-AUTH_URL: ${config.AUTH_URL}
-CLIENT_ID: ${config.CLIENT_ID}
-CLIENT_SECRET: ${config.CLIENT_SECRET}
-SAP_AI_REGION: ${config.SAP_AI_REGION}
-SAP_AI_RESOURCE_GROUP: ${config.SAP_AI_RESOURCE_GROUP}`;
+SAP_AI_CORE_URL: ${this.yamlQuote(config.SAP_AI_CORE_URL)}
+AUTH_URL: ${this.yamlQuote(config.AUTH_URL)}
+CLIENT_ID: ${this.yamlQuote(config.CLIENT_ID)}
+CLIENT_SECRET: ${this.yamlQuote(config.CLIENT_SECRET)}
+SAP_AI_REGION: ${this.yamlQuote(config.SAP_AI_REGION)}
+SAP_AI_RESOURCE_GROUP: ${this.yamlQuote(config.SAP_AI_RESOURCE_GROUP)}`;
     }
     
     const gatewaySecret = `apiVersion: v1
@@ -1965,18 +1979,18 @@ ${gatewayEnvData.split('\n').map(line => '  ' + line).join('\n')}
 `;
     
     // Admin secret
-    const adminEnvData = `DATABASE_URL: postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway
+    const adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway`)}
 VALKEY_URL: redis://valkey:6379
 PORT: "4004"
-VALIDATION_TOKEN_SECRET: ${this.sharedSecrets.VALIDATION_TOKEN_SECRET}
-METADATA_ENCRYPTION_KEY: ${this.sharedSecrets.METADATA_ENCRYPTION_KEY}
-AWS_SECRET_ENCRYPTION_KEY: ${this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY}
-cds.requires.db.credentials.password: ${config.POSTGRES_PASSWORD}
-ROLE_MAPPING: '${config.ROLE_MAPPING || '{}'}'
-IDENTITY_PROVIDER: ${config.provider || 'github'}
-JWT_ISSUER: ${config.baseUrl}/dex
-BASE_URL: ${config.baseUrl}
-LOGOUT_REDIRECT_URL: ${config.baseUrl}/admin/app/shell/`;
+VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
+METADATA_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}
+AWS_SECRET_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY)}
+cds.requires.db.credentials.password: ${this.yamlQuote(config.POSTGRES_PASSWORD)}
+ROLE_MAPPING: ${this.yamlQuote(config.ROLE_MAPPING || '{}')}
+IDENTITY_PROVIDER: ${this.yamlQuote(config.provider || 'github')}
+JWT_ISSUER: ${this.yamlQuote(`${config.baseUrl}/dex`)}
+BASE_URL: ${this.yamlQuote(config.baseUrl)}
+LOGOUT_REDIRECT_URL: ${this.yamlQuote(`${config.baseUrl}/admin/app/shell/`)}`;
     
     const adminSecret = `apiVersion: v1
 kind: Secret
@@ -1997,8 +2011,8 @@ metadata:
   namespace: ${config.namespace}
 type: Opaque
 stringData:
-  cookie-secret: ${cookieSecret}
-  client-secret: ${this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET}
+  cookie-secret: ${this.yamlQuote(cookieSecret)}
+  client-secret: ${this.yamlQuote(this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET)}
 `;
     
     // Ensure directories exist
