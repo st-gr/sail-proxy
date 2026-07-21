@@ -58,6 +58,10 @@ ci-logs/
 ci/.ci-backup-*
 ci/.ci-backup-location
 
+# Admin service Postgres database backups (local docker or Kyma —
+# dumps contain real API keys/credentials, never commit)
+/db-backups/
+
 # Workspace sub-lockfiles (root pnpm-lock.yaml is the source of truth)
 # Keep only: pnpm-lock.yaml (root), docker/pnpm-lock.yaml, npm-dist/sail-proxy/pnpm-lock.yaml
 libs/pnpm-lock.yaml
