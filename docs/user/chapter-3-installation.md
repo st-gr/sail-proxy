@@ -534,8 +534,7 @@ node cli-tools/kyma-db-manager.js restore \
 - `--truncate-first`: Truncate all tables before restore (prevents duplicate key conflicts) ⭐
 - `--include-cds-model`: Include the `cds_model` table in a `--data-only` restore (NOT recommended — see the cds_model note below)
 - `--skip-api-config`: Skip the API configurations table, preserving the currently deployed `api_config.json` state
-- `--no-owner`: Skip ownership restoration
-- `--no-auto-backup`: Disable automatic safety backup
+- `--no-auto-backup`: Disable automatic safety backup (a safety backup is created by default)
 - `--dry-run`: Show what would be restored without executing
 
 > Note: any `DROP`/`CREATE` statements executed during a full restore come from the

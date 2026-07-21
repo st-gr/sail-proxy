@@ -555,9 +555,9 @@ async function executeReset(namespace, credentials, options) {
 async function executePsql(namespace, credentials, options) {
   const { input, dataOnly, clean, ifExists, dryRun, truncateFirst, pauseDeployments: shouldPause, yes } = options;
   // Commander stores `--no-X` flags as `options.x` (camelCase, default true,
-  // false when the flag is passed) — reading `options.noX` silently made both
-  // flags no-ops.
-  const noOwner = options.owner === false;
+  // false when the flag is passed) — reading `options.noX` silently made the
+  // flag a no-op. NOTE: the negated option must NOT be given an explicit
+  // `false` default, or the un-passed default itself becomes false.
   const noAutoBackup = options.autoBackup === false;
 
   let inputPath = path.resolve(input);
@@ -679,7 +679,7 @@ async function executePsql(namespace, credentials, options) {
     }
     logInfo(`  - Read SQL from: ${inputPath}`);
     logInfo(`  - Restore to database: ${credentials.database}`);
-    logInfo(`  - Options: dataOnly=${dataOnly}, clean=${clean}, noOwner=${noOwner}, truncateFirst=${truncateFirst}`);
+    logInfo(`  - Options: dataOnly=${dataOnly}, clean=${clean}, truncateFirst=${truncateFirst}`);
     if (shouldPause) {
       logInfo(`  - Resume deployments to original state`);
     }
@@ -784,12 +784,10 @@ async function executePsql(namespace, credentials, options) {
     logInfo(`Found ${tableNames.length} tables in backup file`);
   }
 
-  // Build psql command with echo-all to show table names
+  // Build psql command with echo-all to show table names.
+  // (No --no-owner here: that is a pg_restore/pg_dump flag — psql does not
+  // recognize it and exits immediately, breaking the stdin pipe.)
   let psqlCmd = `psql -U ${credentials.user} -d ${credentials.database} --no-password --echo-errors`;
-
-  if (noOwner) {
-    psqlCmd += ' --no-owner';
-  }
 
   try {
     // Execute psql via kubectl with stdin pipe
@@ -811,6 +809,18 @@ async function executePsql(namespace, credentials, options) {
 
     child.stderr.on('data', (data) => {
       stderr += data.toString();
+    });
+
+    // If psql/kubectl exits early (bad flag, auth failure, dropped exec
+    // channel), writing the remaining SQL raises EPIPE on stdin. Without a
+    // handler that is an unhandled 'error' event and kills the whole process
+    // BEFORE the close-handler can resume paused deployments — swallow it
+    // here and let the child's exit code + stderr report the real failure.
+    child.stdin.on('error', (err) => {
+      logWarning(`psql stdin closed early (${err.code || err.message}) — waiting for exit status...`);
+    });
+    child.on('error', (err) => {
+      logError(`Failed to launch restore command: ${err.message}`);
     });
 
     // Write SQL to stdin (use filtered content if cds_model was excluded)
@@ -1011,8 +1021,7 @@ program
   .option('--skip-api-config', 'Skip the sap_llm_gateway_admin_apiconfigurations table (preserves current api_config.json)', false)
   .option('--clean', 'Drop existing objects before restore', false)
   .option('--if-exists', 'Use IF EXISTS for drops', false)
-  .option('--no-owner', 'Skip ownership restoration', false)
-  .option('--no-auto-backup', 'Disable automatic safety backup', false)
+  .option('--no-auto-backup', 'Disable automatic safety backup')
   .option('--truncate-first', 'Truncate all tables before restore (removes data, keeps schema)', false)
   .option('--pause-deployments', 'Pause gateway and admin deployments during restore (recommended)', false)
   .option('--dry-run', 'Show what would be restored without executing', false)
