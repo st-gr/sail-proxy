@@ -122,6 +122,11 @@ RUN echo "=== BUILD OUTPUT STRUCTURE ===" && \
 # Production stage
 FROM node:20-alpine AS production
 
+# OCI provenance labels — connect the published image to its source repo on ghcr
+LABEL org.opencontainers.image.source="https://github.com/st-gr/sail-proxy" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.description="SAIL-Proxy admin service — configuration and usage administration (SAP CAP)"
+
 # Install pnpm and netcat for database health checks
 RUN corepack enable && corepack prepare pnpm@10.12.4 --activate && \
     apk add --no-cache netcat-openbsd

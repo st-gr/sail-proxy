@@ -41,6 +41,11 @@ RUN pnpm build:gateway
 # Production stage
 FROM node:20-alpine AS production
 
+# OCI provenance labels — connect the published image to its source repo on ghcr
+LABEL org.opencontainers.image.source="https://github.com/st-gr/sail-proxy" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.description="SAIL-Proxy gateway — OpenAI/Anthropic/Bedrock-compatible proxy for SAP AI Core Foundation Models"
+
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.12.4 --activate
 
