@@ -1,0 +1,40 @@
+# BuildKit daemon config for the 'sail-proxy-builder' buildx builder
+# (created by docker/scripts/build-and-tag-multiarch.js).
+#
+# Why this exists: without an explicit GC policy, BuildKit's docker-container
+# driver defaults to a disk-proportional cache cap (~73 GiB on a 100 GB Docker
+# VM disk, 60-day retention). On one dev machine that let the builder's cache
+# volume silently grow to 67 GB over ~5 months. These rules bound the cache to
+# 20 GB with a 14-day retention so it can never starve the host again.
+#
+# Applied at builder creation only:
+#   docker buildx create --name sail-proxy-builder --driver docker-container \
+#     --buildkitd-config docker/buildkitd.toml --use --bootstrap
+# Changing this file has NO effect on an existing builder — recreate it
+# (docker buildx rm sail-proxy-builder, then rerun pnpm docker:buildx).
+
+[worker.oci]
+  gc = true
+
+  # Rule 1: short-lived helper caches (local sources, cache mounts, git
+  # checkouts) — keep at most 48h / 512MB, mirroring BuildKit's default rule.
+  [[worker.oci.gcpolicy]]
+    all = false
+    filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+    keepDuration = "48h"
+    maxUsedSpace = "512MB"
+
+  # Rule 2: regular build cache — 14-day retention, 20 GB hard cap.
+  [[worker.oci.gcpolicy]]
+    all = false
+    keepDuration = "336h"
+    reservedSpace = "2GB"
+    maxUsedSpace = "20GB"
+    minFreeSpace = "10GB"
+
+  # Rule 3: everything (final backstop) — same 20 GB cap.
+  [[worker.oci.gcpolicy]]
+    all = true
+    reservedSpace = "2GB"
+    maxUsedSpace = "20GB"
+    minFreeSpace = "10GB"

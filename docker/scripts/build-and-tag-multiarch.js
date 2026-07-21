@@ -138,23 +138,91 @@ function checkBuilderExists() {
   }
 }
 
+// buildkitd config with a bounded GC policy (20 GB cap). Without it, BuildKit
+// defaults to a disk-proportional cap (~73 GiB here) and the cache once grew
+// to 67 GB unnoticed. Applied at builder creation only — see docker/buildkitd.toml.
+const buildkitdConfigPath = path.join(dockerDir, 'buildkitd.toml');
+
+function builderCreateCommand() {
+  const configFlag = fs.existsSync(buildkitdConfigPath)
+    ? ` --buildkitd-config "${buildkitdConfigPath}"`
+    : '';
+  return `docker buildx create --name sail-proxy-builder --driver docker-container${configFlag} --use --bootstrap`;
+}
+
 async function createBuilder() {
   const answer = await askUser(`${colors.yellow}Docker builder 'sail-proxy-builder' not found. Create it? (y/n): ${colors.reset}`);
-  
+
   if (answer !== 'y' && answer !== 'yes') {
     log('❌ Multi-arch builds require a buildx builder. Exiting.', colors.red);
     process.exit(1);
   }
-  
-  log('🔧 Creating multi-arch Docker builder...', colors.blue);
-  
+
+  log('🔧 Creating multi-arch Docker builder (with bounded cache GC policy)...', colors.blue);
+
   try {
-    run('docker buildx create --name sail-proxy-builder --driver docker-container --use --bootstrap');
+    run(builderCreateCommand());
     log('✅ Builder created successfully', colors.green);
   } catch (error) {
     log('❌ Failed to create builder', colors.red);
     log('This may happen if Docker Desktop is not running or BuildKit is not available.', colors.yellow);
     process.exit(1);
+  }
+}
+
+// === Cache Guardrail =========================================================
+// Belt & suspenders against unbounded cache growth:
+//  - warn loudly if the builder is running WITHOUT the bounded GC policy
+//    (e.g. created before buildkitd.toml existed), and
+//  - if the cache has grown past the hard threshold anyway, prune it down
+//    before building. GC policy "should" prevent that, but a silent 67 GB
+//    accumulation already happened once — never trust, always verify.
+const CACHE_WARN_GB = 25;   // prune trigger (> GC cap of 20 GB = GC not working)
+const CACHE_PRUNE_TARGET = '20GB';
+
+function parseSizeToGB(sizeStr) {
+  // docker buildx du prints sizes like "67.62GB", "488.3MB", "1.234kB", "0B"
+  const m = String(sizeStr).trim().match(/^([\d.]+)\s*(B|kB|KB|MB|GB|TB)$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toUpperCase();
+  const factor = { B: 1e-9, KB: 1e-6, MB: 1e-3, GB: 1, TB: 1e3 }[unit];
+  return factor === undefined ? null : n * factor;
+}
+
+function enforceCacheBounds() {
+  // 1. Detect a builder still running BuildKit's oversized default GC policy.
+  try {
+    const inspect = run('docker buildx inspect sail-proxy-builder', { silent: true });
+    const caps = [...inspect.matchAll(/Max Used Space:\s*([\d.]+\s*[A-Za-z]+)/g)]
+      .map((m) => parseSizeToGB(m[1].replace(/\s+/g, '').replace(/GiB/i, 'GB').replace(/MiB/i, 'MB')))
+      .filter((v) => v !== null);
+    if (caps.length === 0 || caps.some((gb) => gb > 30)) {
+      log('⚠️  Builder "sail-proxy-builder" is NOT using the bounded cache GC policy', colors.yellow);
+      log('   Its cache can silently grow to ~70+ GB. Recreate it with:', colors.yellow);
+      log('     docker buildx rm sail-proxy-builder', colors.bold);
+      log(`     ${builderCreateCommand()}`, colors.bold);
+    }
+  } catch (error) {
+    log(`⚠️  Could not inspect builder GC policy: ${error.message}`, colors.yellow);
+  }
+
+  // 2. Hard threshold check: prune if the cache outgrew the GC cap anyway.
+  try {
+    const du = run('docker buildx du --builder sail-proxy-builder 2>/dev/null | tail -2', { silent: true });
+    const totalMatch = du.match(/Total:\s*([\d.]+\s*[A-Za-z]+)/);
+    if (!totalMatch) return;
+    const totalGB = parseSizeToGB(totalMatch[1].replace(/\s+/g, ''));
+    if (totalGB === null) return;
+    log(`📦 Builder cache size: ${totalMatch[1].trim()}`, colors.cyan);
+    if (totalGB > CACHE_WARN_GB) {
+      log(`🚨 Builder cache is ${totalMatch[1].trim()} (> ${CACHE_WARN_GB} GB) — GC policy is not holding.`, colors.red);
+      log(`   Pruning down to ${CACHE_PRUNE_TARGET} before building...`, colors.yellow);
+      run(`docker buildx prune --builder sail-proxy-builder --max-used-space ${CACHE_PRUNE_TARGET} --force`);
+      log('✅ Cache pruned', colors.green);
+    }
+  } catch (error) {
+    log(`⚠️  Cache size check failed (continuing): ${error.message}`, colors.yellow);
   }
 }
 
@@ -191,7 +259,7 @@ function validateBuilderPlatforms() {
       log('', colors.reset);
       log('Then restart the builder:', colors.yellow);
       log('  docker buildx rm sail-proxy-builder', colors.bold);
-      log('  docker buildx create --name sail-proxy-builder --driver docker-container --use --bootstrap', colors.bold);
+      log(`  ${builderCreateCommand()}`, colors.bold);
       log('', colors.reset);
       process.exit(1);
     }
@@ -410,7 +478,10 @@ Examples:
   // Step 2: Switch to the builder and validate platforms
   run('docker buildx use sail-proxy-builder');
   validateBuilderPlatforms();
-  
+
+  // Step 2b: Cache guardrail — warn if GC policy is unbounded, prune if oversized
+  enforceCacheBounds();
+
   // Step 3: No registry authentication check - handled during push
   if (!buildOnly) {
     log('');
