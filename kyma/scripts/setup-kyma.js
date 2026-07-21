@@ -2478,9 +2478,28 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       
       console.log(`📝 Processing ${manifestFile} from template...`);
       let content = fs.readFileSync(templatePath, 'utf8');
-      
+
       // Replace standard placeholders
       content = this.replacePlaceholders(content, config);
+
+      // Dex: pin the Kubernetes API host to the kubernetes.default ClusterIP.
+      // Dex's storage client builds "https://[host]:443" (bracketed authority);
+      // Gardener's apiserver-proxy rejects that with 421 Misdirected Request on
+      // the DNS-name path but tolerates it on the ClusterIP path.
+      if (manifestFile === 'dex.yaml') {
+        const apiClusterIp = this.getKubernetesApiClusterIp();
+        if (apiClusterIp) {
+          content = content.replace(/__KUBERNETES_API_CLUSTER_IP__/g, apiClusterIp);
+          console.log(`✅ Dex API access pinned to kubernetes.default ClusterIP ${apiClusterIp} (Gardener 421 workaround)`);
+        } else {
+          // Strip the override block; dex falls back to the injected API host
+          content = content.replace(
+            /[ \t]*# __DEX_K8S_HOST_OVERRIDE_START__[\s\S]*?# __DEX_K8S_HOST_OVERRIDE_END__\n/,
+            ''
+          );
+          console.warn('⚠️  Could not resolve kubernetes.default ClusterIP — dex keeps the injected API host (may hit 421 on Gardener)');
+        }
+      }
       
       // Process OAuth2-proxy configuration for public deployments
       if (manifestFile === 'oauth2-proxy.yaml' && config.deploymentType === 'public') {
@@ -2507,6 +2526,26 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
   }
 
   // Helper method to replace standard placeholders in content
+  /**
+   * ClusterIP of the kubernetes.default Service (lazily cached).
+   * Used to pin dex's API access — see the dex.yaml handling above.
+   */
+  getKubernetesApiClusterIp() {
+    if (this._k8sApiClusterIp !== undefined) return this._k8sApiClusterIp;
+    try {
+      this._k8sApiClusterIp = execSync(
+        `kubectl get service kubernetes -n default -o jsonpath='{.spec.clusterIP}'`,
+        { encoding: 'utf8' }
+      ).trim();
+      if (!/^[0-9a-fA-F.:]+$/.test(this._k8sApiClusterIp)) {
+        this._k8sApiClusterIp = '';
+      }
+    } catch (error) {
+      this._k8sApiClusterIp = '';
+    }
+    return this._k8sApiClusterIp;
+  }
+
   replacePlaceholders(content, config) {
     const fullDomain = `${config.domain}.${config.clusterSubdomain}.kyma.ondemand.com`;
     

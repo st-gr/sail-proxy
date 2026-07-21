@@ -89,6 +89,20 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        # __DEX_K8S_HOST_OVERRIDE_START__
+        # Gardener's apiserver-proxy answers "421 Misdirected Request" to dex's
+        # kubernetes-storage client, which formats the in-cluster API URL with
+        # IPv6-style brackets ("https://[host]:443", present through at least
+        # dex v2.41) — the bracketed HTTP/2 :authority fails the proxy's SNI
+        # routing check when KUBERNETES_SERVICE_HOST is the webhook-injected
+        # DNS name. Pinning the kubernetes.default ClusterIP takes the
+        # interception path that tolerates the bracketed authority.
+        # Substituted by setup-kyma.js (stripped if the IP cannot be resolved).
+        - name: KUBERNETES_SERVICE_HOST
+          value: "__KUBERNETES_API_CLUSTER_IP__"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        # __DEX_K8S_HOST_OVERRIDE_END__
       volumes:
       - name: dex-config
         configMap:
