@@ -532,11 +532,29 @@ node cli-tools/kyma-db-manager.js restore \
 - `--input` / `-i`: Input backup file path (required)
 - `--data-only`: Restore only data (preserves existing schema)
 - `--truncate-first`: Truncate all tables before restore (prevents duplicate key conflicts) ⭐
-- `--clean`: Drop existing objects before restore
-- `--if-exists`: Use IF EXISTS for drops (safer)
+- `--include-cds-model`: Include the `cds_model` table in a `--data-only` restore (NOT recommended — see the cds_model note below)
+- `--skip-api-config`: Skip the API configurations table, preserving the currently deployed `api_config.json` state
 - `--no-owner`: Skip ownership restoration
 - `--no-auto-backup`: Disable automatic safety backup
 - `--dry-run`: Show what would be restored without executing
+
+> Note: any `DROP`/`CREATE` statements executed during a full restore come from the
+> backup file itself (full backups are generated with `pg_dump --clean --if-exists`),
+> not from restore-side flags.
+
+**Automatic `cds_model` protection (important for upgrades)**: the `cds_model` table
+holds CAP's schema metadata for the *currently deployed* code version — it is written by
+`cds-deploy` when the admin pod starts. A `--data-only` restore automatically **excludes
+`cds_model`** from both the truncate step and the restored data, so the freshly deployed
+version's schema metadata is preserved and old metadata from the backup cannot overwrite
+it. Override with `--include-cds-model` only when restoring into the *same* code version
+the backup was taken from.
+
+**⚠️ Use a `--data-only` backup as the restore input for upgrades**: restoring a *full*
+backup with `restore --data-only` still replays the DDL (`DROP`/`CREATE`) contained in
+that dump, replacing the freshly deployed schema with the old one. For the upgrade
+workflow below, take the backup with `backup --data-only` (keep a separate full backup
+as disaster insurance only).
 
 **4. Reset Command** - Delete all data (truncate tables without restore)
 
@@ -580,29 +598,42 @@ ls -lh backups/
 This is the recommended workflow when upgrading to a new version with schema changes:
 
 ```bash
-# Step 1: Backup current database before upgrade
+# Step 0: Record a baseline for later verification (table list + row counts)
+node cli-tools/kyma-db-manager.js info --namespace sail-proxy
+
+# Step 1: Backup current DATA before upgrade (this is the restore artifact —
+# a data-only dump carries no DDL, so it cannot overwrite the new schema)
 node cli-tools/kyma-db-manager.js backup \
   --namespace sail-proxy \
-  --output backups/pre-upgrade-backup.sql
+  --data-only \
+  --output backups/pre-upgrade-data.sql
 
-# Step 2: Store backup safely
-cp backups/pre-upgrade-backup.sql /safe/location/
+# Step 1b: Also take a FULL backup as disaster insurance (schema + data;
+# only for rolling back to the OLD version — never restore it after upgrading)
+node cli-tools/kyma-db-manager.js backup \
+  --namespace sail-proxy \
+  --output backups/pre-upgrade-full.sql
+
+# Step 2: Store backups safely
+cp backups/pre-upgrade-*.sql /safe/location/
 
 # Step 3: Deploy new version with schema changes
 kubectl apply -f kyma/templates/manifests/
 
 # Step 4: Wait for admin pod to complete schema migration
+# (its startup runs `cds-deploy --profile pg`, creating the new schema and cds_model)
 kubectl wait --for=condition=ready pod -l app=admin -n sail-proxy --timeout=300s
 
 # Step 5: Restore data with truncate-first and pause deployments for safety
+# (cds_model is automatically preserved — see note above)
 node cli-tools/kyma-db-manager.js restore \
   --namespace sail-proxy \
-  --input backups/pre-upgrade-backup.sql \
+  --input backups/pre-upgrade-data.sql \
   --data-only \
   --truncate-first \
   --pause-deployments
 
-# Step 6: Verify restoration
+# Step 6: Verify restoration — row counts should match the Step-0 baseline
 node cli-tools/kyma-db-manager.js info --namespace sail-proxy
 ```
 
@@ -662,20 +693,24 @@ node cli-tools/kyma-db-manager.js restore \
 
 #### Understanding Restore Modes
 
-**Full Restore** (no `--data-only` flag):
-- Drops all tables (uses DROP TABLE IF EXISTS)
+**Full Restore** (no `--data-only` flag, input is a *full* backup):
+- Drops all tables (via the `DROP TABLE IF EXISTS` statements that full backups
+  contain — `pg_dump` runs with `--clean --if-exists` at backup time)
 - Recreates tables from backup schema
 - Inserts all data
-- ⚠️ **Warning**: Overwrites any schema changes made after backup
+- ⚠️ **Warning**: Overwrites any schema changes made after backup — including a
+  newly deployed version's schema. Only use to roll back to the backup's version.
 
-**Data-Only Restore** (`--data-only` flag):
+**Data-Only Restore** (`--data-only` flag, input is a *data-only* backup):
 - Preserves existing schema
-- Only runs INSERT statements
+- Only replays data (`COPY` blocks); `cds_model` is automatically excluded
 - ❌ **Fails** if data already exists (duplicate primary keys)
 - ✅ Use with `--truncate-first` to avoid conflicts
+- ⚠️ The `--data-only` flag does **not** strip DDL from a *full* backup file —
+  pair it with a backup taken via `backup --data-only`
 
 **Data-Only with Truncate** (`--data-only --truncate-first`):
-- Truncates all tables (removes data, keeps schema)
+- Truncates all tables (removes data, keeps schema; `cds_model` excluded)
 - Then inserts backup data
 - ✅ **Perfect** for schema upgrades with new columns
 - ✅ No duplicate key conflicts

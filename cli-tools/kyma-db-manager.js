@@ -44,8 +44,22 @@ const colors = {
   cyan: '\x1b[36m',
 };
 
+// Secrets registered here are masked in ALL log output. Error messages from
+// execSync include the full failed command line — which embeds PGPASSWORD —
+// so without central redaction a failed kubectl/psql call echoes the database
+// password to the terminal.
+const secretsToRedact = new Set();
+
+function redactSecrets(message) {
+  let result = String(message);
+  for (const secret of secretsToRedact) {
+    if (secret) result = result.split(secret).join('***');
+  }
+  return result;
+}
+
 function log(message, color = colors.reset) {
-  console.log(`${color}${message}${colors.reset}`);
+  console.log(`${color}${redactSecrets(message)}${colors.reset}`);
 }
 
 function logError(message) {
@@ -98,6 +112,9 @@ function getKubernetesCredentials(namespace) {
     if (!credentials.user || !credentials.password || !credentials.database) {
       throw new Error('Failed to retrieve valid credentials from secret');
     }
+
+    // Mask the password in every subsequent log line (incl. echoed commands)
+    secretsToRedact.add(credentials.password);
 
     logSuccess('Credentials retrieved successfully');
     return credentials;
@@ -536,7 +553,12 @@ async function executeReset(namespace, credentials, options) {
  * @param {Object} options - Restore options
  */
 async function executePsql(namespace, credentials, options) {
-  const { input, dataOnly, clean, ifExists, noOwner, dryRun, noAutoBackup, truncateFirst, pauseDeployments: shouldPause, yes } = options;
+  const { input, dataOnly, clean, ifExists, dryRun, truncateFirst, pauseDeployments: shouldPause, yes } = options;
+  // Commander stores `--no-X` flags as `options.x` (camelCase, default true,
+  // false when the flag is passed) — reading `options.noX` silently made both
+  // flags no-ops.
+  const noOwner = options.owner === false;
+  const noAutoBackup = options.autoBackup === false;
 
   let inputPath = path.resolve(input);
   let tempExtractedPath = null;
@@ -937,9 +959,10 @@ function getDatabaseInfo(namespace, credentials) {
       }
     });
 
-    // Get database size
+    // Get database size. The SQL sits inside sh -c "..." — its quotes must be
+    // escaped or they terminate the outer double-quoted string (shell syntax error).
     const sizeQuery = `SELECT pg_size_pretty(pg_database_size('${credentials.database}')) AS database_size;`;
-    const sizeCmd = `PGPASSWORD='${credentials.password}' psql -U ${credentials.user} -d ${credentials.database} -t -c "${sizeQuery}"`;
+    const sizeCmd = `PGPASSWORD='${credentials.password}' psql -U ${credentials.user} -d ${credentials.database} -t -c \\"${sizeQuery}\\"`;
     const sizeKubectlCmd = `kubectl -n ${namespace} exec -i postgres-0 -- sh -c "${sizeCmd}"`;
 
     const sizeResult = execSync(sizeKubectlCmd, { encoding: 'utf8' }).trim();
