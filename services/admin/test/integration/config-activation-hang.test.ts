@@ -42,18 +42,31 @@ describe('Configuration Activation Stability Test', () => {
   });
 
   it('should handle configuration activation without hanging', async () => {
-    // This should complete successfully without hanging the service
-    const response = await request(baseUrl)
+    // Establish our own precondition: the shared test DB may have any config
+    // active (other test files activate configs too), so activate this one
+    // first — it either freshly activates or is already active; both succeed.
+    const first = await request(baseUrl)
       .post('/odata/v4/admin/activateConfiguration')
       .set('Authorization', authHeader)
       .set('Cookie', cookieHeader)
       .send({ configId })
       .timeout(5000);
-    
-    expect(response.status).toBe(200);
-    expect(response.body.success).toBe(true);
-    // Should indicate the configuration is already active
-    expect(response.body.message).toMatch(/already active/i);
+
+    expect(first.status).toBe(200);
+    expect(first.body.success).toBe(true);
+
+    // Re-activating the now-active config must report "already active"
+    // and, per the original intent of this test, must not hang.
+    const second = await request(baseUrl)
+      .post('/odata/v4/admin/activateConfiguration')
+      .set('Authorization', authHeader)
+      .set('Cookie', cookieHeader)
+      .send({ configId })
+      .timeout(5000);
+
+    expect(second.status).toBe(200);
+    expect(second.body.success).toBe(true);
+    expect(second.body.message).toMatch(/already active/i);
   });
 
   it('should handle GET requests normally after activation', async () => {

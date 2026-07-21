@@ -159,9 +159,14 @@ describe('API Keys HTTP Integration Tests - Realistic Usage', () => {
       expect(response.data.value.length).toBeLessThanOrEqual(5);
       
       if (response.data.value.length > 1) {
-        // Check that results are ordered by name ascending
+        // Check that results are ordered by name ascending. The server's
+        // collation may be case-insensitive (SQLite NOCASE / locale-aware),
+        // so a case-sensitive JS `<=` on mixed-case names would flake —
+        // compare case-insensitively instead.
         for (let i = 0; i < response.data.value.length - 1; i++) {
-          expect(response.data.value[i].name <= response.data.value[i + 1].name).toBe(true);
+          const a = response.data.value[i].name;
+          const b = response.data.value[i + 1].name;
+          expect(a.localeCompare(b, 'en', { sensitivity: 'base' }) <= 0).toBe(true);
         }
       }
     });

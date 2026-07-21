@@ -8,7 +8,21 @@ describe('Gateway Validation Functions Integration Tests', () => {
     auth: {
       username: 'admin@test.com',
       password: 'admin'
-    }
+    },
+    timeout: 10000
+  });
+
+  // Cleanup uses a tolerant client: no throw on non-2xx (a 404 for an
+  // already-deleted row is fine) and a hard timeout, so afterAll can never
+  // reject and log after jest teardown ("Cannot log after tests are done").
+  const cleanupClient = axios.create({
+    baseURL,
+    auth: {
+      username: 'admin@test.com',
+      password: 'admin'
+    },
+    timeout: 5000,
+    validateStatus: () => true
   });
 
   let testApiKey: string;
@@ -40,16 +54,18 @@ describe('Gateway Validation Functions Integration Tests', () => {
   });
 
   afterAll(async () => {
-    // Clean up test data
+    // Clean up test data (tolerant client — non-2xx responses don't throw)
     try {
       if (testApiKeyId) {
-        await client.post('/deleteApiKey', { keyId: testApiKeyId });
+        await cleanupClient.post('/deleteApiKey', { keyId: testApiKeyId });
       }
       if (testAwsAccessKeyId) {
-        await client.post('/deleteAwsCredentials', { accessKeyId: testAwsAccessKeyId });
+        await cleanupClient.post('/deleteAwsCredentials', { accessKeyId: testAwsAccessKeyId });
       }
     } catch (error) {
-      console.warn('Cleanup error:', error);
+      // Only network-level failures reach here; keep the log terse so a late
+      // rejection can't dump an object after jest teardown.
+      console.warn('Cleanup error:', (error as Error).message);
     }
   });
 
