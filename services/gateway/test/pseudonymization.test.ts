@@ -181,14 +181,44 @@ describe('Pseudonymization Plugin', () => {
       }
     });
 
-    it('masks the WHOLE phone number, including a +country-code prefix (structural groups are not the value)', () => {
+    it('masks the WHOLE formatted phone number (with a +, parens, or dash signal)', () => {
       const config: MaskingConfig = { method: 'pseudonymization', entities: [{ type: 'profile-phone' }] };
-      for (const num of ['+1 415 555 0132', '415 555 0132', '(415) 555-0132']) {
+      for (const num of ['+1 415 555 0132', '(415) 555-0132', '415-555-0132']) {
         const map = new ReplacementMap('pseudonymization');
         const masked = replaceEntities(num, detectEntities(num, config), map, config);
         expect(masked).toMatch(/^MASKED_PHONE_NUMBER_\d+$/);
         expect(masked).not.toContain('415');
         expect(masked).not.toContain('0132');
+      }
+    });
+
+    it('does NOT mask numeric-ID / port lists, bare digit runs, or IPs as phone numbers', () => {
+      // Root cause of the MASKED_PHONE_NUMBER leak: the structural phone pattern
+      // spanned whitespace-separated numeric tokens. These must not mask.
+      const config: MaskingConfig = { method: 'pseudonymization', entities: [{ type: 'profile-phone' }] };
+      for (const t of [
+        'for rtr in 10668 10768 11135 11182 11267 11475 11578 11599',
+        'ports 8080 3000 5432 9229',
+        '6584938629',
+        '192.168.1.100',
+        '415 555 0132', // bare space-only phone: no signal → not masked (accepted tradeoff)
+      ]) {
+        const map = new ReplacementMap('pseudonymization');
+        const masked = replaceEntities(t, detectEntities(t, config), map, config);
+        expect(masked).not.toContain('MASKED_PHONE_NUMBER');
+        expect(masked).toBe(t); // unchanged
+      }
+    });
+
+    it('masks a labelled (context-anchored) phone even when only space-separated', () => {
+      const config: MaskingConfig = { method: 'pseudonymization', entities: [{ type: 'profile-phone' }] };
+      for (const t of ['phone: 415 555 0132', 'mobile 415 555 0132', 'fax 415 555 0132']) {
+        const map = new ReplacementMap('pseudonymization');
+        const masked = replaceEntities(t, detectEntities(t, config), map, config);
+        expect(masked).toContain('MASKED_PHONE_NUMBER');
+        expect(masked).not.toContain('415 555 0132'); // the value is masked
+        // the label word survives (only the value is captured/masked)
+        expect(masked).toMatch(/^(phone:|mobile|fax) MASKED_PHONE_NUMBER_\d+$/);
       }
     });
 
@@ -1523,11 +1553,13 @@ describe('Pseudonymization Plugin', () => {
       };
       const req: any = {
         __endpoint: 'anthropic',
-        body: { model: 'test-model', messages: [{ role: 'user', content: trigger('call 415 555 0132') }] },
+        // formatted phone (+ signal) would mask if phone were enabled; model disables it
+        body: { model: 'test-model', messages: [{ role: 'user', content: trigger('at +1 415 555 0132') }] },
       };
       await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
       const masked = req.body.messages[0].content as string;
-      expect(masked).toContain('415 555 0132');            // model disabled phone → unmasked
+      expect(masked).toContain('+1 415 555 0132');         // model disabled phone → unmasked
+      expect(masked).not.toContain('MASKED_PHONE_NUMBER');
     });
 
     it('no toggle config → default behavior (address masked)', async () => {

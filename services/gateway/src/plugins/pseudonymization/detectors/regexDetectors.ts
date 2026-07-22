@@ -101,10 +101,16 @@ function ibanCheck(iban: string): boolean {
   return remainder === 1;
 }
 
-// Phone number digit count validation
+// Phone number validation: 7-15 digits AND a real phone SIGNAL (a leading '+',
+// parentheses, or a dash separator). Spaces and dots are NOT signals — bare
+// space-separated numeric lists (router IDs, ports, PIDs) and dotted IPs use
+// them, and the structural pattern would otherwise span across them and mask
+// them as phone numbers. A labelled phone with only spaces is still caught by
+// the separate context-anchored detector below.
 function phoneValidate(match: string): boolean {
   const digits = match.replace(/\D/g, '');
-  return digits.length >= 7 && digits.length <= 15;
+  if (digits.length < 7 || digits.length > 15) return false;
+  return /[+()\-]/.test(match);
 }
 
 // Credential value validation: reject template placeholders (`<token>`, `${VAR}`,
@@ -121,8 +127,19 @@ const DETECTORS: DetectorDef[] = [
   },
   {
     type: 'profile-phone',
-    pattern: /(?:\+?(\d{1,3})[\s.\-]?)?(?:\((\d{2,4})\)|(\d{2,4}))[\s.\-]?(\d{3,4})[\s.\-]?(\d{3,4})/g,
+    // Structural phone. Digit boundaries (?<!\d) / (?!\d) keep a match from being
+    // a fragment of a longer run. phoneValidate additionally requires a +/()/-
+    // signal so space-separated ID/port lists and dotted IPs are not masked.
+    pattern: /(?<!\d)(?:\+?(\d{1,3})[\s.\-]?)?(?:\((\d{2,4})\)|(\d{2,4}))[\s.\-]?(\d{3,4})[\s.\-]?(\d{3,4})(?!\d)/g,
     validate: phoneValidate,
+  },
+  {
+    type: 'profile-phone',
+    // Context-anchored: an explicitly labelled phone still masks even when it is
+    // only space-separated (no +/()/-). Captures the value only (captureValue).
+    pattern: /(?:phone|tel(?:ephone)?|mobile|cell(?:phone)?|fax|whatsapp)\b(?:\s*(?:number|no\.?|#))?\s*[:=]?\s*(\+?\d[\d\s().\-]*\d)/gi,
+    validate: (v: string) => { const d = v.replace(/\D/g, ''); return d.length >= 7 && d.length <= 15; },
+    captureValue: true,
   },
   {
     type: 'profile-ssn',
