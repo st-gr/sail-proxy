@@ -4,7 +4,9 @@
   "title": "SAP LLM Gateway API Configuration Schema",
   "description": "JSON schema for validating SAP LLM Gateway API configuration files",
   "type": "object",
-  "required": ["api_config"],
+  "required": [
+    "api_config"
+  ],
   "properties": {
     "api_config": {
       "type": "object",
@@ -35,14 +37,28 @@
               "patternProperties": {
                 "^[a-zA-Z0-9_-]+$": {
                   "type": "string",
-                  "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+                  "enum": [
+                    "TRACE",
+                    "DEBUG",
+                    "INFO",
+                    "WARN",
+                    "ERROR",
+                    "FATAL"
+                  ]
                 }
               },
               "additionalProperties": false
             },
             "defaultLevel": {
               "type": "string",
-              "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"],
+              "enum": [
+                "TRACE",
+                "DEBUG",
+                "INFO",
+                "WARN",
+                "ERROR",
+                "FATAL"
+              ],
               "description": "Default log level"
             },
             "log_folder_path": {
@@ -62,11 +78,18 @@
           "patternProperties": {
             "^[a-zA-Z0-9_:=-]+$": {
               "type": "object",
-              "required": ["type"],
+              "required": [
+                "type"
+              ],
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["header", "json-path", "json-path-regex", "url-regex"]
+                  "enum": [
+                    "header",
+                    "json-path",
+                    "json-path-regex",
+                    "url-regex"
+                  ]
                 },
                 "name": {
                   "type": "string",
@@ -105,41 +128,58 @@
                 {
                   "if": {
                     "properties": {
-                      "type": { "const": "header" }
+                      "type": {
+                        "const": "header"
+                      }
                     }
                   },
                   "then": {
-                    "required": ["name"]
+                    "required": [
+                      "name"
+                    ]
                   }
                 },
                 {
                   "if": {
                     "properties": {
-                      "type": { "const": "json-path" }
+                      "type": {
+                        "const": "json-path"
+                      }
                     }
                   },
                   "then": {
-                    "required": ["path"]
+                    "required": [
+                      "path"
+                    ]
                   }
                 },
                 {
                   "if": {
                     "properties": {
-                      "type": { "const": "json-path-regex" }
+                      "type": {
+                        "const": "json-path-regex"
+                      }
                     }
                   },
                   "then": {
-                    "required": ["path", "regex"]
+                    "required": [
+                      "path",
+                      "regex"
+                    ]
                   }
                 },
                 {
                   "if": {
                     "properties": {
-                      "type": { "const": "url-regex" }
+                      "type": {
+                        "const": "url-regex"
+                      }
                     }
                   },
                   "then": {
-                    "required": ["regex"]
+                    "required": [
+                      "regex"
+                    ]
                   }
                 }
               ]
@@ -160,15 +200,22 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "required": ["request"],
+                        "required": [
+                          "request"
+                        ],
                         "properties": {
                           "request": {
                             "type": "object",
-                            "required": ["callback", "match"],
+                            "required": [
+                              "callback",
+                              "match"
+                            ],
                             "properties": {
                               "callback": {
                                 "type": "object",
-                                "required": ["id"],
+                                "required": [
+                                  "id"
+                                ],
                                 "properties": {
                                   "id": {
                                     "type": "string",
@@ -176,7 +223,10 @@
                                   },
                                   "strategy": {
                                     "type": "string",
-                                    "enum": ["before", "after"]
+                                    "enum": [
+                                      "before",
+                                      "after"
+                                    ]
                                   }
                                 },
                                 "additionalProperties": false
@@ -224,6 +274,22 @@
                 },
                 "pseudonymization": {
                   "$ref": "#/$defs/pseudonymizationConfig"
+                },
+                "unsupported_params": {
+                  "description": "Request parameters this provider/model does not accept; the gateway strips them before forwarding to SAP AI Core (which otherwise returns 400 \"does not support parameters: [...]\"). A per-model list replaces the provider-level list.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "param_renames": {
+                  "description": "Parameter renames applied on the direct-deployment path, e.g. {\"max_tokens\":\"max_completion_tokens\"} for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 }
               },
               "additionalProperties": true
@@ -256,7 +322,9 @@
         },
         "openai": {
           "allOf": [
-            { "$ref": "#/$defs/providerConfig" },
+            {
+              "$ref": "#/$defs/providerConfig"
+            },
             {
               "type": "object",
               "properties": {
@@ -270,13 +338,19 @@
         },
         "openrouter": {
           "allOf": [
-            { "$ref": "#/$defs/providerConfig" },
+            {
+              "$ref": "#/$defs/providerConfig"
+            },
             {
               "type": "object",
               "properties": {
                 "default_pricing": {
                   "type": "object",
-                  "required": ["completion", "image", "prompt"],
+                  "required": [
+                    "completion",
+                    "image",
+                    "prompt"
+                  ],
                   "properties": {
                     "completion": {
                       "type": "string",
@@ -297,7 +371,11 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "required": ["default_context_length", "id_prefix", "provider"],
+                    "required": [
+                      "default_context_length",
+                      "id_prefix",
+                      "provider"
+                    ],
                     "properties": {
                       "default_context_length": {
                         "type": "integer",
@@ -381,6 +459,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "perplexity": {
+          "$ref": "#/$defs/providerConfig"
         }
       },
       "additionalProperties": true
@@ -397,7 +478,10 @@
         },
         "method": {
           "type": "string",
-          "enum": ["pseudonymization", "anonymization"]
+          "enum": [
+            "pseudonymization",
+            "anonymization"
+          ]
         },
         "allow_user_bypass": {
           "type": "boolean"
@@ -447,7 +531,10 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["from", "to"],
+            "required": [
+              "from",
+              "to"
+            ],
             "properties": {
               "from": {
                 "type": "string",
@@ -462,6 +549,22 @@
               }
             },
             "additionalProperties": false
+          }
+        },
+        "unsupported_params": {
+          "description": "Request parameters this provider/model does not accept; the gateway strips them before forwarding to SAP AI Core (which otherwise returns 400 \"does not support parameters: [...]\"). A per-model list replaces the provider-level list.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "param_renames": {
+          "description": "Parameter renames applied on the direct-deployment path, e.g. {\"max_tokens\":\"max_completion_tokens\"} for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
           }
         }
       },

@@ -13,6 +13,13 @@ import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import {
+  isUnsupportedParam,
+  stripUnsupportedParams,
+  applyParamRenames,
+  defaultParamRenames,
+  OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS,
+} from '../utils/unsupportedParamFilter';
 import type { SapV2CompletionRequest } from '../services/sapOrchestrationTypes';
 
 // Type definitions
@@ -166,23 +173,66 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       logger.info('openaiController', `Deployed model ${originalModelFromRequest} - Provider: ${deployedModelProvider}, Deployment URL: ${modelDetails.deploymentUrl}`);
 
       let finalDeploymentUrl = modelDetails.deploymentUrl;
-      if (deployedModelProvider === 'openai') {
-        // Always append /chat/completions for OpenAI provider if the base deploymentUrl doesn't include it
+      // Providers whose SAP AI Core deployments expose an OpenAI-compatible
+      // /chat/completions endpoint. Posting to the bare deployment URL 404s, so
+      // the path must be appended (webSearchPlugin does the same for Perplexity).
+      // Anthropic deployments use a different (Bedrock-style) contract and are
+      // intentionally NOT handled on this route.
+      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider)) {
         if (!finalDeploymentUrl.endsWith('/chat/completions')) {
           finalDeploymentUrl = `${finalDeploymentUrl}/chat/completions`;
         }
-        
-        const apiVersion = configService.getOpenAIDeploymentApiVersion();
-        if (apiVersion) {
-          // Append api-version query parameter
-          finalDeploymentUrl = `${finalDeploymentUrl}?api-version=${apiVersion}`;
+
+        // api-version is Azure-OpenAI specific; Perplexity deployments reject it.
+        if (deployedModelProvider === 'openai') {
+          const apiVersion = configService.getOpenAIDeploymentApiVersion();
+          if (apiVersion) {
+            // Append api-version query parameter
+            finalDeploymentUrl = `${finalDeploymentUrl}?api-version=${apiVersion}`;
+          }
         }
-        logger.info('openaiController', `Constructed final URL for OpenAI deployed model: ${finalDeploymentUrl}`);
+        logger.info('openaiController', `Constructed final URL for deployed ${deployedModelProvider} model: ${finalDeploymentUrl}`);
       }
 
       let deploymentPayload = { ...req.body };
       const clientRequestedStream = deploymentPayload.stream === true;
       delete deploymentPayload.stream; // Direct call to deploymentUrl is non-streaming
+
+      // The deployment knows only its upstream model name, not our `--deployed`
+      // alias (Perplexity rejects it: "Model 'sonar--deployed' is not allowed,
+      // supported model: sonar."). Send the real name for OpenAI-compatible
+      // deployments; Anthropic deployments are not served on this route.
+      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider) && modelDetails.model) {
+        if (modelDetails.model !== deploymentPayload.model) {
+          logger.info('openaiController',
+            `Deployed model ${originalModelFromRequest} -> upstream model name '${modelDetails.model}'`);
+        }
+        deploymentPayload.model = modelDetails.model;
+      }
+
+      // This branch forwards the raw client body, so strip parameters the
+      // provider rejects (same guard as the orchestration path below).
+      const deployedDropped = stripUnsupportedParams(
+        deploymentPayload,
+        configService.getUnsupportedParams(deployedModelProvider, originalModelFromRequest)
+      );
+      if (deployedDropped.length > 0) {
+        logger.warn('openaiController',
+          `Dropped ${deployedDropped.length} parameter(s) not supported by provider '${deployedModelProvider}' for deployed model ${originalModelFromRequest}: ${deployedDropped.join(', ')}`);
+      }
+
+      // Rename params this deployment expects under a different name (e.g.
+      // gpt-5.x requires max_completion_tokens instead of max_tokens).
+      // Built-in renames by model family (e.g. gpt-5+ / o-series need
+      // max_completion_tokens); config overrides per key.
+      const deployedRenamed = applyParamRenames(deploymentPayload, {
+        ...defaultParamRenames(deployedModelProvider, originalModelFromRequest),
+        ...configService.getParamRenames(deployedModelProvider, originalModelFromRequest),
+      });
+      if (deployedRenamed.length > 0) {
+        logger.info('openaiController',
+          `Renamed parameter(s) for deployed model ${originalModelFromRequest}: ${deployedRenamed.join(', ')}`);
+      }
 
       if (debugRequestId) {
         payloadLogger.savePayload(debugRequestId, '01a_deployed_request_payload_to_url_openai', deploymentPayload, req);
@@ -217,8 +267,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         );
       }
 
-      // Response Handling
-      if (deployedModelProvider === 'openai') { // Current route is OpenAI, deployed model is OpenAI
+      // Response Handling. OpenAI-compatible deployments (incl. Perplexity)
+      // already return an OpenAI-shaped chat.completion, so pass it straight
+      // through. Other providers (Anthropic) need a transformation that this
+      // route does not implement — they fall through to the error below.
+      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider)) {
         // Determine provider name based on request source
         const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
         const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
@@ -1043,23 +1096,47 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
     payload.messages_history = previousMessages;
   }
 
+  // Parameters this provider/model does not accept. SAP AI Core's LLM module
+  // rejects the whole request otherwise (e.g. HTTP 400 "perplexity does not
+  // support parameters: ['tools'], for model=sonar"), so drop them instead of
+  // letting a client that always sends `tools`/`response_format` fail outright.
+  const unsupportedParams = configService.getUnsupportedParams(provider, modelName);
+  const droppedParams: string[] = [];
+
   // Handle tools and tool_choice if present.
   // V2: tools live on prompt; tool_choice is OpenAI-style under model.params.
   if (openAIReq.tools && openAIReq.tools.length > 0) {
-    logger.info('openaiController', 'Tools found in request, adding to SAP AI Core payload');
+    if (isUnsupportedParam('tools', unsupportedParams)) {
+      droppedParams.push('tools');
+    } else {
+      logger.info('openaiController', 'Tools found in request, adding to SAP AI Core payload');
 
-    payload.config.modules.prompt_templating.prompt.tools = openAIReq.tools;
+      payload.config.modules.prompt_templating.prompt.tools = openAIReq.tools;
+    }
 
     if (openAIReq.tool_choice) {
-      payload.config.modules.prompt_templating.model.params!.tool_choice = openAIReq.tool_choice;
+      if (isUnsupportedParam('tool_choice', unsupportedParams) || isUnsupportedParam('tools', unsupportedParams)) {
+        droppedParams.push('tool_choice');
+      } else {
+        payload.config.modules.prompt_templating.model.params!.tool_choice = openAIReq.tool_choice;
+      }
     }
   }
 
   // Handle response_format if present (V2: lives on prompt).
   if (openAIReq.response_format) {
-    logger.info('openaiController', 'Response format found in request, adding to SAP AI Core payload');
+    if (isUnsupportedParam('response_format', unsupportedParams)) {
+      droppedParams.push('response_format');
+    } else {
+      logger.info('openaiController', 'Response format found in request, adding to SAP AI Core payload');
 
-    payload.config.modules.prompt_templating.prompt.response_format = openAIReq.response_format;
+      payload.config.modules.prompt_templating.prompt.response_format = openAIReq.response_format;
+    }
+  }
+
+  if (droppedParams.length > 0) {
+    logger.warn('openaiController',
+      `Dropped ${droppedParams.length} parameter(s) not supported by provider '${provider}' for model ${modelName}: ${droppedParams.join(', ')}`);
   }
 
   // V2 streaming: config.stream is a structured object { enabled, chunk_size, delimiters? }.

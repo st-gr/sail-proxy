@@ -11,6 +11,7 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { selectPluginCacheKeysToClear } from '../utils/pluginCacheSelector';
+import { resolveUnsupportedParams } from '../utils/unsupportedParamFilter';
 
 interface ModelSubstitution {
   from: string;
@@ -1111,6 +1112,64 @@ export const getSupportedBetaHeaders = (): string[] => {
   }
 };
 
+/**
+ * Get the request parameters a provider/model does not accept, so they can be
+ * stripped before forwarding to SAP AI Core (which returns HTTP 400
+ * "does not support parameters: [...]" otherwise, e.g. `tools` for Perplexity).
+ *
+ * Layered: a per-model `unsupported_params` list REPLACES the provider-level
+ * list. Absent at both levels returns [] (nothing stripped).
+ *
+ * @param provider - lowercased provider key (from modelDetails.owned_by)
+ * @param modelName - optional model id for a per-model override
+ * @returns Array of parameter names to drop from the outbound payload
+ */
+export const getUnsupportedParams = (provider?: string, modelName?: string): string[] => {
+  try {
+    const config = getConfig();
+    const providerList = provider
+      ? config?.api_config?.[provider]?.unsupported_params
+      : undefined;
+    const modelOverride = modelName
+      ? config?.api_config?.model_list_changes?.[modelName]?.unsupported_params
+      : undefined;
+    return resolveUnsupportedParams(providerList, modelOverride);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting unsupported params: ${error.message}`);
+    return [];
+  }
+};
+
+/**
+ * Get parameter renames for a provider/model, e.g.
+ * `{ "max_tokens": "max_completion_tokens" }` for newer OpenAI reasoning models
+ * that reject `max_tokens`. Only needed on the direct-deployment path, which
+ * forwards the raw client body (SAP orchestration normalizes params itself).
+ *
+ * Layered like getUnsupportedParams: a per-model map REPLACES the provider map.
+ *
+ * @param provider - lowercased provider key (from modelDetails.owned_by)
+ * @param modelName - optional model id for a per-model override
+ */
+export const getParamRenames = (provider?: string, modelName?: string): Record<string, string> => {
+  try {
+    const config = getConfig();
+    const modelOverride = modelName
+      ? config?.api_config?.model_list_changes?.[modelName]?.param_renames
+      : undefined;
+    if (modelOverride && typeof modelOverride === 'object') {
+      return modelOverride;
+    }
+    const providerMap = provider
+      ? config?.api_config?.[provider]?.param_renames
+      : undefined;
+    return (providerMap && typeof providerMap === 'object') ? providerMap : {};
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting param renames: ${error.message}`);
+    return {};
+  }
+};
+
 export const getOpenAIDeploymentApiVersion = (): string | undefined => {
   try {
     const config = getConfig();
@@ -1443,6 +1502,8 @@ export default {
   getAnthropicBedrockVersion,
   getExcludedBetaHeaders,
   getSupportedBetaHeaders,
+  getUnsupportedParams,
+  getParamRenames,
   getOpenAIDeploymentApiVersion,
   getAllProviderConfigs,
   getModelListChanges,

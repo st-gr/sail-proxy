@@ -649,6 +649,64 @@ Anthropic clients such as Claude Code send beta feature flags in the `anthropic-
 
 **Default:** the shipped allowlist contains the flags currently accepted by SAP AI Core Bedrock Anthropic deployments. If SAP adds support for a new beta feature, add its flag to `supported_beta_headers` via the admin UI.
 
+### Unsupported Provider Parameters
+
+SAP AI Core's LLM module rejects the **entire request** when it receives a parameter a provider does not accept, e.g.:
+
+```
+400 - LLM Module: perplexity does not support parameters: ['tools'], for model=sonar
+```
+
+Clients such as OpenWebUI send `tools` (function calling) and `response_format` (`{"type":"json_object"}` for title/tag generation) unconditionally. Rather than failing the request, the gateway strips parameters listed under `unsupported_params`, configurable at two levels (hot-reloadable via the admin UI):
+
+```json
+{
+  "api_config": {
+    "perplexity": {
+      "unsupported_params": ["tools", "tool_choice", "response_format"]
+    },
+    "model_list_changes": {
+      "sonar": { "unsupported_params": ["tools", "tool_choice"] }
+    }
+  }
+}
+```
+
+- **Provider level** — keyed by the model's provider (`owned_by`, lowercased; e.g. `perplexity` covers `sonar`, `sonar-pro` and any future Perplexity model automatically).
+- **Per-model level** — a list in `model_list_changes.<model>` **replaces** the provider list for that model (use `[]` to opt a model back in if it later gains support).
+- Absent at both levels means nothing is stripped, so existing configurations are unaffected.
+
+Dropped parameters are logged at WARN naming the provider, model and parameters, so the behavior is diagnosable. This applies to both the orchestration path and directly-deployed (`--deployed`) models.
+
+### Parameter Renames (deployed models)
+
+Requests to `--deployed` models are posted directly to the deployment, bypassing SAP orchestration's parameter normalization. Some models require a different parameter name — the **GPT-5 family and newer, and the o-series reasoning models, reject `max_tokens` and require `max_completion_tokens`**.
+
+This is applied automatically by model family, so newly deployed models work without configuration:
+
+| Model | Parameter sent |
+|---|---|
+| `gpt-5`, `gpt-5.4`, `gpt-6-turbo`, `o1`, `o3`, `o4-mini` | `max_completion_tokens` |
+| `gpt-4o`, `gpt-4`, `gpt-35-turbo` (Azure's GPT-3.5) | `max_tokens` (unchanged) |
+
+Config can override the built-in defaults per key, for exceptions or a family the pattern does not yet know (e.g. a future double-digit `gpt-10`):
+
+```json
+{
+  "api_config": {
+    "model_list_changes": {
+      "some-model--deployed": {
+        "param_renames": { "max_tokens": "max_completion_tokens" }
+      }
+    }
+  }
+}
+```
+
+Same layering as `unsupported_params`: a per-model map replaces the provider-level map, and config wins over the built-in default per key (map a key to itself to disable a default). The source key is always removed so both names are never sent; an explicitly supplied destination value wins. If a deployed model returns `unsupported_parameter … Use 'X' instead`, add the mapping here.
+
+**Deployed-model routing:** `--deployed` models whose provider exposes an OpenAI-compatible endpoint (OpenAI, Perplexity) are served on the `/openai` and `/openrouter` routes — the gateway appends `/chat/completions` to the deployment URL and substitutes the upstream model name (a deployment rejects the `--deployed` alias, e.g. *"Model 'sonar--deployed' is not allowed, supported model: sonar"*). Anthropic deployments use a Bedrock-style contract and are served via the `/anthropic` route instead.
+
 ### Model Capability Validation
 
 The gateway automatically validates that models are used with appropriate endpoints based on their capabilities:

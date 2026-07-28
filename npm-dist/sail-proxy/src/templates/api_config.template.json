@@ -1727,6 +1727,13 @@
         }
       ]
     },
+    "perplexity": {
+      "unsupported_params": [
+        "tools",
+        "tool_choice",
+        "response_format"
+      ]
+    },
     "rate_limit_handling": {
       "backoff_multiplier": 1.5,
       "default_delay_seconds": 30,

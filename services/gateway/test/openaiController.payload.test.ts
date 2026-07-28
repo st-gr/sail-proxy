@@ -20,7 +20,12 @@ jest.mock('@libs/logger', () => ({
 jest.mock('../src/services/modelService', () => ({
   __esModule: true,
   default: {
-    getModelDetails: () => Promise.resolve({ id: 'gpt-4o-mini', owned_by: 'openai' }),
+    // Perplexity models report owned_by 'Perplexity' (lowercased to the provider key)
+    getModelDetails: (model: string) => Promise.resolve(
+      String(model).startsWith('sonar')
+        ? { id: model, owned_by: 'Perplexity', executableId: 'perplexity-ai' }
+        : { id: model, owned_by: 'openai' }
+    ),
     modelSupportsStreaming: () => true,
   },
 }));
@@ -30,6 +35,9 @@ jest.mock('../src/services/configService', () => ({
   default: {
     shouldEmulateStreaming: () => false,
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'default' }),
+    // Mirrors the shipped api_config.json perplexity block
+    getUnsupportedParams: (provider: string) =>
+      provider === 'perplexity' ? ['tools', 'tool_choice', 'response_format'] : [],
   },
 }));
 
@@ -125,5 +133,42 @@ describe('openaiController.transformRequestToSAPFormat — V2 wire shape', () =>
     });
 
     expect(payload.config.modules.prompt_templating.model.params).toHaveProperty('stream_options.include_usage', true);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Provider-unsupported parameters (SAP 400: "does not support parameters")
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const toolsRequest = (model: string) => ({
+    model,
+    messages: [{ role: 'user', content: 'hi' }],
+    max_tokens: 64,
+    tools: [{
+      type: 'function',
+      function: { name: 'get_weather', parameters: { type: 'object', properties: {} } },
+    }],
+    tool_choice: 'auto' as const,
+    response_format: { type: 'json_object' },
+  });
+
+  it('drops tools/tool_choice/response_format for a provider that rejects them (sonar)', async () => {
+    // Reproduces the OpenWebUI + Perplexity failure:
+    // 400 - LLM Module: perplexity does not support parameters: ['tools'], for model=sonar
+    const payload: any = await transformRequestToSAPFormat(toolsRequest('sonar') as any);
+
+    expect(payload.config.modules.prompt_templating.prompt).not.toHaveProperty('tools');
+    expect(payload.config.modules.prompt_templating.prompt).not.toHaveProperty('response_format');
+    expect(payload.config.modules.prompt_templating.model.params).not.toHaveProperty('tool_choice');
+    // the rest of the request still builds normally
+    expect(payload).toHaveProperty('config.modules.prompt_templating.model.name', 'sonar');
+    expect(payload).toHaveProperty('config.modules.prompt_templating.prompt.template');
+  });
+
+  it('keeps tools/tool_choice/response_format for providers that support them (no regression)', async () => {
+    const payload: any = await transformRequestToSAPFormat(toolsRequest('gpt-4o-mini') as any);
+
+    expect(Array.isArray(payload.config.modules.prompt_templating.prompt.tools)).toBe(true);
+    expect(payload.config.modules.prompt_templating.model.params).toHaveProperty('tool_choice', 'auto');
+    expect(payload.config.modules.prompt_templating.prompt).toHaveProperty('response_format', { type: 'json_object' });
   });
 });
