@@ -59,7 +59,7 @@ export const OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS = ['openai', 'perplexity'];
  * still uses `max_tokens`. A future double-digit family (gpt-10+) therefore
  * needs a config `param_renames` entry until this pattern is extended.
  */
-const MAX_COMPLETION_TOKENS_MODELS = /^(?:gpt-[5-9](?:[.\-]|$)|o[1-9])/i;
+export const MAX_COMPLETION_TOKENS_MODELS = /^(?:gpt-[5-9](?:[.\-]|$)|o[1-9])/i;
 
 /**
  * Built-in parameter renames for a deployed model, derived from the model name

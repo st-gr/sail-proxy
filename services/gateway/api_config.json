@@ -151,6 +151,46 @@
               ]
             }
           }
+        ],
+        "responses": [
+          {
+            "request": {
+              "callback": { "id": "pseudonymizationPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesWebSearchPlugin" },
+              "match": ["header:contentTypeJson", "tools:hasWebSearch"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesNamespaceToolsPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          }
+        ],
+        "responses-stream": [
+          {
+            "request": {
+              "callback": { "id": "pseudonymizationPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesNamespaceToolsPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesWebSearchPlugin" },
+              "match": ["header:contentTypeJson", "tools:hasWebSearch"]
+            }
+          }
         ]
       },
       "aws-bedrock": {
@@ -275,6 +315,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -317,6 +358,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -390,6 +432,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -432,6 +475,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -483,6 +527,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -525,6 +570,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -585,6 +631,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -647,6 +694,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -731,6 +779,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -793,6 +842,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -873,6 +923,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -935,6 +986,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1017,6 +1069,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1089,6 +1142,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1181,6 +1235,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1253,6 +1308,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1345,6 +1401,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1417,6 +1474,7 @@
                   "id": "webSearchPlugin"
                 },
                 "match": [
+                  "header:contentTypeJson",
                   "tools:hasWebSearch"
                 ]
               }
@@ -1756,6 +1814,12 @@
         "converse-stream": 25,
         "invoke-with-response-stream": 35
       }
+    },
+    "web_search": {
+      "max_searches_per_request": 3
+    },
+    "namespace_tools": {
+      "mode": "flatten"
     }
   }
 }

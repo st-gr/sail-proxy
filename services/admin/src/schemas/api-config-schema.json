@@ -290,6 +290,10 @@
                     "type": "string",
                     "minLength": 1
                   }
+                },
+                "supports_responses_api": {
+                  "description": "Override whether this provider/model may be served on /openai/v1/responses. Absent = built-in family heuristic (deployed GPT-5+/o-series).",
+                  "type": "boolean"
                 }
               },
               "additionalProperties": true
@@ -462,6 +466,30 @@
         },
         "perplexity": {
           "$ref": "#/$defs/providerConfig"
+        },
+        "web_search": {
+          "type": "object",
+          "properties": {
+            "max_searches_per_request": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "additionalProperties": false
+        },
+        "namespace_tools": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "flatten",
+                "strip"
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": true
@@ -566,6 +594,10 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "supports_responses_api": {
+          "description": "Override whether this provider/model may be served on /openai/v1/responses. Absent = built-in family heuristic (deployed GPT-5+/o-series).",
+          "type": "boolean"
         }
       },
       "additionalProperties": true

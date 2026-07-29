@@ -34,6 +34,56 @@ curl -X POST http://localhost:3000/openai/v1/chat/completions \
   }'
 ```
 
+#### OpenAI Responses API
+
+- **Endpoint**: `/openai/v1/responses` (also mounted at `/openrouter/api/v1/responses`)
+- **Models**: deployed GPT-5+ / o-series only (e.g. `gpt-5.3-codex--deployed`). Other models return HTTP 400 `model_not_supported` — use `/openai/v1/chat/completions` for those.
+- **Supported**: streaming, function tools, `reasoning`, `instructions`, `store: false`.
+- **Hosted web search**: a hosted `{"type":"web_search"}` tool is emulated gateway-side through Perplexity `sonar-pro`. The gateway runs the search itself and then calls the model again with the results, so the turn ends with the model's OWN answer written from what the search found: the client receives a `web_search_call` item recording the search, followed by the assistant's message. Streaming works the same way — the second call's frames are spliced into the same SSE stream, so the client still sees exactly one `response.created` and one `response.completed`. The number of searches per request is capped by `api_config.web_search.max_searches_per_request` (default 3, clamped to 1–10). Only when no follow-up call is possible (the cap is exhausted, or the call itself fails) does the gateway fall back to delivering the formatted results as the assistant's message.
+- **Client**: Codex CLI (see below)
+- **Upgrading a distributed install**: an admin-activated configuration *replaces* the shipped `api_config.json` wholesale, so a configuration activated before this endpoint existed has no `responses` / `responses-stream` hook keys under `defaultHooks.openai`. Because pseudonymization is force-enabled for the `openai` endpoint, the route then refuses requests with HTTP 503 `pseudonymization_hook_missing` rather than sending unmasked data upstream. Activate a configuration containing those keys before using the route.
+
+```bash
+curl -X POST http://localhost:3000/openai/v1/responses \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
+  -d '{"model":"gpt-5.3-codex--deployed","input":"Say OK","max_output_tokens":30,"store":false}'
+```
+
+##### Using Codex CLI
+
+Codex CLI speaks the Responses API natively. Create or edit `~/.codex/config.toml`:
+
+```toml
+model = "gpt-5.3-codex--deployed"
+model_provider = "sailproxy"
+
+[model_providers.sailproxy]
+name = "sail-proxy"
+base_url = "http://localhost:3000/openai/v1"
+env_key = "SAILPROXY_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+Then export your key and run:
+
+```bash
+export SAILPROXY_API_KEY=your_api_key_from_api_keys_endpoint
+codex
+```
+
+The `--deployed` suffix matters: this route serves direct SAP AI Core deployments only. Orchestration-served models (`gpt-5.4`, `gpt-5.3-codex`, …) and Anthropic deployments are rejected with an HTTP 400 naming what is supported — use `/openai/v1/chat/completions` for those.
+
+Codex warns `Model metadata for 'gpt-5.3-codex--deployed' not found` and falls back to generic metadata. That is expected — the name is a gateway alias Codex has no built-in entry for — and does not affect the session.
+
+Reasoning items, encrypted reasoning content, tool calls and native SSE framing pass through unchanged. PII masking covers the whole Responses body — `instructions`, `input` items, tool-call arguments and tool output — as well as the streaming deltas coming back.
+
+**Sub-agents:** Codex's `multi_agent` feature sends a `namespace`-typed tool that SAP deployments reject outright. The gateway handles this for you: it flattens the `namespace` wrapper into the ordinary function tools it contains on the way out, and restores the routing namespace on the model's tool calls on the way back — on both the streaming and non-streaming paths — so sub-agents work with no Codex flag and nothing to configure. Operators who would rather not offer the sub-agent tools at all can set `namespace_tools.mode = "strip"` in `api_config.json`, which drops them instead; Codex then falls back to its own no-sub-agent behavior.
+
+Verified end to end against Codex CLI **0.145.0 and 0.146.0** — both send the same `multi_agent_v1` wrapper, and on both a spawned sub-agent runs to completion through the gateway with no flag. Nothing here is pinned to that wrapper's name: the gateway flattens whichever namespace it is handed and restores that same name on the way back, so a future Codex release that renames the group or changes the tools inside it needs no change on this side.
+
+**Older Codex versions:** releases prior to mid-2025 spoke Chat Completions and were configured through `~/.codex/config.json` with a `providers` block pointing at `/openai/v1`. That still works against the chat-completions route, but the Responses route above is the supported path.
+
 #### Anthropic API Format
 - **Endpoints**: `/anthropic/v1/messages`, `/anthropic/v1/messages/count_tokens`
 - **Compatible with**: Anthropic SDK, Claude applications, Claude Code

@@ -100,8 +100,24 @@ CI (`.github/workflows/ci.yml`) runs tests and Trivy scans on push — it does *
 | Docker images (`ghcr.io/st-gr/sail-proxy-*`) | `pnpm docker:push` (step 5) | `pnpm docker:pull` / redeploy |
 | Bundled gateway inside the npm package | Rebuilt automatically by `prepublishOnly` → `bundle:gateway` | With the npm package |
 | `api_config.json` for **existing** standalone installs | **Never automatically** — the template is copied once at setup | User re-runs setup or hand-merges new keys (e.g. `supported_beta_headers`) |
+| `api_config.json` for **existing** distributed installs | **Never automatically** — the admin-activated configuration REPLACES the file config wholesale (no merge) | Admin activates a configuration containing the new keys |
 
-The last row matters after config-schema releases: existing standalone installs keep their old `api_config.json`. Ship code that degrades gracefully when new keys are absent (the beta-header allowlist and runtime quarantine were designed this way).
+The last two rows matter after config-schema releases: existing installs keep their old `api_config.json`. Ship code that degrades gracefully when new keys are absent (the beta-header allowlist and runtime quarantine were designed this way) — or, where absent keys would silently disable a security control, fail closed.
+
+**Upgrade step for `/openai/v1/responses`:** the route's plugin hooks live under `defaultHooks.openai.responses` / `.responses-stream`. A distributed install whose active configuration predates the route has neither key, so PII masking would be skipped on an endpoint that is force-enabled with `allow_user_bypass: false`. The route therefore answers HTTP 503 `pseudonymization_hook_missing` until an admin activates a configuration that includes them. Existing **standalone** installs are in the same position for the same reason (see the table above — their `api_config.json` is never updated automatically), so they must re-run setup or hand-merge the two keys. Fresh installs ship with them. No other endpoint is affected.
+
+**Later additions to those same two hook arrays.** Subsequent releases added two more plugin entries and two config keys. An install whose activated configuration predates them gets the endpoint without the corresponding feature — the route still answers, it just behaves as it did before:
+
+| Added | Effect if the activated configuration predates it |
+|---|---|
+| `responsesWebSearchPlugin` hook entries | a hosted `web_search` tool reaches the deployment unrewritten and is rejected with `400 … tools are not allowed for model` |
+| `responsesNamespaceToolsPlugin` hook entries | Codex's `namespace` sub-agent wrapper is rejected the same way, and clients need `--disable multi_agent` again |
+| `web_search.max_searches_per_request` | none — absent falls back to the built-in default of 3 |
+| `namespace_tools.mode` | none — absent falls back to the built-in default of `flatten` |
+
+The two plugin entries are what matter on upgrade; both config keys degrade safely.
+
+**The order of those two plugin entries differs between the two arrays, deliberately.** `responses-stream` lists `responsesNamespaceToolsPlugin` *before* `responsesWebSearchPlugin`; `responses` lists it *after*. Write interceptors nest inside-out, while after-handlers chain in array order, so the two paths need opposite orders. When hand-merging, copy each array verbatim rather than normalising them to match — `test/responses-tool-plugin-layering.test.ts` fails by name if they agree.
 
 ## Release Checklist
 

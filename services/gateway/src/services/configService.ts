@@ -12,6 +12,8 @@ const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { selectPluginCacheKeysToClear } from '../utils/pluginCacheSelector';
 import { resolveUnsupportedParams } from '../utils/unsupportedParamFilter';
+import { resolveMaxWebSearches, DEFAULT_MAX_WEB_SEARCHES } from '../plugins/webSearch/searchCap';
+import { resolveNamespaceToolMode, DEFAULT_NAMESPACE_TOOL_MODE, NamespaceToolMode } from '../plugins/namespaceTools/adapter';
 
 interface ModelSubstitution {
   from: string;
@@ -1141,6 +1143,79 @@ export const getUnsupportedParams = (provider?: string, modelName?: string): str
 };
 
 /**
+ * Per-model / per-provider override for /openai/v1/responses eligibility.
+ * Returns undefined when unset so the caller falls back to the family heuristic.
+ */
+export const getSupportsResponsesApi = (provider?: string, modelName?: string): boolean | undefined => {
+  try {
+    const config = getConfig();
+    const m = modelName
+      ? config?.api_config?.model_list_changes?.[modelName]?.supports_responses_api
+      : undefined;
+    if (typeof m === 'boolean') return m;
+    const p = provider ? config?.api_config?.[provider]?.supports_responses_api : undefined;
+    return typeof p === 'boolean' ? p : undefined;
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting supports_responses_api: ${error.message}`);
+    return undefined;
+  }
+};
+
+/**
+ * True when pseudonymization is force-enabled for an endpoint via
+ * `defaultHooks[endpoint].pseudonymization.enabled` — the same source the
+ * pseudonymization plugin reads for its per-endpoint force flag.
+ *
+ * Callers use this to fail closed when the force flag is on but the plugin hook
+ * for their subpath is missing (an admin-activated configuration replaces the
+ * file config wholesale, so a configuration older than a route has none of its
+ * hook keys).
+ *
+ * @param endpoint - endpoint identifier, e.g. 'openai'
+ */
+export const isPseudonymizationForced = (endpoint: string): boolean => {
+  try {
+    const config = getConfig();
+    return config?.api_config?.defaultHooks?.[endpoint]?.pseudonymization?.enabled === true;
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting pseudonymization force flag: ${error.message}`);
+    return false;
+  }
+};
+
+/**
+ * Cap on hosted web searches per request. Absent config yields the built-in default,
+ * so installs whose api_config.json predates the key are unaffected.
+ *
+ * @see plugins/webSearch/searchCap.ts - the validation rules
+ */
+export const getWebSearchMaxSearches = (): number => {
+  try {
+    const config = getConfig();
+    return resolveMaxWebSearches(config?.api_config?.web_search?.max_searches_per_request);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the web search cap: ${error.message}`);
+    return DEFAULT_MAX_WEB_SEARCHES;
+  }
+};
+
+/**
+ * How to handle Codex's `namespace` sub-agent wrapper, which SAP AI Core rejects.
+ * Absent config yields `flatten`, so an install whose api_config.json predates this
+ * key gets the working behavior rather than the 400.
+ *
+ * @see plugins/namespaceTools/adapter.ts - the validation rules
+ */
+export const getNamespaceToolMode = (): NamespaceToolMode => {
+  try {
+    return resolveNamespaceToolMode(getConfig()?.api_config?.namespace_tools?.mode);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the namespace tool mode: ${error.message}`);
+    return DEFAULT_NAMESPACE_TOOL_MODE;
+  }
+};
+
+/**
  * Get parameter renames for a provider/model, e.g.
  * `{ "max_tokens": "max_completion_tokens" }` for newer OpenAI reasoning models
  * that reject `max_tokens`. Only needed on the direct-deployment path, which
@@ -1504,6 +1579,10 @@ export default {
   getSupportedBetaHeaders,
   getUnsupportedParams,
   getParamRenames,
+  getSupportsResponsesApi,
+  isPseudonymizationForced,
+  getWebSearchMaxSearches,
+  getNamespaceToolMode,
   getOpenAIDeploymentApiVersion,
   getAllProviderConfigs,
   getModelListChanges,

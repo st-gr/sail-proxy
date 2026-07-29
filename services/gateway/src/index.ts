@@ -12,6 +12,7 @@ const logger = getDefaultLogger();
 import modelRoutes from './routes/modelRoutes';
 import chatRoutes from './routes/chatRoutes';
 import embeddingRoutes from './routes/embeddingRoutes';
+import responsesRoutes from './routes/responsesRoutes';
 import anthropicRoutes from './routes/anthropicRoutes';
 import awsBedrockRoutes from './routes/awsBedrockRoutes';
 import awsCredentialsRoutes from './routes/awsCredentialsRoutes';
@@ -115,6 +116,10 @@ app.use('/openai/v1/chat/completions', chatRoutes);
 // OpenAI Embedding Routes
 app.use('/openai/api/v1/embeddings', embeddingRoutes);
 app.use('/openai/v1/embeddings', embeddingRoutes);
+
+// OpenAI Responses Routes
+app.use('/openai/api/v1/responses', responsesRoutes);
+app.use('/openai/v1/responses', responsesRoutes);
 
 // Anthropic Routes
 app.use('/anthropic/v1', anthropicRoutes);
@@ -406,6 +411,7 @@ initializeGatewayService().then(() => {
     logger.info('Gateway Service', 'API endpoints available at:');
     logger.info('Gateway Service', `- OpenAI Chat: http://${config.host}:${config.port}/openai/api/v1/chat/completions`);
     logger.info('Gateway Service', `- OpenAI Embeddings: http://${config.host}:${config.port}/openai/api/v1/embeddings`);
+    logger.info('Gateway Service', `- OpenAI Responses: http://${config.host}:${config.port}/openai/v1/responses`);
     logger.info('Gateway Service', `- Anthropic: http://${config.host}:${config.port}/anthropic/v1/messages`);
     logger.info('Gateway Service', `- AWS Bedrock Invoke: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/invoke`);
     logger.info('Gateway Service', `- AWS Bedrock Invoke Stream: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/invoke-with-response-stream`);
@@ -417,6 +423,7 @@ initializeGatewayService().then(() => {
     logger.info('Gateway Service', `- Admin API Config: http://${config.host}:${config.port}/api/admin/api-config`);
     logger.info('Gateway Service', `- OpenRouter Chat: http://${config.host}:${config.port}/openrouter/api/v1/chat/completions`);
     logger.info('Gateway Service', `- OpenRouter Models: http://${config.host}:${config.port}/openrouter/api/v1/models`);
+    logger.info('Gateway Service', `- OpenRouter Responses: http://${config.host}:${config.port}/openrouter/api/v1/responses`);
     logger.info('Gateway Service', '');
     logger.info('Gateway Service', 'Authentication Methods:');
     logger.info('Gateway Service', '- AWS Bedrock: AWS SigV4 or Unified Token Auth (API Key + AWS credentials)');

@@ -89,6 +89,8 @@ export function propagateMaskedValues(
 
   if (body?.system !== undefined) body.system = walk(body.system);
   if (Array.isArray(body?.messages)) walk(body.messages);
+  if (body?.instructions !== undefined) body.instructions = walk(body.instructions);
+  if (body?.input !== undefined) body.input = walk(body.input);
 
   return replaced;
 }

@@ -165,17 +165,31 @@ The proxy provides the following API endpoints:
 | OpenAI | `/openai/v1/chat/completions` | OpenAI chat completions alias |
 | OpenAI | `/openai/api/v1/embeddings` | OpenAI embeddings API → SAP AI Core |
 | OpenAI | `/openai/v1/embeddings` | OpenAI embeddings alias |
+| OpenAI | `/openai/api/v1/responses` | OpenAI Responses API (deployed GPT-5+ models) |
+| OpenAI | `/openai/v1/responses` | OpenAI Responses alias |
 | Anthropic | `/anthropic/v1/messages` | Anthropic messages API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke` | Bedrock invoke API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke-with-response-stream` | Bedrock streaming API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse` | Bedrock converse API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse-stream` | Bedrock converse streaming |
 | OpenRouter | `/openrouter/api/v1/chat/completions` | OpenRouter chat API |
+| OpenRouter | `/openrouter/api/v1/responses` | OpenAI Responses alias under the OpenRouter prefix |
 | OpenRouter | `/openrouter/api/v1/models` | OpenRouter models (unauthenticated) |
 | Ollama | `http://localhost:11434/api/*` | Full Ollama API compatibility |
 | Common | `/v1/models` | List available models (authenticated) |
 | Admin | `/api/admin/api-keys` | API key management |
 | Admin | `/aws/api-keys` | AWS credentials management |
+
+### Codex CLI
+
+The Responses routes serve **deployed** GPT-5+/o-series models (e.g. `gpt-5.3-codex--deployed`), which is what Codex CLI speaks. Point it at the gateway with `wire_api = "responses"` and `base_url = "http://localhost:3000/openai/v1"`.
+
+Two tool types that SAP AI Core rejects are handled for you, so no Codex flags are needed:
+
+- **Hosted `web_search`** is emulated gateway-side through Perplexity `sonar-pro`; the model then answers from the results.
+- **Sub-agent tools** (`multi_agent`) arrive wrapped in a `namespace` entry SAP refuses — the gateway flattens it outbound and restores the routing namespace on the way back.
+
+Verified against Codex CLI 0.145.0 and 0.146.0. See the project's `docs/user/chapter-2-features.md` for the full `config.toml`.
 
 ## Usage Examples
 

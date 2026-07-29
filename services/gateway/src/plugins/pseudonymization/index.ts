@@ -29,6 +29,13 @@ import { applyEntityToggles, buildKnownEntityTypes } from './entityToggles';
 import { unmaskText, unmaskJsonValue } from './unmasker';
 import { StreamUnmaskBuffer } from './streamBuffer';
 import { entityCache } from './entityCache';
+import {
+  isResponsesBody,
+  extractResponsesInputTexts,
+  setResponsesInputText,
+  appendResponsesInstructions,
+  unmaskResponsesOutput,
+} from '../../utils/responsesBodyAdapter';
 
 interface PluginContext {
   req: Request;
@@ -420,6 +427,20 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       }
     } catch { /* non-fatal: residue guard is best-effort */ }
 
+    // Responses API bodies use `instructions` + `input` instead of `system` +
+    // `messages`. Without this the /openai/v1/responses route would bypass
+    // masking entirely, even though it is force-enabled for this endpoint.
+    const responsesBody = isResponsesBody(req.body);
+    if (responsesBody) {
+      for (const { text, path } of extractResponsesInputTexts(req.body)) {
+        const detected = detectEntities(text, maskingConfig);
+        allEntities.push(...detected);
+        const masked = replaceEntities(text, detected, map, maskingConfig);
+        maskedInputs.push(masked);
+        setResponsesInputText(req.body, path, masked);
+      }
+    }
+
     // Process system messages (Anthropic format)
     if (Array.isArray(req.body.system)) {
       for (let i = 0; i < req.body.system.length; i++) {
@@ -489,7 +510,9 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         + 'Masked URLs appear as hosts like https://masked-url-<id>.invalid — you MAY append paths and query '
         + 'parameters to such a host to form new URLs, but never invent a masked-url host that is not present '
         + 'in the conversation.';
-      if (Array.isArray(req.body.system)) {
+      if (responsesBody) {
+        appendResponsesInstructions(req.body, copyNote);
+      } else if (Array.isArray(req.body.system)) {
         req.body.system.push({ type: 'text', text: copyNote });
       } else if (typeof req.body.system === 'string') {
         req.body.system = `${req.body.system}\n\n${copyNote}`;
@@ -594,6 +617,9 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
 
     unmaskToolBlocks(upstreamResponse, map);
 
+    // Responses API output items (message/function_call/reasoning).
+    unmaskResponsesOutput(upstreamResponse, (s: string) => unmaskText(s, map));
+
     // Residue audit (the non-streaming path had none — this is the incident path).
     // Scan the fully-unmasked client-facing body for surviving MASKED_* tokens and
     // log per-token detail plus one aggregated, grep-stable counter line.
@@ -605,6 +631,17 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
     return upstreamResponse;
   }
 }
+
+/**
+ * Buffer-key prefix → the Responses delta event a flushed remainder is re-emitted
+ * as, so a synthetic flush keeps the frame type the client is already parsing.
+ */
+const RESPONSES_DELTA_TYPE_BY_KEY_PREFIX: Record<string, string> = {
+  'responses_text:': 'response.output_text.delta',
+  'responses_args:': 'response.function_call_arguments.delta',
+  'responses_summary:': 'response.reasoning_summary_text.delta',
+  'responses_refusal:': 'response.refusal.delta',
+};
 
 /**
  * Install a res.write interceptor that unmasks placeholders in SSE events as they are
@@ -744,6 +781,86 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       event.delta.partial_json = buf.append(event.delta.partial_json);
       track(`tool_use:${idx}`, event.delta.partial_json);
       modified = true;
+    }
+
+    // OpenAI Responses API deltas. Frames are bare `data: {json}` with the type
+    // inside the JSON; both delta events carry a `delta` string. Tool-argument
+    // deltas are JSON fragments, so a placeholder can split mid-token.
+    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+      const key = `responses_text:${event.output_index ?? 0}`;
+      event.delta = getBuf(key).append(event.delta);
+      track(key, event.delta);
+      modified = true;
+    }
+    if (event.type === 'response.function_call_arguments.delta' && typeof event.delta === 'string') {
+      const key = `responses_args:${event.output_index ?? 0}`;
+      event.delta = getBuf(key).append(event.delta);
+      track(key, event.delta);
+      modified = true;
+    }
+    // Reasoning summaries and refusals stream through the same `delta` string
+    // shape. Without buffering them a placeholder split across two frames reaches
+    // the client masked (visibly, in Codex's reasoning pane).
+    if (event.type === 'response.reasoning_summary_text.delta' && typeof event.delta === 'string') {
+      const key = `responses_summary:${event.output_index ?? 0}`;
+      event.delta = getBuf(key).append(event.delta);
+      track(key, event.delta);
+      modified = true;
+    }
+    if (event.type === 'response.refusal.delta' && typeof event.delta === 'string') {
+      const key = `responses_refusal:${event.output_index ?? 0}`;
+      event.delta = getBuf(key).append(event.delta);
+      track(key, event.delta);
+      modified = true;
+    }
+    // Flush a single Responses buffer by key: emit its retained remainder as a
+    // synthetic delta, track it for the leak audit, then delete and audit the key.
+    const flushResponsesKey = (key: string): void => {
+      const buf = buffers.get(key);
+      if (!buf) return;
+      const remainder = buf.flush();
+      if (remainder) {
+        const deltaType = RESPONSES_DELTA_TYPE_BY_KEY_PREFIX[key.slice(0, key.indexOf(':') + 1)]
+          || 'response.output_text.delta';
+        const idx = parseInt(key.split(':')[1], 10) || 0;
+        syntheticPrefix += `data: ${JSON.stringify({ type: deltaType, output_index: idx, delta: remainder })}\n\n`;
+        track(key, remainder);
+      }
+      buffers.delete(key);
+      auditBlock(key);
+    };
+
+    // response.output_text.done / response.function_call_arguments.done and
+    // response.output_item.done are PER-ITEM terminal events — only the finishing
+    // item's own buffer(s) may be flushed. Sweeping every `responses_` buffer here
+    // (as opposed to scoping by output_index) would flush a DIFFERENT, still-open
+    // item's buffer mid-placeholder, leaking an unresolved masked fragment to the
+    // client. Only response.completed is stream-terminal and may sweep everything.
+    if (event.type === 'response.output_text.done') {
+      flushResponsesKey(`responses_text:${event.output_index ?? 0}`);
+    }
+    if (event.type === 'response.function_call_arguments.done') {
+      flushResponsesKey(`responses_args:${event.output_index ?? 0}`);
+    }
+    if (event.type === 'response.reasoning_summary_text.done') {
+      flushResponsesKey(`responses_summary:${event.output_index ?? 0}`);
+    }
+    if (event.type === 'response.refusal.done') {
+      flushResponsesKey(`responses_refusal:${event.output_index ?? 0}`);
+    }
+    if (event.type === 'response.output_item.done') {
+      // Any item kind (message text, function_call, reasoning, refusal) may be
+      // the one finishing; only this output_index's own buffers are flushed.
+      const idx = event.output_index ?? 0;
+      flushResponsesKey(`responses_text:${idx}`);
+      flushResponsesKey(`responses_args:${idx}`);
+      flushResponsesKey(`responses_summary:${idx}`);
+      flushResponsesKey(`responses_refusal:${idx}`);
+    }
+    if (event.type === 'response.completed') {
+      for (const key of Array.from(buffers.keys())) {
+        if (key.startsWith('responses_')) flushResponsesKey(key);
+      }
     }
 
     // Anthropic content_block_stop — flush retained suffixes of this block's buffers

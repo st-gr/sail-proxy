@@ -3,6 +3,7 @@
  */
 import express from 'express';
 import * as openRouterController from '../controllers/openRouterController';
+import { handleResponses } from '../controllers/responsesController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import rateLimiter from '../middlewares/rateLimiter';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
@@ -30,6 +31,7 @@ router.use((req, _res, next) => {
 // Core endpoints
 router.post('/chat/completions', openRouterController.handleChatCompletions);
 router.post('/completions', openRouterController.handleCompletions);
+router.post('/responses', handleResponses);
 router.get('/models', openRouterController.listModels);
 
 // Other REST endpoints

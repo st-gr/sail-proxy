@@ -71,6 +71,9 @@ The original draw.io file can be found here: docs/assets/sail-proxy-deployment-o
 | OpenAI      | `/openai/v1/chat/completions`                              | OpenAI chat completions API alias → SAP AI Core    |
 | OpenAI      | `/openai/api/v1/embeddings`                                | OpenAI embeddings API → SAP AI Core                |
 | OpenAI      | `/openai/v1/embeddings`                                    | OpenAI embeddings API alias → SAP AI Core          |
+| OpenAI      | `/openai/api/v1/responses`                                 | OpenAI Responses API → deployed GPT-5+ models       |
+| OpenAI      | `/openai/v1/responses`                                     | OpenAI Responses API alias → deployed GPT-5+ models |
+| OpenRouter  | `/openrouter/api/v1/responses`                             | OpenAI Responses API via OpenRouter prefix → deployed GPT-5+ models |
 | Anthropic   | `/anthropic/v1/messages`                                   | Anthropic messages API → SAP AI Core               |
 | Anthropic   | `/anthropic/v1/messages/count_tokens`                      | Count tokens for Anthropic Messages API requests   |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke`                      | AWS Bedrock InvokeModel API → SAP AI Core          |
@@ -678,6 +681,26 @@ Clients such as OpenWebUI send `tools` (function calling) and `response_format` 
 
 Dropped parameters are logged at WARN naming the provider, model and parameters, so the behavior is diagnosable. This applies to both the orchestration path and directly-deployed (`--deployed`) models.
 
+### Web Search Emulation
+
+SAP AI Core deployments reject hosted web-search tools (`{"type":"web_search"}` on `/openai/v1/responses`), but Codex CLI attaches one to every request and offers no way to turn it off. The gateway rewrites the hosted tool into a plain function tool the deployment accepts, runs the search itself through Perplexity `sonar-pro`, and then **calls the model again with the results**, so the same turn ends with the model's own answer rather than a canned result list. Streaming works the same way: the second call's frames are spliced into the live SSE stream, so the client still sees exactly one `response.created` and one `response.completed`.
+
+Each follow-up call costs deployment tokens, so the number of searches per request is capped (hot-reloadable via the admin UI):
+
+```json
+{
+  "api_config": {
+    "web_search": {
+      "max_searches_per_request": 3
+    }
+  }
+}
+```
+
+- Default `3`. Values are clamped to 1–10; a missing, non-numeric or out-of-range value falls back to the default and logs a warning, so a bad edit can neither disable the cap nor let a model search in a loop.
+- Reaching the cap never fails the request: the searches that did run are delivered to the client as a formatted result message instead of a further model pass.
+- The continuation calls' tokens are included in this route's usage/telemetry event and in the `usage` field of the response the client receives.
+
 ### Parameter Renames (deployed models)
 
 Requests to `--deployed` models are posted directly to the deployment, bypassing SAP orchestration's parameter normalization. Some models require a different parameter name — the **GPT-5 family and newer, and the o-series reasoning models, reject `max_tokens` and require `max_completion_tokens`**.
@@ -1129,42 +1152,33 @@ In mid December 2025 SAP introduced prompt caching. At the time of writing (Janu
 
 **AWS Bedrock prompt caching:** If you deploy the model directly, you should, in theory, be able utilize the `cache_control` parameter in your API payload to enable caching. The API responses even indicate, e. g. that input_cache was hit with X tokens. This would reduce the costs significantly, but SAP used to charge the tokens at full rate irrespective of the fact that AWS discounted cached tokens up to 90%. There is a model property in `api_config.json` where you can specify if a model supports prompt caching `"supports_prompt_caching"`. If false then `cache_control` blocks in your payload will be removed. If set to __true__ or __undefined__ then no filtering of `cache_control` elements will take place.
 
-### OpenAI Codex CLI (outdated, worked with older Codex versions prior June 2025)
-You can also use the OpenAI Codex CLI to interact with SAP AI Core via your OpenRouter provider. First, create or edit your CLI config file at `~/.codex/config.json`, for example:
-```json
-{
-  "model": "o4-mini",
-  "approvalMode": "suggest",
-  "fullAutoErrorMode": "ask-user",
-  "notify": true,
-  "provider": "openrouter",
-  "providers": {
-    "openrouter": {
-      "name": "OpenRouter",
-      "baseURL": "http://localhost:3000/openai/v1",
-      "envKey": "OPENROUTER_API_KEY"
-    }
-  },
-  "history": { "maxSize": 1000, "saveHistory": true, "sensitivePatterns": [] }
-}
+### OpenAI Codex CLI
+
+Codex CLI speaks the OpenAI **Responses** API, so point it at the gateway's `/openai/v1/responses` route and pick a **deployed** GPT-5+ or o-series model:
+
+```toml
+# ~/.codex/config.toml
+model = "gpt-5.3-codex--deployed"
+model_provider = "sailproxy"
+
+[model_providers.sailproxy]
+name = "sail-proxy"
+base_url = "http://localhost:3000/openai/v1"
+env_key = "SAILPROXY_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
 ```
 
-Then set your environment variables and invoke the CLI:
 ```bash
-OPENAI_API_KEY=your_api_key_from_api_keys_endpoint \
-OPENROUTER_API_KEY=your_api_key_from_api_keys_endpoint \
-DEBUG=false \
-codex --model o4-mini
-```
-Or export and run:
-```bash
-export OPENAI_API_KEY=your_api_key_from_api_keys_endpoint
-export OPENROUTER_API_KEY=your_api_key_from_api_keys_endpoint
-export DEBUG=false
-codex --model o4-mini
+export SAILPROXY_API_KEY=your_api_key_from_api_keys_endpoint
+codex
 ```
 
-**Note:** Even if you only want to use OpenRouter you will have to define both the OPENAI and OPENROUTER API key, which are identical when using this proxy.
+Reasoning items, tool calls and native SSE framing pass through unchanged, and PII masking covers the whole Responses body in both directions.
+
+Codex's `multi_agent` sub-agent tools work as-is: the gateway rewrites the `namespace` tool wrapper SAP deployments reject and restores the routing namespace on the way back, so no `--disable multi_agent` flag is needed.
+
+See [Chapter 2 – Features](docs/user/chapter-2-features.md#using-codex-cli) for the model-eligibility rules, the sub-agent handling and notes on older Codex versions.
 
 ### VS Code with GitHub Copilot
 

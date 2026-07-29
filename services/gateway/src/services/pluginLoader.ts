@@ -313,6 +313,27 @@ function matchRuleOptimized(req: Request, hookDef: HookDefinition, ruleId: strin
 }
 
 
+/** Media type of a header value: everything before the first `;`, trimmed, lowercased. */
+function mediaType(value: string): string {
+  const semi = value.indexOf(';');
+  return (semi === -1 ? value : value.slice(0, semi)).trim().toLowerCase();
+}
+
+/**
+ * Compare a request header against a hook definition's `equals`.
+ *
+ * An expected value carrying no parameters compares on media type alone: clients
+ * routinely append `; charset=utf-8` (OkHttp, .NET JsonContent, older axios), and the
+ * strict equality this replaces silently excluded them — which, for
+ * `header:contentTypeJson`, meant those requests bypassed pseudonymization on every
+ * endpoint. An expected value that deliberately spells out parameters keeps exact-match
+ * semantics, so a definition can still pin a charset when it means to.
+ */
+export function headerValueMatches(actual: string, expected: string): boolean {
+  if (expected.includes(';')) return actual === expected;
+  return mediaType(actual) === mediaType(expected);
+}
+
 /**
  * Match header rule
  * @param req - Express request object
@@ -321,16 +342,16 @@ function matchRuleOptimized(req: Request, hookDef: HookDefinition, ruleId: strin
  */
 function matchHeader(req: Request, hookDef: HookDefinition): boolean {
   if (!hookDef.name) return false;
-  
+
   const headerName = hookDef.name.toLowerCase();
   const headerValue = req.headers[headerName];
-  
+
   if (headerValue === undefined) {
     return false;
   }
-  
+
   if (hookDef.equals !== undefined) {
-    return headerValue === hookDef.equals;
+    return headerValueMatches(String(headerValue), String(hookDef.equals));
   }
   
   if (hookDef.from !== undefined && hookDef.to !== undefined) {
