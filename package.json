@@ -1,6 +1,6 @@
 {
   "name": "sap-llm-gateway",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "A proxy that allows applications to use OpenAI, Anthropic, and AWS Bedrock API formats to access SAP AI Core Foundation Models.",
   "repository": "https://github.com/st-gr/sail-proxy.git",
   "license": "GNU AGPLv3 License - see the LICENSE file for details.",

@@ -1,6 +1,6 @@
 {
   "name": "ollama",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Ollama API compatibility server for SAP AI Core proxy",
   "main": "index.js",
   "scripts": {

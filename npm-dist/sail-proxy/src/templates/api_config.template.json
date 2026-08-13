@@ -71,6 +71,13 @@
         "regex": "^Analyze\\s+this\\s+message\\s+and\\s+come\\s+up\\s+with\\s+a\\s+single\\s+positive,\\s+cheerful",
         "type": "json-path-regex"
       },
+      "tools:hasFileSearch": {
+        "desc": "Match requests containing a file_search tool",
+        "type": "json-path-regex",
+        "path": "$.tools",
+        "regex": "file_search",
+        "flags": "i"
+      },
       "tools:hasWebSearch": {
         "desc": "Match requests containing web_search tool",
         "type": "json-path-regex",
@@ -161,13 +168,31 @@
           },
           {
             "request": {
+              "callback": { "id": "responsesImagePlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
               "callback": { "id": "responsesWebSearchPlugin" },
               "match": ["header:contentTypeJson", "tools:hasWebSearch"]
             }
           },
           {
             "request": {
+              "callback": { "id": "responsesFileSearchPlugin" },
+              "match": ["header:contentTypeJson", "tools:hasFileSearch"]
+            }
+          },
+          {
+            "request": {
               "callback": { "id": "responsesNamespaceToolsPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesCustomToolsPlugin" },
               "match": ["header:contentTypeJson"]
             }
           }
@@ -181,7 +206,19 @@
           },
           {
             "request": {
+              "callback": { "id": "responsesImagePlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
               "callback": { "id": "responsesNamespaceToolsPlugin" },
+              "match": ["header:contentTypeJson"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesCustomToolsPlugin" },
               "match": ["header:contentTypeJson"]
             }
           },
@@ -189,6 +226,12 @@
             "request": {
               "callback": { "id": "responsesWebSearchPlugin" },
               "match": ["header:contentTypeJson", "tools:hasWebSearch"]
+            }
+          },
+          {
+            "request": {
+              "callback": { "id": "responsesFileSearchPlugin" },
+              "match": ["header:contentTypeJson", "tools:hasFileSearch"]
             }
           }
         ]
@@ -282,7 +325,6 @@
       "anthropic--claude-3.5-sonnet--deployed": {
         "streamingSupported": true,
         "anthropic_version": "bedrock-2023-05-31",
-        "supports_prompt_caching": true,
         "subpaths_emulated": [],
         "subpaths_native": [
           "invoke",
@@ -393,7 +435,6 @@
           "converse",
           "converse-stream"
         ],
-        "supports_prompt_caching": true,
         "pseudonymization": {
           "enabled": true,
           "method": "pseudonymization"
@@ -408,7 +449,6 @@
           "converse",
           "converse-stream"
         ],
-        "supports_prompt_caching": true,
         "anthropic_version": "bedrock-2023-05-31",
         "cachePricing": {
           "cacheReadInputCostPer1K": "0.00099",
@@ -604,8 +644,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.5-sonnet--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -748,8 +787,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.6-sonnet--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -896,8 +934,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.5-opus--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -1040,8 +1077,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.6-opus--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -1206,8 +1242,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.7-opus--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -1372,8 +1407,7 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
       "anthropic--claude-4.8-opus--deployed": {
         "anthropic_version": "bedrock-2023-05-31",
@@ -1538,9 +1572,9 @@
           "invoke-with-response-stream",
           "converse",
           "converse-stream"
-        ],
-        "supports_prompt_caching": true
+        ]
       },
+      "anthropic--claude-4.8-opus": {},
       "amazon--titan-text-express": {
         "streamingSupported": false
       },
@@ -1673,6 +1707,14 @@
         },
         {
           "from": "claude-opus-4-8",
+          "to": "anthropic--claude-4.8-opus--deployed"
+        },
+        {
+          "from": "claude-opus-5",
+          "to": "anthropic--claude-4.8-opus--deployed"
+        },
+        {
+          "from": "claude-fable-5",
           "to": "anthropic--claude-4.8-opus--deployed"
         }
       ]
@@ -1818,8 +1860,52 @@
     "web_search": {
       "max_searches_per_request": 3
     },
+    "hosted_tools": {
+      "result_cache_ttl_seconds": 3600,
+      "result_cache_max_entries": 500
+    },
     "namespace_tools": {
       "mode": "flatten"
+    },
+    "custom_tools": {
+      "mode": "translate"
+    },
+    "tool_search": {
+      "mode": "translate",
+      "hoist_discovered_tools": true
+    },
+    "file_search": {
+      "enabled": true,
+      "embedding_model": "text-embedding-3-large",
+      "embedding_dimensions": 1536,
+      "rewrite_query": false,
+      "rewrite_query_model": "gpt-4o-mini",
+      "hybrid": {
+        "rrf_k": 60,
+        "lexical_enabled": true,
+        "candidates": 50,
+        "rerank": { "enabled": "auto", "model": "cohere-reranker" }
+      },
+      "chunking": { "max_chunk_size_tokens": 800, "chunk_overlap_tokens": 400 },
+      "limits": { "max_file_bytes": 33554432, "max_tokens_per_file": 5000000, "max_files_per_store": 10000 },
+      "ingestion": { "concurrency": 4, "extract_timeout_ms": 60000, "max_retries": 3 },
+      "blob_storage": {
+        "backend": "db",
+        "local_path": "/var/lib/sail-proxy/blobs",
+        "s3": { "bucket": "", "prefix": "sail-proxy/blobs", "endpoint": "", "region": "" }
+      },
+      "teacher_logging": {
+        "enabled": false,
+        "store_chunk_text": false,
+        "sample_rate": 1.0,
+        "source": "production",
+        "max_concurrent_writes": 2
+      },
+      "tool": {
+        "enabled": true,
+        "max_searches_per_request": 3,
+        "max_num_results_default": 10
+      }
     }
   }
 }

@@ -4,6 +4,9 @@ node_modules/
 # Build outputs
 dist/
 bundled/
+# The packed tarball CI's Phase 6.5 produces (pack + install + run +
+# inference + stop against the real CLI). Regenerated every run, ~31 MB.
+*.tgz
 
 # Logs
 *.log
