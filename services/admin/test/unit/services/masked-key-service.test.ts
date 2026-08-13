@@ -301,7 +301,7 @@ describe('MaskedKey Unit Tests - AdminService', () => {
       expect(result.maskedKey).not.toBe(null);
     });
 
-    test('should create unique maskedKeys for different API keys', async () => {
+    test('should create unique keys and IDs for different API key requests', async () => {
       const request1 = {
         data: { name: 'Key 1', email: 'key1@example.com' },
         user: { id: 'test-user' }
@@ -315,7 +315,9 @@ describe('MaskedKey Unit Tests - AdminService', () => {
       const result1 = await adminService.createApiKey(request1);
       const result2 = await adminService.createApiKey(request2);
 
-      expect(result1.maskedKey).not.toBe(result2.maskedKey);
+      // NOT maskedKey: the mask keeps 1 hex char of the prefix and 2 of the
+      // suffix, so it has 4096 possible values and two keys collide roughly once
+      // per 4096 pairs. The key and the ID are what carry the uniqueness.
       expect(result1.key).not.toBe(result2.key);
       expect(result1.id).not.toBe(result2.id);
       

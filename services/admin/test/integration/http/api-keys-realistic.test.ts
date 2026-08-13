@@ -152,20 +152,44 @@ describe('API Keys HTTP Integration Tests - Realistic Usage', () => {
     });
 
     test('should support OData ordering and pagination', async () => {
-      const response = await client.get('/odata/v4/admin/ApiKeys?$orderby=name asc&$top=5');
-      
+      // `name` is nullable in the model (src/db/schema/api-keys.cds:13 declares
+      // `name : String(100)` with no `not null`, unlike `key`), and the
+      // input-validation suite creates keys with no name at all. SQLite sorts
+      // NULLs FIRST under `$orderby=name asc`, so those rows take the whole
+      // $top=5 page and every comparison below hits `null.localeCompare`.
+      //
+      // That is not hypothetical, but the trigger is narrower than it looks.
+      // With no services/admin/db/admin.db present the suite runs against an
+      // in-memory database and starts clean — which is what CI does, and a
+      // clean run was verified green. When that FILE exists, though — any
+      // developer who has run the dev server — the tests use it, it accumulates
+      // rows across every run, and it had gathered five null-named keys from
+      // the input-validation suite. That is the observed failure.
+      //
+      // Filtering them out keeps this test about what it actually verifies —
+      // that ordering and $top work — rather than about which rows happen to
+      // exist.
+      const response = await client.get(
+        '/odata/v4/admin/ApiKeys?$orderby=name asc&$top=5&$filter=name ne null'
+      );
+
       expect(response.status).toBe(200);
       expect(response.data.value).toBeInstanceOf(Array);
       expect(response.data.value.length).toBeLessThanOrEqual(5);
-      
+
       if (response.data.value.length > 1) {
-        // Check that results are ordered by name ascending. The server's
-        // collation may be case-insensitive (SQLite NOCASE / locale-aware),
-        // so a case-sensitive JS `<=` on mixed-case names would flake —
-        // compare case-insensitively instead.
         for (let i = 0; i < response.data.value.length - 1; i++) {
           const a = response.data.value[i].name;
           const b = response.data.value[i + 1].name;
+
+          // Asserted explicitly so a filter that stops working fails with this
+          // message rather than with an opaque TypeError from localeCompare.
+          expect(a).not.toBeNull();
+          expect(b).not.toBeNull();
+
+          // Case-insensitive: the server's collation may be case-insensitive
+          // (SQLite NOCASE / locale-aware), so a case-sensitive JS `<=` on
+          // mixed-case names would flake.
           expect(a.localeCompare(b, 'en', { sensitivity: 'base' }) <= 0).toBe(true);
         }
       }

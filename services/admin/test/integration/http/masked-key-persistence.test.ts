@@ -171,7 +171,14 @@ describe('MaskedKey Persistence HTTP Integration Tests', () => {
       expect(listResponse.data.value[0].maskedKey).toBe(responseMaskedKey);
     });
 
-    test('should create unique maskedKey for each API key', async () => {
+    // NOT "unique maskedKey": maskApiKey keeps `key.slice(0,4)` and `key.slice(-2)`
+    // of an `sk-` + 48-hex-char key, so a mask has only 16 × 256 = 4096 possible
+    // values. Two keys collide about 1 time in 4096, which is exactly the rate at
+    // which this test used to fail in a full run and pass on its own. A mask is a
+    // display string, deliberately lossy; the ID is the identifier. Assert what
+    // the implementation actually guarantees — distinct IDs, a well-formed mask,
+    // and a mask that survives the round trip to the database.
+    test('gives each API key a distinct ID and a well-formed maskedKey', async () => {
       const testData1 = {
         name: 'Unique Test Key 1',
         email: 'unique1@example.com'
@@ -196,9 +203,11 @@ describe('MaskedKey Persistence HTTP Integration Tests', () => {
 
       createdKeyIds.push(keyId1, keyId2);
 
-      // Verify maskedKeys are different
-      expect(maskedKey1).not.toBe(maskedKey2);
       expect(keyId1).not.toBe(keyId2);
+      // sk- + one hex char, four stars, then the key's last two hex chars.
+      for (const mask of [maskedKey1, maskedKey2]) {
+        expect(mask).toMatch(/^sk-[0-9a-f]\*{4}[0-9a-f]{2}$/);
+      }
 
       // Verify both are persisted correctly
       const listResponse1 = await client.get(`/odata/v4/admin/ApiKeys?$filter=ID eq '${keyId1}'`);

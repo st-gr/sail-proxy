@@ -3,12 +3,15 @@
  */
 
 import request from 'supertest';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
 const baseUrl = getAdminServiceUrl();
 const authHeader = 'Basic YWRtaW5AdGVzdC5jb206YWRtaW4=';
 
 describe('Enhanced Configuration Activation Test', () => {
+  // Restores whatever was active before this suite; see active-config-guard.
+  guardActiveConfiguration();
+
   let activeConfigId: string;
   let inactiveConfigId: string;
 

@@ -3,8 +3,12 @@
  */
 
 import Valkey from 'iovalkey';
+import { guardActiveConfiguration } from '@libs/test-utils';
 
 describe('Valkey Publish Hang Test', () => {
+  // Restores whatever was active before this suite; see active-config-guard.
+  guardActiveConfiguration();
+
   let valkeyClient: Valkey;
 
   beforeAll(async () => {

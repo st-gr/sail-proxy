@@ -4,9 +4,12 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
 describe('Database Operations Stability Test', () => {
+  // Restores whatever was active before this suite; see active-config-guard.
+  guardActiveConfiguration();
+
   let adminClient: AxiosInstance;
 
   beforeAll(() => {

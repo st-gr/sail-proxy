@@ -8,7 +8,9 @@ namespace sap.llm.gateway.admin;
  */
 entity ApiKeys : cuid, managed {
   // Core fields
-  ![key]      : String(128) not null;  // The actual API key (sk-xxxxx)
+  ![key]      : String(256) not null;  // The actual API key (sk-xxxxx). 256, not 128:
+                                      // an OpenAI platform key (sk-proj-…) is 164 characters, so a
+                                      // caller bringing their own key could not be stored at all.
   maskedKey   : String(64);           // Masked version for List Report display (non-sensitive)
   name        : String(100);          // Human-readable name/description
   email       : String(255);          // Associated email address
@@ -106,6 +108,9 @@ entity ApiKeyUsage : cuid, temporal {
   cacheCreationInputTokens : Integer;       // Cache creation input tokens (separate pricing)
   cacheReadInputTokens : Integer;           // Cache read input tokens (separate pricing)
   totalTokens         : Integer;
+  usageEstimated      : Boolean;            // True when tokens were derived locally because the
+                                             // client aborted before the provider reported usage;
+                                             // absent/null means provider-reported.
   
   // Cost tracking
   inputCost           : Decimal(10,6);      // Input cost in USD
@@ -158,8 +163,8 @@ entity ApiKeySecurityEvents : cuid, managed {
  */
 entity ApiKeyRotations : cuid, managed {
   apiKey            : Association to ApiKeys;
-  oldKey            : String(128);          // The old API key that was rotated
-  newKey            : String(128);          // The new API key after rotation
+  oldKey            : String(256);          // The old API key that was rotated
+  newKey            : String(256);          // The new API key after rotation
   rotationType      : String(20);           // manual, automatic, emergency
   reason            : String(200);
   rotatedBy         : String(100);
@@ -172,7 +177,7 @@ entity ApiKeyRotations : cuid, managed {
  * API Key blacklist for revoked or compromised keys
  */
 entity ApiKeyBlacklist : cuid, managed {
-  ![key]        : String(128) not null;
+  ![key]        : String(256) not null;
   reason        : String(200);              // Reason for blacklisting
   severity      : String(20) default 'medium'; // low, medium, high, critical
   revokedBy     : String(100);

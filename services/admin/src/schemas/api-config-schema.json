@@ -266,7 +266,8 @@
                   "type": "boolean"
                 },
                 "supports_prompt_caching": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "Optional. Resolution order: this per-model flag, then the provider-level api_config.<provider>.supports_prompt_caching flag, then a default of true for Anthropic-provider models and false for all others (see src/utils/promptCachingSupport.ts). Set false to opt a model out (e.g. claude-3-haiku). A true on an Anthropic model with no provider-level override is redundant."
                 },
                 "anthropic_version": {
                   "type": "string",
@@ -478,6 +479,24 @@
           },
           "additionalProperties": false
         },
+        "hosted_tools": {
+          "type": "object",
+          "properties": {
+            "result_cache_ttl_seconds": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 86400,
+              "description": "Optional. How long a hosted tool's results remain replayable by a client that replays the call item. Defaults to 3600 seconds. A miss re-executes the recorded query rather than degrading the answer."
+            },
+            "result_cache_max_entries": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 10000,
+              "description": "Optional. How many hosted tool results are held in the replay cache at once. Defaults to 500 entries. A miss re-executes the recorded query rather than degrading the answer."
+            }
+          },
+          "additionalProperties": false
+        },
         "namespace_tools": {
           "type": "object",
           "properties": {
@@ -487,6 +506,236 @@
                 "flatten",
                 "strip"
               ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "custom_tools": {
+          "type": "object",
+          "description": "Codex freeform `custom` tools (apply_patch). `translate` rewrites them into function tools, which both the deployed and orchestration routes accept; `strip` removes them, leaving the model to edit files through shell commands.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "translate",
+                "strip"
+              ],
+              "default": "translate"
+            }
+          },
+          "additionalProperties": false
+        },
+        "file_search": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "embedding_model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "embedding_dimensions": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "rewrite_query": {
+              "type": "boolean"
+            },
+            "rewrite_query_model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hybrid": {
+              "type": "object",
+              "properties": {
+                "rrf_k": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "lexical_enabled": {
+                  "type": "boolean"
+                },
+                "candidates": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "rerank": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "oneOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "auto"
+                          ]
+                        }
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "chunking": {
+              "type": "object",
+              "properties": {
+                "max_chunk_size_tokens": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "chunk_overlap_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "max_file_bytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_tokens_per_file": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_files_per_store": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "ingestion": {
+              "type": "object",
+              "properties": {
+                "concurrency": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "extract_timeout_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_retries": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "blob_storage": {
+              "type": "object",
+              "properties": {
+                "backend": {
+                  "type": "string",
+                  "enum": [
+                    "db",
+                    "local",
+                    "s3"
+                  ]
+                },
+                "local_path": {
+                  "type": "string"
+                },
+                "s3": {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "prefix": {
+                      "type": "string"
+                    },
+                    "endpoint": {
+                      "type": "string"
+                    },
+                    "region": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "teacher_logging": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "store_chunk_text": {
+                  "type": "boolean"
+                },
+                "sample_rate": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "max_concurrent_writes": {
+                  "description": "Ceiling on in-flight teacher-label writes; excess writes are dropped, not queued. Capped at the file_search pg pool size (max: 10, see services/gateway/src/fileSearch/db.ts): above that the semaphore stops bounding anything, because the extra writes simply wait inside pg's own connection queue \u2014 turning 'dropped, not queued' into 'queued', which is the failure mode the bound exists to prevent.",
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                }
+              }
+            },
+            "tool": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_searches_per_request": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                },
+                "max_num_results_default": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "tool_search": {
+          "type": "object",
+          "description": "Codex's `tool_search` deferred-tool discovery tool. `translate` rewrites it into a function tool, which both the deployed and orchestration routes accept; `strip` removes it, leaving the model unable to discover deferred tools such as MCP servers.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "translate",
+                "strip"
+              ],
+              "default": "translate"
+            },
+            "hoist_discovered_tools": {
+              "type": "boolean",
+              "default": true,
+              "description": "Lift tools discovered by tool_search into the request so the model can call them. Works around codex exposing deferred MCP tools only when the provider base_url is api.openai.com; set false once that is fixed upstream. Safe to leave on either way - names the client already declares are skipped."
             }
           },
           "additionalProperties": false

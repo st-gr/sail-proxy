@@ -1,76 +1,90 @@
 # Admin Service Debug Environment Variables
 # Copy this to .env or set these in your Docker environment
+#
+# EVERY variable below is read by the code. This file previously also listed
+# X_AUTH_REQUEST_USER_HEADER / _EMAIL_HEADER / _GROUPS_HEADER /
+# _ACCESS_TOKEN_HEADER, DEBUG_AUTH, DEBUG_HEADERS, DEBUG_ROLES, LOG_FORMAT and
+# DATABASE_URL. None of those nine is read anywhere in admin's source — they
+# described an intended configuration surface that was never built, which is
+# worse than no documentation: someone setting one gets no effect and no error.
+# See docs/notes/auth-header-flow-by-runtime.md.
 
 # ========================================
 # Deployment Configuration
 # ========================================
+# Selects the authentication mode (src/auth/authInit.ts:134):
+#   docker        -> docker-jwt (oauth2-proxy headers, then JWT fallback)
+#   xsuaa | btp   -> xsuaa
+#   xsa           -> xsa
+#   anything else -> mocked when NODE_ENV=development, otherwise cap-jwt
+# Kyma also uses 'docker' — it runs the same oauth2-proxy + nginx chain.
 DEPLOY_TARGET=docker
 NODE_ENV=production
 PORT=4004
 
 # ========================================
-# Authentication Configuration  
+# Authentication Configuration
 # ========================================
-# OAuth2-proxy headers (these are set by nginx/oauth2-proxy)
-# X_AUTH_REQUEST_USER_HEADER=x-auth-request-user
-# X_AUTH_REQUEST_EMAIL_HEADER=x-auth-request-email
-# X_AUTH_REQUEST_GROUPS_HEADER=x-auth-request-groups
-# X_AUTH_REQUEST_ACCESS_TOKEN_HEADER=x-auth-request-access-token
-
-# Dex/OAuth2 Configuration
+# Dex/OAuth2 issuer, used to validate user JWTs against the Dex JWKS.
 OAUTH2_PROXY_OIDC_ISSUER_URL=http://dex:5556/dex
 
 # ========================================
 # Role Mapping Configuration
 # ========================================
-# Map Dex groups to CAP roles
-ROLE_MAPPING={
-  "sap-llm-gateway-admin": "admin",
-  "sap-llm-gateway-user": "user", 
-  "admin": "admin",
-  "user": "user",
-  "gateway": "service"
-}
+# Map identity-provider groups to CAP roles. JSON.
+ROLE_MAPPING={"sap-llm-gateway-admin":"admin","sap-llm-gateway-user":"user","admin":"admin","user":"user","gateway":"service"}
 
 # ========================================
 # JWT Configuration
 # ========================================
-# Secret for validating gateway service tokens
+# Shared secret for validating gateway service tokens. MUST match the gateway's
+# value of the same name.
 VALIDATION_TOKEN_SECRET=dev-secret-change-in-production
-
-# ========================================
-# Database Configuration
-# ========================================
-DATABASE_URL=postgres://admin_user:admin_password@postgres:5432/sap_llm_gateway
 
 # ========================================
 # Logging Configuration
 # ========================================
+# Read by @libs/logger (libs/logger/index.ts:161), not by admin directly.
+# Options: ERROR, WARN, INFO, DEBUG, TRACE
 LOG_LEVEL=debug
-LOG_FORMAT=json
+
+# Logs the decoded JWT metadata on the docker-jwt path. Any non-empty value
+# enables it. Prints token contents — leave unset where those are sensitive.
+# DEBUG_METADATA=
 
 # ========================================
-# Debug Settings
+# Database Configuration
 # ========================================
-# Enable detailed authentication debugging
-DEBUG_AUTH=true
-DEBUG_HEADERS=true
-DEBUG_ROLES=true
+# Admin uses CAP's own configuration, NOT a DATABASE_URL. Set these instead
+# (dot notation is supported in .env files) — see .env.sample for the full set.
+cds.requires.db.kind=postgres
+cds.requires.db.impl=@cap-js/postgres
+cds.requires.db.credentials.host=postgres
+cds.requires.db.credentials.port=5432
+cds.requires.db.credentials.user=admin_user
+cds.requires.db.credentials.password=admin_password
+cds.requires.db.credentials.database=sap_llm_gateway
 
 # ========================================
-# Expected Headers from OAuth2-Proxy/Nginx
+# Headers expected from oauth2-proxy / nginx
 # ========================================
-# These headers should be forwarded by nginx after oauth2-proxy authentication:
+# These names are FIXED. oauth2-proxy emits them when
+# OAUTH2_PROXY_SET_XAUTHREQUEST is on and offers no option to rename them;
+# nginx forwards them under the same names; authMiddleware.ts:79-81 reads them
+# under the same names. There is no environment variable for any of this.
 #
-# x-auth-request-user: admin@example.com
-# x-auth-request-email: admin@example.com  
-# x-auth-request-groups: sap-llm-gateway-admin
-# x-auth-request-preferred-username: admin@example.com
-# x-auth-request-access-token: <JWT token>
+#   x-auth-request-user
+#   x-auth-request-email                 <- gates the whole header auth path
+#   x-auth-request-groups
+#   x-auth-request-preferred-username
+#   x-auth-request-access-token
+#
+# WHICH of them arrive differs by deployment, and that is a real difference:
+#   Docker forwards user, email, groups, preferred-username
+#   Kyma   forwards user, groups only
+# See docs/notes/auth-header-flow-by-runtime.md for why Kyma still works.
 #
 # Example nginx configuration:
-# proxy_set_header X-Auth-Request-User $auth_request_user;
-# proxy_set_header X-Auth-Request-Email $auth_request_email;
-# proxy_set_header X-Auth-Request-Groups $auth_request_groups;
-# proxy_set_header X-Auth-Request-Preferred-Username $auth_request_preferred_username;
-# proxy_set_header X-Auth-Request-Access-Token $auth_request_access_token;
+# proxy_set_header X-Auth-Request-User   $user;
+# proxy_set_header X-Auth-Request-Email  $email;
+# proxy_set_header X-Auth-Request-Groups $groups;

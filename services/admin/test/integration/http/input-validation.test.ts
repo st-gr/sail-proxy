@@ -81,8 +81,10 @@ describe('Input Validation and Error Handling Integration Tests', () => {
       }
     });
 
-    test('should accept API key at exactly 128 characters', async () => {
-      const maxLengthKey = 'sk-' + 'a'.repeat(125); // Exactly 128 characters
+    test('should accept API key at exactly 256 characters', async () => {
+      // 256, raised from 128: a real OpenAI platform key (sk-proj-…) is 164
+      // characters, so the old ceiling rejected the bring-your-own-key case.
+      const maxLengthKey = 'sk-' + 'a'.repeat(253); // Exactly 256 characters
       
       const validKeyData = {
         name: 'Max Length Key Test',
@@ -257,13 +259,36 @@ describe('Input Validation and Error Handling Integration Tests', () => {
       }
     });
 
+    test('accepts a 164-character key, the length of a real OpenAI platform key', async () => {
+      // The exact case that failed: sk-proj-… keys are 164 characters and the
+      // 128 ceiling rejected them with "API key cannot exceed 128 characters".
+      //
+      // Bring-your-own-key goes through updateApiKeyValue — createApiKey MINTS
+      // a key and takes no `key` parameter at all.
+      if (!testApiKeyId) return;
+      // Unique per run: the key column is UNIQUE and this database persists
+      // across runs, so a deterministic value passes once and then collides
+      // with "API key already exists" forever after.
+      const suffix = Math.random().toString(36).slice(2, 10);
+      const realWorldLengthKey = `sk-proj-${suffix}` + 'b'.repeat(156 - suffix.length); // 164 total
+      expect(realWorldLengthKey).toHaveLength(164);
+
+      const response = await adminClient.post('/odata/v4/admin/updateApiKeyValue', {
+        keyId: testApiKeyId,
+        newKey: realWorldLengthKey,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data.success).toBe(true);
+    });
+
     test('should validate API key length in updateApiKeyValue action', async () => {
       if (!testApiKeyId) {
         console.log('Skipping test - test API key not created');
         return;
       }
 
-      const tooLongKey = 'sk-' + 'x'.repeat(126); // 129 characters - too long
+      const tooLongKey = 'sk-' + 'x'.repeat(254); // 257 characters - over the 256 ceiling
       
       const response = await adminClient.post('/odata/v4/admin/updateApiKeyValue', {
         keyId: testApiKeyId,
@@ -273,7 +298,7 @@ describe('Input Validation and Error Handling Integration Tests', () => {
       // updateApiKeyValue action should validate and reject invalid length
       if (response.status === 200) {
         expect(response.data.success).toBe(false);
-        expect(response.data.message).toMatch(/128|length|exceed/i);
+        expect(response.data.message).toMatch(/256|length|exceed/i);
       } else {
         expect([200, 400, 404]).toContain(response.status);
       }

@@ -3,13 +3,16 @@
  */
 
 import request from 'supertest';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
 const baseUrl = getAdminServiceUrl();
 const authHeader = 'Basic YWRtaW5AdGVzdC5jb206YWRtaW4=';
 const cookieHeader = 'cap.sid=s%3ArTusDxXGRlT2RfgHfXH2LS2URXco2lEb.4W%2B9QhW%2FkpP8roWPVLX3IQImtSBfJ%2Fc1sIQlYzU9aEw';
 
 describe('Activation Request Isolation Test', () => {
+  // Restores whatever was active before this suite; see active-config-guard.
+  guardActiveConfiguration();
+
   let configId: string;
 
   beforeAll(async () => {

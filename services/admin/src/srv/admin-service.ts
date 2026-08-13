@@ -625,10 +625,14 @@ class AdminService {
       };
     }
     
-    if (newKey.length > 128) {
+    // 256, not 128. A real OpenAI platform key (sk-proj-…) is 164 characters,
+    // so the old ceiling rejected exactly the bring-your-own-key case this
+    // endpoint exists for. Still bounded — an unbounded key is a cost to hash
+    // and index on every request.
+    if (newKey.length > 256) {
       return {
         success: false,
-        message: 'API key cannot exceed 128 characters'
+        message: 'API key cannot exceed 256 characters'
       };
     }
     

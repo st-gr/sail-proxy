@@ -26,6 +26,10 @@ export interface UsageEvent {
   responseTime: number;
   statusCode: number;
   endpoint?: string; // Add endpoint information for better granularity
+  // True when inputTokens/outputTokens were derived locally (e.g. tokenizing a
+  // mid-stream abort's already-streamed text) rather than read off a
+  // provider-reported usage object. Absent/false means provider-reported.
+  usageEstimated?: boolean;
 }
 
 interface UsageProcessorConfig {
@@ -306,7 +310,8 @@ class UsageEventProcessor {
         totalCost: costs.totalCost,
         requestId: event.requestId,
         validFrom: new Date(event.timestamp * 1000),
-        validTo: new Date('9999-12-31T23:59:59.999Z')
+        validTo: new Date('9999-12-31T23:59:59.999Z'),
+        usageEstimated: event.usageEstimated ?? null
       };
     }));
 
@@ -402,7 +407,8 @@ class UsageEventProcessor {
         cacheReadInputCost: costs.cacheReadInputCost || 0,
         totalCost: costs.totalCost,
         validFrom: new Date(event.timestamp * 1000),
-        validTo: new Date('9999-12-31T23:59:59.999Z')
+        validTo: new Date('9999-12-31T23:59:59.999Z'),
+        usageEstimated: event.usageEstimated ?? null
       };
     }));
 

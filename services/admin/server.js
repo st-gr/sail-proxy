@@ -53,11 +53,21 @@ async function startServer() {
       deployTarget,
       port,
       nodeEnv: process.env.NODE_ENV,
+      // These names are FIXED, not configurable. They are logged so an
+      // operator can see what the service reads, and they are written out
+      // literally here because the reader is authMiddleware.ts:79-81 and
+      // index.ts:107-109, both of which hardcode them.
+      //
+      // This block previously read X_AUTH_REQUEST_USER_HEADER and friends from
+      // the environment, which made the startup log advertise configuration
+      // that does not exist: setting one changed this line and nothing else,
+      // while the middleware went on reading the hardcoded name. If these ever
+      // need to be configurable, the change belongs in the middleware first.
       authHeaders: {
-        userHeader: process.env.X_AUTH_REQUEST_USER_HEADER || 'x-auth-request-user',
-        emailHeader: process.env.X_AUTH_REQUEST_EMAIL_HEADER || 'x-auth-request-email',
-        groupsHeader: process.env.X_AUTH_REQUEST_GROUPS_HEADER || 'x-auth-request-groups',
-        accessTokenHeader: process.env.X_AUTH_REQUEST_ACCESS_TOKEN_HEADER || 'x-auth-request-access-token'
+        userHeader: 'x-auth-request-user',
+        emailHeader: 'x-auth-request-email',
+        groupsHeader: 'x-auth-request-groups',
+        accessTokenHeader: 'x-auth-request-access-token'
       }
     });
 

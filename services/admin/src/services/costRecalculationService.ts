@@ -112,10 +112,28 @@ export class CostRecalculationService {
         WHERE ${joinCondition}
           AND u.validFrom >= $1
           AND mc.dateFrom <= u.validFrom AND mc.dateTo >= u.validFrom
-          AND u.inputTokens > 1
-          AND ABS(
-            (u.inputCost::numeric / GREATEST(u.inputTokens, 1) * 1000) - mc.inputCost::numeric
-          ) / GREATEST(mc.inputCost::numeric, 0.000001) > 0.05
+          AND (u.inputTokens > 1 OR COALESCE(u.cacheReadInputTokens, 0) > 0 OR COALESCE(u.cacheCreationInputTokens, 0) > 0)
+          AND (
+            ABS(
+              (u.inputCost::numeric / GREATEST(u.inputTokens, 1) * 1000) - mc.inputCost::numeric
+            ) / GREATEST(mc.inputCost::numeric, 0.000001) > 0.05
+            OR (
+              COALESCE(u.cacheReadInputTokens, 0) > 0 AND (
+                u.cacheReadInputCost IS NULL
+                OR ABS(
+                  (u.cacheReadInputCost::numeric / GREATEST(COALESCE(u.cacheReadInputTokens, 0), 1) * 1000) - COALESCE(mc.cacheReadInputCost, mc.inputCost)::numeric
+                ) / GREATEST(COALESCE(mc.cacheReadInputCost, mc.inputCost)::numeric, 0.000001) > 0.05
+              )
+            )
+            OR (
+              COALESCE(u.cacheCreationInputTokens, 0) > 0 AND (
+                u.cacheCreationInputCost IS NULL
+                OR ABS(
+                  (u.cacheCreationInputCost::numeric / GREATEST(COALESCE(u.cacheCreationInputTokens, 0), 1) * 1000) - COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric
+                ) / GREATEST(COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric, 0.000001) > 0.05
+              )
+            )
+          )
       `;
     }
 
@@ -135,6 +153,18 @@ export class CostRecalculationService {
             AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
           LIMIT 1
         ), 6),
+        cacheReadInputCost = ROUND(CAST(COALESCE(cacheReadInputTokens, 0) AS REAL) / 1000 * (
+          SELECT COALESCE(mc.cacheReadInputCost, mc.inputCost) FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        ), 6),
+        cacheCreationInputCost = ROUND(CAST(COALESCE(cacheCreationInputTokens, 0) AS REAL) / 1000 * (
+          SELECT COALESCE(mc.cacheCreationInputCost, mc.inputCost) FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        ), 6),
         totalCost = ROUND(
           CAST(inputTokens AS REAL) / 1000 * (
             SELECT mc.inputCost FROM sap_llm_gateway_admin_ModelCosts mc
@@ -147,9 +177,21 @@ export class CostRecalculationService {
             WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
               AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
             LIMIT 1
+          ) +
+          CAST(COALESCE(cacheReadInputTokens, 0) AS REAL) / 1000 * (
+            SELECT COALESCE(mc.cacheReadInputCost, mc.inputCost) FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          ) +
+          CAST(COALESCE(cacheCreationInputTokens, 0) AS REAL) / 1000 * (
+            SELECT COALESCE(mc.cacheCreationInputCost, mc.inputCost) FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
           ), 6)
       WHERE validFrom >= ?
-        AND inputTokens > 1
+        AND (inputTokens > 1 OR COALESCE(cacheReadInputTokens, 0) > 0 OR COALESCE(cacheCreationInputTokens, 0) > 0)
         AND EXISTS (
           SELECT 1 FROM sap_llm_gateway_admin_ModelCosts mc
           WHERE ${joinCondition.replace(/u\./g, `${table}.`)}

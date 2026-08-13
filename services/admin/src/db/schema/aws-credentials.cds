@@ -108,6 +108,9 @@ entity AwsCredentialUsage : cuid, temporal {
   outputTokens        : Integer;
   cacheCreationInputTokens : Integer;       // Cache creation input tokens (separate pricing)
   cacheReadInputTokens : Integer;           // Cache read input tokens (separate pricing)
+  usageEstimated      : Boolean;            // True when tokens were derived locally because the
+                                             // client aborted before the provider reported usage;
+                                             // absent/null means provider-reported.
   
   // Client information
   userAgent           : String(500);

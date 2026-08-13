@@ -155,6 +155,37 @@ describe('CostRecalculationService', () => {
       expect(apiKeyCall[0]).toContain('mc.inputCost)');
     });
 
+    it('should not skip fully-cached rows (inputTokens <= 1 with cache activity)', async () => {
+      await service.runRecalculation();
+
+      const calls = mockDb.run.mock.calls;
+      const apiKeyCall = calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('ApiKeyUsage')
+      );
+
+      // The gate must also admit rows driven entirely by cache tokens.
+      expect(apiKeyCall[0]).toContain(
+        '(u.inputTokens > 1 OR COALESCE(u.cacheReadInputTokens, 0) > 0 OR COALESCE(u.cacheCreationInputTokens, 0) > 0)'
+      );
+    });
+
+    it('should trigger recalculation on cache-price drift even when input pricing is unchanged', async () => {
+      await service.runRecalculation();
+
+      const calls = mockDb.run.mock.calls;
+      const apiKeyCall = calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('ApiKeyUsage')
+      );
+
+      // The drift predicate must compare cacheReadInputCost and cacheCreationInputCost
+      // against current pricing, not just inputCost — otherwise a cache-only price
+      // change never triggers a recalc.
+      expect(apiKeyCall[0]).toContain('u.cacheReadInputCost::numeric / GREATEST(COALESCE(u.cacheReadInputTokens, 0), 1) * 1000');
+      expect(apiKeyCall[0]).toContain('u.cacheCreationInputCost::numeric / GREATEST(COALESCE(u.cacheCreationInputTokens, 0), 1) * 1000');
+      expect(apiKeyCall[0]).toContain('u.cacheReadInputCost IS NULL');
+      expect(apiKeyCall[0]).toContain('u.cacheCreationInputCost IS NULL');
+    });
+
     it('should log results with record counts', async () => {
       mockDb.run.mockResolvedValue({ rowCount: 5 });
 
