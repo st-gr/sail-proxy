@@ -16,6 +16,7 @@ import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import * as sseWriter from '../utils/sseWriter';
+import { requestDeclaresWebSearchTool } from './webSearch/webSearchTool';
 
 // Type definitions
 interface CacheStats {
@@ -637,7 +638,31 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
   if (!config.enableCaching) {
     return { stop: false };
   }
-  
+
+  // A web_search turn is never cached, in either direction.
+  //
+  // SERVING: a cache hit returns { stop: true } from here, so the whole Bedrock
+  // streaming handler — and with it the web_search stream interception — never
+  // runs. STORING: `streamHandler` captures the RAW upstream chunk, before
+  // `BedrockStreamParser.processChunk` and therefore before the interception, so
+  // what lands in the cache is the un-rewritten `tool_use` turn. Together those
+  // mean one uncached web_search request could poison the cache and every later
+  // hit would replay the exact bug this module exists to fix — silently, and
+  // with no upstream call to notice it by.
+  //
+  // Returning before `requestContextMap.set` is what disarms all of it: the
+  // stream, after and error handlers all begin by looking that context up and
+  // pass through untouched when it is absent, so this one guard covers serve
+  // AND store.
+  //
+  // Search results are time-sensitive anyway — a cached answer about "the
+  // current version" is wrong the moment it stops being current — so this is
+  // the right behaviour independently of the correctness bug.
+  if (requestDeclaresWebSearchTool(req.body)) {
+    logger.info('Plugin', '[awsBedrockResponseCache] NOT CACHING: request declares the web_search tool');
+    return { stop: false };
+  }
+
   // Record start time for performance tracking
   const requestId = req.id || Math.random().toString(36).substring(2, 15);
   requestStartTimes.set(requestId, Date.now());

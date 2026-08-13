@@ -12,6 +12,10 @@ export interface UsageEvent {
   responseTime: number;
   statusCode: number;
   endpoint?: string; // Add endpoint information for better granularity
+  // True when inputTokens/outputTokens were derived locally (e.g. tokenizing a
+  // mid-stream abort's already-streamed text) rather than read off a
+  // provider-reported usage object. Absent/false means provider-reported.
+  usageEstimated?: boolean;
 }
 
 export interface UsageMetrics {
@@ -21,4 +25,7 @@ export interface UsageMetrics {
   cacheCreationInputTokens?: number; // Separate tracking for cache creation tokens
   cacheReadInputTokens?: number; // Separate tracking for cache read tokens
   eventEmitted?: boolean; // Flag to prevent duplicate usage events
+  // See UsageEvent.usageEstimated — carried on the metrics accumulator so the
+  // controller can set it before emitUsageEvent copies it onto the event.
+  usageEstimated?: boolean;
 }

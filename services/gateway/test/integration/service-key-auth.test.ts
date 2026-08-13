@@ -25,6 +25,15 @@ jest.mock('../../src/services/unifiedApiKeyValidationService', () => ({
 
 describe('Service Key Authentication Integration', () => {
   let app: express.Application;
+  // ONE listening server per test (the app is rebuilt in beforeEach), and every
+  // request goes through it. Passing the app to supertest instead stands up an
+  // EPHEMERAL server per CALL and tears it down when the response completes —
+  // under `forceExit: true` plus workers competing for cores, that teardown
+  // races the response still being written and the client reads a closed
+  // socket, surfacing as `Parse Error: Expected HTTP/, RTSP/ or ICE/` or
+  // `socket hang up` on a passing assertion.
+  let server: import('http').Server;
+
   const mockServiceKey = 'sk-' + 'a'.repeat(48); // Mock service key format
   
   // Default mock validation result
@@ -52,7 +61,7 @@ describe('Service Key Authentication Integration', () => {
     }
   };
   
-  beforeEach(() => {
+  beforeEach(async () => {
     app = express();
     app.use(express.json());
     
@@ -100,6 +109,12 @@ describe('Service Key Authentication Integration', () => {
     const { unifiedApiKeyValidationService } = require('../../src/services/unifiedApiKeyValidationService');
     unifiedApiKeyValidationService.validateApiKey.mockReset();
     unifiedApiKeyValidationService.validateApiKey.mockResolvedValue(mockValidationResult);
+
+    await new Promise<void>((resolve) => { server = app.listen(0, () => resolve()); });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => { server.close(() => resolve()); });
   });
 
   describe('Non-Standalone Mode with Service Key', () => {
@@ -108,7 +123,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should allow GET /api/admin/api-config with valid service key', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -125,7 +140,7 @@ describe('Service Key Authentication Integration', () => {
         timeouts: { default: 30000 }
       };
 
-      const response = await request(app)
+      const response = await request(server)
         .put('/api/admin/api-config')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -141,7 +156,7 @@ describe('Service Key Authentication Integration', () => {
         timeouts: { openai: 15000 }
       };
 
-      const response = await request(app)
+      const response = await request(server)
         .patch('/api/admin/api-config')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -153,7 +168,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should allow GET /api/admin/api-config/rate-limits with valid service key', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config/rate-limits')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -164,7 +179,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should reject requests without API key', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('User-Agent', 'Admin-Service/1.0.0')
         .expect(401);
@@ -188,7 +203,7 @@ describe('Service Key Authentication Integration', () => {
         }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('X-API-Key', 'sk-invalid-key-12345')
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -217,7 +232,7 @@ describe('Service Key Authentication Integration', () => {
         }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('X-API-Key', 'sk-regular-user-key-123')
         .set('User-Agent', 'Regular-Client/1.0.0')
@@ -234,7 +249,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should allow access without API key in standalone mode', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('User-Agent', 'Admin-Service/1.0.0')
         .expect(200);
@@ -244,7 +259,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should allow access with API key in standalone mode', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -263,7 +278,7 @@ describe('Service Key Authentication Integration', () => {
     test('should pass correct validation context to unified service', async () => {
       const { unifiedApiKeyValidationService } = require('../../src/services/unifiedApiKeyValidationService');
       
-      await request(app)
+      await request(server)
         .post('/api/admin/api-config')
         .set('X-API-Key', mockServiceKey)
         .set('User-Agent', 'Admin-Service/1.0.0')
@@ -315,7 +330,7 @@ describe('Service Key Authentication Integration', () => {
     });
 
     test('should return proper error format for missing API key', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .expect(401);
 
@@ -332,7 +347,7 @@ describe('Service Key Authentication Integration', () => {
         valid: false
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/admin/api-config')
         .set('X-API-Key', 'invalid-key')
         .expect(403);

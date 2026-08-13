@@ -11,6 +11,7 @@ import { unifiedValidationCache } from './unifiedValidationCache';
 import { getCachedUnifiedAuthConfig, isStandaloneMode } from '../config/unifiedAuthConfig';
 import { UnifiedValidationResponse, UnifiedTokenRequest, AwsCredentialValidationData } from '../clients/adminServiceClient';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 export interface UnifiedAwsCredentialValidationRequest {
@@ -56,7 +57,7 @@ export class UnifiedAwsCredentialValidationService {
     const requestId = this.generateRequestId();
     
     logger.trace('UnifiedAwsCredentialValidationService', 'Validating AWS credentials', {
-      accessKeyId: request.accessKeyId,
+      accessKeyLabel: secretLabel(request.accessKeyId),
       endpoint: request.endpoint,
       requestId
     });
@@ -135,7 +136,7 @@ export class UnifiedAwsCredentialValidationService {
 
     try {
       logger.trace('UnifiedAwsCredentialValidationService', 'Creating unified validation token for AWS credential', {
-        accessKeyId: request.accessKeyId,
+        accessKeyLabel: secretLabel(request.accessKeyId),
         requestId
       });
 
@@ -198,7 +199,7 @@ export class UnifiedAwsCredentialValidationService {
       const credential = await awsCredentialsService.findAwsCredential(request.accessKeyId);
       if (!credential) {
         logger.debug('UnifiedAwsCredentialValidationService', 'AWS credential not found in local service', {
-          accessKeyId: request.accessKeyId
+          accessKeyLabel: secretLabel(request.accessKeyId)
         });
         return null;
       }
@@ -246,7 +247,7 @@ export class UnifiedAwsCredentialValidationService {
       
       if (cachedResponse && cachedResponse.valid && cachedResponse.authType === 'aws_credential') {
         logger.trace('UnifiedAwsCredentialValidationService', 'Cache hit for AWS credential', {
-          accessKeyId: accessKeyId
+          accessKeyLabel: secretLabel(accessKeyId)
         });
         return cachedResponse.data as AwsCredentialValidationData;
       }
@@ -285,7 +286,7 @@ export class UnifiedAwsCredentialValidationService {
       await unifiedValidationCache.setUnifiedToken(accessKeyId, unifiedResponse, { source });
       
       logger.trace('UnifiedAwsCredentialValidationService', 'Cached AWS credential validation result', {
-        accessKeyId,
+        accessKeyLabel: secretLabel(accessKeyId),
         source
       });
     } catch (error) {

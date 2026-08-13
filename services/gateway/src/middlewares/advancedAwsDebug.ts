@@ -4,7 +4,25 @@
  */
 import crypto from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
+
+// Header names that carry credential material and must never be logged raw,
+// even in this verbose debug tool.
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'x-api-key',
+  'x-stainless-key',
+  'cookie',
+  'x-amz-security-token'
+]);
+
+/** Redact a header value for logging if its name carries credential material. */
+function redactHeaderValue(name: string, value: any): any {
+  if (!SENSITIVE_HEADER_NAMES.has(name.toLowerCase())) return value;
+  if (typeof value !== 'string' || value.length === 0) return value;
+  return `[redacted:${secretLabel(value)}]`;
+}
 
 interface AuthInfo {
   accessKeyId: string;
@@ -79,7 +97,7 @@ export function analyzeRequest(req: any, authInfo: AuthInfo, originalUrl: URL, p
       value = value.map((v: any) => String(v)).join(', ');
     }
     const inSignedHeaders = authInfo.signedHeaders.includes(key) ? '✅' : '❌';
-    logger.debug('AwsDebug', `  ${inSignedHeaders} ${key}: "${value}"`);
+    logger.debug('AwsDebug', `  ${inSignedHeaders} ${key}: "${redactHeaderValue(key, value)}"`);
   });
 
   // 6. Signed headers from auth vs actual
@@ -87,7 +105,7 @@ export function analyzeRequest(req: any, authInfo: AuthInfo, originalUrl: URL, p
   authInfo.signedHeaders.forEach(header => {
     const value = req.headers[header.toLowerCase()];
     const status = value !== undefined ? '✅' : '⚠️';
-    logger.debug('AwsDebug', `  ${status} ${header}: "${value || 'MISSING'}"`);
+    logger.debug('AwsDebug', `  ${status} ${header}: "${value ? redactHeaderValue(header, value) : 'MISSING'}"`);
   });
 
   // 7. Canonical request analysis
@@ -145,17 +163,16 @@ export function performComprehensiveAnalysis(_req: any, authInfo: AuthInfo, secr
   logger.debug('AwsDebug', `Our calculated signature: ${expectedSignature}`);
   logger.debug('AwsDebug', `Client provided signature: ${authInfo.signature}`);
   
-  // Check exact secret value being used - including hex representation to catch invisible chars
-  logger.debug('AwsDebug', `Full secret being used: "${secretAccessKey}"`);
+  // Check exact secret value being used - label lets us confirm equality/inequality
+  // across log lines (invisible-char / whitespace bugs) without ever printing the secret.
+  logger.debug('AwsDebug', `Secret label being used: ${secretLabel(secretAccessKey)}`);
   logger.debug('AwsDebug', `Secret length: ${secretAccessKey.length}`);
   logger.debug('AwsDebug', `Secret type: ${typeof secretAccessKey}`);
-  logger.debug('AwsDebug', `Secret hex representation: ${Buffer.from(secretAccessKey, 'utf8').toString('hex')}`);
-  
+
   // Test with the exact stored secret from credentials
   const storedSecret = credential.reconstructedSecret;
-  logger.debug('AwsDebug', `Stored secret: "${storedSecret}"`);
+  logger.debug('AwsDebug', `Stored secret label: ${secretLabel(storedSecret)}`);
   logger.debug('AwsDebug', `Stored secret length: ${storedSecret.length}`);
-  logger.debug('AwsDebug', `Stored secret hex: ${Buffer.from(storedSecret, 'utf8').toString('hex')}`);
   
   if (secretAccessKey !== storedSecret) {
     logger.debug('AwsDebug', 'WARNING: Secret from service differs from stored secret!');
@@ -215,7 +232,7 @@ function performManualSigningKeyVerification(secretAccessKey: string, authInfo: 
   const testRegion = authInfo.region;
   const testService = authInfo.service;
   
-  logger.debug('AwsDebug', `Using: secret="${testSecret}", date="${testDate}", region="${testRegion}", service="${testService}"`);
+  logger.debug('AwsDebug', `Using: secretLabel=${secretLabel(testSecret)}, date="${testDate}", region="${testRegion}", service="${testService}"`);
   
   const step1 = crypto.createHmac('sha256', 'AWS4' + testSecret).update(testDate).digest();
   logger.debug('AwsDebug', `Step 1 (kDate): ${step1.toString('hex')}`);
@@ -280,22 +297,22 @@ export function logSignatureVerificationFailure(req: any, authInfo: AuthInfo, or
     } else {
       formattedHeaders[key] = value as string;
     }
-    logger.debug('AwsDebug', `Header [${key}]: "${formattedHeaders[key]}"`);
+    logger.debug('AwsDebug', `Header [${key}]: "${redactHeaderValue(key, formattedHeaders[key])}"`);
   });
   logger.debug('AwsDebug', '=== END HEADERS ===');
-  
+
   // Log specific headers used in signature verification
   logger.debug('AwsDebug', `Host header: ${req.headers.host}`);
   logger.debug('AwsDebug', `Content-Type: ${req.headers['content-type']}`);
   logger.debug('AwsDebug', `X-Amz-Date: ${req.headers['x-amz-date']}`);
   logger.debug('AwsDebug', `X-Amz-Content-Sha256: ${req.headers['x-amz-content-sha256']}`);
-  logger.debug('AwsDebug', `Authorization header: ${req.headers.authorization}`);
-  
+  logger.debug('AwsDebug', `Authorization header: ${redactHeaderValue('authorization', req.headers.authorization)}`);
+
   // Compare signed headers with actual headers
   logger.debug('AwsDebug', '=== SIGNED HEADERS CHECK ===');
   logger.debug('AwsDebug', `Signed headers from auth: ${authInfo.signedHeaders.join(';')}`);
   authInfo.signedHeaders.forEach(header => {
-    logger.debug('AwsDebug', `SignedHeader [${header}] found in request: ${req.headers[header.toLowerCase()] !== undefined ? 'Yes' : 'No'}, Value: "${req.headers[header.toLowerCase()]}"`);
+    logger.debug('AwsDebug', `SignedHeader [${header}] found in request: ${req.headers[header.toLowerCase()] !== undefined ? 'Yes' : 'No'}, Value: "${redactHeaderValue(header, req.headers[header.toLowerCase()])}"`);
   });
   logger.debug('AwsDebug', '=== END SIGNED HEADERS CHECK ===');
   
@@ -386,7 +403,7 @@ function generateCurlCommand(req: any, _authInfo: AuthInfo, _payloadHash: string
   Object.keys(req.headers).forEach(header => {
     // Skip content-length as curl adds it
     if (header.toLowerCase() !== 'content-length') {
-      cmd.push(`-H "${header}: ${req.headers[header]}"`);
+      cmd.push(`-H "${header}: ${redactHeaderValue(header, req.headers[header])}"`);
     }
   });
   

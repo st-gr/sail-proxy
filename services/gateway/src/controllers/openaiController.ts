@@ -12,7 +12,8 @@ import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExe
 import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
-import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
+import { foldExclusiveUsage } from '../utils/usageFolding';
 import {
   isUnsupportedParam,
   stripUnsupportedParams,
@@ -258,12 +259,25 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         payloadLogger.savePayload(debugRequestId, '03a_deployed_response_from_url_openai', deploymentResponse.data, req, res);
       }
 
-      // Track usage from deployment response
+      // Track usage from deployment response. UNLIKE the five SAP-orchestration
+      // fold sites elsewhere in this file, this branch's producer is a real
+      // OpenAI-compatible endpoint (finalDeploymentUrl, restricted to
+      // OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS above), not SAP. Per OpenAI's
+      // documented contract, `prompt_tokens_details.cached_tokens` is INCLUSIVE
+      // (a subset already counted inside prompt_tokens) — the opposite of the
+      // EXCLUSIVE regime the other sites measured live. No live capture of a
+      // deployed-model cached response exists to confirm this branch actually
+      // follows that contract, so cache tokens are deliberately NOT split here
+      // pending one. Splitting with the exclusive fold (as if cache rode along
+      // as a separate line item) would double-count against prompt_tokens.
       if (deploymentResponse.data && deploymentResponse.data.usage) {
-        updateTokenCounts(
+        const deployedUsage = deploymentResponse.data.usage;
+        foldExclusiveUsage(
           usageMetrics,
-          deploymentResponse.data.usage.prompt_tokens || 0,
-          deploymentResponse.data.usage.completion_tokens || 0
+          deployedUsage.prompt_tokens || 0,
+          deployedUsage.completion_tokens || 0,
+          0,
+          0,
         );
       }
 
@@ -484,7 +498,24 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       logger.info('openaiController', 'Calling SAP AI Core streaming service');
       let chunkCounter = 0; // Initialize chunk counter
       let emulatedStreamingData: any = null; // Store emulated streaming data
-      let streamTokenCounts = { inputTokens: 0, outputTokens: 0 }; // Track streaming token usage
+      // Track streaming token usage. EXCLUSIVE regime (foldExclusiveUsage,
+      // src/utils/usageFolding.ts): prompt_tokens counts only full-rate tokens,
+      // cache read/write are separate line items that are ADDED, never subtracted.
+      // Measured live on POST /openai/v1/chat/completions, 2026-08-07
+      // (test/fixtures/orchestration/cache-probe-result.md): prompt_tokens stayed
+      // flat at 14 across two identical calls while prompt_tokens_details.cached_tokens
+      // went 0 -> 29004. Usage arrives on the FINAL streamed chunk only (measured: 1 of
+      // several chunks per response), so this accumulator's `+=` is not a double-count
+      // today; cache_creation_tokens was absent on T2's streaming captures but T11
+      // observed it once on a streaming round of the same backend
+      // (bridge-cache-probe-result.md, T11 section) — governing rule unknown, which is
+      // why the field is read tolerantly below rather than assumed absent.
+      let streamTokenCounts = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      }; // Track streaming token usage
       
       // For emulated streaming, we need to handle the Promise differently
       const streamingPromise = sapAIService.streamChatCompletion(payload, (chunk: StreamChunk) => {
@@ -549,6 +580,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
             if (transformedResponse.usage.completion_tokens) {
               streamTokenCounts.outputTokens += transformedResponse.usage.completion_tokens;
             }
+            if (transformedResponse.usage.prompt_tokens_details?.cached_tokens) {
+              streamTokenCounts.cacheReadInputTokens += transformedResponse.usage.prompt_tokens_details.cached_tokens;
+            }
+            if (transformedResponse.usage.prompt_tokens_details?.cache_creation_tokens) {
+              streamTokenCounts.cacheCreationInputTokens += transformedResponse.usage.prompt_tokens_details.cache_creation_tokens;
+            }
             logger.debug('openaiController', 'Updated streaming token counts:', streamTokenCounts);
           } else {
             logger.debug('openaiController', 'No usage data in transformed response');
@@ -601,10 +638,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
             // Check if emulated streaming data had token usage that we should track
             if (emulatedStreamingData && emulatedStreamingData.nonStreamingResponse && emulatedStreamingData.nonStreamingResponse.usage) {
               const usage = emulatedStreamingData.nonStreamingResponse.usage;
-              updateTokenCounts(
+              foldExclusiveUsage(
                 usageMetrics,
                 usage.prompt_tokens || 0,
-                usage.completion_tokens || 0
+                usage.completion_tokens || 0,
+                usage.prompt_tokens_details?.cache_creation_tokens ?? 0,
+                usage.prompt_tokens_details?.cached_tokens ?? 0,
               );
               logger.debug('openaiController', 'Updated usage metrics with emulated streaming tokens:', usage);
             }
@@ -623,14 +662,18 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Update usage metrics with streaming token counts (regardless of response state)
           logger.debug('openaiController', 'Final streaming token counts before usage tracking:', streamTokenCounts);
           if (streamTokenCounts.inputTokens > 0 || streamTokenCounts.outputTokens > 0) {
-            updateTokenCounts(
+            foldExclusiveUsage(
               usageMetrics,
               streamTokenCounts.inputTokens,
-              streamTokenCounts.outputTokens
+              streamTokenCounts.outputTokens,
+              streamTokenCounts.cacheCreationInputTokens,
+              streamTokenCounts.cacheReadInputTokens,
             );
             logger.info('openaiController', 'Updated usage metrics with streaming tokens:', {
               inputTokens: streamTokenCounts.inputTokens,
-              outputTokens: streamTokenCounts.outputTokens
+              outputTokens: streamTokenCounts.outputTokens,
+              cacheReadInputTokens: streamTokenCounts.cacheReadInputTokens,
+              cacheCreationInputTokens: streamTokenCounts.cacheCreationInputTokens
             });
           } else {
             logger.warn('openaiController', 'No streaming token counts to track, will emit usage event with zero tokens');
@@ -742,10 +785,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           
           // Update metrics with any tokens collected during streaming before error
           if (streamTokenCounts.inputTokens > 0 || streamTokenCounts.outputTokens > 0) {
-            updateTokenCounts(
+            foldExclusiveUsage(
               usageMetrics,
               streamTokenCounts.inputTokens,
-              streamTokenCounts.outputTokens
+              streamTokenCounts.outputTokens,
+              streamTokenCounts.cacheCreationInputTokens,
+              streamTokenCounts.cacheReadInputTokens,
             );
           }
           
@@ -770,10 +815,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         
         // Track usage from transformed response
         if (transformedResponse && transformedResponse.usage) {
-          updateTokenCounts(
+          foldExclusiveUsage(
             usageMetrics,
             transformedResponse.usage.prompt_tokens || 0,
-            transformedResponse.usage.completion_tokens || 0
+            transformedResponse.usage.completion_tokens || 0,
+            transformedResponse.usage.prompt_tokens_details?.cache_creation_tokens ?? 0,
+            transformedResponse.usage.prompt_tokens_details?.cached_tokens ?? 0,
           );
         }
         
@@ -1024,36 +1071,13 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
   }
   const previousMessages = openAIReq.messages.length > 1 ? openAIReq.messages.slice(0, -1) : [];
 
-  // Prepare a modified version of the latest message for the V2 prompt_templating module.
-  // The prompt template requires a specific format.
-  let templateMessage: OpenAIMessage;
-
-  if (isAnthropicModel && Array.isArray(latestUserMessage.content)) {
-    // For Anthropic models with array content, we need to format differently for SAP AI Core
-    // Convert array content to a plain text string for prompt_templating
-    let textContent = '';
-    
-    // Extract any text parts from the content array
-    latestUserMessage.content.forEach(item => {
-      if (item.type === 'text' && item.text) {
-        textContent += item.text + ' ';
-      } else if (item.type === 'image_url') {
-        textContent += '[Image attached] ';
-      }
-    });
-    
-    // Create a simplified template message with just text content
-    templateMessage = {
-      role: latestUserMessage.role,
-      content: textContent.trim()
-    };
-    
-    // For messages_history, keep the original format with image content
-    logger.info('openaiController', 'Using special Anthropic image format for model input');
-  } else {
-    // For other models or simple content, use the original message
-    templateMessage = latestUserMessage;
-  }
+  // The latest message, used as the prompt template in the non-Anthropic branch
+  // below. There used to be a flattening pass here that turned array content
+  // into a string for Anthropic models; it was dead code — its only reader is
+  // the `else` branch below, and the flattening ran only in the `if` branch,
+  // which discards it. `prompt_templating` never required string content, and
+  // block content already reaches SAP intact via messages_history.
+  const templateMessage: OpenAIMessage = latestUserMessage;
 
   // Create the SAP AI Core payload (V2 wire shape)
   const payload: SAPPayload = {

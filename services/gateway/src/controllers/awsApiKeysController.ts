@@ -8,6 +8,7 @@ import {
   setAwsCredentialKeys as setAwsCredentialKeysService
 } from '../services/awsCredentialsService';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 interface CreateAwsCredentialsRequest extends Request {
@@ -92,7 +93,7 @@ export const revokeAwsCredentials = async (req: RevokeAwsCredentialsRequest, res
     const revoked = await revokeAwsCredentialsService(accessKeyId);
 
     if (revoked) {
-      logger.info('AwsApiKeysController', `Revoked AWS credentials: ${accessKeyId}`);
+      logger.info('AwsApiKeysController', `Revoked AWS credentials: ${secretLabel(accessKeyId)}`);
       res.json({ message: 'Credentials revoked successfully' });
     } else {
       res.status(404).json({

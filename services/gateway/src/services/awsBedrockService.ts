@@ -10,9 +10,30 @@ import { getDefaultLogger, createSafePreview, createHeadersPreview } from '@libs
 const logger = getDefaultLogger();
 import rateLimitManager from './rateLimitManager';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { foldExclusiveUsage } from '../utils/usageFolding';
 import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from '../utils/betaFeatureFilter';
 import * as betaFlagQuarantine from './betaFlagQuarantine';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
+import { secretLabel } from '../utils/secretLabel';
+import {
+  installWebSearchStreamInterception,
+  WebSearchStreamHandle,
+  ContinuationUsage,
+} from '../plugins/webSearch/anthropicWebSearchStream';
+import { requestDeclaresWebSearchTool } from '../plugins/webSearch/webSearchTool';
+
+/**
+ * `getDefaultLogger()` is component-first (`error(component, message)`); the
+ * webSearch modules take the plugin-style `(message, meta)` logger that
+ * pluginExecutor hands its handlers. Adapt rather than pass the wrong shape.
+ */
+const webSearchStreamLogger = {
+  error: (message: string, meta?: any) => logger.error('webSearchStream', message, undefined, meta),
+  warn: (message: string, meta?: any) => logger.warn('webSearchStream', message, meta),
+  info: (message: string, meta?: any) => logger.info('webSearchStream', message, meta),
+  debug: (message: string, meta?: any) => logger.debug('webSearchStream', message, meta),
+  trace: (message: string, meta?: any) => logger.trace('webSearchStream', message, meta),
+};
 
 // Type definitions
 interface ModelDetails {
@@ -192,9 +213,24 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
       }
     }
     if (isInvokeSubpath && isNativeSubpath) {
-      // Check if model explicitly disables prompt caching - if so, filter out cache_control parameters
-      const shouldFilterCacheControl = modelDetails.supports_prompt_caching === false;
-      
+      // Check if model explicitly disables prompt caching - if so, filter out cache_control
+      // parameters. Stripping is a request-mutating act reserved for known exceptions (e.g.
+      // claude-3-haiku) — identity inference must NEVER trigger it. Catalog drift can resolve
+      // a real Anthropic deployment's provider as 'unknown' when its backing foundation-model
+      // entry is missing from the live SAP catalog (modelService.ts's `provider || 'unknown'`
+      // fallbacks); feeding that into resolvePromptCachingSupport's provider-based default
+      // would silently strip Claude Code's own cache_control from a model that actually
+      // supports caching. So this site checks the EXPLICIT config flags directly, not the
+      // resolver's inferred default: only a deliberate `false` (model or provider tier)
+      // strips — absence of a flag never does, regardless of what the provider resolves to.
+      // SAP measurably ignores cache_control on models that don't support it anyway
+      // (gpt-5-mini via SAP orchestration: HTTP 200, cached_tokens 0 — see
+      // promptCachingSupport.ts), so not stripping is always the safe direction.
+      const cachingProvider = (modelDetails?.provider || modelDetails?.owned_by || '').toLowerCase();
+      const modelCachingFlag = configService.getSupportsPromptCaching(undefined, modelId);
+      const providerCachingFlag = configService.getSupportsPromptCaching(cachingProvider, undefined);
+      const shouldFilterCacheControl = modelCachingFlag === false || providerCachingFlag === false;
+
       if (shouldFilterCacheControl) {
         logger.debug('AwsBedrockService', `Model ${modelId} has prompt caching disabled, filtering cache_control parameters`);
         
@@ -645,6 +681,14 @@ interface BedrockResponse {
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
+    // Cache field names per AWS Bedrock Converse API docs (TokenUsage shape),
+    // unconfirmed by any capture in this repo — see task-T6 report. No local
+    // traffic exercises the raw Converse (non-streaming) response shape; every
+    // captured Bedrock response in logs/payloads and test fixtures went through
+    // the SAP native Anthropic passthrough route instead, which is already
+    // Anthropic-shaped (cache_creation_input_tokens / cache_read_input_tokens).
+    cacheReadInputTokens?: number;
+    cacheWriteInputTokens?: number;
   };
   responseMetadata?: {
     requestId?: string;
@@ -824,7 +868,7 @@ function transformAnthropicToBedrockConverse(anthropicRequest: AnthropicRequest,
 /**
  * Transform Bedrock response back to Anthropic format
  */
-function transformBedrockToAnthropicResponse(bedrockResponse: BedrockResponse, originalSubpath: string, originalModelId: string): any {
+export function transformBedrockToAnthropicResponse(bedrockResponse: BedrockResponse, originalSubpath: string, originalModelId: string): any {
   if (originalSubpath === 'invoke' || originalSubpath === 'invoke-with-response-stream') {
     // Transform Bedrock Converse response to Anthropic format
     const anthropicResponse = {
@@ -873,7 +917,10 @@ function transformBedrockToAnthropicResponse(bedrockResponse: BedrockResponse, o
     if (bedrockResponse.usage) {
       anthropicResponse.usage = {
         input_tokens: bedrockResponse.usage.inputTokens || 0,
-        output_tokens: bedrockResponse.usage.outputTokens || 0
+        output_tokens: bedrockResponse.usage.outputTokens || 0,
+        // field names per AWS docs, unconfirmed by capture — see task-T6 report
+        cache_creation_input_tokens: bedrockResponse.usage.cacheWriteInputTokens ?? 0,
+        cache_read_input_tokens: bedrockResponse.usage.cacheReadInputTokens ?? 0
       };
     }
 
@@ -882,6 +929,54 @@ function transformBedrockToAnthropicResponse(bedrockResponse: BedrockResponse, o
 
   // For other subpaths, return as-is
   return bedrockResponse;
+}
+
+/**
+ * Fold raw Bedrock streaming usage-metrics fields into `usageMetrics`,
+ * including the cache read/write split, and return the plain input/output
+ * counts for the caller's own logging. Used by all three raw-fold sites in
+ * this file's two streaming handlers (`handleNativeStreamingRequest`,
+ * `handleEmulatedStreamingRequest`) so the extraction lives in one place.
+ *
+ * Two raw shapes appear across those call sites on `message_stop` / `metadata`
+ * events, and this helper normalizes both:
+ *
+ *  - `amazon-bedrock-invocationMetrics` envelope: inputTokenCount/
+ *    outputTokenCount/cacheReadInputTokenCount/cacheWriteInputTokenCount.
+ *    CONFIRMED by a real capture: services/gateway/logs/payloads/
+ *    2026-07-22T04-56-14-543Z_gateway-1784696170168-sxs3wi83e_03_native_streaming_response_from_sap.json
+ *    (message_stop event), and mirrored in
+ *    test/bedrock-stream-anthropic-passthrough.test.ts and this file's own
+ *    BedrockStreamParser (src/utils/bedrockStreamParser.ts).
+ *  - Converse `metadata.usage`: inputTokens/outputTokens/cacheReadInputTokens/
+ *    cacheWriteInputTokens — field names per AWS docs, unconfirmed by
+ *    capture — see task-T6 report. No local capture exercises the raw
+ *    Converse streaming metadata event; local traffic exclusively hits the
+ *    SAP native Anthropic passthrough route.
+ *
+ * Every field is read with `??` fallback to 0 — never asserted present — so
+ * an unrecognized or absent shape degrades to today's behavior (0 cache
+ * tokens) rather than throwing.
+ */
+function foldRawBedrockStreamUsage(
+  usageMetrics: any,
+  raw: {
+    inputTokenCount?: number;
+    outputTokenCount?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadInputTokenCount?: number;
+    cacheWriteInputTokenCount?: number;
+    cacheReadInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  }
+): { inputTokens: number; outputTokens: number } {
+  const inputTokens = raw.inputTokenCount ?? raw.inputTokens ?? 0;
+  const outputTokens = raw.outputTokenCount ?? raw.outputTokens ?? 0;
+  const cacheReadTokens = raw.cacheReadInputTokenCount ?? raw.cacheReadInputTokens ?? 0;
+  const cacheCreationTokens = raw.cacheWriteInputTokenCount ?? raw.cacheWriteInputTokens ?? 0;
+  updateTokenCounts(usageMetrics, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
+  return { inputTokens, outputTokens };
 }
 
 // Additional interface definitions for streaming functions
@@ -909,8 +1004,14 @@ interface EmulatedStreamingRequestOptions extends StreamingRequestOptions {
 
 /**
  * Handle native streaming requests
+ *
+ * Exported for `test/bedrock-native-stream-websearch-wiring.test.ts`, which is the
+ * only thing outside this file that reaches it: the web_search interception is
+ * installed and finalized here, and the ordering it depends on — the chunk queue
+ * draining before `finalize()` — is a property of this function, not of the
+ * module it calls.
  */
-async function handleNativeStreamingRequest(options: StreamingRequestOptions): Promise<void> {
+export async function handleNativeStreamingRequest(options: StreamingRequestOptions): Promise<void> {
   const { targetUrl, requestBody, authToken, debugRequestId, req, res, modelId, hookConfig, outputFormat } = options;
   logger.info('AwsBedrockService', 'Starting native streaming request');
   logger.debug('AwsBedrockService', `Native streaming options: hasUsageMetrics=${!!(options as any).usageMetrics}, originalModelId=${(options as any).originalModelId}`);
@@ -955,11 +1056,63 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
     });
     
     logger.info('AwsBedrockService', 'Got native streaming response, processing chunks');
-    
+
+    // Anthropic's web_search is a SERVER tool, but the SAP deployment has none:
+    // webSearchPlugin's before-handler rewrote it into an ordinary function tool,
+    // so the model answers with a plain `tool_use` block for a tool the client
+    // never declared. On the non-streaming path the after-handler runs the search
+    // and rebuilds the content; here the bytes are already on the wire by the time
+    // it fires, so the search has to happen in the stream itself.
+    //
+    // Gated three ways. The parser branch: only there does Anthropic-shaped SSE
+    // reach `res.write`. `outputFormat === 'anthropic'`: bedrock-shaped frames are
+    // a different wire shape entirely and must not be touched. And a request that
+    // actually declares web_search — without it the model can never emit the call,
+    // so patching `res.write` would be pure risk on every other stream.
+    const interceptWebSearch = useStreamParser
+      && outputFormat === 'anthropic'
+      && requestDeclaresWebSearchTool(requestBody);
+    const webSearchStream: WebSearchStreamHandle | null = interceptWebSearch
+      ? installWebSearchStreamInterception({
+          res,
+          targetUrl,
+          authToken,
+          requestBody,
+          timeoutMs: timeout,
+          logger: webSearchStreamLogger,
+          maxSearches: configService.getWebSearchMaxSearches(),
+          // Continuation usage is Anthropic-native → EXCLUSIVE regime, folded
+          // additively (never subtracted) exactly like every other exclusive
+          // source in this codebase. The first turn's own usage is folded by
+          // the raw-metrics listener below, same as it always was; this only
+          // adds the round(s) this module itself ran.
+          onUsage: options.usageMetrics
+            ? (usage: ContinuationUsage) => foldExclusiveUsage(
+                options.usageMetrics,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_creation_input_tokens,
+                usage.cache_read_input_tokens,
+              )
+            : undefined,
+        })
+      : null;
+    if (interceptWebSearch) {
+      logger.info('AwsBedrockService', 'web_search stream interception installed for this request');
+    }
+
     // Send an initial ping to ensure connection is established and start events flowing
     // Track if we've seen any data
     let hasReceivedData = false;
-    
+    /**
+     * Chunk processing is serialized onto this chain so the `end` handler can
+     * await it. The 'data' listener is async (stream plugins are awaited inside)
+     * and Node does not wait for an async listener before emitting 'end' — so
+     * without the chain, `end` could run its after-plugins, its web_search
+     * finalize and `res.end()` while the last chunks were still being written.
+     */
+    let chunkWork: Promise<void> = Promise.resolve();
+
     // Only initiate ping for useStreamParser mode, not for direct passthrough
     if (useStreamParser) {
       logger.info('AwsBedrockService', 'Initializing ping mechanism for stream parser mode');
@@ -988,7 +1141,8 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
       logger.info('AwsBedrockService', `Using stream parser for native request with outputFormat: ${outputFormat || 'bedrock'}`);
       const streamParser = new BedrockStreamParser(modelId, 'invoke-with-response-stream', outputFormat || 'bedrock');
       
-      response.data.on('data', async (chunk: Buffer) => {
+      response.data.on('data', (chunk: Buffer) => {
+        chunkWork = chunkWork.then(async () => {
         if (!res.writableEnded) {
           try {
             const chunkStr = chunk.toString();
@@ -1032,10 +1186,8 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
                     logger.debug('AwsBedrockService', `Native streaming - extracted usage metrics: ${JSON.stringify(metrics)}`);
                     
                     if (metrics) {
-                      const inputTokens = metrics.inputTokenCount || 0;
-                      const outputTokens = metrics.outputTokenCount || 0;
-                      updateTokenCounts(options.usageMetrics, inputTokens, outputTokens);
-                      
+                      const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
+
                       // Determine provider based on request endpoint
                       const originalModelId = options.originalModelId || options.modelId;
                       let provider = 'aws-bedrock'; // Default provider
@@ -1050,8 +1202,13 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
                       }
                       // Otherwise keep default 'aws-bedrock'
                       
-                      // Only emit usage event once when final metrics are available
-                      if (!options.usageMetrics.eventEmitted) {
+                      // Only emit usage event once when final metrics are available.
+                      // When web_search interception is active, the continuation this
+                      // turn's message_stop is about to trigger has not run yet — its
+                      // tokens are not in `options.usageMetrics` until `finalize()`
+                      // resolves — so the emit is deferred to the 'end' handler below,
+                      // after it has awaited that. Every other stream is unaffected.
+                      if (!webSearchStream && !options.usageMetrics.eventEmitted) {
                         emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
                         options.usageMetrics.eventEmitted = true;
                       }
@@ -1072,6 +1229,7 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
             logger.error('AwsBedrockService', 'Error processing native stream chunk:', error);
           }
         }
+        });
       });
     } else {
       // For other streaming endpoints, pipe directly
@@ -1103,7 +1261,34 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
 
     response.data.on('end', async () => {
       logger.debug('AwsBedrockService', `Native stream ended, hasReceivedData: ${hasReceivedData}`);
-      
+
+      // Everything below assumes the last upstream chunk has already been written
+      // to the client. The 'data' listener is async, so that is only true once its
+      // queue has drained.
+      await chunkWork;
+
+      // Runs FIRST: it may still owe the client the search blocks, the model's
+      // answer and the terminal frames, and the after-plugin block and res.end()
+      // that follow both assume the client stream is complete.
+      if (webSearchStream) {
+        try {
+          await webSearchStream.finalize();
+        } catch (error: any) {
+          logger.error('AwsBedrockService', `Error finalizing web_search stream: ${error.message}`);
+        }
+
+        // The emit the 'data' handler skipped above, now that finalize() has
+        // folded in whatever continuation usage this module reported. Fires
+        // whether finalize() succeeded, errored, or ran zero continuation
+        // rounds — a request that already has first-turn usage in
+        // `options.usageMetrics` must still end with exactly one event, never
+        // zero, even when the continuation itself failed.
+        if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+          emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
+          options.usageMetrics.eventEmitted = true;
+        }
+      }
+
       // Log the complete streaming response if we have debug request ID
       if (debugRequestId && capturedResponseChunks.length > 0) {
         const completeResponse = capturedResponseChunks.join('');
@@ -1233,7 +1418,7 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
         logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
         // Log auth details if DEBUG is enabled
         if (process.env.DEBUG === 'true') {
-          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
+          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { tokenLabel: secretLabel(authToken) });
           logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
         }
       }
@@ -1255,8 +1440,12 @@ async function handleNativeStreamingRequest(options: StreamingRequestOptions): P
 
 /**
  * Handle emulated streaming requests with response transformation
+ *
+ * Exported for test/awsBedrock-emulated-stream-cache-usage.test.ts, which
+ * drives it directly to cover the raw Converse `metadata.usage` and
+ * `amazon-bedrock-invocationMetrics` usage-fold sites (task-T6/T7).
  */
-async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestOptions): Promise<void> {
+export async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestOptions): Promise<void> {
   const { targetUrl, requestBody, authToken, debugRequestId, req, res, originalSubpath, originalModelId, modelId, subpath, hookConfig } = options;
   logger.info('AwsBedrockService', `Starting emulated streaming request for original subpath: ${originalSubpath}`);
   
@@ -1502,9 +1691,7 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
             // Track usage for streaming completion (if usage metrics provided)
             logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasUsageData=${!!jsonData.metadata.usage}`);
             if (options.usageMetrics && jsonData.metadata.usage) {
-              const inputTokens = jsonData.metadata.usage.inputTokens || 0;
-              const outputTokens = jsonData.metadata.usage.outputTokens || 0;
-              updateTokenCounts(options.usageMetrics, inputTokens, outputTokens);
+              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, jsonData.metadata.usage);
               // Only emit usage event once when final metrics are available
               if (!options.usageMetrics.eventEmitted) {
                 emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
@@ -1523,9 +1710,7 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
             const metrics = jsonData['amazon-bedrock-invocationMetrics'];
             logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasMetrics=${!!metrics}`);
             if (options.usageMetrics && metrics) {
-              const inputTokens = metrics.inputTokenCount || 0;
-              const outputTokens = metrics.outputTokenCount || 0;
-              updateTokenCounts(options.usageMetrics, inputTokens, outputTokens);
+              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
               // Only emit usage event once when final metrics are available
               if (!options.usageMetrics.eventEmitted) {
                 emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
@@ -1666,7 +1851,7 @@ async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestO
         logger.error('AwsBedrockService', `Authentication failed (401) for request to: ${targetUrl}`);
         // Log auth details if DEBUG is enabled
         if (process.env.DEBUG === 'true') {
-          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { token: authToken });
+          logger.debug('AwsBedrockService', 'DEBUG - Auth token used:', { tokenLabel: secretLabel(authToken) });
           logger.debug('AwsBedrockService', 'DEBUG - Response headers: ' + createHeadersPreview(error.response.headers));
         }
       }

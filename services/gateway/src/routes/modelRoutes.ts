@@ -1,8 +1,15 @@
 import express from 'express';
 import * as modelController from '../controllers/modelController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
+import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 
 const router: express.Router = express.Router();
+
+// router.param fires for every route below that declares :model_id, regardless
+// of where this router is mounted — unlike an app.use() at a static path, which
+// runs before Express has populated req.params at all. See
+// src/middlewares/nulByteGuard.ts for why this is needed.
+router.param('model_id', nulByteParamGuard);
 
 // Create unified auth middleware using environment variables
 const modelAuth = createUnifiedTokenAuth();

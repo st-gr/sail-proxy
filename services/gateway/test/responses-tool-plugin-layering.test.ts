@@ -4,8 +4,22 @@
  * THE HEADLINE, because it looks like a mistake and is not: the two hook arrays ship in
  * OPPOSITE orders, deliberately.
  *
- *   defaultHooks.openai.responses-stream : pseudonymization -> namespace -> web-search
- *   defaultHooks.openai.responses        : pseudonymization -> web-search -> namespace
+ *   defaultHooks.openai.responses-stream : pseudonymization -> image -> namespace -> web-search -> file-search
+ *   defaultHooks.openai.responses        : pseudonymization -> image -> web-search -> file-search -> namespace
+ *
+ * (The two hosted-tool plugins — web-search and file-search — are the same engine under two
+ * ids and two `match` rules; what matters below is where the pair sits relative to the
+ * namespace layer, which is opposite in the two arrays. `responsesImagePlugin` sits at index 1
+ * in both — right after masking, ahead of everything below — and is not part of the
+ * disagreement this file is about: it registers no `res.write` interceptor and has no after
+ * handler, so neither mechanism below even sees it. Its position there is still not
+ * arbitrary — being index 1 means it downloads and inlines a remote `input_image` BEFORE
+ * `responsesNamespaceToolsPlugin` / `responsesCustomToolsPlugin` install THEIR `res.write`
+ * interceptors on `responses-stream`, so it never has to coexist with an already-patched
+ * `res.write` or worry about which layer a rewritten request body reaches first — there is
+ * no request-body ordering question here at all, only the interceptor-install ordering this
+ * file is otherwise about, which is why index 1 is safe for it independent of everything
+ * this file pins.)
  *
  * They must disagree because two different mechanisms consume them, and the two mechanisms
  * walk the array in opposite directions:
@@ -145,13 +159,128 @@ const hookIds = (subpath: string): string[] => (apiConfig.api_config.defaultHook
 const STREAM_HOOK_IDS = hookIds('responses-stream');
 const NON_STREAM_HOOK_IDS = hookIds('responses');
 
+/** The `match` array of one plugin's entry in a subpath, for the gating assertions. */
+const matchOf = (subpath: string, id: string): string[] => {
+  const entry = (apiConfig.api_config.defaultHooks.openai[subpath] as any[])
+    .find(e => e?.request?.callback?.id === id);
+  return entry?.request?.match ?? [];
+};
+
+/**
+ * BOTH hook arrays, pinned WHOLE and BY NAME, with the reason each position exists.
+ *
+ * Pinned as a full array rather than by pairwise index comparisons because the arrays now
+ * hold five entries each and the two orders differ in more than one place. A partial
+ * assertion would let a "tidy-up" move `responsesFileSearchPlugin` without failing
+ * anything, and the two engine plugins are the two whose relative position to the
+ * namespace layer is exactly what the layering is about.
+ *
+ * `responsesCustomToolsPlugin` (Task 8) sits last on `responses` — after
+ * `responsesNamespaceToolsPlugin` unmasking has already run — and, on `responses-stream`,
+ * between `responsesNamespaceToolsPlugin` and `responsesWebSearchPlugin`: outer than
+ * pseudonymization so it observes unmasked text, inner than web-search so it observes
+ * frames web-search generates.
+ *
+ * `responsesImagePlugin` (Task 2 of the input_image plan) sits at index 1 in BOTH arrays —
+ * right after pseudonymization, ahead of every plugin this file is actually about. That
+ * position is not part of the disagreement above (see the file header): it installs no
+ * `res.write` interceptor and has no after handler, so it is invisible to both mechanisms
+ * this file drives. It still has to be outer than masking (so the unmasker sees whatever it
+ * downloads and inlines) and it is deliberately inner than nothing else — being index 1
+ * means it runs, and if relevant downloads and rewrites a remote `input_image` to a `data:`
+ * URL, BEFORE `responsesNamespaceToolsPlugin` / `responsesCustomToolsPlugin` ever install
+ * their `res.write` interceptors on `responses-stream`, so its request-body rewrite can
+ * never race an interceptor that is already patching writes. There is no "which array
+ * position" question for it beyond that: no other plugin here reads or writes `input_image`
+ * content, so it has nothing to disagree about with the two engines or the namespace layer.
+ */
+describe('the shipped hook arrays, in full', () => {
+  it('orders `responses` pseudonymization -> image -> webSearch -> fileSearch -> namespace -> customTools, because after-handlers chain IN ARRAY ORDER and namespace must re-nest the final merged `output` before customTools converts it', () => {
+    expect(NON_STREAM_HOOK_IDS).toEqual([
+      'pseudonymizationPlugin',
+      'responsesImagePlugin',
+      'responsesWebSearchPlugin',
+      'responsesFileSearchPlugin',
+      'responsesNamespaceToolsPlugin',
+      'responsesCustomToolsPlugin',
+    ]);
+  });
+
+  it('orders `responses-stream` pseudonymization -> image -> namespace -> customTools -> webSearch -> fileSearch, because write interceptors nest INSIDE-OUT so namespace must install FIRST and see every later plugin\'s self-generated frames', () => {
+    expect(STREAM_HOOK_IDS).toEqual([
+      'pseudonymizationPlugin',
+      'responsesImagePlugin',
+      'responsesNamespaceToolsPlugin',
+      'responsesCustomToolsPlugin',
+      'responsesWebSearchPlugin',
+      'responsesFileSearchPlugin',
+    ]);
+  });
+
+  it('keeps pseudonymization at index 0 in both arrays — the one constraint that never moves', () => {
+    expect(NON_STREAM_HOOK_IDS[0]).toBe('pseudonymizationPlugin');
+    expect(STREAM_HOOK_IDS[0]).toBe('pseudonymizationPlugin');
+  });
+
+  it('gates the file-search entry on tools:hasFileSearch in BOTH subpaths, never on the neighbour\'s rule', () => {
+    // `matchAll` is an AND. Copied from the web-search entry it sits beside — the obvious
+    // mistake, and the one a previous review actually found — a turn carrying only
+    // `file_search` matches nothing and the whole tool is silently unreachable.
+    for (const subpath of ['responses', 'responses-stream']) {
+      const match = matchOf(subpath, 'responsesFileSearchPlugin');
+      expect(match).toContain('tools:hasFileSearch');
+      expect(match).toContain('header:contentTypeJson');
+      expect(match).not.toContain('tools:hasWebSearch');
+    }
+  });
+});
+
+// `apiConfig` is already bound at line 144 of this file:
+//   const apiConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'api_config.json'), 'utf-8'));
+// Reuse it — do not introduce a second read of the config.
+const idsOf = (hookName: string): string[] =>
+  apiConfig.api_config.defaultHooks.openai[hookName].map((h: any) => h.request.callback.id);
+
+it('keeps pseudonymization innermost and custom-tools outside it on the stream path', () => {
+  const stream = idsOf('responses-stream');
+  expect(stream[0]).toBe('pseudonymizationPlugin');
+  // Outer than namespace, inner than web-search: it must be observed by the
+  // unmasker, and must observe what web-search generates.
+  expect(stream.indexOf('responsesCustomToolsPlugin'))
+    .toBeGreaterThan(stream.indexOf('responsesNamespaceToolsPlugin'));
+  expect(stream.indexOf('responsesCustomToolsPlugin'))
+    .toBeLessThan(stream.indexOf('responsesWebSearchPlugin'));
+});
+
+it('runs the custom-tools after handler last on the non-streaming path', () => {
+  const nonStream = idsOf('responses');
+  expect(nonStream[0]).toBe('pseudonymizationPlugin');
+  expect(nonStream[nonStream.length - 1]).toBe('responsesCustomToolsPlugin');
+});
+
+/**
+ * `responsesFileSearchPlugin` maps to the SAME functions, and that is not a shortcut — it
+ * is what ships. Both shims export `hostedToolBeforeHandler` / `hostedToolAfterHandler`
+ * verbatim; only the plugin id and the hook `match` differ. Wiring it here means every
+ * scenario below runs the engine TWICE per request, exactly as a turn carrying both hosted
+ * tools does in production, and pins the property that makes that safe: the second pass
+ * finds no hosted tool left in `body.tools` (the first rewrote them), no hosted-tool
+ * `function_call` left in `output` (the first replaced them), and the interceptor already
+ * installed — so it is a no-op, and the frames below are unchanged by its presence.
+ *
+ * The real shim module is deliberately NOT imported: doing so would drag the whole
+ * file_search retrieval stack into a suite about hook ordering. That it exports these two
+ * functions is pinned by `test/responses-filesearch-plugin.test.ts`.
+ */
 const BEFORE_HANDLERS: Record<string, (ctx: any) => Promise<any>> = {
   responsesWebSearchPlugin: webSearchBefore,
+  responsesFileSearchPlugin: webSearchBefore,
   responsesNamespaceToolsPlugin: namespaceBefore,
 };
 
 const AFTER_HANDLERS: Record<string, (ctx: any) => Promise<any>> = {
   responsesWebSearchPlugin: webSearchAfter,
+  responsesFileSearchPlugin: webSearchAfter,
   responsesNamespaceToolsPlugin: namespaceAfter,
 };
 

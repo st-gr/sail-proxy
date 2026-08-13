@@ -60,8 +60,15 @@ jest.mock('../src/services/modelService', () => ({
   __esModule: true,
   default: {
     getModelDetails: (m: string) => Promise.resolve(
+      // Faithful to the real model list: every deployment appears TWICE — the bare
+      // foundation entry `X`, which is orchestration-only and carries no
+      // deploymentUrl, and `X--deployed`, which carries one. A mock that deployed
+      // both could not tell the sibling fallback from a no-op.
       m.startsWith('gpt-5')
-        ? { id: m, model: m.replace(/--deployed$/, ''), owned_by: 'OpenAI', deploymentUrl: 'http://mock-sap/deployments/abc' }
+        ? {
+            id: m, model: m.replace(/--deployed$/, ''), owned_by: 'OpenAI',
+            ...(m.endsWith('--deployed') ? { deploymentUrl: 'http://mock-sap/deployments/abc' } : {}),
+          }
         : m.startsWith('sonar')
           ? { id: m, model: m.replace(/--deployed$/, ''), owned_by: 'Perplexity', deploymentUrl: 'http://mock-sap/deployments/xyz' }
           // Known to the model list but never deployed — only reachable because
@@ -185,6 +192,109 @@ describe('responsesController', () => {
     configState.pseudonymizationForced = false;
     beforePlugins = () => Promise.resolve({ stop: false });
     afterPlugins = (_req: any, _res: any, body: any) => Promise.resolve(body);
+  });
+
+  describe('bare foundation-model names', () => {
+    // codex-cli — and any client carrying its own table of published OpenAI model
+    // names — sends `gpt-5.3-codex`, not our `--deployed` decoration, and warns
+    // "Model metadata for `gpt-5.3-codex--deployed` not found" when made to use it.
+    it('resolves a bare name to its --deployed sibling and forwards to that deployment', async () => {
+      const req = mockReq({ model: 'gpt-5.3-codex', input: 'Say OK' });
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(res.statusCode).toBe(200);
+      expect(posted).toHaveLength(1);
+      expect(posted[0].url).toBe('http://mock-sap/deployments/abc/responses');
+      // The deployment rejects our alias suffix, so the outbound name is the bare
+      // SAP model either way — the fallback must not smuggle `--deployed` upstream.
+      expect(posted[0].body.model).toBe('gpt-5.3-codex');
+    });
+
+    it('bills the usage event against the deployment actually called', async () => {
+      const req = mockReq({ model: 'gpt-5.3-codex', input: 'Say OK' });
+      await handleResponses(req, mockRes(), () => {});
+
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0][2]).toBe('gpt-5.3-codex--deployed');
+    });
+
+    it('still rejects a bare name whose family cannot serve the Responses API', async () => {
+      // `sonar` has no deployed sibling in the mock and is not a Responses family,
+      // so the fallback must not turn an honest 400 into a 500.
+      const req = mockReq({ model: 'sonar', input: 'Say OK' });
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(res.statusCode).toBe(400);
+      expect(posted).toHaveLength(0);
+      expect(res.body.error.message).toContain('does not support the Responses API');
+    });
+  });
+
+  describe('upstream error envelopes', () => {
+    // SAP AI Core returns `error` as a STRING; OpenAI SDKs read `error.message`
+    // off an OBJECT and get undefined. Captured verbatim from a deployment
+    // rejecting codex-cli's tool list on 2026-08-06.
+    const SAP_ERROR = {
+      error: 'BadRequest',
+      message: "The following tools are not allowed for model 'gpt-5.3-codex': namespace and web_search.",
+    };
+
+    it('reshapes a SAP-style error into the OpenAI envelope', async () => {
+      nextPostRejection = {
+        status: 400,
+        message: 'Request failed with status code 400',
+        data: () => SAP_ERROR,
+      };
+
+      const req = mockReq({ model: 'gpt-5.3-codex--deployed', input: 'Say OK' });
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.message).toBe(SAP_ERROR.message);
+      expect(res.body.error.type).toBe('invalid_request_error');
+      expect(res.body.error.code).toBe('BadRequest');
+      // Nothing is discarded: the raw upstream body stays reachable for debugging.
+      expect(res.body.error.details).toEqual(SAP_ERROR);
+    });
+
+    it('carries the upstream message into the mid-stream response.failed frame', async () => {
+      nextPostRejection = {
+        status: 400,
+        message: 'Request failed with status code 400',
+        data: () => upstreamStreamBody(SAP_ERROR),
+      };
+
+      const req = mockReq({ model: 'gpt-5.3-codex--deployed', input: 'Say OK', stream: true });
+      const res = mockRes();
+      res.headersSent = true;
+
+      await handleResponses(req, res, () => {});
+
+      const frame = res.writes.find((w: string) => w.includes('response.failed'));
+      expect(frame).toBeDefined();
+      const parsed = JSON.parse(frame!.replace(/^data: /, '').trim());
+      // Not axios's "Request failed with status code 400", which names no cause.
+      expect(parsed.response.error.message).toBe(SAP_ERROR.message);
+    });
+
+    it('wraps a non-JSON upstream body rather than passing raw text through', async () => {
+      nextPostRejection = {
+        status: 502,
+        message: 'Request failed with status code 502',
+        data: () => '<html><body>Bad Gateway</body></html>',
+      };
+
+      const req = mockReq({ model: 'gpt-5.3-codex--deployed', input: 'Say OK' });
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(res.statusCode).toBe(502);
+      expect(res.body.error.message).toContain('Bad Gateway');
+      expect(res.body.error.type).toBe('api_error');
+    });
   });
 
   it('forwards to {deploymentUrl}/responses with the upstream model name', async () => {

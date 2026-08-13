@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 
 // Use require for CommonJS module
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 // Extend Request interface to include apiKey property
@@ -28,7 +29,7 @@ const openRouterAuth = (req: AuthenticatedRequest, _res: Response, next: NextFun
                     : null);
     
     // Log what we're working with
-    logger.debug('OpenRouterAuth', `API Key format: ${apiKey ? apiKey.substring(0, 3) + '...' : 'missing'}`);
+    logger.debug('OpenRouterAuth', `API Key label: ${apiKey ? secretLabel(apiKey) : 'missing'}`);
     
     // For testing purposes, accept any API key or allow no authentication
     if (!apiKey) {

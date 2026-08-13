@@ -142,10 +142,13 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
     if (result && typeof result === 'object' && result.usage) {
       if (result.usage.inputTokens !== undefined && result.usage.outputTokens !== undefined) {
         // AWS Bedrock format
-        updateTokenCounts(usageMetrics, result.usage.inputTokens || 0, result.usage.outputTokens || 0);
+        // Cache field names per AWS Bedrock Converse API docs, unconfirmed by capture — see task-T6 report.
+        updateTokenCounts(usageMetrics, result.usage.inputTokens || 0, result.usage.outputTokens || 0,
+          result.usage.cacheWriteInputTokens || 0, result.usage.cacheReadInputTokens || 0);
       } else if (result.usage.input_tokens !== undefined && result.usage.output_tokens !== undefined) {
         // Anthropic-transformed format
-        updateTokenCounts(usageMetrics, result.usage.input_tokens || 0, result.usage.output_tokens || 0);
+        updateTokenCounts(usageMetrics, result.usage.input_tokens || 0, result.usage.output_tokens || 0,
+          result.usage.cache_creation_input_tokens || 0, result.usage.cache_read_input_tokens || 0);
       }
     }
 

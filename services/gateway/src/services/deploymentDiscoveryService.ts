@@ -275,6 +275,87 @@ export async function getPerplexityDeploymentId(forceRefresh = false): Promise<s
   }
 }
 
+// Separate cache for the reranker direct deployment
+let rerankerDeploymentCache: {
+  deploymentId: string | null;
+  expiresAt: number;
+} = {
+  deploymentId: null,
+  expiresAt: 0
+};
+
+/**
+ * Auto-discover a running Cohere reranker direct deployment.
+ * Looks for foundation-models deployments whose backend model name matches
+ * the configured file_search.hybrid.rerank.model (defaults to 'cohere-reranker').
+ * @param forceRefresh - Force refresh the cache
+ * @returns Deployment ID or null if none available
+ */
+export async function getRerankerDeploymentId(forceRefresh = false): Promise<string | null> {
+  const now = Date.now();
+
+  if (!forceRefresh && rerankerDeploymentCache.expiresAt > now) {
+    logger.debug('DeploymentDiscoveryService',
+      `Using cached reranker deployment ID: ${rerankerDeploymentCache.deploymentId}`);
+    return rerankerDeploymentCache.deploymentId;
+  }
+
+  try {
+    const sapConfig = configService.getSAPAICoreConfig();
+    const accessToken = await configService.getAccessToken();
+    const rerankModel = configService.getFileSearchConfig().hybrid.rerank.model;
+
+    const url = `${sapConfig.url}/v2/lm/deployments`;
+
+    logger.debug('DeploymentDiscoveryService', 'Fetching deployments for reranker discovery');
+
+    const response: AxiosResponse = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'AI-Resource-Group': sapConfig.resourceGroup || 'default',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (response.data?.resources) {
+      const rerankerDep = response.data.resources.find((dep: DeploymentResource) =>
+        dep.status === 'RUNNING' &&
+        dep.scenarioId === 'foundation-models' &&
+        dep.details?.resources?.backendDetails?.model?.name === rerankModel
+      );
+
+      const id = rerankerDep?.id || null;
+      rerankerDeploymentCache = {
+        deploymentId: id,
+        expiresAt: now + (CACHE_TTL_SECONDS * 1000)
+      };
+
+      if (id) {
+        logger.info('DeploymentDiscoveryService',
+          `Found reranker deployment: ${id} (${rerankerDep.configurationName})`);
+      } else {
+        logger.debug('DeploymentDiscoveryService',
+          'No running reranker foundation-models deployment found');
+      }
+
+      return id;
+    }
+
+    return null;
+  } catch (error: any) {
+    logger.error('DeploymentDiscoveryService',
+      `Error discovering reranker deployment: ${error.message}`);
+
+    // Short cache for failures to allow retry
+    rerankerDeploymentCache = {
+      deploymentId: null,
+      expiresAt: now + (CACHE_TTL_SECONDS * 250) // ~25% of normal TTL
+    };
+
+    return null;
+  }
+}
+
 /**
  * Clear the deployment cache (useful for testing)
  */
@@ -287,6 +368,10 @@ export function clearCache(): void {
     deploymentId: null,
     expiresAt: 0
   };
+  rerankerDeploymentCache = {
+    deploymentId: null,
+    expiresAt: 0
+  };
   logger.debug('DeploymentDiscoveryService', 'Cache cleared');
 }
 
@@ -294,6 +379,7 @@ export default {
   getOrchestrationDeployments,
   getPreferredOrchestrationDeploymentId,
   getPerplexityDeploymentId,
+  getRerankerDeploymentId,
   isAutoDiscoveryEnabled,
   getCacheStatus,
   clearCache

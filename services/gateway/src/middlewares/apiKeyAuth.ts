@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import apiKeyService from '../services/apiKeyService';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 interface AuthenticatedRequest extends Request {
@@ -200,19 +201,19 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
         logger.error('ApiKeyAuth', 'Authentication failed: Invalid API key provided');
         if ((req.headers['user-agent'] as string)?.includes('GitHubCopilot')) {
           // There is an issue with GitHub Copilot Chat where it sends an old API key
-          logger.debug('ApiKeyAuth', `DEBUG - GitHub Copilot Chat detected, but invalid API key provided: ${apiKey} - use PATCH /api/admin/api-keys/{{id}} to set it`);
+          logger.debug('ApiKeyAuth', `DEBUG - GitHub Copilot Chat detected, but invalid API key provided: ${secretLabel(apiKey as string)} - use PATCH /api/admin/api-keys/{{id}} to set it`);
         }
-        logger.debug('ApiKeyAuth', `DEBUG - API key format: ${(apiKey as string).substring(0, 3)}...${(apiKey as string).substring((apiKey as string).length - 3)}`);
-        
-        // Log all registered keys (just prefixes) for debugging
+        logger.debug('ApiKeyAuth', `DEBUG - API key label: ${secretLabel(apiKey as string)}`);
+
+        // Log all registered keys (just labels) for debugging
         const allKeys = await apiKeyService.listApiKeys();
         if (allKeys.length === 0) {
           logger.debug('ApiKeyAuth', 'DEBUG - No API keys registered in the system!');
           logger.debug('ApiKeyAuth', 'DEBUG - Create an API key first with: POST /api/admin/api-keys');
         } else {
           logger.debug('ApiKeyAuth', `DEBUG - ${allKeys.length} registered API keys:`);
-          const keyFormats = allKeys.map(k => ({ 
-            prefix: k.key.substring(0, 3) + '...' + k.key.substring(k.key.length - 3), 
+          const keyFormats = allKeys.map(k => ({
+            label: secretLabel(k.key),
             active: k.isActive,
             created: k.createdAt
           }));

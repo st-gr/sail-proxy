@@ -26,6 +26,7 @@ import { ReplacementMap } from './replacementMap';
 import { detectEntities } from './detectors';
 import { replaceEntities, maskJsonValue, propagateMaskedValues } from './replacer';
 import { applyEntityToggles, buildKnownEntityTypes } from './entityToggles';
+import { DEFAULT_MASKING_CONFIG } from './defaultMaskingConfig';
 import { unmaskText, unmaskJsonValue } from './unmasker';
 import { StreamUnmaskBuffer } from './streamBuffer';
 import { entityCache } from './entityCache';
@@ -167,34 +168,11 @@ function setResponseText(response: any, newText: string): void {
 const TRIGGERWORD = '<sail-proxy:pseudonymization:on>';
 const TRIGGERWORD_ANON = '<sail-proxy:anonymization:on>';
 
-// Default masking config when activated via triggerword
-const DEFAULT_MASKING_CONFIG: MaskingConfig = {
-  method: 'pseudonymization',
-  entities: [
-    { type: 'profile-person' },
-    { type: 'profile-email' },
-    { type: 'profile-phone' },
-    { type: 'profile-ssn' },
-    { type: 'profile-credit-card-number' },
-    { type: 'profile-iban' },
-    { type: 'profile-url' },
-    { type: 'profile-address' },
-    { type: 'profile-username-password' },
-    { type: 'profile-nationalid' },
-    { type: 'profile-passport' },
-    { type: 'profile-driverlicense' },
-    { type: 'profile-pronouns-gender' },
-    { type: 'profile-nationality' },
-    { type: 'profile-ethnicity' },
-    { type: 'profile-gender' },
-    { type: 'profile-religious-group' },
-    { type: 'profile-political-group' },
-    { type: 'profile-sexual-orientation' },
-    { type: 'profile-trade-union' },
-    { type: 'profile-org' },
-    { type: 'profile-location' },
-  ],
-};
+// DEFAULT_MASKING_CONFIG — the entity set triggerword/force activation starts from — now
+// lives in ./defaultMaskingConfig.ts, imported above. This file is `export = pluginRules`,
+// so a named value declared here is unreachable from anywhere else; fileSearch's chunk
+// masking is the second consumer that needs the same list. See that module for why a
+// second copy of the list was not acceptable.
 
 // All category types the pseudonymizationPlugin understands, for toggle validation.
 const KNOWN_ENTITY_TYPES = buildKnownEntityTypes(DEFAULT_MASKING_CONFIG.entities);
@@ -639,6 +617,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
 const RESPONSES_DELTA_TYPE_BY_KEY_PREFIX: Record<string, string> = {
   'responses_text:': 'response.output_text.delta',
   'responses_args:': 'response.function_call_arguments.delta',
+  'responses_custom_input:': 'response.custom_tool_call_input.delta',
   'responses_summary:': 'response.reasoning_summary_text.delta',
   'responses_refusal:': 'response.refusal.delta',
 };
@@ -798,6 +777,16 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       track(key, event.delta);
       modified = true;
     }
+    // Codex's freeform custom-tool mechanism. After responsesCustomToolsPlugin
+    // converts the function-call frames, THIS is the event carrying the model's
+    // generated payload — without buffering it a placeholder split across two
+    // frames reaches the client masked.
+    if (event.type === 'response.custom_tool_call_input.delta' && typeof event.delta === 'string') {
+      const key = `responses_custom_input:${event.output_index ?? 0}`;
+      event.delta = getBuf(key).append(event.delta);
+      track(key, event.delta);
+      modified = true;
+    }
     // Reasoning summaries and refusals stream through the same `delta` string
     // shape. Without buffering them a placeholder split across two frames reaches
     // the client masked (visibly, in Codex's reasoning pane).
@@ -841,6 +830,9 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     }
     if (event.type === 'response.function_call_arguments.done') {
       flushResponsesKey(`responses_args:${event.output_index ?? 0}`);
+    }
+    if (event.type === 'response.custom_tool_call_input.done') {
+      flushResponsesKey(`responses_custom_input:${event.output_index ?? 0}`);
     }
     if (event.type === 'response.reasoning_summary_text.done') {
       flushResponsesKey(`responses_summary:${event.output_index ?? 0}`);

@@ -3,8 +3,18 @@ import * as awsBedrockController from '../controllers/awsBedrockController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import rateLimiter from '../middlewares/rateLimiter';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
+import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 
 const router: express.Router = express.Router();
+
+// router.param fires for every route below that declares :modelId / :subpath,
+// regardless of where this router is mounted — unlike an app.use() at a static
+// path, which runs before Express has populated req.params at all. Neither of
+// these is a database identifier (both are forwarded into the upstream Bedrock
+// URL), but a NUL is never legitimate in a path segment. See
+// src/middlewares/nulByteGuard.ts for why this is needed.
+router.param('modelId', nulByteParamGuard);
+router.param('subpath', nulByteParamGuard);
 
 // Create unified auth middleware using environment variables
 const bedrockAuth = createUnifiedTokenAuth();

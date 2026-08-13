@@ -12,6 +12,7 @@ import { getCachedUnifiedAuthConfig, isStandaloneMode } from '../config/unifiedA
 import { UnifiedValidationResponse, UnifiedTokenRequest, ApiKeyValidationData } from '../clients/adminServiceClient';
 import apiKeyService from './apiKeyService';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 export interface UnifiedApiKeyValidationRequest {
@@ -56,7 +57,7 @@ export class UnifiedApiKeyValidationService {
     const requestId = this.generateRequestId();
     
     logger.trace('UnifiedApiKeyValidationService', 'Validating API key', {
-      keyPrefix: request.apiKey.substring(0, 10) + '...',
+      keyLabel: secretLabel(request.apiKey),
       endpoint: request.endpoint,
       requestId
     });

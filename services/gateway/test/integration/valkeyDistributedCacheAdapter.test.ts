@@ -143,11 +143,28 @@ describe('Valkey Distributed Cache Adapter Integration', () => {
       const testKey = 'error-test-key';
       const testEntry = createTestCacheEntry();
 
-      // Should not throw but may return null or handle gracefully
-      await expect(async () => {
-        await testAdapter.set(testKey, testEntry, 60);
-      }).not.toThrow();
-      
+      // `set` REJECTS when the connection cannot be established: both
+      // establishConnection and set log and then rethrow. Awaiting the promise
+      // here is not a style preference — it is what stops this test leaking one.
+      //
+      // The previous form was `await expect(async () => { await
+      // testAdapter.set(...) }).not.toThrow()`. That is vacuous twice over: an
+      // async function never throws synchronously, so `.not.toThrow()` can
+      // never fail, and `toThrow` invokes the function and DISCARDS the promise
+      // it returns (the outer `await` applies to expect()'s own result). So
+      // `set` kept running, unawaited, against `redis://invalid-host:6379`,
+      // past the end of this test. When that socket eventually closed,
+      // iovalkey's close handler called flushQueue(new Error('Connection is
+      // closed')), the rejection propagated back out through set(), and nothing
+      // was holding the promise.
+      //
+      // Jest attributes an unhandled rejection to whichever suite is LOADING in
+      // that worker when it arrives, so this produced an intermittent
+      // "Test suite failed to run: Connection is closed." on a completely
+      // unrelated file, with every test still passing. Five different innocent
+      // suites were hit that way before it was traced back here.
+      await expect(testAdapter.set(testKey, testEntry, 60)).rejects.toThrow();
+
       // Clean up test adapter (invalid connection shouldn't need cleanup but try anyway)
       try {
         await testAdapter.disconnect();
@@ -161,10 +178,10 @@ describe('Valkey Distributed Cache Adapter Integration', () => {
     test('should handle malformed data gracefully', async () => {
       const testKey = 'malformed-test-key';
       
-      // This should not throw even with edge cases
-      await expect(async () => {
-        await adapter.get(testKey);
-      }).not.toThrow();
+      // Same correction as above: awaited, so the promise cannot outlive the
+      // test. This one runs against the healthy `adapter`, so it resolves
+      // rather than rejecting — a miss yields null.
+      await expect(adapter.get(testKey)).resolves.toBeNull();
     });
   });
 

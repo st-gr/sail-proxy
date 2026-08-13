@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 interface RateLimitEntry {
@@ -23,6 +24,12 @@ interface RateLimitedRequest extends Request {
     [key: string]: any;
   };
 }
+
+// Builds a non-reversible label for log lines so requests remain correlatable
+// without ever exposing the raw identifier (API key or AWS access key ID).
+const bucketLabel = (identifier: string, model: string): string => {
+  return `${secretLabel(identifier)}-${model}`;
+};
 
 // A simple in‑memory rate limiter keyed by API key and model. In production, integrate with your CDS ModelRateLimit data.
 const rateLimitMap = new Map<string, RateLimitEntry>();
@@ -56,6 +63,7 @@ const rateLimiter = (req: RateLimitedRequest, res: Response, next: NextFunction)
     
     const model = req.body.model || 'default';
     const key = `${identifier}-${model}`;
+    const label = bucketLabel(identifier, model);
     const currentTime = Date.now();
     const windowTime = 60000; // 60 seconds
     let entry = rateLimitMap.get(key);
@@ -94,10 +102,10 @@ const rateLimiter = (req: RateLimitedRequest, res: Response, next: NextFunction)
       if (!req.bypassRateLimit && entry!.pendingRequests.has(requestId)) {
         entry!.count++;
         entry!.pendingRequests.delete(requestId);
-        logger.debug('RateLimiter', `Request ${requestId} counted against rate limit for ${key}, new count: ${entry!.count}`);
+        logger.debug('RateLimiter', `Request ${requestId} counted against rate limit for ${label}, new count: ${entry!.count}`);
       } else if (req.bypassRateLimit && entry!.pendingRequests.has(requestId)) {
         entry!.pendingRequests.delete(requestId);
-        logger.debug('RateLimiter', `Request ${requestId} bypassed rate limit for ${key}, not counted`);
+        logger.debug('RateLimiter', `Request ${requestId} bypassed rate limit for ${label}, not counted`);
       }
     });
     

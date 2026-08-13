@@ -13,7 +13,13 @@ import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { selectPluginCacheKeysToClear } from '../utils/pluginCacheSelector';
 import { resolveUnsupportedParams } from '../utils/unsupportedParamFilter';
 import { resolveMaxWebSearches, DEFAULT_MAX_WEB_SEARCHES } from '../plugins/webSearch/searchCap';
+import { resolveResultCacheTtlSeconds, resolveResultCacheMaxEntries, DEFAULT_RESULT_CACHE_TTL_SECONDS, DEFAULT_RESULT_CACHE_MAX_ENTRIES } from '../plugins/hostedTool/resultCacheConfig';
 import { resolveNamespaceToolMode, DEFAULT_NAMESPACE_TOOL_MODE, NamespaceToolMode } from '../plugins/namespaceTools/adapter';
+import { CustomToolMode, resolveCustomToolMode, DEFAULT_CUSTOM_TOOL_MODE } from '../plugins/customTools/adapter';
+import {
+  ToolSearchMode, resolveToolSearchMode, DEFAULT_TOOL_SEARCH_MODE,
+  resolveHoistDiscoveredTools, DEFAULT_HOIST_DISCOVERED_TOOLS,
+} from '../plugins/toolSearch/adapter';
 
 interface ModelSubstitution {
   from: string;
@@ -326,11 +332,30 @@ const initializeValkey = async (): Promise<void> => {
       maxRetriesPerRequest: 3,
       lazyConnect: true
     });
-    
+
     valkeyPublisher = new Valkey(VALKEY_URL, {
       retryStrategy: (times: number) => Math.min(times * 50, 2000),
       maxRetriesPerRequest: 3,
       lazyConnect: true
+    });
+
+    // An 'error' listener is NOT optional on an iovalkey client, and both of
+    // these went without one. An unhandled error event is fatal at the node
+    // level in production; in Jest it surfaces as `Connection is closed` raised
+    // from iovalkey's close handler when the socket goes away at force-exit,
+    // blamed on whichever suite happened to be loading in that worker — an
+    // intermittent "Test suite failed to run" on a file unrelated to config.
+    //
+    // These are logged, not escalated: config still resolves from the local
+    // file when valkey is unreachable (see getConfig's fallback), so losing the
+    // event channel degrades freshness rather than breaking the gateway.
+    valkeySubscriber.on('error', (error: any) => {
+      logger.warn('ConfigService',
+        `Valkey subscriber error (config still resolves from the local file): ${error?.message}`);
+    });
+    valkeyPublisher.on('error', (error: any) => {
+      logger.warn('ConfigService',
+        `Valkey publisher error (config still resolves from the local file): ${error?.message}`);
     });
 
     // Subscribe to configuration changes only (Gateway doesn't need to listen to startup events)
@@ -344,6 +369,38 @@ const initializeValkey = async (): Promise<void> => {
     logger.info('ConfigService', 'Valkey connections established for configuration events');
   } catch (error: any) {
     logger.error('ConfigService', `Failed to initialize Valkey: ${error.message}`);
+  }
+};
+
+/**
+ * Closes the config event connections, if they were ever opened.
+ *
+ * Nothing closed them before: both clients were created once and left open for
+ * the process's lifetime. Harmless for a real process exit, which tears the
+ * sockets down anyway — but a test worker that force-exits with them still open
+ * gets their close events after the run, and a repeated
+ * initialize/teardown cycle accumulates a connection per round.
+ *
+ * Safe to call when valkey was never configured or never initialized, and safe
+ * to call twice.
+ */
+export const closeValkeyConnections = async (): Promise<void> => {
+  const clients = [valkeySubscriber, valkeyPublisher];
+  valkeySubscriber = null;
+  valkeyPublisher = null;
+  valkeyInitialized = false;
+
+  for (const client of clients) {
+    if (!client) continue;
+    try {
+      // disconnect() rather than quit(): quit() round-trips a QUIT command and
+      // can hang when the connection is already unusable, which is exactly the
+      // state this is most often called in.
+      // eslint-disable-next-line no-await-in-loop
+      await client.disconnect();
+    } catch {
+      // best-effort cleanup; nothing to react to
+    }
   }
 };
 
@@ -1162,6 +1219,27 @@ export const getSupportsResponsesApi = (provider?: string, modelName?: string): 
 };
 
 /**
+ * Per-model / per-provider override for Anthropic prompt caching (whether
+ * `cache_control` breakpoints are applied to a model's requests).
+ * Returns undefined when unset so the caller falls back to the
+ * provider === 'anthropic' default in promptCachingSupport.
+ */
+export const getSupportsPromptCaching = (provider?: string, modelName?: string): boolean | undefined => {
+  try {
+    const config = getConfig();
+    const m = modelName
+      ? config?.api_config?.model_list_changes?.[modelName]?.supports_prompt_caching
+      : undefined;
+    if (typeof m === 'boolean') return m;
+    const p = provider ? config?.api_config?.[provider]?.supports_prompt_caching : undefined;
+    return typeof p === 'boolean' ? p : undefined;
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting supports_prompt_caching: ${error.message}`);
+    return undefined;
+  }
+};
+
+/**
  * True when pseudonymization is force-enabled for an endpoint via
  * `defaultHooks[endpoint].pseudonymization.enabled` — the same source the
  * pseudonymization plugin reads for its per-endpoint force flag.
@@ -1200,6 +1278,33 @@ export const getWebSearchMaxSearches = (): number => {
 };
 
 /**
+ * How long a hosted tool's results stay replayable, and how many are held at once. Absent
+ * config yields the built-in defaults, so installs whose api_config.json predates these keys
+ * are unaffected.
+ *
+ * @see plugins/hostedTool/resultCacheConfig.ts - the validation rules
+ */
+export const getHostedToolResultCacheTtlSeconds = (): number => {
+  try {
+    const config = getConfig();
+    return resolveResultCacheTtlSeconds(config?.api_config?.hosted_tools?.result_cache_ttl_seconds);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the hosted-tool result cache TTL: ${error.message}`);
+    return DEFAULT_RESULT_CACHE_TTL_SECONDS;
+  }
+};
+
+export const getHostedToolResultCacheMaxEntries = (): number => {
+  try {
+    const config = getConfig();
+    return resolveResultCacheMaxEntries(config?.api_config?.hosted_tools?.result_cache_max_entries);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the hosted-tool result cache size: ${error.message}`);
+    return DEFAULT_RESULT_CACHE_MAX_ENTRIES;
+  }
+};
+
+/**
  * How to handle Codex's `namespace` sub-agent wrapper, which SAP AI Core rejects.
  * Absent config yields `flatten`, so an install whose api_config.json predates this
  * key gets the working behavior rather than the 400.
@@ -1212,6 +1317,374 @@ export const getNamespaceToolMode = (): NamespaceToolMode => {
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the namespace tool mode: ${error.message}`);
     return DEFAULT_NAMESPACE_TOOL_MODE;
+  }
+};
+
+export const getCustomToolMode = (): CustomToolMode => {
+  try {
+    return resolveCustomToolMode(getConfig()?.api_config?.custom_tools?.mode);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the custom tool mode: ${error.message}`);
+    return DEFAULT_CUSTOM_TOOL_MODE;
+  }
+};
+
+export const getToolSearchMode = (): ToolSearchMode => {
+  try {
+    return resolveToolSearchMode(getConfig()?.api_config?.tool_search?.mode);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the tool search mode: ${error.message}`);
+    return DEFAULT_TOOL_SEARCH_MODE;
+  }
+};
+
+export const getToolSearchHoistDiscoveredTools = (): boolean => {
+  try {
+    return resolveHoistDiscoveredTools(getConfig()?.api_config?.tool_search?.hoist_discovered_tools);
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting the tool search hoist setting: ${error.message}`);
+    return DEFAULT_HOIST_DISCOVERED_TOOLS;
+  }
+};
+
+export interface FileSearchConfig {
+  enabled: boolean;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  rewriteQuery: boolean;
+  /** Model used for the `rewrite_query` orchestration call (search.ts's
+   *  queryRewriter.ts) — config-driven exactly like hybrid.rerank.model,
+   *  since a model name that works on one SAP AI Core tenant's orchestration
+   *  deployment is not guaranteed to work on another's. Verified live
+   *  2026-07-30: 'gpt-35-turbo-16k' (this codebase's usual no-model-specified
+   *  fallback elsewhere) returns HTTP 400 "Model name ... is not supported"
+   *  on this tenant; 'gpt-4o-mini' is what was actually probed working. */
+  rewriteQueryModel: string;
+  hybrid: {
+    rrfK: number;
+    lexicalEnabled: boolean;
+    candidates: number;
+    rerank: { enabled: 'auto' | boolean; model: string };
+  };
+  chunking: { maxChunkSizeTokens: number; chunkOverlapTokens: number };
+  limits: { maxFileBytes: number; maxTokensPerFile: number; maxFilesPerStore: number };
+  ingestion: { concurrency: number; extractTimeoutMs: number; maxRetries: number };
+  blobStorage: {
+    backend: 'db' | 'local' | 's3';
+    localPath: string;
+    s3: { bucket: string; prefix: string; endpoint: string; region: string };
+  };
+}
+
+export const FILE_SEARCH_DEFAULTS: FileSearchConfig = {
+  enabled: true,
+  embeddingModel: 'text-embedding-3-large',
+  embeddingDimensions: 1536,
+  rewriteQuery: false,
+  rewriteQueryModel: 'gpt-4o-mini',
+  hybrid: { rrfK: 60, lexicalEnabled: true, candidates: 50,
+            rerank: { enabled: 'auto', model: 'cohere-reranker' } },
+  chunking: { maxChunkSizeTokens: 800, chunkOverlapTokens: 400 },
+  limits: { maxFileBytes: 33554432, maxTokensPerFile: 5000000, maxFilesPerStore: 10000 },
+  ingestion: { concurrency: 4, extractTimeoutMs: 60000, maxRetries: 3 },
+  blobStorage: { backend: 'db', localPath: '/var/lib/sail-proxy/blobs',
+                 s3: { bucket: '', prefix: 'sail-proxy/blobs', endpoint: '', region: '' } },
+};
+
+/**
+ * file_search (OpenAI-compatible document retrieval) configuration. Absent config
+ * yields the shipped defaults, so an install whose api_config.json predates this
+ * key gets a working, enabled feature rather than a crash.
+ *
+ * @see fileSearch/db.ts - consumes embeddingDimensions and enabled
+ */
+export const getFileSearchConfig = (): FileSearchConfig => {
+  try {
+    const f = getConfig()?.api_config?.file_search;
+    if (!f) return FILE_SEARCH_DEFAULTS;
+    const d = FILE_SEARCH_DEFAULTS;
+    return {
+      enabled: f.enabled ?? d.enabled,
+      embeddingModel: f.embedding_model ?? d.embeddingModel,
+      embeddingDimensions: f.embedding_dimensions ?? d.embeddingDimensions,
+      rewriteQuery: f.rewrite_query ?? d.rewriteQuery,
+      rewriteQueryModel: f.rewrite_query_model ?? d.rewriteQueryModel,
+      hybrid: {
+        rrfK: f.hybrid?.rrf_k ?? d.hybrid.rrfK,
+        lexicalEnabled: f.hybrid?.lexical_enabled ?? d.hybrid.lexicalEnabled,
+        candidates: f.hybrid?.candidates ?? d.hybrid.candidates,
+        rerank: {
+          enabled: f.hybrid?.rerank?.enabled ?? d.hybrid.rerank.enabled,
+          model: f.hybrid?.rerank?.model ?? d.hybrid.rerank.model,
+        },
+      },
+      chunking: {
+        maxChunkSizeTokens: f.chunking?.max_chunk_size_tokens ?? d.chunking.maxChunkSizeTokens,
+        chunkOverlapTokens: f.chunking?.chunk_overlap_tokens ?? d.chunking.chunkOverlapTokens,
+      },
+      limits: {
+        maxFileBytes: f.limits?.max_file_bytes ?? d.limits.maxFileBytes,
+        maxTokensPerFile: f.limits?.max_tokens_per_file ?? d.limits.maxTokensPerFile,
+        maxFilesPerStore: f.limits?.max_files_per_store ?? d.limits.maxFilesPerStore,
+      },
+      ingestion: {
+        concurrency: f.ingestion?.concurrency ?? d.ingestion.concurrency,
+        extractTimeoutMs: f.ingestion?.extract_timeout_ms ?? d.ingestion.extractTimeoutMs,
+        maxRetries: resolveMaxRetries(f.ingestion?.max_retries ?? d.ingestion.maxRetries),
+      },
+      blobStorage: {
+        backend: f.blob_storage?.backend ?? d.blobStorage.backend,
+        localPath: f.blob_storage?.local_path ?? d.blobStorage.localPath,
+        s3: {
+          bucket: f.blob_storage?.s3?.bucket ?? d.blobStorage.s3.bucket,
+          prefix: f.blob_storage?.s3?.prefix ?? d.blobStorage.s3.prefix,
+          endpoint: f.blob_storage?.s3?.endpoint ?? d.blobStorage.s3.endpoint,
+          region: f.blob_storage?.s3?.region ?? d.blobStorage.s3.region,
+        },
+      },
+    };
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting file_search config: ${error.message}`);
+    return FILE_SEARCH_DEFAULTS;
+  }
+};
+
+const MIN_MAX_RETRIES = 1;
+
+// Distinct from `undefined`/`NaN` (both of which are themselves offending
+// values this resolver must warn about), so the initial "nothing warned yet"
+// state can never collide with a real configured value — see
+// resolveMaxSearchesPerRequest below, which uses the same shape.
+const RETRIES_CLAMP_UNWARNED = Symbol('retries-clamp-unwarned');
+let retriesClampWarnedFor: unknown = RETRIES_CLAMP_UNWARNED;
+
+/**
+ * Resolves `file_search.ingestion.max_retries`. `0` reads as an operator's
+ * "do not retry", but it actually breaks ingestion outright: `reapZombies`
+ * (ingestWorker.ts) fires on `attempts >= maxRetries AND claimed_at IS
+ * NULL`, which at 0 matches every freshly attached row, while `claimNext`'s
+ * own `attempts < maxRetries` then matches none. Verified live: three
+ * attached files, zero extractText/embed calls, all three rows `failed`
+ * with `last_error.name` `'MaxRetriesExceededZombie'`, and the batch itself
+ * reporting `completed` — so an SDK `createAndPoll` returns *successfully*
+ * over a store with zero content. `0` is therefore clamped to 1 rather than
+ * rejected outright: "no retries" still honestly means one attempt.
+ *
+ * Anything else that isn't a positive integer (a negative number, a float, a
+ * non-numeric value) is treated as not configured and falls back to the
+ * shipped default, the same way `resolveMaxSearchesPerRequest` and
+ * `resolveMaxNumResultsDefault` treat garbage config as "absent" rather than
+ * coercing it.
+ *
+ * Not silent — per this file's own `resolveMaxConcurrentWrites` and
+ * test/fileSearch/teacherLoggingConfig.test.ts, "a silent override of a
+ * tuning choice is its own defect." Warned at most once per distinct
+ * offending value — this resolver runs on the ingestion claim path, which
+ * polls continuously — using `Object.is` rather than `!==` so a repeated
+ * `NaN` (which is `!== NaN` to itself) doesn't re-warn on every call.
+ */
+export const resolveMaxRetries = (configured: unknown): number => {
+  const valid = typeof configured === 'number' && Number.isInteger(configured)
+      && configured >= MIN_MAX_RETRIES;
+  if (valid) return configured;
+
+  const resolved = configured === 0 ? MIN_MAX_RETRIES : FILE_SEARCH_DEFAULTS.ingestion.maxRetries;
+  if (!Object.is(retriesClampWarnedFor, configured)) {
+    retriesClampWarnedFor = configured;
+    logger.warn('ConfigService',
+      `file_search.ingestion.max_retries is ${JSON.stringify(configured)}; ` +
+      (configured === 0
+        ? '0 reads as "do not retry" but silently disables ingestion outright — every freshly attached file ' +
+          'is reaped as a retry-exhausted zombie before it can ever run; clamping to 1 so "no retries" still ' +
+          'means one attempt.'
+        : `not a valid positive integer; falling back to the default of ${resolved}.`));
+  }
+  return resolved;
+};
+
+export interface TeacherLoggingConfig {
+  enabled: boolean;
+  storeChunkText: boolean;
+  sampleRate: number;
+  source: string;
+  maxConcurrentWrites: number;
+}
+
+export const TEACHER_LOGGING_DEFAULTS: TeacherLoggingConfig = {
+  enabled: false,
+  storeChunkText: false,
+  sampleRate: 1.0,
+  source: 'production',
+  maxConcurrentWrites: 2,
+};
+
+// The file_search pg pool is built with `max: 10` (fileSearch/db.ts) and is
+// shared with search, ingestion and the expiry sweeper. Above that many
+// in-flight label writes the teacher logger's semaphore stops bounding
+// anything: the surplus writes are no longer DROPPED, they wait inside pg's
+// own connection queue — exactly the "logging starves the thing it observes"
+// behaviour the bound exists to prevent. Measured on this pool: at 20, a
+// concurrent query on the shared pool went 14ms → 86ms. The admin config
+// schema asserts the same ceiling ("maximum": 10, api-config-schema.json),
+// but that only validates edits made through the cockpit — a hand-edited
+// api_config.json reaches this code unchecked, so the ceiling is enforced
+// here too.
+export const MAX_CONCURRENT_WRITES_CEILING = 10;
+
+let clampWarnedFor: number | null = null;
+
+/**
+ * Clamps `max_concurrent_writes` to the pg pool size. Not silent — the log
+ * names the configured value, the ceiling and the reason — but warned at most
+ * once per offending value rather than on every call, because this resolver
+ * runs on the search path. Re-warns if the configured value later changes to
+ * a *different* over-limit number: teacher_logging is deliberately
+ * runtime-flippable from the admin cockpit, so a later edit is a new decision
+ * and deserves its own line in the log.
+ */
+export const resolveMaxConcurrentWrites = (configured: number): number => {
+  if (!(configured > MAX_CONCURRENT_WRITES_CEILING)) return configured;
+  if (clampWarnedFor !== configured) {
+    clampWarnedFor = configured;
+    logger.warn('ConfigService',
+      `file_search.teacher_logging.max_concurrent_writes is ${configured}, above the ` +
+      `${MAX_CONCURRENT_WRITES_CEILING}-connection file_search database pool it draws from; clamping to ` +
+      `${MAX_CONCURRENT_WRITES_CEILING}. Beyond the pool size the limit stops dropping surplus teacher-label ` +
+      'writes and starts queueing them inside the connection pool, delaying the searches it is meant to observe. ' +
+      'Lower teacher_logging.sample_rate instead to reduce volume.');
+  }
+  return MAX_CONCURRENT_WRITES_CEILING;
+};
+
+/**
+ * Teacher-label logging configuration for reranker evaluation/distillation.
+ * Absent config yields the shipped defaults (both off), so an install whose
+ * api_config.json predates this key never starts writing rows or persisting
+ * chunk text. `enabled` and `storeChunkText` are deliberately independent:
+ * turning on logging must never by itself start persisting document
+ * contents.
+ *
+ * @see fileSearch/schema.sql.ts - reranker_search_events / reranker_candidate_labels
+ */
+export const getTeacherLoggingConfig = (): TeacherLoggingConfig => {
+  try {
+    const t = getConfig()?.api_config?.file_search?.teacher_logging;
+    if (!t) return TEACHER_LOGGING_DEFAULTS;
+    const d = TEACHER_LOGGING_DEFAULTS;
+    return {
+      enabled: t.enabled ?? d.enabled,
+      storeChunkText: t.store_chunk_text ?? d.storeChunkText,
+      sampleRate: t.sample_rate ?? d.sampleRate,
+      source: t.source ?? d.source,
+      maxConcurrentWrites: resolveMaxConcurrentWrites(t.max_concurrent_writes ?? d.maxConcurrentWrites),
+    };
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting teacher_logging config: ${error.message}`);
+    return TEACHER_LOGGING_DEFAULTS;
+  }
+};
+
+export interface FileSearchToolConfig {
+  enabled: boolean;
+  maxSearchesPerRequest: number;
+  maxNumResultsDefault: number;
+}
+
+const TOOL_DEFAULTS: FileSearchToolConfig = { enabled: true, maxSearchesPerRequest: 3, maxNumResultsDefault: 10 };
+const MIN_SEARCHES = 1;
+const MAX_SEARCHES = 10;
+/**
+ * The valid range for a `file_search` result count — both the configured
+ * `tool.max_num_results_default` that `resolveMaxNumResultsDefault` below
+ * clamps, and the per-request `max_num_results` a caller sends on the hosted
+ * tool, which `plugins/fileSearch/descriptor.ts` validates against these same
+ * two constants. Exported for exactly that reason: one bound, imported, rather
+ * than a second pair of literals in the descriptor that agrees today and
+ * drifts silently later. (OpenAI's own bound for the field is likewise [1, 50].)
+ */
+export const MIN_RESULTS_DEFAULT = 1;
+export const MAX_RESULTS_DEFAULT = 50;
+
+// Distinct from `undefined`/`NaN` (both of which are themselves offending
+// values this resolver must warn about), so the initial "nothing warned yet"
+// state can never collide with a real configured value.
+const SEARCHES_CLAMP_UNWARNED = Symbol('searches-clamp-unwarned');
+let searchesClampWarnedFor: unknown = SEARCHES_CLAMP_UNWARNED;
+
+/**
+ * Clamps `file_search.tool.max_searches_per_request` into [1, 10], falling back
+ * to the default (rather than clamping to the nearer bound) on anything that
+ * isn't a valid integer in range — garbage config (a string, a float, null,
+ * NaN) is treated the same as "not configured" instead of being coerced.
+ *
+ * Not silent: a hand-edited api_config.json reaches this code unvalidated
+ * (the admin schema only bounds cockpit-activated configs), and per this
+ * codebase's own principle (see resolveMaxConcurrentWrites, and
+ * test/fileSearch/teacherLoggingConfig.test.ts) "a silent override of a
+ * tuning choice is its own defect." Warned at most once per distinct
+ * offending value — this resolver runs on the search path — and re-warns if
+ * the configured value later changes to a *different* offending value.
+ * Uses `Object.is` rather than `!==` so a repeated `NaN` (which is `!== NaN`
+ * to itself) doesn't re-warn on every call.
+ */
+export const resolveMaxSearchesPerRequest = (configured: unknown): number => {
+  const valid = typeof configured === 'number' && Number.isInteger(configured)
+      && configured >= MIN_SEARCHES && configured <= MAX_SEARCHES;
+  if (valid) return configured as number;
+
+  if (!Object.is(searchesClampWarnedFor, configured)) {
+    searchesClampWarnedFor = configured;
+    logger.warn('ConfigService',
+      `file_search.tool.max_searches_per_request is ${JSON.stringify(configured)}, outside the valid ` +
+      `range [${MIN_SEARCHES}, ${MAX_SEARCHES}] (or not an integer); falling back to the default of ` +
+      `${TOOL_DEFAULTS.maxSearchesPerRequest}.`);
+  }
+  return TOOL_DEFAULTS.maxSearchesPerRequest;
+};
+
+/**
+ * Clamps `file_search.tool.max_num_results_default` into [1, 50] the same way
+ * `resolveMaxSearchesPerRequest` clamps its field: falls back to the default
+ * rather than coercing to the nearer bound on anything that isn't a valid
+ * in-range integer. A hand-edited api_config.json reaches this code
+ * unvalidated (the admin schema only bounds cockpit-activated configs).
+ */
+export const resolveMaxNumResultsDefault = (configured: unknown): number => {
+  if (typeof configured !== 'number' || !Number.isInteger(configured)
+      || configured < MIN_RESULTS_DEFAULT || configured > MAX_RESULTS_DEFAULT) {
+    return TOOL_DEFAULTS.maxNumResultsDefault;
+  }
+  return configured;
+};
+
+/**
+ * Validates `file_search.tool.enabled`, falling back to the default for
+ * anything that isn't a genuine boolean (a hand-edited `"true"` string, `1`,
+ * etc. reach this code unvalidated the same way the numeric tool fields do).
+ */
+export const resolveToolEnabled = (configured: unknown): boolean => {
+  return typeof configured === 'boolean' ? configured : TOOL_DEFAULTS.enabled;
+};
+
+/**
+ * file_search tool-calling configuration (the Anthropic/OpenAI `file_search`
+ * tool block, as opposed to the raw `/vector_stores/{id}/search` REST path
+ * covered by `getFileSearchConfig`). Absent config — including an install
+ * whose api_config.json predates this key entirely — yields the shipped
+ * defaults, so upgrading installs get a working, enabled tool rather than a
+ * crash.
+ */
+export const getFileSearchToolConfig = (): FileSearchToolConfig => {
+  try {
+    const t = getConfig()?.api_config?.file_search?.tool ?? {};
+    return {
+      enabled: resolveToolEnabled(t.enabled),
+      maxSearchesPerRequest: resolveMaxSearchesPerRequest(t.max_searches_per_request),
+      maxNumResultsDefault: resolveMaxNumResultsDefault(t.max_num_results_default),
+    };
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting file_search tool config: ${error.message}`);
+    return { ...TOOL_DEFAULTS };
   }
 };
 
@@ -1580,9 +2053,23 @@ export default {
   getUnsupportedParams,
   getParamRenames,
   getSupportsResponsesApi,
+  getSupportsPromptCaching,
   isPseudonymizationForced,
   getWebSearchMaxSearches,
+  getHostedToolResultCacheTtlSeconds,
+  getHostedToolResultCacheMaxEntries,
   getNamespaceToolMode,
+  getCustomToolMode,
+  getToolSearchMode,
+  getToolSearchHoistDiscoveredTools,
+  getFileSearchConfig,
+  resolveMaxRetries,
+  getTeacherLoggingConfig,
+  closeValkeyConnections,
+  getFileSearchToolConfig,
+  resolveMaxSearchesPerRequest,
+  resolveMaxNumResultsDefault,
+  resolveToolEnabled,
   getOpenAIDeploymentApiVersion,
   getAllProviderConfigs,
   getModelListChanges,

@@ -39,6 +39,12 @@ export class EnhancedValidationCache {
   private metrics: CacheMetrics;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private distributedClient: any = null; // Valkey client if enabled
+  // The client of an in-flight connection attempt, before its ping has
+  // answered. Tracked so destroy() can close a connection that is still
+  // retrying: until the attempt gives up on its own (which takes the whole
+  // retry budget) the socket is live, and a cache destroyed in the meantime
+  // would otherwise leave it running with nobody holding it.
+  private connectingClient: any = null;
 
   constructor(config?: Partial<CacheConfiguration>) {
     this.config = {
@@ -373,18 +379,65 @@ export class EnhancedValidationCache {
   private async initializeDistributedCache(): Promise<void> {
     if (!this.config.valkeyUrl) return;
 
+    // Held locally, not on `this`, for the whole attempt. Two initializations
+    // can be in flight at once — the constructor starts one without awaiting it
+    // — and a catch that cleans up `this.distributedClient` cleans up whichever
+    // client won the race, leaking the other. The failing attempt must close the
+    // client IT created.
+    let client: any = null;
+
     try {
       // Import Valkey client (only if needed and available)
       const Redis = (await import('iovalkey')).default;
-      
-      this.distributedClient = new Redis(this.config.valkeyUrl);
 
-      // Test connection (iovalkey auto-connects)
-      await this.distributedClient.ping();
+      client = new Redis(this.config.valkeyUrl);
+      this.connectingClient = client;
+
+      // An 'error' listener is NOT optional on an iovalkey client. Without one,
+      // every connection-level error is an unhandled error event: node-level
+      // fatal in production, and in Jest it surfaces as `Connection is closed`
+      // raised from iovalkey's close handler when the socket goes away at
+      // force-exit — attributed to whichever test suite happened to be loading
+      // in that worker. That is an intermittent "Test suite failed to run" on a
+      // file with no connection to this code at all, which is exactly how it
+      // was found (three different innocent suites, zero failing tests).
+      //
+      // Distributed caching is an accelerator: the local cache and the
+      // authoritative lookup behind it both keep working when valkey does not,
+      // so a connection error is logged and otherwise tolerated rather than
+      // escalated.
+
+      client.on('error', (error: Error) => {
+        logger.warn('EnhancedValidationCache',
+          `Valkey connection error (distributed cache is an accelerator; validation still works): ${error.message}`);
+      });
+
+      // Test connection (iovalkey auto-connects). Only after it answers does
+      // this become the cache's client — publishing it before the ping would
+      // make a connection that is still failing briefly look usable.
+      await client.ping();
+      this.distributedClient = client;
+      this.connectingClient = null;
     } catch (error) {
       logger.warn('EnhancedValidationCache', `Valkey not available, disabling distributed cache: ${(error as Error).message}`);
       this.config.enableDistributed = false;
-      this.distributedClient = null;
+      // Disconnect before dropping the reference. Clearing the field alone
+      // leaves a live socket with retries scheduled and nothing holding it —
+      // the connection outlives the object that gave up on it, and its eventual
+      // close raises the error above with no owner left to attribute it to.
+      if (this.distributedClient === client) {
+        this.distributedClient = null;
+      }
+      if (this.connectingClient === client) {
+        this.connectingClient = null;
+      }
+      if (client) {
+        try {
+          client.disconnect();
+        } catch {
+          // best-effort cleanup; the connection is already unusable
+        }
+      }
     }
   }
 
@@ -527,6 +580,19 @@ export class EnhancedValidationCache {
       if (this.distributedClient) {
         await this.distributedClient.quit();
         this.distributedClient = null;
+      }
+
+      // A connection attempt still in flight owns a live socket that is not
+      // this.distributedClient yet. Without this, destroying the cache mid-
+      // attempt leaves it retrying until the budget runs out.
+      if (this.connectingClient) {
+        const pending = this.connectingClient;
+        this.connectingClient = null;
+        try {
+          pending.disconnect();
+        } catch {
+          // best-effort cleanup; the connection is already unusable
+        }
       }
 
       this.localCache.clear();

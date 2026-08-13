@@ -1,6 +1,7 @@
 import { LogEntry, RequestContext } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -536,20 +537,107 @@ export function createSafePreview(data: any, maxLength: number = 1000): string {
   }
 }
 
-export function createHeadersPreview(headers: Record<string, any> | null | undefined): string {
-  if (!headers) return '[No headers]';
-  
-  const sanitizedHeaders = { ...headers };
-  
-  // Sanitize authorization header
-  if (sanitizedHeaders.Authorization || sanitizedHeaders.authorization) {
-    const authKey = sanitizedHeaders.Authorization ? 'Authorization' : 'authorization';
-    const authValue = sanitizedHeaders[authKey];
-    if (typeof authValue === 'string' && authValue.length > 15) {
-      sanitizedHeaders[authKey] = `${authValue.substring(0, 15)}...`;
+// Header names that carry credential material and must never be logged raw.
+// Exact-match set of well-known sensitive headers, checked case-insensitively.
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'api-key',
+  'x-amz-security-token',
+  'x-amz-credential',
+  'cookie',
+  'set-cookie',
+  'x-goog-api-key',
+  'x-auth-token'
+]);
+
+// Beyond the exact-match set above, any header whose name *contains* one of
+// these tokens is also treated as sensitive, so callers passing headers this
+// library has never seen (custom proxy/session headers, etc.) still get
+// redacted. Prefer over-redaction to under-redaction here: a header wrongly
+// labelled costs a little debuggability, one wrongly printed costs a
+// credential.
+const SENSITIVE_HEADER_NAME_TOKENS = [
+  'authorization',
+  'api-key',
+  'apikey',
+  'token',
+  'secret',
+  'cookie',
+  'credential',
+  'password',
+  'session'
+];
+
+function isSensitiveHeaderName(lowerName: string): boolean {
+  if (SENSITIVE_HEADER_NAMES.has(lowerName)) return true;
+  return SENSITIVE_HEADER_NAME_TOKENS.some(token => lowerName.includes(token));
+}
+
+// Short, stable, non-reversible label for a secret value, for use in log
+// lines. Never returns any substring of the input.
+//
+// This intentionally duplicates services/gateway/src/utils/secretLabel.ts:
+// libs/ must not import from a service, so this (tiny) hashing helper is
+// kept here rather than shared across the boundary.
+function hashForLabel(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 8);
+}
+
+function stringifyHeaderValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+/**
+ * Redact a single (non-array) header value to a non-reversible label.
+ *
+ * When `preserveScheme` is set (Authorization / Proxy-Authorization), the
+ * auth scheme (e.g. "Bearer", "Basic", "AWS4-HMAC-SHA256") is kept, since it
+ * is diagnostically useful and is not secret; only the credential portion
+ * after it is hashed. Every other sensitive header is redacted in full.
+ */
+function redactHeaderValueScalar(value: unknown, preserveScheme: boolean): unknown {
+  if (value == null) return value;
+
+  const stringValue = stringifyHeaderValue(value);
+
+  if (preserveScheme) {
+    const schemeMatch = stringValue.match(/^([A-Za-z][A-Za-z0-9-]*)\s+(.+)$/s);
+    if (schemeMatch) {
+      const [, scheme, rest] = schemeMatch;
+      return `${scheme} [redacted:${hashForLabel(rest)}]`;
     }
   }
-  
+
+  return `[redacted:${hashForLabel(stringValue)}]`;
+}
+
+function redactHeaderValue(value: unknown, preserveScheme: boolean): unknown {
+  if (Array.isArray(value)) {
+    return value.map(v => redactHeaderValueScalar(v, preserveScheme));
+  }
+  return redactHeaderValueScalar(value, preserveScheme);
+}
+
+export function createHeadersPreview(headers: Record<string, any> | null | undefined): string {
+  if (!headers) return '[No headers]';
+
+  const sanitizedHeaders: Record<string, any> = { ...headers };
+
+  for (const key of Object.keys(sanitizedHeaders)) {
+    const lowerKey = key.toLowerCase();
+    if (!isSensitiveHeaderName(lowerKey)) continue;
+
+    const preserveScheme = lowerKey === 'authorization' || lowerKey === 'proxy-authorization';
+    sanitizedHeaders[key] = redactHeaderValue(sanitizedHeaders[key], preserveScheme);
+  }
+
   return createSafePreview(sanitizedHeaders, 500);
 }
 

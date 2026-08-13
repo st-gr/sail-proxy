@@ -13,6 +13,11 @@ import modelRoutes from './routes/modelRoutes';
 import chatRoutes from './routes/chatRoutes';
 import embeddingRoutes from './routes/embeddingRoutes';
 import responsesRoutes from './routes/responsesRoutes';
+import filesRoutes from './routes/filesRoutes';
+import vectorStoresRoutes from './routes/vectorStoresRoutes';
+import { runMigration } from './fileSearch/db';
+import { startIngestWorker, stopIngestWorker } from './fileSearch/ingestWorker';
+import { startExpirySweeper, stopExpirySweeper } from './fileSearch/expirySweeper';
 import anthropicRoutes from './routes/anthropicRoutes';
 import awsBedrockRoutes from './routes/awsBedrockRoutes';
 import awsCredentialsRoutes from './routes/awsCredentialsRoutes';
@@ -23,6 +28,7 @@ import openRouterRoutes from './routes/openRouterRoutes';
 // Middleware imports
 import awsSigV4Auth from './middlewares/awsSigV4Auth';
 import errorHandler from './middlewares/errorHandler';
+import { nulByteGuard } from './middlewares/nulByteGuard';
 
 const configLoader = new ConfigLoader('gateway');
 const config = configLoader.loadConfig();
@@ -120,6 +126,34 @@ app.use('/openai/v1/embeddings', embeddingRoutes);
 // OpenAI Responses Routes
 app.use('/openai/api/v1/responses', responsesRoutes);
 app.use('/openai/v1/responses', responsesRoutes);
+
+// NUL-byte guard (file_search identifiers/cursors only) — mounted ahead of
+// the Files and Vector Store handlers, after body parsing. See
+// src/middlewares/nulByteGuard.ts for why this exists.
+//
+// The /openrouter entries are not optional: openRouterRoutes re-declares the
+// Files and Vector Store paths, so the same NUL reaches Postgres from there.
+// Its `router.param` registrations cover path params only; ?after/?before and
+// the body identifier fields are covered here or nowhere.
+app.use(
+  [
+    '/openai/api/v1/files',
+    '/openai/v1/files',
+    '/openai/api/v1/vector_stores',
+    '/openai/v1/vector_stores',
+    '/openrouter/api/v1/files',
+    '/openrouter/api/v1/vector_stores',
+  ],
+  nulByteGuard,
+);
+
+// OpenAI Files Routes (file_search)
+app.use('/openai/api/v1/files', filesRoutes);
+app.use('/openai/v1/files', filesRoutes);
+
+// OpenAI Vector Store Routes (file_search)
+app.use('/openai/api/v1/vector_stores', vectorStoresRoutes);
+app.use('/openai/v1/vector_stores', vectorStoresRoutes);
 
 // Anthropic Routes
 app.use('/anthropic/v1', anthropicRoutes);
@@ -332,6 +366,14 @@ async function initializeGatewayService(): Promise<void> {
   await initializeUsageTracking();
   await initializeSecurityEventSystem();
   await initializeCacheInvalidation();
+
+  // file_search: apply the schema migration (a no-op that logs and returns
+  // when no database is configured — the normal state for a standalone
+  // install) before starting the ingestion worker, which itself also
+  // no-ops cleanly when file_search is unavailable.
+  await runMigration();
+  startIngestWorker();
+  startExpirySweeper();
 }
 
 // Global cleanup tracking
@@ -356,7 +398,34 @@ function gracefulShutdown(signal: string): void {
       clearInterval(interval);
     });
     logger.info('Gateway Service', `Cleared ${cleanupResources.intervals.length} intervals`);
-    
+
+    // Stop the file_search ingestion worker, letting any in-flight job
+    // finish first (see fileSearch/ingestWorker.ts's stopIngestWorker).
+    try {
+      await stopIngestWorker();
+      logger.info('Gateway Service', 'file_search ingestion worker stopped');
+    } catch (error) {
+      logger.warn('Gateway Service', 'Error stopping file_search ingestion worker:',
+        error instanceof Error ? error.message : 'Unknown error');
+    }
+
+    // Stop the file_search expiry sweeper (just clears its interval timer --
+    // see fileSearch/expirySweeper.ts's stopExpirySweeper).
+    stopExpirySweeper();
+
+    // Close the config event connections. These are NOT in
+    // cleanupResources.valkeyClients — that registry only holds the clients
+    // this file creates — so nothing closed them until now; configService
+    // opened a subscriber and a publisher once and left both open for the
+    // process's lifetime.
+    try {
+      await require('./services/configService').closeValkeyConnections();
+      logger.info('Gateway Service', 'Config event Valkey connections closed');
+    } catch (error) {
+      logger.warn('Gateway Service', 'Error closing config event Valkey connections:',
+        error instanceof Error ? error.message : 'Unknown error');
+    }
+
     // Close Valkey connections
     const valkeyClosePromises = cleanupResources.valkeyClients.map(async (client, index) => {
       try {

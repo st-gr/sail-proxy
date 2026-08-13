@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { findAwsCredential, getSecretForSignature } from '../services/awsCredentialsService';
 import * as awsDebug from './advancedAwsDebug';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 interface ParsedAuthHeader {
@@ -135,7 +136,7 @@ function createStringToSign(algorithm: string, timestamp: string, scope: string,
 /**
  * Derive signing key
  */
-function getSigningKey(secret: string, date: string, region: string, service: string): Buffer {
+export function getSigningKey(secret: string, date: string, region: string, service: string): Buffer {
   // Standard AWS SigV4 implementation
   const kDate = crypto.createHmac('sha256', 'AWS4' + secret).update(date).digest();
   
@@ -156,7 +157,7 @@ function getSigningKey(secret: string, date: string, region: string, service: st
 /**
  * Calculate signature
  */
-function calculateSignature(signingKey: Buffer, stringToSign: string): string {
+export function calculateSignature(signingKey: Buffer, stringToSign: string): string {
   return crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
 }
 
@@ -177,7 +178,7 @@ const awsSigV4Auth = async (req: AwsCredentialsExtended, res: Response, next: Ne
     }
     
     logger.trace('AwsSigV4Auth', `[${requestId}] Processing AWS SigV4 request`);
-    logger.trace('AwsSigV4Auth', `[${requestId}] Authorization header: ${authHeader.substring(0, 50)}...`);
+    logger.trace('AwsSigV4Auth', `[${requestId}] Authorization header present (scheme=AWS4-HMAC-SHA256, label=${secretLabel(authHeader)})`);
     
     // Parse authorization header
     const authInfo = parseAuthHeader(authHeader);
@@ -225,7 +226,7 @@ const awsSigV4Auth = async (req: AwsCredentialsExtended, res: Response, next: Ne
     const credential = await findAwsCredential(authInfo.accessKeyId);
     
     if (!credential) {
-      logger.trace('AwsSigV4Auth', `[${requestId}] Access key not found: ${authInfo.accessKeyId}`);
+      logger.trace('AwsSigV4Auth', `[${requestId}] Access key not found: ${secretLabel(authInfo.accessKeyId)}`);
       res.status(401).json({
         error: {
           message: 'Invalid access key',
@@ -239,7 +240,7 @@ const awsSigV4Auth = async (req: AwsCredentialsExtended, res: Response, next: Ne
     const secretAccessKey = await getSecretForSignature(authInfo.accessKeyId);
     
     if (!secretAccessKey) {
-      logger.trace('AwsSigV4Auth', `[${requestId}] Could not retrieve secret for access key: ${authInfo.accessKeyId}`);
+      logger.trace('AwsSigV4Auth', `[${requestId}] Could not retrieve secret for access key: ${secretLabel(authInfo.accessKeyId)}`);
       res.status(401).json({
         error: {
           message: 'Invalid access key',

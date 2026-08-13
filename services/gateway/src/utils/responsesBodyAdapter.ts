@@ -57,6 +57,23 @@ export function extractResponsesInputTexts(body: any): Array<{ text: string; pat
       out.push({ text: item.output, path: `input.${i}.output` });
     }
 
+    // A custom_tool_call carries its freeform payload in `input` — for apply_patch
+    // that is the whole patch, file contents included. Without this the text reached
+    // the provider unmasked: the string cases above never matched it.
+    if (typeof item.input === 'string') {
+      out.push({ text: item.input, path: `input.${i}.input` });
+    }
+    // A custom_tool_call_output's `output` is an ARRAY of content parts, unlike a
+    // function_call_output's plain string, so the string case above skips it.
+    if (Array.isArray(item.output)) {
+      for (let p = 0; p < item.output.length; p++) {
+        const part = item.output[p];
+        if (part && typeof part.text === 'string') {
+          out.push({ text: part.text, path: `input.${i}.output.${p}.text` });
+        }
+      }
+    }
+
     if (Array.isArray(item.summary)) {
       for (let s = 0; s < item.summary.length; s++) {
         const part = item.summary[s];

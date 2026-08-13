@@ -68,6 +68,43 @@ describe('Responses streaming unmask', () => {
     expect(all).not.toContain('MASKED_EMAIL');
   });
 
+  it('unmasks response.custom_tool_call_input.delta split across frames and flushes the retained tail on .done', async () => {
+    const { res, written, map } = await setup('Contact john@test.com');
+    const token = map.forward.get('john@test.com');
+
+    res.write(frame({ type: 'response.output_item.added', item: { type: 'custom_tool_call' }, output_index: 0 }));
+    res.write(frame({ type: 'response.custom_tool_call_input.delta', output_index: 0, delta: `mail ${token.slice(0, 6)}` }));
+    // "MASK" trailing the completed token could be the start of ANOTHER
+    // placeholder (e.g. MASKED_PERSON_2), so the buffer retains it rather than
+    // emitting it — only an end-of-item flush releases it. This is what makes
+    // the test depend on the .done handler's flush key actually matching the
+    // delta handler's buffer key: unlike a token that completes with nothing
+    // ambiguous trailing (which the buffer would release on append() alone,
+    // making a key mismatch invisible), this fragment is genuinely stuck until
+    // flushed under the SAME key it was buffered under.
+    res.write(frame({ type: 'response.custom_tool_call_input.delta', output_index: 0, delta: `${token.slice(6)}MASK` }));
+
+    const afterDeltas = written.join('');
+    expect(afterDeltas).toContain('john@test.com');
+    expect(afterDeltas).not.toContain('MASK'); // still retained, not yet flushed
+
+    res.write(frame({ type: 'response.custom_tool_call_input.done', output_index: 0 }));
+
+    // Assert BEFORE response.completed's catch-all sweep. That sweep flushes
+    // every buffer keyed `responses_*` regardless of which literal the .done
+    // handler used, so it would hide a key mismatch — checking here, where
+    // only the .done handler's own flush call could have released "MASK",
+    // is what makes the assertion meaningful.
+    const beforeCompleted = written.join('');
+    expect(beforeCompleted).toContain('MASK');
+
+    res.write(frame({ type: 'response.completed', response: { status: 'completed' } }));
+
+    const all = written.join('');
+    expect(all).toContain('john@test.com');
+    expect(all).not.toContain('MASKED_EMAIL');
+  });
+
   it('unmasks response.reasoning_summary_text.delta split across frames', async () => {
     const { res, written, map } = await setup('Contact john@test.com');
     const token = map.forward.get('john@test.com');

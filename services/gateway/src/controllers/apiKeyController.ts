@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 
 // Use require for CommonJS module
 import apiKeyService from '../services/apiKeyService';
+import { secretLabel } from '../utils/secretLabel';
 
 
 interface CreateApiKeyRequest extends Request {
@@ -172,14 +173,15 @@ export const setApiKey = async (req: SetApiKeyRequest, res: Response, next: Next
 export const listApiKeys = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const keys = await apiKeyService.listApiKeys();
-    // Do not expose full keys – mask them for listing
+    // Do not expose the key, not even a prefix of it - a prefix is still key
+    // material. A non-reversible label is enough to tell entries apart.
     res.json(keys.map((k: any) => ({
       id: k.id, // Use the UUID as the identifier
       createdBy: k.createdBy,
       email: k.email,
       createdAt: k.createdAt,
       isActive: k.isActive,
-      key: k.key.substring(0, 6) + '****'
+      key: secretLabel(k.key)
     })));
   } catch (err) {
     next(err);

@@ -9,6 +9,7 @@ import {
 } from '../../../../libs/aws-token-validation/validation-token';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
 interface ParsedAuthHeader {
@@ -92,7 +93,7 @@ class TokenBasedAwsAuth {
         return this.respondWithError(res, 401, 'INVALID_AUTH_HEADER', 'Invalid authorization header format');
       }
 
-      logger.info('TokenBasedAwsAuth', `Processing AWS SigV4 request for access key: ${parsed.accessKeyId}`);
+      logger.info('TokenBasedAwsAuth', `Processing AWS SigV4 request for access key: ${secretLabel(parsed.accessKeyId)}`);
 
       // Create canonical request and string to sign
       const { canonicalRequest, stringToSign } = this.createAwsSignatureData(req, parsed);
@@ -105,7 +106,7 @@ class TokenBasedAwsAuth {
       let cacheHit = false;
 
       if (validationResult && validationResult.valid) {
-        logger.info('TokenBasedAwsAuth', `Cache hit for access key: ${parsed.accessKeyId}`);
+        logger.info('TokenBasedAwsAuth', `Cache hit for access key: ${secretLabel(parsed.accessKeyId)}`);
         cacheHit = true;
       } else {
         // Create validation token
@@ -201,7 +202,7 @@ class TokenBasedAwsAuth {
         const errorCode = validationResult?.error?.code || 'INVALID_CREDENTIALS';
         const errorMessage = validationResult?.error?.message || 'Invalid AWS credentials';
         
-        logger.warn('TokenBasedAwsAuth', `Authentication failed for ${parsed.accessKeyId}: ${errorMessage}`);
+        logger.warn('TokenBasedAwsAuth', `Authentication failed for ${secretLabel(parsed.accessKeyId)}: ${errorMessage}`);
         
         // Emit security event using SecurityEventEmitter
         await securityEventEmitter.emitFailedAuth({
@@ -259,7 +260,7 @@ class TokenBasedAwsAuth {
       }
 
       // Log successful authentication
-      logger.info('TokenBasedAwsAuth', `Successfully authenticated AWS request for ${parsed.accessKeyId} (${Date.now() - startTime}ms)`);
+      logger.info('TokenBasedAwsAuth', `Successfully authenticated AWS request for ${secretLabel(parsed.accessKeyId)} (${Date.now() - startTime}ms)`);
       
       // Update usage statistics asynchronously
       this.updateUsageStats(validationResult.credentialMetadata?.credentialId, req);

@@ -231,6 +231,26 @@ export const callSAPAIOrchestration = async (payload: SAPPayload, debugRequestId
 };
 
 /**
+ * The orchestration endpoint and headers, for callers that must POST it
+ * themselves — the hosted-tool engine's continuation, which cannot go through
+ * callSAPAIOrchestration because it owns its own axios call and response
+ * handling. getDestinationConfig stays private; only this narrow view escapes.
+ */
+export const getOrchestrationEndpoint = async (): Promise<{ url: string; headers: Record<string, string> }> => {
+  const deploymentId = await configService.getDeploymentId();
+  if (!deploymentId) throw new Error('No SAP AI Core deployment ID available');
+  const destination = await getDestinationConfig() as DestinationConfig;
+  return {
+    url: `${destination.url}/v2/inference/deployments/${deploymentId}/v2/completion`,
+    headers: {
+      Authorization: destination.authToken,
+      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+      'Content-Type': 'application/json',
+    },
+  };
+};
+
+/**
  * Streams chat completions from SAP AI Core
  * @param payload - The payload to send to SAP AI Core
  * @param onChunk - Callback for each chunk of data
@@ -813,6 +833,7 @@ const createEmbedding = async (sapRequest: any, modelId: string): Promise<any> =
 export const sapAIService = {
   completeChat,
   callSAPAIOrchestration,
+  getOrchestrationEndpoint,
   streamChatCompletion,
   createEmbedding
 };

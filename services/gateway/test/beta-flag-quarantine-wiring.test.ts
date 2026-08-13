@@ -50,6 +50,10 @@ jest.mock('../src/services/configService', () => ({
     getTimeout: () => 1000,
     getConfig: () => ({}),
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap' }),
+    // No flag either way: unrelated to this suite's beta-flag-quarantine assertions —
+    // present only so awsBedrockService's cache_control filter (now routed through
+    // resolvePromptCachingSupport) doesn't throw on a missing mock method.
+    getSupportsPromptCaching: () => undefined,
   },
 }));
 

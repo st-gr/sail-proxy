@@ -5,6 +5,7 @@
 
 export * from './port-utils';
 export * from './test-config';
+export * from './active-config-guard';
 
 // Additional test utilities can be exported here
 export const TestHelpers = {
