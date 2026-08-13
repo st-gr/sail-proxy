@@ -89,7 +89,12 @@ describe('responsesWebSearchPlugin — before handler', () => {
     const outputs = req.body.input.filter((i: any) => i.type === 'function_call_output');
     expect(outputs).toHaveLength(1);
     expect(outputs[0].call_id).toBe('call_1');
-    expect(JSON.parse(outputs[0].output).results).toEqual([]);
+    // The mocked rejection goes through execute()'s own catch, which sets code
+    // 'web_search_failed' — distinct from the generic 'web_search_unavailable'
+    // fallback renderOutput uses only when a call carries no error at all (never ran).
+    const parsed = JSON.parse(outputs[0].output);
+    expect(parsed.results).toBeUndefined();
+    expect(parsed.error.code).toBe('web_search_failed');
   });
 
   it('answers a later pending search even when an earlier one in the same drain fails', async () => {
@@ -116,7 +121,9 @@ describe('responsesWebSearchPlugin — before handler', () => {
     expect(outputs).toHaveLength(2);
 
     const byCallId: Record<string, any> = Object.fromEntries(outputs.map((o: any) => [o.call_id, o]));
-    expect(JSON.parse(byCallId['call_2'].output).results).toEqual([]);
+    const call2 = JSON.parse(byCallId['call_2'].output);
+    expect(call2.results).toBeUndefined();
+    expect(call2.error.code).toBe('web_search_failed');
     expect(byCallId['call_1'].output).toContain('https://w.example/berlin');
   });
 
@@ -359,7 +366,9 @@ describe('responsesWebSearchPlugin — continuation', () => {
       output: [{ type: 'function_call', call_id: 'call_1', name: 'web_search', arguments: '{"query":"q"}' }],
     }, utils });
 
-    expect(req.__responsesExtraUsage).toEqual({ input_tokens: 40, output_tokens: 7 });
+    expect(req.__responsesExtraUsage).toEqual({
+      input_tokens: 40, output_tokens: 7, cache_creation_tokens: 0, cache_read_tokens: 0,
+    });
   });
 
   it('loops for a second search and stops at the configured cap', async () => {
@@ -421,7 +430,7 @@ describe('responsesWebSearchPlugin — continuation', () => {
     expect(out.output.map((i: any) => i.type)).toEqual(['reasoning', 'web_search_call', 'message']);
   });
 
-  it('still attempts the continuation with empty results when the search itself throws — status stays independent in this direction too', async () => {
+  it('still attempts the continuation with a failure output when the search itself throws — status stays independent in this direction too', async () => {
     mockExecuteWebSearch.mockRejectedValue(new Error('perplexity down'));
     const req = reqWithUpstream();
     mockPost.mockResolvedValue({ data: { output: [{ type: 'message', content: [] }], usage: { input_tokens: 1, output_tokens: 1 } } });
@@ -430,14 +439,16 @@ describe('responsesWebSearchPlugin — continuation', () => {
       output: [{ type: 'function_call', call_id: 'call_1', name: 'web_search', arguments: '{"query":"q"}' }],
     }, utils });
 
-    // A failed search still gets a continuation attempt (results: []) so the model can
-    // tell the user the search was unavailable — mirrors the before handler's pending-
-    // search behavior. Here the continuation itself succeeds, proving the two statuses
-    // (search outcome vs. continuation outcome) stay independent in this direction too:
-    // search failed, continuation succeeded.
+    // A failed search still gets a continuation attempt (an error output, not results: [])
+    // so the model can tell the user the search was unavailable — mirrors the before
+    // handler's pending-search behavior. Here the continuation itself succeeds, proving the
+    // two statuses (search outcome vs. continuation outcome) stay independent in this
+    // direction too: search failed, continuation succeeded.
     expect(mockPost).toHaveBeenCalledTimes(1);
     const [, body] = mockPost.mock.calls[0];
-    expect(JSON.parse(body.input[body.input.length - 1].output).results).toEqual([]);
+    const parsed = JSON.parse(body.input[body.input.length - 1].output);
+    expect(parsed.results).toBeUndefined();
+    expect(parsed.error.code).toBe('web_search_failed');
     expect(out.output[0].type).toBe('web_search_call');
     expect(out.output[0].status).toBe('failed');
   });
@@ -494,7 +505,9 @@ describe('responsesWebSearchPlugin — continuation', () => {
     const out = await after({ req, upstreamResponse: { output: [searchCall('call_1')] }, utils });
 
     // The internal billing accumulator only ever saw the one successful continuation.
-    expect(req.__responsesExtraUsage).toEqual({ input_tokens: 10, output_tokens: 5 });
+    expect(req.__responsesExtraUsage).toEqual({
+      input_tokens: 10, output_tokens: 5, cache_creation_tokens: 0, cache_read_tokens: 0,
+    });
     // And the client-visible response.usage must report that same total, not silently
     // drop it because a LATER round's continuation failed.
     expect(out.usage).toMatchObject({ input_tokens: 10, output_tokens: 5 });

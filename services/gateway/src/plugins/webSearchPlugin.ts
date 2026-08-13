@@ -27,6 +27,7 @@ import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 import { executeWebSearch, Logger, SearchResult } from './webSearch/searchExecutor';
 import { remaskSearchQuery } from './webSearch/queryMasking';
+import { buildWebSearchToolResultContent } from './webSearch/webSearchTool';
 
 const logger = getDefaultLogger();
 
@@ -266,22 +267,17 @@ function formatSearchSummary(results: SearchResult[], query: string): string {
  * Inject search results into messages as a tool_result
  */
 function injectSearchResults(messages: any[], toolUseId: string, searchResults: SearchResult[]): void {
-  // Create a user message with the tool_result
+  // Create a user message with the tool_result.
+  // The payload itself is shared with the streaming continuation
+  // (webSearch/anthropicWebSearchStream.ts): what the MODEL reads back from a
+  // search must not depend on which transport the request arrived on, and the
+  // two had drifted into identical copies of the same builder.
   const toolResult = {
     role: 'user',
     content: [{
       type: 'tool_result',
       tool_use_id: toolUseId,
-      content: searchResults.length > 0
-        ? JSON.stringify({
-            results: searchResults.map(r => ({
-              title: r.title,
-              url: r.url,
-              content: r.content,
-              date: r.date
-            }))
-          })
-        : 'No search results found.'
+      content: buildWebSearchToolResultContent(searchResults)
     }]
   };
 
@@ -382,10 +378,25 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
       pluginLogger
     );
 
+    // afterHandler handles a single web_search tool_use per call (findWebSearchToolUse
+    // returns only the first match), so one search executed here means one search.
+    const searchCount = 1;
+
+    // Claude Code — and any client rendering a search count — reads this and
+    // nothing else. Verified against a real api.anthropic.com capture on
+    // 2026-08-07: one search reports {"web_search_requests":1,
+    // "web_fetch_requests":0}. Emitting the result blocks without it shows
+    // "0 searches executed" over a turn that plainly searched.
+    // web_fetch_requests is always 0: we do not implement web_fetch, and the
+    // key is present in the golden, so its absence would be a shape difference.
     return {
       ...upstreamResponse,
       content: transformedContent,
-      stop_reason: 'end_turn'  // Search completed, turn ends
+      stop_reason: 'end_turn',  // Search completed, turn ends
+      usage: {
+        ...(upstreamResponse.usage || {}),
+        server_tool_use: { web_search_requests: searchCount, web_fetch_requests: 0 },
+      },
     };
 
   } catch (error: any) {

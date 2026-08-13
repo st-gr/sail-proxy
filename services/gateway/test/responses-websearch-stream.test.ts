@@ -641,7 +641,9 @@ describe('responsesWebSearchPlugin — streaming continuation', () => {
 
     // The FIRST call's tokens are read off the captured raw stream by responsesController,
     // so only the continuation's belong here — double counting them is a billing bug.
-    expect(req.__responsesExtraUsage).toEqual({ input_tokens: 40, output_tokens: 7 });
+    expect(req.__responsesExtraUsage).toEqual({
+      input_tokens: 40, output_tokens: 7, cache_creation_tokens: 0, cache_read_tokens: 0,
+    });
   });
 
   it('resolves the idle hook only once the continuation has finished writing', async () => {
@@ -730,7 +732,9 @@ describe('responsesWebSearchPlugin — streaming continuation', () => {
     const completed = f[f.length - 1];
     expect(completed.response.output.map((i: any) => i.type)).toEqual(['web_search_call', 'web_search_call', 'message']);
     expect(completed.response.usage.input_tokens).toBe(110);                 // 10 + 40 + 60
-    expect(req.__responsesExtraUsage).toEqual({ input_tokens: 100, output_tokens: 12 });
+    expect(req.__responsesExtraUsage).toEqual({
+      input_tokens: 100, output_tokens: 12, cache_creation_tokens: 0, cache_read_tokens: 0,
+    });
   });
 
   it('stops at the configured cap and hands the client the results instead of a further call', async () => {
@@ -758,7 +762,16 @@ describe('responsesWebSearchPlugin — streaming continuation', () => {
       .toEqual(['web_search_call', 'web_search_call', 'message']);
     const capped = f.filter(x => x.type === 'response.output_item.done' && x.item.type === 'web_search_call').pop();
     expect(capped.item.status).toBe('failed');
-    expect(frames(res.written).some(x => x.type === 'response.output_text.delta' && String(x.delta).startsWith('No web search results'))).toBe(true);
+    // Task 2 fix round 2: the capped call's dump must name the budget as the reason, never
+    // read as though the search ran and found nothing. Fix round 4: this dump is USER-facing
+    // (rendered verbatim as the assistant's message on this no-continuation path), so its
+    // text is the plain statement `FAILURE_MESSAGES.cap_reached.user` in
+    // webSearch/descriptor.ts, not the model-facing instruction `renderOutput` sends.
+    expect(frames(res.written).some(x => x.type === 'response.output_text.delta'
+      && String(x.delta).startsWith("This turn's web-search budget was used up"))).toBe(true);
+    // No model-facing imperative may leak into what the user reads.
+    expect(frames(res.written).some(x => x.type === 'response.output_text.delta'
+      && /do not tell the user/i.test(String(x.delta)))).toBe(false);
   });
 
   it('stops the loop when it outlives the idle budget the controller allows it', async () => {
@@ -953,7 +966,9 @@ describe('responsesWebSearchPlugin — streaming continuation', () => {
 
     // Both must already be true when the controller folds usage and emits the event.
     expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(req.__responsesExtraUsage).toEqual({ input_tokens: 40, output_tokens: 7 });
+    expect(req.__responsesExtraUsage).toEqual({
+      input_tokens: 40, output_tokens: 7, cache_creation_tokens: 0, cache_read_tokens: 0,
+    });
     expect(frames(res.written).some(x => x.delta === 'Node 22.')).toBe(true);
 
     res.end();

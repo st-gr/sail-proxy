@@ -50,3 +50,20 @@ export function buildFunctionCallOutput(callId: string, results: SearchResult[])
   };
 }
 
+/**
+ * The tool result item for a call that did NOT run.
+ *
+ * Deliberately NOT `{results: []}`: that shape is what a search which ran and found nothing
+ * returns, and a model reads it exactly that way — measured in the 2026-08-08 replay probe,
+ * where a model handed `{"results": []}` for a call that never ran concluded the search had
+ * returned nothing and asked to retry. An error shape keeps "found nothing" and "could not
+ * search" distinguishable, which is the whole point.
+ */
+export function buildFailedFunctionCallOutput(callId: string, code: string, message: string): any {
+  return {
+    type: 'function_call_output',
+    call_id: callId,
+    output: JSON.stringify({ error: { code, message } }),
+  };
+}
+

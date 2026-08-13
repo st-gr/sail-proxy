@@ -6,6 +6,24 @@ The `responsesWebSearchPlugin` emulates OpenAI's hosted `web_search` tool on the
 
 It is the Responses-wire-format sibling of [`webSearchPlugin`](./webSearchPlugin.md), which does the equivalent job for the Anthropic Messages format. Both share the Perplexity search core in [`webSearch/searchExecutor.ts`](./webSearch/searchExecutor.ts); this plugin's request/response shaping lives in [`webSearch/responsesAdapter.ts`](./webSearch/responsesAdapter.ts), which contains all the pure Responses-format helpers.
 
+## Where the code lives
+
+`responsesWebSearchPlugin.ts` is a **shim**. The machinery this document describes was extracted into a hosted-tool engine that is generic over the tool being emulated, so a second hosted tool is a second descriptor rather than a second copy of the interceptor:
+
+| Concern | File |
+|---|---|
+| The `res.write` interceptor, the continuation loop, the pending drain, the caps, usage accounting | [`hostedTool/engine.ts`](./hostedTool/engine.ts) |
+| What a hosted tool has to implement (`HostedToolDescriptor`) | [`hostedTool/descriptor.ts`](./hostedTool/descriptor.ts) |
+| Lookup by hosted `type` (request side) and function `name` (response side) | [`hostedTool/registry.ts`](./hostedTool/registry.ts) |
+| Everything web-search-specific: the rewritten tool, query parsing and re-masking, the `web_search_call` and result-`message` items | [`webSearch/descriptor.ts`](./webSearch/descriptor.ts) |
+| Registering `web_search` onto the engine, and the two hook rules | `responsesWebSearchPlugin.ts` |
+
+The behaviour below is unchanged by that extraction, and deliberately so: [`test/responses-websearch-characterization.test.ts`](../../test/responses-websearch-characterization.test.ts) pins the exact bytes written to `res` and the exact continuation POST bodies, and had to stay byte-identical across it.
+
+Names used below that moved: `hasResponsesWebSearchTool` / `transformResponsesWebSearchTool` are now the engine's `rewriteHostedTools` driving `descriptor.rewriteTool`; `findPendingResponsesSearch` is `findPendingHostedToolCall`; `isWebSearchFunctionCall` is `isHostedToolCall` (a registry lookup on the item's `name`); `MAX_PENDING_SEARCHES_PER_TURN` is `MAX_PENDING_CALLS_PER_TURN`; `installResponsesWebSearchInterceptor` is `installHostedToolInterceptor`; `replaceWebSearchCalls` is `replaceHostedToolCalls`. The pure helpers in `responsesAdapter.ts` and `continuation.ts` did not move — the descriptor composes them.
+
+One behaviour did change with the extraction: the continuation loop groups a round's calls **per turn rather than per tool**. Every call whose function name resolves to a registered descriptor is resolved in one batch and answered by one continuation POST carrying one `function_call_output` each, and each tool's `maxCallsPerRequest()` is an independent budget. With only `web_search` registered this is indistinguishable from the previous single-cap behaviour.
+
 ## Problem Statement
 
 OpenAI's Responses API `web_search` tool is a **hosted tool**: OpenAI's own infrastructure executes the search server-side. SAP AI Core deployments don't implement it and reject any request that references it outright:
@@ -77,7 +95,7 @@ After plugins do not run per SSE frame, so the streaming path is handled by a `r
 **Usage and lifecycle.** `responsesController.forwardStream` treats the first stream's `'end'` event as the end of the response, which is wrong here: the continuation is opened *after* that event, and `forwardStream` never runs the after-plugin chain, so there is no other point at which these tokens could be reported. Three hooks on `res` (`utils/responsesStreamIdle.ts`) bridge that gap, all no-ops on a response with no interceptor installed:
 
 - **upstream-end** — signalled by the controller immediately before it waits. It is one of three things that tell the interceptor the turn is finished and a continuation may start (the others being the held terminal frame and a deferred `res.end`). A stream that ends without a terminal frame has neither of those, so without this signal the continuation would start only *after* the usage event had been emitted, and its tokens would go unbilled.
-- **idle** — awaited by the controller before it folds `__responsesExtraUsage`, emits the usage event and closes the socket.
+- **idle** — awaited by the controller before it folds `__responsesExtraUsage`, emits the usage event and closes the socket. Each continuation round's usage lands on the accumulator through `noteExtraUsage` (`usageFolding.ts`), which per round subtracts that round's cache-read and cache-creation counts out of `input_tokens` before adding it — a cached-prefix continuation round bills only its full-rate remainder, not the whole prefix again. The accumulator's `input_tokens`/`output_tokens` field names are unchanged, so a plugin doing `acc.input_tokens += n` still works exactly as documented above; `cache_creation_tokens` and `cache_read_tokens` are additions, not a shape change to those two.
 - **abort** — called from the controller's `req` `'close'` handler, the same signal it uses to destroy the first upstream stream. It destroys any continuation stream in flight and blocks further rounds: Codex aborts turns routinely, and an abandoned request must neither open nor keep open a deployment call nobody will read.
 
 A stalled continuation degrades to a truncated response rather than a hung request: the per-stream watchdog is the first bound, the controller's wait timeout the last.
