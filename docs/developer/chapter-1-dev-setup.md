@@ -80,6 +80,8 @@ code --version   # VS Code (or preferred editor)
 trivy --version  # Container security scanner
 ```
 
+**Compose version requirement:** `docker-compose --version` above must report the **Compose v2 plugin, 2.24.0 or newer** (`docker compose version` also works and is the preferred invocation — the legacy standalone `docker-compose` v1 binary does not qualify, even though the command name is the same). `docker/docker-compose.yml` uses the `env_file` long-form syntax (`path:` / `required:`) to make the gateway's Postgres credentials file optional, which v1 and pre-2.24 v2 do not parse. Docker Desktop bundles a recent enough Compose plugin; on Linux, install/update via the [Compose plugin](https://docs.docker.com/compose/install/linux/) rather than the standalone binary.
+
 **Apple Silicon (M1/M2/M3) Specific Notes**:
 - **Docker Desktop**: Ensure "Use Rosetta for x86/amd64 emulation" is enabled
 - **Colima Alternative**: If using Colima instead of Docker Desktop, additional setup is required:

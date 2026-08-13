@@ -354,11 +354,48 @@ node cli-tools/kyma-db-manager.js restore \
   --data-only \
   --truncate-first
 
+# Create a backup WITHOUT the stored file bytes (much smaller)
+node cli-tools/kyma-db-manager.js backup \
+  --namespace sail-proxy \
+  --exclude-blobs \
+  --output backups/metadata-$(date +%Y%m%d).sql
+
 # Reset database - delete all data (preserves schema)
 node cli-tools/kyma-db-manager.js reset \
   --namespace sail-proxy \
   --pause-deployments
 ```
+
+> ⚠️ **`reset` deletes every `file_search` corpus.** It truncates every table it
+> finds, which includes `file_blobs`, `vector_stores`, `vector_store_files` and
+> `vector_store_chunks` — so every uploaded document, every vector store and
+> every embedding goes, irrecoverably unless you have a backup. Re-ingesting is
+> not free: the embeddings have to be regenerated, which is a billed call per
+> chunk against the tenant. Take a backup first.
+
+> ⚠️ **`--exclude-blobs` does not produce an equivalent backup.** It omits the
+> *data* of `file_blobs` (the `bytea` payloads that `pg_dump` hex-encodes,
+> roughly doubling backup size) while keeping the table and its constraints, so
+> the dump still restores cleanly. What you get back is the file *metadata* and
+> the *embeddings* — search keeps working — but the original bytes are gone, and
+> `GET /v1/files/{id}/content` will fail for every file in the backup. Use it for
+> routine snapshots, not as your only copy. It is only meaningful when
+> `file_search.blob_storage.backend` is `"db"`; with the `s3` backend the bytes
+> were never in Postgres to begin with.
+
+**A restore creates the `vector` extension for you.** Before streaming the dump,
+`restore` runs `CREATE EXTENSION IF NOT EXISTS vector` against the target
+database — a `--data-only` dump does not carry its own, and without the
+extension any dump containing `file_search` tables fails to load. If the
+extension cannot be created (the role lacks the right, or the server does not
+ship pgvector) it warns and continues rather than aborting, so a database with
+no vector columns still restores.
+
+**`info` reports pgvector.** It shows *available* (the server ships it) and
+*installed* (this database has it) separately, because the remedies differ:
+available-but-not-installed resolves itself on the gateway's next boot, while
+unavailable needs the `pgvector/pgvector` image and cannot be fixed from the
+CLI at all.
 
 **Database Migration Tool Features**:
 - ✅ **Automatic credential retrieval** from Kubernetes secrets
@@ -370,6 +407,8 @@ node cli-tools/kyma-db-manager.js reset \
 - ✅ **Dry-run mode** for testing operations
 - ✅ **Cross-platform compression** using tar.gz (Windows 10+, Linux, macOS)
 - ✅ **Automatic extraction** of compressed backups during restore
+- ✅ **`--exclude-blobs`** omits `file_blobs` DATA only, so the dump still restores
+- ✅ **pgvector handling**: created before restore, reported by `info`
 
 See [Database Migration Guide](#database-migration-for-kyma-deployments) below for detailed usage.
 

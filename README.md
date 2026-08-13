@@ -497,7 +497,7 @@ The `model_list_changes` section in `api_config.json` allows you to customize mo
         "streamingSupported": true,
         "subpaths_native": ["invoke", "invoke-with-response-stream", "converse", "converse-stream"],
         "subpaths_emulated": [],
-        "supports_prompt_caching": true,
+        "supports_prompt_caching": false,
         "anthropic_version": "bedrock-2023-05-31",
         "hooks": {
           "invoke-with-response-stream": [
@@ -522,7 +522,7 @@ The `model_list_changes` section in `api_config.json` allows you to customize mo
 - **`streamingSupported`**: Override whether the model supports streaming responses
 - **`subpaths_native`**: Define which API endpoints the model natively supports
 - **`subpaths_emulated`**: Specify endpoints that should be emulated for this model
-- **`supports_prompt_caching`**: Enable/disable prompt caching support for cost optimization
+- **`supports_prompt_caching`**: Optional; Anthropic-provider models default to `true` and all others to `false`, so this only needs to be set to opt a model *out* (`false`, e.g. `claude-3-haiku` above) — a `true` on an Anthropic model is redundant
 - **`anthropic_version`**: Set the Anthropic API version for Bedrock models
 - **`hooks`**: Attach plugins to specific model endpoints for custom behavior
 - **`cachePricing`**: Configure cache token pricing for accurate cost calculation (see Cache Token Pricing section below)
@@ -1150,7 +1150,7 @@ Look at Anthropic docs for more information [llm-gateway](https://docs.anthropic
 - Without caching, identical prompts are charged at full token rates repeatedly
 In mid December 2025 SAP introduced prompt caching. At the time of writing (January 2026) it is unclear if this really works as advertised.
 
-**AWS Bedrock prompt caching:** If you deploy the model directly, you should, in theory, be able utilize the `cache_control` parameter in your API payload to enable caching. The API responses even indicate, e. g. that input_cache was hit with X tokens. This would reduce the costs significantly, but SAP used to charge the tokens at full rate irrespective of the fact that AWS discounted cached tokens up to 90%. There is a model property in `api_config.json` where you can specify if a model supports prompt caching `"supports_prompt_caching"`. If false then `cache_control` blocks in your payload will be removed. If set to __true__ or __undefined__ then no filtering of `cache_control` elements will take place.
+**AWS Bedrock prompt caching:** If you deploy the model directly, you should, in theory, be able utilize the `cache_control` parameter in your API payload to enable caching. The API responses even indicate, e. g. that input_cache was hit with X tokens. This would reduce the costs significantly, but SAP used to charge the tokens at full rate irrespective of the fact that AWS discounted cached tokens up to 90%. There is a model property in `api_config.json` where you can specify if a model supports prompt caching `"supports_prompt_caching"`. Anthropic-provider models — which is what this section's Bedrock-deployed models are — default to __true__ (no filtering) when the property is left __undefined__, so you only need to set it when a model needs to opt out. If explicitly set to __false__ (e.g. `claude-3-haiku`, which doesn't support it) then `cache_control` blocks in your payload will be removed; a `true` on an Anthropic model is redundant.
 
 ### OpenAI Codex CLI
 

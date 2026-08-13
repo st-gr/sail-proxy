@@ -253,7 +253,7 @@ services:
     platform: linux/amd64  # OAuth2-proxy - no native ARM64
 
 # Other services run natively on ARM64:
-# - postgres:16 (✅ multi-arch)
+# - pgvector/pgvector:pg16-trixie (✅ multi-arch)
 # - valkey/valkey:8 (✅ multi-arch) 
 # - nginx:alpine (✅ multi-arch)
 # - Custom services (gateway, admin, ollama, nginx) - built natively

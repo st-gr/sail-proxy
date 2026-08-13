@@ -34,6 +34,8 @@ The system uses a microservices architecture with separate gateway, admin, and o
 12. [UI5 Application Development](chapter-12-ui5-app-development.md)
 13. [Plugin System Development](chapter-13-plugin-system.md)
 14. [Release & Deployment](chapter-14-release.md)
+15. [Reranker Teacher Datasets](chapter-15-reranker-datasets.md)
+16. [The hosted `file_search` tool](chapter-16-file-search-tool.md)
 
 ---
 
