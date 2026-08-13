@@ -1,5 +1,11 @@
 # Notes — a `file_search` tool for the Responses API
 
+> **SUPERSEDED, 2026-08-05.** These are pre-implementation notes from before the
+> feature existed. The corpus question was answered (pgvector in the admin Postgres),
+> the tool shipped, and the design that replaced these notes is
+> `docs/superpowers/specs/2026-08-04-file-search-tool-design.md`. Kept for the
+> reasoning about *why* it was deferred from phase 2, which is still accurate.
+
 **Status:** notes only. Not a spec, not approved, nothing scheduled.
 **Written:** 2026-07-29, at the close of the three-phase Responses API effort.
 
