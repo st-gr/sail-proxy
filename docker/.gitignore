@@ -4,6 +4,7 @@
 /.env
 /.env.auth
 /.env.postgres
+/.env.filesearch-runtime
 /.env.nginx
 
 # Generated configuration files (in docker/ root, from old setup)

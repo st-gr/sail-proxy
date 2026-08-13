@@ -127,9 +127,16 @@ LABEL org.opencontainers.image.source="https://github.com/st-gr/sail-proxy" \
       org.opencontainers.image.licenses="AGPL-3.0" \
       org.opencontainers.image.description="SAIL-Proxy admin service — configuration and usage administration (SAP CAP)"
 
-# Install pnpm and netcat for database health checks
-RUN corepack enable && corepack prepare pnpm@10.12.4 --activate && \
-    apk add --no-cache netcat-openbsd
+# netcat for the database health check in CMD below.
+#
+# pnpm is deliberately NOT installed here. This stage never runs it — it copies
+# node_modules from the build stage and prunes them with `rm`, and the
+# entrypoint is `node` — but `corepack prepare` still downloaded pnpm into
+# /root/.cache, leaving 20.7 MB in the image whose only effect was to carry
+# corepack's vendored tar@7.4.3 (CVE-2026-59873, fixed in 7.5.19) plus 26 HIGH
+# findings. Not installing it beats installing and deleting it. Same reasoning
+# as the npm removal further down.
+RUN apk add --no-cache netcat-openbsd
 
 WORKDIR /app
 

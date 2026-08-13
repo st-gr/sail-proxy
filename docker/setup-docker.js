@@ -1084,7 +1084,7 @@ class DockerSetup {
       
       // Database credentials (16 chars hex, safe for env files)
       this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
-      
+
       // OAuth2 Proxy secrets (matching hardcoded lengths for compatibility)
       this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET = this.generateOAuth2ClientSecret(); // 64 chars
       this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET = this.generateOAuth2CookieSecret(); // 32 chars
@@ -1102,6 +1102,25 @@ class DockerSetup {
     }
     if (finalDbConfig && finalDbConfig.passwordWasGenerated !== undefined) {
       this.sharedSecrets.passwordWasGenerated = finalDbConfig.passwordWasGenerated;
+    }
+
+    // file_search runtime role: DML only (SELECT/INSERT/UPDATE/DELETE on the
+    // file_search tables, no CREATE) — provisioned by the gateway-migrate
+    // compose service using FILE_SEARCH_MIGRATION_DATABASE_URL (which reuses
+    // POSTGRES_USER/POSTGRES_PASSWORD above) to grant it. Username is fixed
+    // rather than prompted: it's an internal service account no operator
+    // needs to choose, unlike POSTGRES_USER. Guarded on its own key, not
+    // folded into the `!this.sharedSecrets.VALIDATION_TOKEN_SECRET` block
+    // above: a caller supplying `--config` (or a pre-populated
+    // this.sharedSecrets) from before this release would already have
+    // VALIDATION_TOKEN_SECRET set, skip that whole block, and — without this
+    // independent guard — never generate a runtime password at all, silently
+    // writing docker/configs/shared/.env.filesearch-runtime's committed
+    // placeholder password verbatim into the generated .env.filesearch-runtime,
+    // which the migration step would then `CREATE ROLE ... PASSWORD` with.
+    if (!this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD) {
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_USER = 'file_search_app';
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD = this.generateDatabasePassword();
     }
     
     await this.setupGatewayEnv(sapConfig);
@@ -1787,16 +1806,57 @@ services:
 
     console.log('');
     
-    // Create .env file for manual docker-compose commands (both local and registry modes)
+    // Create OR REFRESH .env for manual docker-compose commands.
+    //
+    // `docker compose` auto-loads `.env` from this directory and never reads
+    // `.env.docker` — only the explicit `--env-file` invocations further down
+    // do. This block previously ran only when `.env` was ABSENT, so once
+    // created it never changed again: a version bump updated package.json and
+    // .env.docker while `.env` kept the tag it was born with, and every manual
+    // `docker compose up` silently ran whatever images still matched that stale
+    // tag. Observed as .env pinning DOCKER_TAG=0.9.0 against a 0.9.4 repo, with
+    // one profile-gated service left on a two-month-old image under that tag.
+    //
+    // The DOCKER_* keys are rewritten in place rather than the file being
+    // overwritten, because its own header invites manual edits.
     const envPath = path.join(this.dockerDir, '.env');
-    
-    if (fs.existsSync(envDockerPath) && !fs.existsSync(envPath)) {
+
+    if (fs.existsSync(envDockerPath)) {
       try {
-        const envDockerContent = fs.readFileSync(envDockerPath, 'utf8');
-        fs.writeFileSync(envPath, envDockerContent, 'utf8');
-        console.log('✅ Created .env file for manual docker-compose commands');
+        if (!fs.existsSync(envPath)) {
+          fs.writeFileSync(envPath, fs.readFileSync(envDockerPath, 'utf8'), 'utf8');
+          console.log('✅ Created .env file for manual docker-compose commands');
+        } else {
+          const desired = {
+            DOCKER_REGISTRY: registry,
+            DOCKER_ORGANIZATION: organization,
+            DOCKER_TAG: version
+          };
+          let content = fs.readFileSync(envPath, 'utf8');
+          const changes = [];
+
+          for (const [key, value] of Object.entries(desired)) {
+            const line = new RegExp(`^${key}=(.*)$`, 'm');
+            const found = content.match(line);
+
+            if (!found) {
+              content += `${content.endsWith('\n') ? '' : '\n'}${key}=${value}\n`;
+              changes.push(`${key} added as ${value}`);
+            } else if (found[1].trim() !== String(value)) {
+              content = content.replace(line, `${key}=${value}`);
+              changes.push(`${key} ${found[1].trim()} -> ${value}`);
+            }
+          }
+
+          if (changes.length > 0) {
+            fs.writeFileSync(envPath, content, 'utf8');
+            console.log(`✅ Updated .env (${changes.join('; ')})`);
+          } else {
+            console.log('✅ .env already matches the configured images');
+          }
+        }
       } catch (error) {
-        console.log(`⚠️  Warning: Could not create .env file: ${error.message}`);
+        console.log(`⚠️  Warning: Could not create or update .env file: ${error.message}`);
       }
     }
     
@@ -1886,8 +1946,13 @@ services:
     console.log('ℹ️  Nginx configuration is now handled via environment variables');
     console.log('   See docker/nginx/README.md for details');
     
-    // Only copy .env.postgres
-    const sharedFiles = ['.env.postgres'];
+    // .env.postgres carries the privileged migration DSN (consumed only by
+    // the one-shot gateway-migrate compose service); .env.filesearch-runtime
+    // carries the restricted runtime DSN the long-running gateway service
+    // actually uses. Kept as two files, not one, specifically so
+    // docker-compose.yml can hand each service only the file it needs —
+    // see that file's `gateway` vs `gateway-migrate` service definitions.
+    const sharedFiles = ['.env.postgres', '.env.filesearch-runtime'];
     for (const file of sharedFiles) {
       const srcPath = path.join(this.configsDir, 'shared', file);
       const destPath = path.join(this.dockerDir, file);
@@ -1908,6 +1973,46 @@ services:
             content = content.replace(
               /cds\.requires\.db\.credentials\.password=[^\s\n]+/g,
               `cds.requires.db.credentials.password=${this.sharedSecrets.POSTGRES_PASSWORD}`
+            );
+          }
+          // FILE_SEARCH_MIGRATION_DATABASE_URL is a plain env var embedded in
+          // this CAP-style file (the gateway reads it via process.env, not
+          // CDS config), so its user/password segments need their own
+          // replacement, scoped to that one line so they can't collide with
+          // the cds.requires.db.credentials.* keys above or with each other.
+          // Unlike those CAP keys (plain key=value, never parsed as a URI),
+          // this segment is embedded in an actual postgresql:// URL, so
+          // reserved URI characters in a manually-entered username/password
+          // (e.g. "/", which pg-connection-string rejects outright with
+          // "Invalid URL") must be percent-encoded — encodeURIComponent also
+          // neutralises any literal "$" in the value, which would otherwise
+          // be misread as a regex backreference by the capturing-group
+          // replacement below.
+          if (this.sharedSecrets.POSTGRES_USER) {
+            content = content.replace(
+              /(FILE_SEARCH_MIGRATION_DATABASE_URL=postgresql:\/\/)[^:]+(:)/,
+              `$1${encodeURIComponent(this.sharedSecrets.POSTGRES_USER)}$2`
+            );
+          }
+          if (this.sharedSecrets.POSTGRES_PASSWORD) {
+            content = content.replace(
+              /(FILE_SEARCH_MIGRATION_DATABASE_URL=postgresql:\/\/[^:]+:)[^@]+(@)/,
+              `$1${encodeURIComponent(this.sharedSecrets.POSTGRES_PASSWORD)}$2`
+            );
+          }
+        } else if (file === '.env.filesearch-runtime') {
+          // Same percent-encoding rationale as FILE_SEARCH_MIGRATION_DATABASE_URL
+          // above, applied to the restricted runtime role's own DSN.
+          if (this.sharedSecrets.FILE_SEARCH_RUNTIME_USER) {
+            content = content.replace(
+              /(FILE_SEARCH_DATABASE_URL=postgresql:\/\/)[^:]+(:)/,
+              `$1${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_USER)}$2`
+            );
+          }
+          if (this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD) {
+            content = content.replace(
+              /(FILE_SEARCH_DATABASE_URL=postgresql:\/\/[^:]+:)[^@]+(@)/,
+              `$1${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD)}$2`
             );
           }
         } else {
@@ -1943,29 +2048,53 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
     fs.writeFileSync(nginxEnvPath, nginxEnvContent);
     console.log(`✅ .env.nginx created with BASE_URL=${baseUrl}`);
     
-    // Update docker-compose.yml with generated database credentials
-    const dockerComposePath = path.join(this.dockerDir, 'docker-compose.yml');
-    if (fs.existsSync(dockerComposePath)) {
-      let dockerComposeContent = fs.readFileSync(dockerComposePath, 'utf8');
-      
-      // Replace database password
-      if (this.sharedSecrets.POSTGRES_PASSWORD) {
-        dockerComposeContent = dockerComposeContent.replace(
-          /POSTGRES_PASSWORD=[^\s\n]+/g, 
-          `POSTGRES_PASSWORD=${this.sharedSecrets.POSTGRES_PASSWORD}`
-        );
+    // Write the generated database credentials to docker/.env, NOT into
+    // docker-compose.yml.
+    //
+    // This used to rewrite the POSTGRES_USER= / POSTGRES_PASSWORD= literals in
+    // docker-compose.yml with a global regex. docker-compose.yml is TRACKED, so
+    // every setup run planted a live database password in a file staged for
+    // commit — observed as a real secret sitting in `git diff` after a routine
+    // setup. The compose file now carries
+    //   POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-admin_password}
+    // and takes the real value from here instead.
+    //
+    // docker/.env specifically: compose substitutes ${VAR} only from the shell
+    // and from docker/.env, never from an `env_file:` — see the note on the
+    // gateway service in docker-compose.yml. Putting these in .env.postgres or
+    // .env.auth would silently fall back to the placeholders.
+    const envForComposePath = path.join(this.dockerDir, '.env');
+    const composeCreds = {
+      POSTGRES_USER: this.sharedSecrets.POSTGRES_USER,
+      POSTGRES_PASSWORD: this.sharedSecrets.POSTGRES_PASSWORD
+    };
+
+    try {
+      let envForCompose = fs.existsSync(envForComposePath)
+        ? fs.readFileSync(envForComposePath, 'utf8')
+        : '';
+      const written = [];
+
+      for (const [key, value] of Object.entries(composeCreds)) {
+        if (!value) continue;
+        const line = new RegExp(`^${key}=.*$`, 'm');
+        if (line.test(envForCompose)) {
+          envForCompose = envForCompose.replace(line, `${key}=${value}`);
+        } else {
+          if (envForCompose.length > 0 && !envForCompose.endsWith('\n')) {
+            envForCompose += '\n';
+          }
+          envForCompose += `${key}=${value}\n`;
+        }
+        written.push(key);
       }
-      
-      // Replace database username
-      if (this.sharedSecrets.POSTGRES_USER) {
-        dockerComposeContent = dockerComposeContent.replace(
-          /POSTGRES_USER=[^\s\n]+/g, 
-          `POSTGRES_USER=${this.sharedSecrets.POSTGRES_USER}`
-        );
+
+      if (written.length > 0) {
+        fs.writeFileSync(envForComposePath, envForCompose, 'utf8');
+        console.log(`✅ Database credentials written to docker/.env (${written.join(', ')})`);
       }
-      
-      fs.writeFileSync(dockerComposePath, dockerComposeContent);
-      console.log(`✅ docker-compose.yml updated with generated database credentials`);
+    } catch (error) {
+      console.log(`⚠️  Warning: Could not write database credentials to docker/.env: ${error.message}`);
     }
     
     // Update dex.config.yaml with database credentials
