@@ -1,0 +1,303 @@
+{
+  "note": "Verbatim shapes from a real codex 0.147.0 <-> chatgpt.com session (16 turns, 2773 WS frames). Opaque blobs and account ids redacted; every FIELD NAME is real.",
+  "server_frame_type_counts": {
+    "codex.rate_limits": 16,
+    "codex.response.metadata": 16,
+    "response.created": 16,
+    "response.in_progress": 16,
+    "responsesapi.websocket_timing": 16,
+    "response.completed": 16,
+    "response.output_item.added": 21,
+    "response.content_part.added": 8,
+    "response.output_text.delta": 1569,
+    "response.output_text.done": 8,
+    "response.content_part.done": 8,
+    "response.output_item.done": 21,
+    "response.custom_tool_call_input.delta": 1018,
+    "response.custom_tool_call_input.done": 8
+  },
+  "client_input_item_type_counts": {
+    "additional_tools": 5,
+    "message": 19,
+    "custom_tool_call_output": 8,
+    "compaction_trigger": 1
+  },
+  "output_item_types_seen": {
+    "message": 8,
+    "custom_tool_call": 8,
+    "reasoning": 4,
+    "compaction": 1
+  },
+  "usage_verbatim": {
+    "input_tokens": 11438,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 0,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 11438
+  },
+  "text_delta_fields": [
+    "content_index",
+    "delta",
+    "item_id",
+    "logprobs",
+    "obfuscation",
+    "output_index",
+    "safety_buffering",
+    "sequence_number",
+    "type"
+  ],
+  "reasoning_item": {
+    "id": "rs_0d0e7f18523c9246016a7acb494c848198b14864d113dde7b3",
+    "type": "reasoning",
+    "content": [],
+    "encrypted_content": "<redacted:encrypted_content>",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "019fefa9-e4a2-7271-9079-4d85744732b7"
+    },
+    "summary": [],
+    "metadata": {
+      "turn_id": "019fefa9-e4a2-7271-9079-4d85744732b7"
+    }
+  },
+  "compaction_item": {
+    "id": "cmp_08837e1beb979fab016a7ad408cc20819a9e2b21bb94114096",
+    "type": "compaction",
+    "encrypted_content": "<redacted:encrypted_content>",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "019fefcc-3cbe-77e0-875e-7b351207164b"
+    },
+    "metadata": {
+      "turn_id": "019fefcc-3cbe-77e0-875e-7b351207164b"
+    }
+  },
+  "compaction_trigger_item": {
+    "type": "compaction_trigger"
+  },
+  "response_create_shape": {
+    "type": "response.create",
+    "model": "gpt-5.6-sol",
+    "input": "<input items omitted>",
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "reasoning": {
+      "effort": "low",
+      "context": "all_turns"
+    },
+    "store": false,
+    "stream": true,
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "prompt_cache_key": "<redacted:prompt_cache_key>",
+    "text": {
+      "verbosity": "low"
+    },
+    "generate": false,
+    "client_metadata": "<redacted:client_metadata>"
+  },
+  "codex_rate_limits": {
+    "type": "codex.rate_limits",
+    "plan_type": "plus",
+    "rate_limits": {
+      "allowed": true,
+      "limit_reached": false,
+      "primary": {
+        "used_percent": 0,
+        "window_minutes": 10080,
+        "reset_after_seconds": 604361,
+        "reset_at": 1787036436
+      },
+      "secondary": null
+    },
+    "code_review_rate_limits": null,
+    "additional_rate_limits": null,
+    "credits": {
+      "has_credits": false,
+      "unlimited": false,
+      "balance": "0"
+    },
+    "promo": null
+  },
+  "cancellation": {
+    "how_observed": "User pressed Escape in the codex TUI mid-stream; TUI showed \"Conversation interrupted\".",
+    "client_frames_sent": "none \u2014 the only client frame type across the whole socket remained response.create; no response.cancel, no abort frame",
+    "http_side_channel": "none \u2014 the only new HTTP flows were analytics/telemetry/search and a models refresh; no cancel endpoint was called",
+    "server_terminal_frame": "none \u2014 the response stream simply stops mid response.output_text.delta",
+    "socket_state_after": {
+      "timestamp_end": null,
+      "close_code": null,
+      "close_reason": null,
+      "closed_by_client": null
+    },
+    "counting_evidence": "the socket carried 11 response.created but only 10 response.completed \u2014 exactly one response never terminated",
+    "conclusion": "Cancellation is purely client-side: codex stops rendering and abandons the response. The server is not told, the socket stays open, and no usage is ever reported for the abandoned turn."
+  },
+  "error_envelopes": {
+    "note": "Two distinct shapes observed on the same endpoint.",
+    "backend_gateway_error": {
+      "http": 400,
+      "body": {
+        "detail": "Unsupported parameter: max_output_tokens"
+      },
+      "also_seen": {
+        "detail": "The 'gpt-9-does-not-exist' model is not supported when using Codex with a ChatGPT account."
+      }
+    },
+    "openai_style_validation_error": {
+      "http": 400,
+      "body": {
+        "error": {
+          "message": "Invalid value: 'not_a_real_item'. Supported values are: 'additional_tools', 'agent_message', 'apply_patch_call', 'apply_patch_call_output', 'code_interpreter_call', 'compaction', 'compaction_trigger', 'computer_call', 'computer_call_output', 'custom_tool_call', 'custom_tool_call_output', 'file_search_call', 'function_call', 'function_call_output', 'image_generation_call', 'item_reference', 'local_shell_call', 'local_shell_call_output', 'mcp_approval_request', 'mcp_approval_response', 'mcp_call', 'mcp_list_tools', 'message', 'multi_agent_call', 'multi_agent_call_output', 'program', 'program_output', 'reasoning', 'shell_call', 'shell_call_output', 'tool_search_call', 'tool_search_output', and 'web_search_call'.",
+          "type": "invalid_request_error",
+          "param": "input[0]",
+          "code": "invalid_value"
+        }
+      },
+      "envelope_keys": [
+        "code",
+        "message",
+        "param",
+        "type"
+      ],
+      "example": {
+        "type": "invalid_request_error",
+        "code": "invalid_value",
+        "param": "input[0]"
+      }
+    }
+  },
+  "supported_input_item_types": [
+    "additional_tools",
+    "agent_message",
+    "apply_patch_call",
+    "apply_patch_call_output",
+    "code_interpreter_call",
+    "compaction",
+    "compaction_trigger",
+    "computer_call",
+    "computer_call_output",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "file_search_call",
+    "function_call",
+    "function_call_output",
+    "image_generation_call",
+    "item_reference",
+    "local_shell_call",
+    "local_shell_call_output",
+    "mcp_approval_request",
+    "mcp_approval_response",
+    "mcp_call",
+    "mcp_list_tools",
+    "message",
+    "multi_agent_call",
+    "multi_agent_call_output",
+    "program",
+    "program_output",
+    "reasoning",
+    "shell_call",
+    "shell_call_output",
+    "tool_search_call",
+    "tool_search_output",
+    "web_search_call"
+  ],
+  "public_api_api_openai_com": {
+    "note": "Captured directly from https://api.openai.com/v1/responses with an API key \u2014 the authoritative public surface, not the ChatGPT backend.",
+    "model": "gpt-5.4",
+    "usage_verbatim": {
+      "input_tokens": 8,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 5,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 13
+    },
+    "confirms_cache_write_tokens": "input_tokens_details uses cache_write_tokens on the PUBLIC API too \u2014 the same name the ChatGPT backend and SAP deployed path use.",
+    "response_completed_keys": [
+      "background",
+      "completed_at",
+      "created_at",
+      "error",
+      "frequency_penalty",
+      "id",
+      "incomplete_details",
+      "instructions",
+      "max_output_tokens",
+      "max_tool_calls",
+      "metadata",
+      "model",
+      "moderation",
+      "object",
+      "output",
+      "parallel_tool_calls",
+      "presence_penalty",
+      "previous_response_id",
+      "prompt_cache_key",
+      "prompt_cache_retention",
+      "reasoning",
+      "safety_identifier",
+      "service_tier",
+      "status",
+      "store",
+      "temperature",
+      "text",
+      "tool_choice",
+      "tool_usage",
+      "tools",
+      "top_logprobs",
+      "top_p",
+      "truncation",
+      "usage",
+      "user"
+    ],
+    "incomplete": {
+      "event_type": "response.incomplete",
+      "status": "incomplete",
+      "incomplete_details": {
+        "reason": "max_output_tokens"
+      },
+      "usage": {
+        "input_tokens": 19,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 16,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 35
+      }
+    },
+    "error_envelopes": {
+      "shape": "{\"error\": {message, type, param, code}} with HTTP 400 \u2014 a single consistent shape, unlike the ChatGPT backend which also emits a bare {\"detail\": \u2026}",
+      "examples": [
+        {
+          "code": "decimal_above_max_value",
+          "param": "temperature",
+          "type": "invalid_request_error"
+        },
+        {
+          "code": "model_not_found",
+          "param": "model",
+          "type": "invalid_request_error"
+        },
+        {
+          "code": "invalid_value",
+          "param": "input[0]",
+          "type": "invalid_request_error"
+        }
+      ]
+    },
+    "supported_input_item_types_match_chatgpt_backend": true
+  }
+}
