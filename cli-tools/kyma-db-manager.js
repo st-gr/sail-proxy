@@ -309,8 +309,93 @@ function promptConfirmation(message) {
  * @param {Object} credentials - Database credentials
  * @param {Object} options - Backup options
  */
+/**
+ * Builds the pg_dump command line.
+ *
+ * Pure, and exported, so its flag combinations can be asserted without a
+ * cluster — every branch here is otherwise reachable only through
+ * `kubectl exec`, which no test can run.
+ */
+/**
+ * `CREATE EXTENSION IF NOT EXISTS vector`, run against the target database
+ * before a restore streams in.
+ *
+ * A dump referencing `vector` columns cannot load into a database where the
+ * extension does not exist. A schema dump usually carries its own CREATE
+ * EXTENSION, but a --data-only restore into a fresh database does not — and
+ * that is the documented recovery path.
+ *
+ * Pure and exported for the same reason as buildPgDumpCommand: otherwise this
+ * is only reachable through kubectl.
+ */
+function buildEnsureVectorCommand(namespace, credentials) {
+  return `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} `
+    + `psql -U ${credentials.user} -d ${credentials.database} `
+    + `-c "CREATE EXTENSION IF NOT EXISTS vector"`;
+}
+
+/**
+ * One line: `<available>/<installed>` for the pgvector extension.
+ *
+ * The two are genuinely different states and the distinction is the point of
+ * the check. "Available" means the server ships the extension and a role could
+ * enable it; "installed" means this database already has. A managed Postgres
+ * can report available=1, installed=0 — fixable from here. available=0 cannot
+ * be fixed from here at all: it needs a different image
+ * (docker/docker-compose.yml pins pgvector/pgvector for exactly this reason),
+ * and file_search will report unavailable until it is.
+ *
+ * Pure and exported so the query can be asserted without a cluster.
+ */
+function buildPgvectorProbeCommand(namespace, credentials) {
+  const query = "SELECT (SELECT count(*) FROM pg_available_extensions WHERE name = 'vector') "
+    + "|| '/' || (SELECT count(*) FROM pg_extension WHERE extname = 'vector')";
+  return `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} `
+    + `psql -U ${credentials.user} -d ${credentials.database} -t -A -c "${query}"`;
+}
+
+function buildPgDumpCommand(credentials, options) {
+  const { dataOnly, schemaOnly, excludeTable, excludeBlobs } = options;
+
+  let cmd = `pg_dump -U ${credentials.user} -d ${credentials.database} --no-password`;
+
+  if (dataOnly) {
+    cmd += ' --data-only';
+  }
+
+  if (schemaOnly) {
+    cmd += ' --schema-only';
+  }
+
+  if (excludeTable) {
+    const tables = excludeTable.split(',');
+    tables.forEach(table => {
+      cmd += ` --exclude-table=${table.trim()}`;
+    });
+  }
+
+  // --exclude-table-DATA, never --exclude-table. The latter omits the table
+  // DEFINITION as well, and fs_files.sha256 REFERENCES file_blobs(sha256)
+  // (services/gateway/src/fileSearch/schema.sql.ts), so a dump built that way
+  // fails on restore the moment fs_files is created. This keeps the empty
+  // table and its constraints and drops only the bytea payload, which is what
+  // makes the backup smaller.
+  if (excludeBlobs) {
+    cmd += ' --exclude-table-data=file_blobs';
+  }
+
+  // Always add --clean and --if-exists for safer restores
+  if (!dataOnly) {
+    cmd += ' --clean --if-exists';
+  }
+
+  return cmd;
+}
+
 async function executePgDump(namespace, credentials, options) {
-  const { output, dataOnly, schemaOnly, excludeTable, compress, pauseDeployments: shouldPause, yes } = options;
+  // dataOnly/schemaOnly/excludeTable/excludeBlobs are consumed by
+  // buildPgDumpCommand(options) below, not here.
+  const { output, compress, pauseDeployments: shouldPause, yes } = options;
 
   let originalCounts = null;
 
@@ -336,28 +421,7 @@ async function executePgDump(namespace, credentials, options) {
 
   logInfo('Starting database backup...');
 
-  // Build pg_dump command
-  let pgDumpCmd = `pg_dump -U ${credentials.user} -d ${credentials.database} --no-password`;
-
-  if (dataOnly) {
-    pgDumpCmd += ' --data-only';
-  }
-
-  if (schemaOnly) {
-    pgDumpCmd += ' --schema-only';
-  }
-
-  if (excludeTable) {
-    const tables = excludeTable.split(',');
-    tables.forEach(table => {
-      pgDumpCmd += ` --exclude-table=${table.trim()}`;
-    });
-  }
-
-  // Always add --clean and --if-exists for safer restores
-  if (!dataOnly) {
-    pgDumpCmd += ' --clean --if-exists';
-  }
+  const pgDumpCmd = buildPgDumpCommand(credentials, options);
 
   try {
     // Set PGPASSWORD environment variable for kubectl exec
@@ -784,6 +848,18 @@ async function executePsql(namespace, credentials, options) {
     logInfo(`Found ${tableNames.length} tables in backup file`);
   }
 
+  // Best-effort, and deliberately NOT fatal. A database whose role cannot
+  // CREATE EXTENSION, or a cluster without pgvector installed at all, must not
+  // lose the ability to restore dumps that contain no vector columns. If the
+  // dump does need the type, psql below fails with a clear message naming it.
+  try {
+    execSync(buildEnsureVectorCommand(namespace, credentials), { encoding: 'utf8', stdio: 'pipe' });
+    logInfo('Ensured the vector extension exists (required by file_search dumps)');
+  } catch (error) {
+    logWarning(`Could not create the vector extension: ${String(error.message).split('\n')[0]}. `
+      + 'A backup containing file_search tables will fail to restore.');
+  }
+
   // Build psql command with echo-all to show table names.
   // (No --no-owner here: that is a pg_restore/pg_dump flag — psql does not
   // recognize it and exits immediately, breaking the stdin pipe.)
@@ -978,6 +1054,30 @@ function getDatabaseInfo(namespace, credentials) {
     const sizeResult = execSync(sizeKubectlCmd, { encoding: 'utf8' }).trim();
     log(`${colors.bright}Total Database Size:${colors.reset} ${sizeResult}\n`);
 
+    // file_search depends on pgvector. Without this an operator sees a healthy
+    // database and a feature that answers 503, with nothing connecting the two.
+    log('\n' + colors.bright + '=== file_search (pgvector) ===' + colors.reset);
+    try {
+      const raw = execSync(buildPgvectorProbeCommand(namespace, credentials), { encoding: 'utf8' });
+      const cleaned = raw.replace(/\x1b\[[0-9;]*m/g, '').trim();
+      const [available, installed] = cleaned.split('/').map(Number);
+
+      log(`${colors.cyan}Extension available:${colors.reset} ${available > 0 ? 'yes' : colors.red + 'NO' + colors.reset}`);
+      log(`${colors.cyan}Extension installed:${colors.reset} ${installed > 0 ? 'yes' : 'no'}`);
+
+      if (!(available > 0)) {
+        logWarning('pgvector is NOT available on this server — file_search will report '
+          + '503 file_search_unavailable. The Postgres image must be pgvector/pgvector '
+          + '(see docker/docker-compose.yml); enabling it from here is not possible.');
+      } else if (!(installed > 0)) {
+        logInfo('pgvector is available but not yet installed in this database. The gateway '
+          + 'runs CREATE EXTENSION IF NOT EXISTS vector at startup, so this resolves on its '
+          + 'next boot provided its role may create extensions.');
+      }
+    } catch (error) {
+      logWarning(`Could not determine pgvector status: ${String(error.message).split('\n')[0]}`);
+    }
+
     logSuccess('Database information retrieved successfully');
 
   } catch (error) {
@@ -1001,6 +1101,7 @@ program
   .option('--data-only', 'Backup only data (no schema)', false)
   .option('--schema-only', 'Backup only schema (no data)', false)
   .option('--exclude-table <tables>', 'Comma-separated list of tables to exclude')
+  .option('--exclude-blobs', 'Skip file_blobs DATA (large bytea payloads; keeps the table and its constraints)', false)
   .option('--compress', 'Compress backup with tar.gz', false)
   .option('--pause-deployments', 'Pause gateway and admin deployments during backup', false)
   .option('-y, --yes', 'Assume yes to all prompts (unattended mode)', false)
@@ -1056,10 +1157,17 @@ program
     getDatabaseInfo(options.namespace, credentials);
   });
 
-// Parse command line arguments
-program.parse(process.argv);
+// Parse command line arguments — only when run as a CLI. Without this guard a
+// `require()` from a test would hand Jest's own argv to commander, which then
+// errors on unknown options or prints help. Same pattern as
+// cli-tools/check-nul-bytes.js:214.
+if (require.main === module) {
+  program.parse(process.argv);
 
-// Show help if no command provided
-if (!process.argv.slice(2).length) {
-  program.outputHelp();
+  // Show help if no command provided
+  if (!process.argv.slice(2).length) {
+    program.outputHelp();
+  }
 }
+
+module.exports = { buildPgDumpCommand, buildEnsureVectorCommand, buildPgvectorProbeCommand };

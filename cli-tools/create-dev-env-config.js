@@ -115,6 +115,63 @@ async function patchAdminEnvForSQLite() {
   }
 }
 
+/**
+ * Points the gateway at the compose Postgres so file_search works locally.
+ *
+ * Without this the gateway has no DSN at all: getPool() returns null and every
+ * /v1/files and /v1/vector_stores endpoint answers 503 file_search_unavailable.
+ * That is correct fail-closed behaviour for a standalone install, but for a
+ * developer who just ran the dev setup it looks like the feature is broken.
+ *
+ * Writes FILE_SEARCH_DATABASE_URL, not POSTGRES_URL: fileSearch/db.ts reads
+ * `FILE_SEARCH_DATABASE_URL || POSTGRES_URL`, and the specific name cannot
+ * collide with anything else that reads the fallback.
+ *
+ * Credentials match docker/docker-compose.yml's postgres service — the same
+ * defaults cli-tools/check-postgres-credentials.js enforces for committed
+ * config, so there is no secret here to leak.
+ */
+async function patchGatewayEnvForFileSearch() {
+  logger.step('Pointing the Gateway .env at the compose Postgres (file_search)...');
+
+  const gatewayEnvPath = path.join(__dirname, '..', 'services', 'gateway', '.env');
+  const DSN = 'postgresql://admin_user:admin_password@localhost:5432/sap_llm_gateway';
+
+  try {
+    await fs.access(gatewayEnvPath);
+    const envContent = await fs.readFile(gatewayEnvPath, 'utf8');
+
+    // Idempotent: running the script twice must not append a second line, and
+    // must never overwrite a DSN the developer set deliberately.
+    if (/^\s*FILE_SEARCH_DATABASE_URL=/m.test(envContent)) {
+      logger.info('FILE_SEARCH_DATABASE_URL already set in the Gateway .env — left unchanged');
+      return;
+    }
+
+    const addition = [
+      '',
+      '# file_search (RAG) — points at the compose Postgres (pgvector).',
+      '# Added by cli-tools/create-dev-env-config.js. Omit it and file_search',
+      '# answers 503 file_search_unavailable, which is the intended standalone',
+      '# behaviour. See services/gateway/.env.sample for the full description.',
+      `FILE_SEARCH_DATABASE_URL=${DSN}`,
+      '',
+    ].join('\n');
+
+    await fs.writeFile(gatewayEnvPath, `${envContent.replace(/\s*$/, '')}\n${addition}`);
+
+    logger.success('Gateway .env now carries FILE_SEARCH_DATABASE_URL');
+    logger.info('  Requires the compose postgres service (pgvector/pgvector:pg16-trixie) to be running');
+
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      logger.warning('Gateway .env file not found. You may need to run this script from the project root.');
+    } else {
+      logger.warning(`Could not patch the Gateway .env: ${error.message}`);
+    }
+  }
+}
+
 async function verifyDatabaseDirectory() {
   logger.step('Ensuring database directory exists...');
   
@@ -195,6 +252,7 @@ Files created/modified:
     // Phase 2: Patch for local development
     logger.phase('Phase 2: Configuring for Local Development');
     await patchAdminEnvForSQLite();
+    await patchGatewayEnvForFileSearch();
     await verifyDatabaseDirectory();
     
     // Phase 3: Show next steps

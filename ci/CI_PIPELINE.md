@@ -22,52 +22,68 @@ The pipeline runs automatically on:
 
 ## Pipeline Phases
 
+The authoritative list is `ci/ci-pipeline.js`'s `logger.phase(...)` calls. There are
+TEN phases, and security scanning runs at 9 — not 6, as an earlier version of this
+document said while the code had already moved on.
+
 ### Phase 1: Environment Setup & Cleanup
 - ✅ Validates `SAP_AI_CORE_SERVICE_KEY` JSON format
+- 💾 Backs up the postgres and valkey volumes, all three `.env` files and `admin.db`,
+  then restores them in Phase 10 — a run leaves your environment as it found it
 - 🧹 Cleans existing `.env` files
-- 📦 Installs dependencies recursively with `pnpm`
-- 🐳 Runs Docker setup script
-- 🗄️ Starts Valkey cache container
+- 🗄️ Starts a Valkey container (removing it again in Phase 8 to free 6379 for compose)
 
-### Phase 2: Service Compilation
-- 🔨 Builds Gateway service (TypeScript → JavaScript)
-- 🔨 Builds Admin service (CAP + TypeScript)
-- 📦 Builds SAIL-PROXY npm distribution package
-- 📁 Creates proper dist directories
-- 🗄️ Resets database for clean testing
-
-### Phase 3: Unit Testing
-- 🧪 Gateway unit tests
-- 🧪 Admin unit tests
-- ❌ **Fail-fast**: Pipeline stops on any test failure
-
-### Phase 4: Integration Environment
-- 🚀 Starts Admin service in mock mode (35s startup)
-- 🔑 Creates API key for Ollama service via REST API
-- 🚀 Starts Gateway service (10s startup)
-- 🚀 Starts Ollama service
-- 🔍 Health checks for all services
-
-### Phase 5: Full Test Suite
-- 🧪 Gateway complete test suite
-- 🧪 Admin complete test suite  
-- 🧪 Ollama complete test suite
-
-### Phase 6: Security Scanning
-- 🛡️ npm audit for dependency vulnerabilities
-- 🐳 Trivy Docker image vulnerability scanning
-- 🔍 Static code analysis for security issues
+### Phase 2: Security Validation
 - 🚨 Secret and credential detection
-- ⚠️ Security TODO/FIXME identification
+- 🔗 Supply-chain indicators (known-malicious versions, suspicious preinstall scripts)
+- 🛡️ Dependency audit — **throws on a CRITICAL**, unlike the image scan at Phase 9
 
-### Phase 7: Docker Validation
-- 🐳 Tests `docker-compose build --no-cache`
-- ✅ Ensures deployment readiness
+### Phase 3: Service Compilation
+- 🔨 Gateway (TypeScript → JavaScript) and Admin (CAP + TypeScript)
+
+### Phase 4: Unit Testing
+- 🧪 `pnpm run test:unit` per service — deliberately narrow: the gateway's
+  `test:unit` matches only `test/(clients|config)/`. The full suite is Phase 6.
+
+### Phase 5: Integration Test Environment
+- 🚀 Starts Admin, Gateway and Ollama as HOST processes (not containers)
+- 🔑 Creates an API key for the Ollama service via REST
+
+### Phase 6: Full Test Suite
+- 🧪 `pnpm run test` for gateway, admin and ollama — the whole jest config, so a
+  new `test/*.test.ts` file is picked up here with no CI change
+
+### Phase 6.5: sail-proxy CLI End-to-End
+- 📦 Packs the npm tarball, installs it in a tmpdir, then exercises
+  run/status/apikey/inference/stop
+
+### Phase 7: Docker Build Validation
+- 🐳 `docker compose build --no-cache gateway admin ollama nginx`
+- The four services are named explicitly: the compose file has FIVE build
+  definitions but only four images, because `gateway` and `gateway-migrate`
+  share a tag. Building both raced to write it under `--no-cache`.
+
+### Phase 8: Docker Container Runtime Validation
+- 🐳 Starts postgres and the **admin** container, and checks schema deployment
+- ⚠️ Only admin is validated as a container; the gateway and ollama images are
+  built and scanned but never started here
+
+### Phase 9: Docker Security Scanning
+- 🐳 Trivy scans each built image
+- ⚠️ **Advisory only.** Findings are logged as warnings and the pipeline still
+  reports success. This is inconsistent with Phase 2, which throws on a CRITICAL
+  dependency finding, and with the "fail-fast" claim below. Deliberate or not, it
+  is what the code does — decide the policy before relying on it as a gate.
+
+### Phase 10: Cleanup
+- 🛑 Stops spawned services and containers
+- ♻️ Restores everything Phase 1 backed up
 
 ## Key Features
 
 ### 🔄 Industry Standards
-- **Fail-fast**: Any failure stops the entire pipeline
+- **Fail-fast**: a failed command stops the entire pipeline — with one
+  documented exception, the Phase 9 image scan, which only warns (see above)
 - **Service orchestration**: Proper startup sequencing
 - **Health checks**: Waits for services to be ready
 - **Graceful cleanup**: Stops all services and containers

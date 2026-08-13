@@ -10,6 +10,7 @@
  * 0. api_config.json synchronization across gateway, admin, and npm-dist
  * 1. workspace:* protocol validation in npm-dist/sail-proxy/package.json
  * 2. PostgreSQL credentials validation in docker configuration files
+ * 3. literal NUL bytes in staged text files
  *
  * Usage: Automatically run by git pre-commit hook
  * Exit code: 0 if all checks pass, 1 if any check fails
@@ -86,6 +87,23 @@ function main() {
     const checkPostgres = require('./check-postgres-credentials.js');
     checkPostgres.main();
     console.log('✅ PostgreSQL credentials verified');
+  }
+
+  // Check 3: literal NUL bytes in text files.
+  //
+  // Runs over EVERY staged file, unlike the checks above, because this defect is not tied
+  // to any particular path -- it arrived in a core module and in test comments in the same
+  // commit. It is inert at runtime, which is why review missed it four times: what it
+  // breaks is `git diff` (the file renders as "Bin 0 -> N bytes", so the change is
+  // unreviewable) and `grep` (which stops matching the file entirely, silently).
+  console.log('🔍 Checking for literal NUL bytes...');
+  const checkNulBytes = require('./check-nul-bytes.js');
+  try {
+    checkNulBytes.main(stagedFiles);
+    console.log('✅ No literal NUL bytes in staged text files');
+  } catch (error) {
+    // check-nul-bytes.js has already printed the offending files and lines.
+    process.exit(1);
   }
 
   process.exit(0);

@@ -38,7 +38,23 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16
+        # pgvector/pgvector:pg16-trixie is postgres:16 plus the pgvector extension.
+        # file_search runs `CREATE EXTENSION IF NOT EXISTS vector` at startup;
+        # without this image it fails closed (logs and disables the feature,
+        # never throws).
+        #
+        # Pinned to "-trixie", not plain "pg16": plain `postgres:16` and
+        # `pgvector/pgvector:pg16` currently build on different Debian releases
+        # (trixie/glibc 2.41 vs bookworm/glibc 2.36). An existing PVC upgrading
+        # in place — same volume, image swap only — would keep postgres
+        # text-collation data (including admin's CAP schema, which shares this
+        # database) built under one glibc and read under another: a silent
+        # wrong-results/index-corruption hazard, not a startup failure.
+        # "-trixie" matches plain postgres:16's base exactly, so an in-place
+        # upgrade never crosses a glibc boundary. See
+        # docs/developer/chapter-14-release.md for the remediation if a
+        # differently-based pgvector image is ever substituted here.
+        image: pgvector/pgvector:pg16-trixie
         envFrom:
         - secretRef:
             name: postgres-env

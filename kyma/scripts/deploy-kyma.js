@@ -323,7 +323,7 @@ spec:
   const secretsPath = path.join(templatesPath, 'secrets');
   if (fs.existsSync(secretsPath)) {
     console.log('\nApplying secrets individually to ensure proper creation...');
-    const secretFiles = ['admin-env.yaml', 'gateway-env.yaml', 'oauth2-proxy-secrets.yaml', 'postgres-env.yaml'];
+    const secretFiles = ['admin-env.yaml', 'gateway-env.yaml', 'gateway-migration-env.yaml', 'oauth2-proxy-secrets.yaml', 'postgres-env.yaml'];
     
     for (const secretFile of secretFiles) {
       const secretFilePath = path.join(secretsPath, secretFile);

@@ -1009,6 +1009,17 @@ class KymaSetup {
     if (!this.sharedSecrets.POSTGRES_PASSWORD) {
       this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
     }
+
+    // file_search runtime role: DML only (SELECT/INSERT/UPDATE/DELETE on the
+    // file_search tables, no CREATE) — provisioned by the gateway pod's
+    // migrate-file-search initContainer, which uses gateway-migration-env's
+    // FILE_SEARCH_MIGRATION_DATABASE_URL (POSTGRES_USER/POSTGRES_PASSWORD
+    // above) to grant it. Username is fixed rather than prompted: it's an
+    // internal service account, not something an operator needs to choose.
+    if (!this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD) {
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_USER = 'file_search_app';
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD = this.generateDatabasePassword();
+    }
   }
 
   /**
@@ -1990,11 +2001,19 @@ stringData:
   POSTGRES_PASSWORD: ${this.yamlQuote(config.POSTGRES_PASSWORD)}
 `;
     
-    // Gateway secret  
+    // Gateway secret. FILE_SEARCH_DATABASE_URL is the restricted, DML-only
+    // runtime role — the gateway pod itself never receives DDL-capable
+    // credentials. Those (FILE_SEARCH_MIGRATION_DATABASE_URL, built from
+    // POSTGRES_USER/POSTGRES_PASSWORD like this used to be) live only in
+    // the separate gateway-migration-env Secret below, consumed only by
+    // the gateway Deployment's migrate-file-search initContainer — never
+    // by the long-running `gateway` container. See
+    // docs/developer/chapter-14-release.md.
     let gatewayEnvData = `VALKEY_URL: redis://valkey:6379
 PORT: "8080"
 DEPLOY_TARGET: docker
 ADMIN_SERVICE_URL: http://admin:4004
+FILE_SEARCH_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_USER)}:${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD)}@postgres:5432/sap_llm_gateway`)}
 VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
 METADATA_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}`;
 
@@ -2017,7 +2036,21 @@ type: Opaque
 stringData:
 ${gatewayEnvData.split('\n').map(line => '  ' + line).join('\n')}
 `;
-    
+
+    // Privileged migration secret — DDL rights, consumed only by the
+    // gateway Deployment's migrate-file-search initContainer (see
+    // kyma/templates/manifests/core/gateway.yaml), never by the
+    // long-running `gateway` container itself.
+    const gatewayMigrationSecret = `apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-migration-env
+  namespace: ${config.namespace}
+type: Opaque
+stringData:
+  FILE_SEARCH_MIGRATION_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(config.POSTGRES_USER)}:${encodeURIComponent(config.POSTGRES_PASSWORD)}@postgres:5432/sap_llm_gateway`)}
+`;
+
     // Admin secret
     const adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway`)}
 VALKEY_URL: redis://valkey:6379
@@ -2062,6 +2095,7 @@ stringData:
     // Write secrets
     fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'postgres-env.yaml'), postgresSecret);
     fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'gateway-env.yaml'), gatewaySecret);
+    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'gateway-migration-env.yaml'), gatewayMigrationSecret);
     fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'admin-env.yaml'), adminSecret);
     fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'oauth2-proxy-secrets.yaml'), oauth2ProxySecret);
     
@@ -2901,7 +2935,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
     const secretKeys = [
       'VALIDATION_TOKEN_SECRET', 'METADATA_ENCRYPTION_KEY', 'AWS_SECRET_ENCRYPTION_KEY',
       'CLIENT_SECRET', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'CLIENT_ID', 'AUTH_URL',
-      'VALKEY_URL', 'REDIS_URL', 'ADMIN_SERVICE_URL',  // Connection URLs should come from Secrets with K8s service names
+      'VALKEY_URL', 'REDIS_URL', 'ADMIN_SERVICE_URL', 'FILE_SEARCH_DATABASE_URL',  // Connection URLs should come from Secrets with K8s service names
       'PORT',  // PORT is already set in the Secret and should not be duplicated in ConfigMap
       'ROLE_MAPPING'  // ROLE_MAPPING is already set in the Secret and must not be overridden by ConfigMap
     ];

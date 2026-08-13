@@ -81,6 +81,70 @@ spec:
         envFrom:
         - secretRef:
             name: gateway-env
+      # Applies the file_search schema migration and provisions the
+      # `gateway` container's DML-only runtime role (FILE_SEARCH_DATABASE_URL
+      # in the gateway-env Secret above), then exits — the ONLY place
+      # gateway-migration-env's FILE_SEARCH_MIGRATION_DATABASE_URL (a
+      # bootstrap-superuser DSN) is used or even present in this Deployment.
+      # initContainers get their own independent env — this Secret is never
+      # attached to the long-running `gateway` container below. Runs after
+      # wait-for-admin (not because it needs Admin itself, only Postgres,
+      # which Admin's own startup already required) so migrateCli.ts's
+      # getConfigAsync() pre-fetch of file_search.embedding_dimensions has a
+      # reachable Admin/Valkey to resolve the real configured value from,
+      # instead of falling back to the default. See
+      # services/gateway/src/fileSearch/migrateCli.ts and
+      # docs/developer/chapter-14-release.md.
+      - name: migrate-file-search
+        image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-gateway:__CONTAINER_TAG__
+        command: ["node", "services/gateway/dist/services/gateway/src/fileSearch/migrateCli.js"]
+        envFrom:
+        # `optional: true` as defence in depth against exactly the class of
+        # mistake that briefly existed in deploy-kyma.js — its secretFiles
+        # whitelist not yet including this Secret would otherwise mean
+        # kubectl never applies it and the kubelet cannot build this
+        # container's env at all (CreateContainerConfigError), wedging the
+        # *entire* pod (this initContainer never completes, so the main
+        # `gateway` container never starts either) — a total-gateway outage
+        # for what should only ever degrade file_search. With `optional:
+        # true`, a genuinely missing Secret instead leaves
+        # FILE_SEARCH_MIGRATION_DATABASE_URL unset, which migrateCli.ts's
+        # runMigration() already treats as "no privileged DSN configured"
+        # and falls back to the unrestricted single-DSN path (or reports
+        # unavailable, per its own fail-closed handling) — never a wedged
+        # pod. `gateway-env` below is deliberately NOT optional: it's
+        # required by the `gateway` container too, so a missing gateway-env
+        # is a broken deployment either way and there's nothing to gain by
+        # papering over it in just this one container.
+        - secretRef:
+            name: gateway-migration-env
+            optional: true
+        - secretRef:
+            name: gateway-env
+        # setup-kyma.js's updateDeploymentManifests() auto-appends a
+        # non-secret env ConfigMap reference after every gateway-env
+        # secretRef line it finds in this file (the same mechanism that
+        # adds one below, for the `gateway` container). Deliberately not
+        # hand-written here too, to avoid tripping that function's
+        # "already patched?" guard a second time (see the note on the
+        # `gateway` container's own configMapRef below) — though as of the
+        # manifest actually committed here, that guard is already satisfied
+        # by the `gateway` container's reference, so the auto-append is a
+        # no-op for this initContainer today. It doesn't need anything from
+        # gateway-config anyway (VALKEY_URL/ADMIN_SERVICE_URL live in the
+        # gateway-env Secret already attached above).
+        env:
+        # An initContainer that exits non-zero blocks the whole pod: the
+        # main `gateway` container never starts (all LLM proxying, not just
+        # file_search) until every initContainer succeeds. Before this
+        # migration step existed, a broken migration cost file_search a 503
+        # and nothing else — this flag (see migrateCli.ts's own doc
+        # comment) keeps that exact blast radius: migration still runs
+        # first and its failure is still logged loudly (kubectl logs
+        # <pod> -c migrate-file-search), but it can never prevent the
+        # gateway from starting.
+        - name: FILE_SEARCH_MIGRATE_NEVER_BLOCK
+          value: "true"
       containers:
       - name: gateway
         image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-gateway:__CONTAINER_TAG__

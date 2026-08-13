@@ -1047,7 +1047,23 @@ async function executeCommand(command, options = {}) {
   }
 
   try {
-    const execOptions = { cwd };
+    // maxBuffer, explicitly: child_process.exec defaults to 1 MiB of stdout and
+    // KILLS the child the moment it is exceeded, surfacing as a generic failure
+    // rather than as "your output was too big".
+    //
+    // That silently broke Phase 9. `trivy image --format json` emits 490 KB for
+    // nginx but 1,343,693 bytes for admin and 1,081,068 for a gateway build —
+    // straddling the 1,048,576 limit. Oversized scans came back with stdout: ''
+    // (the ignoreError path below), so JSON.parse threw "Unexpected end of JSON
+    // input", the loop logged an error and moved on, and the pipeline still
+    // reported success. Trivy had scanned those images correctly every time;
+    // their results were thrown away here. Whether any given image survived was
+    // down to whether its JSON happened to land under 1 MiB.
+    //
+    // 64 MiB is far above any output this pipeline produces, and applies to
+    // every command, not just Trivy — docker build logs and full test output
+    // are the other candidates for silently hitting this.
+    const execOptions = { cwd, maxBuffer: 64 * 1024 * 1024 };
     if (env) {
       execOptions.env = env;
     }
@@ -1732,7 +1748,24 @@ async function runCIPipeline() {
       logger.step('Building Docker images with ci-test tags...');
       const dockerStartTime = Date.now();
 
-      await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache`, {
+      // Build the four DISTINCT images by name rather than every service.
+      //
+      // docker-compose.yml has FIVE build definitions but only four images:
+      // `gateway` and `gateway-migrate` deliberately share one tag (the migrate
+      // service is that image run with a different command). Passing no service
+      // names builds both, and under `--no-cache` the two identical targets race
+      // to write the same tag — one wins, the other dies with
+      //   target gateway-migrate: failed to solve:
+      //   image ".../sail-proxy-gateway:ci-test": already exists
+      // With a warm cache both "build" instantly and the race does not show, so
+      // this only ever fails here, on the cold build CI does.
+      //
+      // Fixed here rather than in docker-compose.yml on purpose: BOTH services
+      // need their own `build:` for deployment. Compose resolves images for all
+      // services in parallel, and one with no build section can only pull, so
+      // deleting either block makes `docker compose up` fail on a clean machine
+      // with no local image and no registry access. Measured both ways round.
+      await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache gateway admin ollama nginx`, {
         description: 'Testing Docker build process (this may take 10-15 minutes)...',
         cwd: projectRoot,
         env: ciEnv

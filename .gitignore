@@ -110,5 +110,17 @@ docker/.env.auth
 docker/.env.docker
 docker/.env.nginx
 docker/.env.postgres
+docker/.env.filesearch-runtime
 docker/docker-compose.override.yml
 docker/docker-compose.override.yml.backup.*
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages.
+.superpowers/
+
+# Superpowers plans/specs: written to be executed on a specific machine, so they
+# accumulate local paths, hosts and DSNs. Kept on disk, out of the repo.
+# Everything under here EXCEPT the README. The `/*` form matters: `!docs/superpowers/`
+# would re-include the directory and with it every plan and spec, which is what a
+# first attempt at this did.
+docs/superpowers/*
+!docs/superpowers/README.md

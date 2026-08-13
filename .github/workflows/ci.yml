@@ -14,6 +14,30 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    # pgvector-enabled Postgres for the file_search DSN-gated integration suites
+    # (test/fileSearch/integration/**). Bound to host port 55432, not the default
+    # 5432, because Phase 8 of ci/ci-pipeline.js later runs `docker compose up`
+    # against docker/docker-compose.yml, whose own postgres service also publishes
+    # 5432 — a same-port service container would collide with it.
+    services:
+      pgvector:
+        # Same tag as docker/docker-compose.yml and the Kyma manifest (see
+        # comments there for why "-trixie" specifically) — kept identical for
+        # test/prod parity, though this container is ephemeral per CI run so
+        # the glibc-collation concern that motivates it doesn't apply here.
+        image: pgvector/pgvector:pg16-trixie
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: filesearch_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd=pg_isready
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -61,6 +85,18 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y trivy
 
+    - name: Install file_search extractor binaries (pandoc, pdftotext)
+      run: |
+        # pandoc (.docx/.odt/.epub/.rst/.html/.tex) and pdftotext from poppler-utils
+        # (.pdf) are spawned by the gateway's extractor registry. Installing them
+        # here lets the FILE_SEARCH_TEST_BINARIES-gated suite
+        # (test/fileSearch/integration/extractors.test.ts) run instead of skip.
+        # (Own `apt-get update` — don't rely on the Trivy step above having run one.)
+        sudo apt-get update
+        sudo apt-get install -y pandoc poppler-utils
+        pandoc --version
+        pdftotext -v
+
     - name: Set up SAP AI Core Service Key
       env:
         SECRET_VALUE: ${{ secrets.SAP_AI_CORE_SERVICE_KEY }}
@@ -92,7 +128,13 @@ jobs:
         cds.requires.db.kind: sqlite
         cds.requires.db.impl: "@cap-js/sqlite"
         cds.requires.db.credentials.url: "db/admin.db"
-        
+        # file_search: point the gateway's DSN-gated integration suites at the
+        # pgvector service container above so they run instead of skipping.
+        FILE_SEARCH_TEST_DSN: postgresql://postgres:postgres@localhost:55432/filesearch_test
+        # Extractor binaries were installed in the step above, so the
+        # FILE_SEARCH_TEST_BINARIES-gated suite runs too.
+        FILE_SEARCH_TEST_BINARIES: "1"
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       if: always()
