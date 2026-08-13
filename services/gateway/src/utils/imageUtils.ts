@@ -49,3 +49,23 @@ export const getMediaTypeFromUrl = (url: string): string => {
   
   return mediaType;
 };
+
+/**
+ * Download a remote image and return it as a `data:` URL.
+ *
+ * Used by the Responses orchestration route's image plugin
+ * (responsesImagePlugin.ts), which composes the same two primitives the chat
+ * path's inline Anthropic-image handling (openaiController.ts) already uses —
+ * `downloadAndEncodeImage` / `getMediaTypeFromUrl` — so the download itself is
+ * reused rather than reimplemented. openaiController.ts is left calling those
+ * two functions inline, unchanged: its surrounding loop and failure handling
+ * diverge from what this route needs (see responsesImagePlugin.ts), and this
+ * composed step is additive, so it does not need to adopt it too. Propagates
+ * whatever `downloadAndEncodeImage` throws; it is each caller's job to decide
+ * what a failed download means for its request.
+ */
+export const remoteUrlToDataUrl = async (imageUrl: string): Promise<string> => {
+  const base64Image = await downloadAndEncodeImage(imageUrl);
+  const mediaType = getMediaTypeFromUrl(imageUrl);
+  return `data:${mediaType};base64,${base64Image}`;
+};
