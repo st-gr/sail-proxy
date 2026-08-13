@@ -41,7 +41,7 @@ describe('Usage Tracking Integration Tests', () => {
   let app: express.Application;
   let server: any;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // Set up a minimal Express app for testing
     app = express();
     app.use(express.json());
@@ -105,7 +105,10 @@ describe('Usage Tracking Integration Tests', () => {
       res.json({ success: true, tokens: { input: 75, output: 125 } });
     });
 
-    server = app.listen(0); // Use random port
+    // Awaited: a request issued before the socket is listening is the same
+    // race this change removes. The server already existed here, but every
+    // request below still went to `app`, so it was never used.
+    await new Promise<void>((resolve) => { server = app.listen(0, () => resolve()); });
   });
 
   afterAll(() => {
@@ -125,7 +128,7 @@ describe('Usage Tracking Integration Tests', () => {
       // Set emitter to memory mode
       usageEmitter.setValkeyClient(null);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/test/anthropic')
         .send({ message: 'Hello, Claude!' })
         .expect(200);
@@ -155,7 +158,7 @@ describe('Usage Tracking Integration Tests', () => {
     it('should track usage for AWS credential request', async () => {
       usageEmitter.setValkeyClient(null);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/test/aws')
         .send({ message: 'Hello from AWS!' })
         .expect(200);
@@ -180,7 +183,7 @@ describe('Usage Tracking Integration Tests', () => {
     it('should track usage for error responses', async () => {
       usageEmitter.setValkeyClient(null);
 
-      await request(app)
+      await request(server)
         .post('/test/error')
         .send({ message: 'This will fail' })
         .expect(500);
@@ -204,7 +207,7 @@ describe('Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       const requests = Array(5).fill(null).map((_, index) => 
-        request(app)
+        request(server)
           .post('/test/anthropic')
           .send({ message: `Request ${index}` })
       );
@@ -245,7 +248,7 @@ describe('Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       // Generate some usage events
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Test message' });
 
@@ -275,7 +278,7 @@ describe('Usage Tracking Integration Tests', () => {
       );
 
       // Generate usage event
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Test message' });
 
@@ -299,7 +302,7 @@ describe('Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(mockValkeyClient);
 
       // Generate usage event
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Test message' });
 
@@ -330,7 +333,7 @@ describe('Usage Tracking Integration Tests', () => {
 
       usageEmitter.setValkeyClient(mockValkeyClient);
 
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Valkey test' });
 
@@ -366,7 +369,7 @@ describe('Usage Tracking Integration Tests', () => {
 
       usageEmitter.setValkeyClient(failingValkeyClient);
 
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Fallback test' });
 
@@ -389,7 +392,7 @@ describe('Usage Tracking Integration Tests', () => {
       const requestCount = 50;
 
       const requests = Array(requestCount).fill(null).map((_, index) =>
-        request(app)
+        request(server)
           .post('/test/anthropic')
           .send({ message: `Volume test ${index}` })
       );
@@ -422,7 +425,7 @@ describe('Usage Tracking Integration Tests', () => {
       // Measure response time with usage tracking
       const startTime = Date.now();
       
-      await request(app)
+      await request(server)
         .post('/test/anthropic')
         .send({ message: 'Performance test' });
       
@@ -438,17 +441,45 @@ describe('Usage Tracking Integration Tests', () => {
     it('should handle memory queue size limits', async () => {
       usageEmitter.setValkeyClient(null);
 
-      // Generate more events than the queue limit (assuming 1000)
-      const excessiveRequests = Array(1005).fill(null).map((_, index) =>
-        request(app)
-          .post('/test/anthropic')
-          .send({ message: `Overflow test ${index}` })
-      );
+      // Generate more events than the queue limit (assuming 1000).
+      //
+      // Two deliberate choices here, both of which exist to stop this test leaking
+      // work into the tests that run after it. The emitter's memory queue is
+      // singleton state shared by the whole file, so any request still in flight
+      // when this test ends will push its event into whatever test runs next.
+      //
+      //  1. Requests are sent in bounded batches against the already-listening
+      //     `server` rather than 1005 at once against `app`. The old version made
+      //     supertest stand up an ephemeral server per request; at that concurrency
+      //     the sockets intermittently produced "Parse Error: Expected HTTP/, RTSP/
+      //     or ICE/", which is what made this suite fail roughly 1-in-8.
+      //  2. `Promise.allSettled`, never `Promise.all`. `Promise.all` rejects on the
+      //     first failure and hands control back with the other ~1000 requests still
+      //     running, so a single bad socket aborted this test and then dumped its
+      //     stragglers into the following tests' assertions.
+      const totalRequests = 1005;
+      const batchSize = 25;
+      let delivered = 0;
 
-      await Promise.all(excessiveRequests);
+      for (let sent = 0; sent < totalRequests; sent += batchSize) {
+        const batch = Array(Math.min(batchSize, totalRequests - sent))
+          .fill(null)
+          .map((_, index) =>
+            request(server)
+              .post('/test/anthropic')
+              .send({ message: `Overflow test ${sent + index}` })
+          );
+
+        const results = await Promise.allSettled(batch);
+        delivered += results.filter(result => result.status === 'fulfilled').length;
+      }
+
+      // The queue must actually have been pushed past its limit, or the assertion
+      // below would pass for the wrong reason.
+      expect(delivered).toBeGreaterThan(1000);
 
       // Queue should respect size limit
-      expect(usageEmitter.getQueueSize()).toBeLessThanOrEqual(1000);
+      expect(usageEmitter.getQueueSize()).toBe(1000);
     });
   });
 
@@ -468,7 +499,7 @@ describe('Usage Tracking Integration Tests', () => {
 
       usageEmitter.setValkeyClient(null);
 
-      await request(app)
+      await request(server)
         .post('/test/no-auth')
         .send({ message: 'No auth test' })
         .expect(200);
@@ -492,7 +523,7 @@ describe('Usage Tracking Integration Tests', () => {
 
       usageEmitter.setValkeyClient(null);
 
-      await request(app)
+      await request(server)
         .post('/test/legacy-auth')
         .send({ message: 'Legacy auth test' })
         .expect(200);
@@ -520,7 +551,7 @@ describe('Usage Tracking Integration Tests', () => {
 
       usageEmitter.setValkeyClient(null);
 
-      await request(app)
+      await request(server)
         .post('/test/invalid-auth')
         .send({ message: 'Invalid auth test' })
         .expect(401);

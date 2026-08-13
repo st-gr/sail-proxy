@@ -41,7 +41,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
   let app: express.Application;
   let server: any;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // Set up a test Express app that simulates all providers
     app = express();
     app.use(express.json());
@@ -215,7 +215,11 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       });
     });
 
-    server = app.listen(0);
+    // Awaited: a request issued before the socket is listening is the same
+    // race this change exists to remove. The server was already created
+    // here but every request below still went to `app`, so it was never
+    // actually used.
+    await new Promise<void>((resolve) => { server = app.listen(0, () => resolve()); });
   });
 
   afterAll(() => {
@@ -239,7 +243,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null); // Use memory mode
 
       // Test Anthropic
-      await request(app)
+      await request(server)
         .post('/anthropic/v1/messages')
         .send({
           model: 'claude-3-5-sonnet',
@@ -248,7 +252,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
         .expect(200);
 
       // Test AWS Bedrock
-      await request(app)
+      await request(server)
         .post('/aws-bedrock/model/anthropic.claude-3-5-sonnet-v2/invoke')
         .send({
           messages: [{ role: 'user', content: 'Hello' }]
@@ -256,7 +260,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
         .expect(200);
 
       // Test OpenAI
-      await request(app)
+      await request(server)
         .post('/openai/v1/chat/completions')
         .send({
           model: 'gpt-4o',
@@ -265,7 +269,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
         .expect(200);
 
       // Test OpenRouter
-      await request(app)
+      await request(server)
         .post('/openrouter/v1/chat/completions')
         .send({
           model: 'anthropic/claude-3-5-sonnet',
@@ -334,7 +338,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       // Test Anthropic error
-      await request(app)
+      await request(server)
         .post('/anthropic/v1/error')
         .send({
           model: 'claude-3-5-sonnet',
@@ -343,7 +347,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
         .expect(400);
 
       // Test AWS Bedrock error
-      await request(app)
+      await request(server)
         .post('/aws-bedrock/model/test-model/error')
         .send({
           messages: [{ role: 'user', content: 'Error test' }]
@@ -376,7 +380,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       // Test with API key auth (Anthropic)
-      await request(app)
+      await request(server)
         .post('/anthropic/v1/messages')
         .send({
           model: 'claude-3-5-sonnet',
@@ -384,7 +388,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
         });
 
       // Test with AWS credential auth (Bedrock)
-      await request(app)
+      await request(server)
         .post('/aws-bedrock/model/test-model/invoke')
         .send({
           messages: [{ role: 'user', content: 'Auth test' }]
@@ -407,11 +411,11 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       const requests = [
-        request(app).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: '1' }] }),
-        request(app).post('/aws-bedrock/model/model1/invoke').send({ messages: [{ role: 'user', content: '2' }] }),
-        request(app).post('/openai/v1/chat/completions').send({ model: 'gpt-4o', messages: [{ role: 'user', content: '3' }] }),
-        request(app).post('/openrouter/v1/chat/completions').send({ model: 'openai/gpt-4o', messages: [{ role: 'user', content: '4' }] }),
-        request(app).post('/anthropic/v1/messages').send({ model: 'claude-3-5-haiku', messages: [{ role: 'user', content: '5' }] })
+        request(server).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: '1' }] }),
+        request(server).post('/aws-bedrock/model/model1/invoke').send({ messages: [{ role: 'user', content: '2' }] }),
+        request(server).post('/openai/v1/chat/completions').send({ model: 'gpt-4o', messages: [{ role: 'user', content: '3' }] }),
+        request(server).post('/openrouter/v1/chat/completions').send({ model: 'openai/gpt-4o', messages: [{ role: 'user', content: '4' }] }),
+        request(server).post('/anthropic/v1/messages').send({ model: 'claude-3-5-haiku', messages: [{ role: 'user', content: '5' }] })
       ];
 
       const responses = await Promise.all(requests);
@@ -442,11 +446,11 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       // Test different token counts per provider
-      await request(app)
+      await request(server)
         .post('/anthropic/v1/messages')
         .send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'Cost test' }] });
 
-      await request(app)
+      await request(server)
         .post('/openai/v1/chat/completions')
         .send({ model: 'gpt-4o', messages: [{ role: 'user', content: 'Cost test' }] });
 
@@ -474,9 +478,9 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       usageEmitter.setValkeyClient(null);
 
       // Generate events from multiple providers
-      await request(app).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'test' }] });
-      await request(app).post('/openai/v1/chat/completions').send({ model: 'gpt-4o', messages: [{ role: 'user', content: 'test' }] });
-      await request(app).post('/aws-bedrock/model/test-model/invoke').send({ messages: [{ role: 'user', content: 'test' }] });
+      await request(server).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'test' }] });
+      await request(server).post('/openai/v1/chat/completions').send({ model: 'gpt-4o', messages: [{ role: 'user', content: 'test' }] });
+      await request(server).post('/aws-bedrock/model/test-model/invoke').send({ messages: [{ role: 'user', content: 'test' }] });
 
       // Verify events are in memory queue
       expect(usageEmitter.getQueueSize()).toBe(3);
@@ -505,7 +509,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       // @ts-ignore - Jest mock typing issues
       mockAdminServiceClient.callAdminAction.mockRejectedValue(new Error('Admin service down'));
 
-      await request(app).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'test' }] });
+      await request(server).post('/anthropic/v1/messages').send({ model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'test' }] });
 
       // Should not throw
       await expect(usageEmitter.flushToAdminService()).resolves.toBeUndefined();
@@ -529,7 +533,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
       const requests: Promise<any>[] = [];
       for (let i = 0; i < 25; i++) {
         const provider = providers[i % providers.length];
-        requests.push(request(app).post(provider.path).send(provider.payload));
+        requests.push(request(server).post(provider.path).send(provider.payload));
       }
 
       const startTime = Date.now();
@@ -574,7 +578,7 @@ describe('Multi-Provider Usage Tracking Integration Tests', () => {
           ? { messages: [{ role: 'user', content: 'test' }] }
           : { model: 'test-model', messages: [{ role: 'user', content: 'test' }] };
         
-        return request(app).post(testCase.path).send(payload);
+        return request(server).post(testCase.path).send(payload);
       });
 
       await Promise.all(requests);

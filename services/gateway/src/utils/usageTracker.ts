@@ -138,7 +138,8 @@ export async function emitUsageEvent(
       cacheReadInputTokens: metrics.cacheReadInputTokens,
       responseTime,
       statusCode,
-      endpoint
+      endpoint,
+      usageEstimated: metrics.usageEstimated
     };
 
     // Add comprehensive logging before emission
