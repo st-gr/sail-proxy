@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'fs';
  * Get the configuration directory path based on the platform
  */
 export function getConfigDir(): string {
+  if (process.env.SAIL_PROXY_CONFIG_DIR) return process.env.SAIL_PROXY_CONFIG_DIR;
   if (process.platform === 'win32') {
     // Windows: %APPDATA%/sail-proxy
     return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'sail-proxy');

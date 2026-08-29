@@ -284,8 +284,10 @@ describe('Gateway Startup Behavior', () => {
       const testConfigPath = path.join(__dirname, '../../api_config.json');
       const testConfig = {
         api_config: {
-          openai: {
-            substitute_models: [{ from: "test-model", to: "real-model" }]
+          providers: {
+            openai: {
+              substitute_models: [{ from: "test-model", to: "real-model" }]
+            }
           }
         }
       };

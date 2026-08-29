@@ -17,7 +17,7 @@ auth:basic {
 
 body:json {
   {
-    "configData": "{\"api_config\":{\"timeouts\":{\"default\":600000,\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INFO\",\"log_folder_path\":\"./logs\",\"payload_logging_enabled\":false,\"components\":{\"ConfigService\":\"DEBUG\"}},\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\",\"description\":\"Test substitution\"}]},\"openrouter\":{\"default_pricing\":{\"completion\":\"0.001\",\"image\":\"0.01\",\"prompt\":\"0.0005\"},\"model_mappings\":[{\"default_context_length\":128000,\"id_prefix\":\"openrouter/\",\"provider\":\"openrouter\",\"max_tokens\":4096}]},\"rate_limit_handling\":{\"enabled\":true,\"default_delay_seconds\":1,\"backoff_multiplier\":2,\"max_delay_seconds\":60}}}"
+    "configData": "{\"api_config\":{\"providers\":{\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\",\"description\":\"Test substitution\"}]},\"openrouter\":{\"default_pricing\":{\"completion\":\"0.001\",\"image\":\"0.01\",\"prompt\":\"0.0005\"},\"model_mappings\":[{\"default_context_length\":128000,\"id_prefix\":\"openrouter/\",\"provider\":\"openrouter\",\"max_tokens\":4096}]}},\"platform\":{\"timeouts\":{\"default\":600000,\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INFO\",\"log_folder_path\":\"./logs\",\"payload_logging_enabled\":false,\"components\":{\"ConfigService\":\"DEBUG\"}},\"rate_limit_handling\":{\"enabled\":true,\"default_delay_seconds\":1,\"backoff_multiplier\":2,\"max_delay_seconds\":60}}}}"
   }
 }
 

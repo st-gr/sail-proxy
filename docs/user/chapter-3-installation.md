@@ -380,7 +380,7 @@ node cli-tools/kyma-db-manager.js reset \
 > the *embeddings* — search keeps working — but the original bytes are gone, and
 > `GET /v1/files/{id}/content` will fail for every file in the backup. Use it for
 > routine snapshots, not as your only copy. It is only meaningful when
-> `file_search.blob_storage.backend` is `"db"`; with the `s3` backend the bytes
+> `capabilities.file_search.blob_storage.backend` is `"db"`; with the `s3` backend the bytes
 > were never in Postgres to begin with.
 
 **A restore creates the `vector` extension for you.** Before streaming the dump,

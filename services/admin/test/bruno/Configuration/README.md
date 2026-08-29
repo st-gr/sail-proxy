@@ -86,25 +86,29 @@ The tests use a standard configuration structure:
 ```json
 {
   "api_config": {
-    "timeouts": {
-      "default": 120000,
-      "streaming": 300000
+    "providers": {
+      "anthropic": {
+        "substitute_models": [
+          {
+            "from": "claude-3-5-haiku-20241022",
+            "to": "anthropic--claude-3-haiku--deployed"
+          }
+        ]
+      },
+      "openai": {
+        "substitute_models": [
+          {
+            "from": "GPT-4",
+            "to": "o1"
+          }
+        ]
+      }
     },
-    "anthropic": {
-      "substitute_models": [
-        {
-          "from": "claude-3-5-haiku-20241022",
-          "to": "anthropic--claude-3-haiku--deployed"
-        }
-      ]
-    },
-    "openai": {
-      "substitute_models": [
-        {
-          "from": "GPT-4",
-          "to": "o1"
-        }
-      ]
+    "platform": {
+      "timeouts": {
+        "default": 120000,
+        "streaming": 300000
+      }
     }
   }
 }

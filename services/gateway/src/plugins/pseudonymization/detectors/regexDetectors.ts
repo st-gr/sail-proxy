@@ -7,11 +7,31 @@
  */
 
 import { EntityMatch, EntityConfig } from '../types';
+import { OPT_IN_ENTITY_TYPES } from '../entityToggles';
+import { hasTriggerWord } from './technicalContext';
+import { DETECTOR_CONFIDENCE } from './confidenceScores';
+
+/**
+ * Trigger words for the rules anchored through `DetectorDef.anchor`. Module-level
+ * constants, not inline literals: hasTriggerWord caches its compiled regex per array
+ * identity, so a fresh literal on every call would recompile per match.
+ */
+const NATIONAL_ID_TRIGGERS = [
+  'national insurance', 'insurance number', 'nino', 'ni number', 'ni',
+  'national id', 'identification', 'identity',
+] as const;
 
 interface DetectorDef {
   type: string;
   pattern: RegExp;
   validate?: (match: string) => boolean;
+  /**
+   * Trigger words that must appear within 100 characters BEFORE the match, the same
+   * bargain the routing-number and DEA rules make inside their patterns. Used for rules
+   * whose trigger cannot live in the pattern itself — a purely structural pattern has no
+   * label to capture a value from, so the anchor has to be checked separately.
+   */
+  anchor?: readonly string[];
   // When true, the entity is the first defined CAPTURE GROUP (context-anchored /
   // value-extracting patterns like `token: <value>` or `passport number: <value>`).
   // When absent, the entity is the WHOLE match — required for structural detectors
@@ -19,6 +39,22 @@ interface DetectorDef {
   // the value: extracting a sub-group there would feed e.g. an area code to the
   // validator and drop the match entirely.
   captureValue?: boolean;
+}
+
+/**
+ * Loopback / private / link-local hosts. Extracted from isMaskableUrl so URL masking
+ * and IP masking share ONE definition — two copies of this list would drift, and the
+ * consequence of drift is masking a developer's 127.0.0.1 into an unmaskable token.
+ */
+function isPrivateOrLocalHost(host: string): boolean {
+  if (host === '' || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return true;
+  if (host === '::1' || host.startsWith('127.') || host.startsWith('0.')) return true;
+  if (host.startsWith('10.') || host.startsWith('192.168.')) return true;
+  const m172 = host.match(/^172\.(\d{1,3})\./);
+  if (m172) { const o = Number(m172[1]); if (o >= 16 && o <= 31) return true; }
+  if (host.startsWith('169.254.')) return true;
+  if (host.toLowerCase().startsWith('fe80:')) return true;
+  return false;
 }
 
 /**
@@ -50,14 +86,7 @@ function isMaskableUrl(fullMatch: string): boolean {
 
   const host = authority.replace(/:\d*$/, '').replace(/^\[|\]$/g, '');
 
-  if (host === '' || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
-  if (host === '::1' || host.startsWith('127.') || host.startsWith('0.')) return false;
-  if (host.startsWith('10.') || host.startsWith('192.168.')) return false;
-  // 172.16.0.0 – 172.31.255.255
-  const m172 = host.match(/^172\.(\d{1,3})\./);
-  if (m172) { const o = Number(m172[1]); if (o >= 16 && o <= 31) return false; }
-  // 169.254.0.0/16 link-local
-  if (host.startsWith('169.254.')) return false;
+  if (isPrivateOrLocalHost(host)) return false;
   return true;
 }
 
@@ -99,6 +128,27 @@ function ibanCheck(iban: string): boolean {
     remainder = (remainder * 10 + parseInt(numStr[i])) % 97;
   }
   return remainder === 1;
+}
+
+/**
+ * ABA routing-number checksum. Weights 3-7-1 repeating, sum mod 10 == 0.
+ * Verified against 021000021 and 011401533 (valid) and 123456789 (invalid).
+ */
+function abaCheck(digits: string): boolean {
+  if (!/^\d{9}$/.test(digits)) return false;
+  const d = digits.split('').map(Number);
+  return (3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8])) % 10 === 0;
+}
+
+/**
+ * DEA registration checksum: (d1+d3+d5) + 2*(d2+d4+d6), last digit equals the
+ * 7th digit. Verified against AB1234563 (valid) and AB1234567 (invalid).
+ */
+function deaCheck(value: string): boolean {
+  const m = value.match(/^[A-Za-z]{2}(\d{7})$/);
+  if (!m) return false;
+  const d = m[1].split('').map(Number);
+  return ((d[0] + d[2] + d[4]) + 2 * (d[1] + d[3] + d[5])) % 10 === d[6];
 }
 
 // Phone number validation: 7-15 digits AND a real phone SIGNAL (a leading '+',
@@ -151,6 +201,35 @@ const DETECTORS: DetectorDef[] = [
     pattern: /\b\d{3}\s\d{3}\s\d{3}\b/g,
   },
   {
+    // ITIN: always begins with 9; group digits fall in the IRS-assigned ranges
+    // 50-65, 70-88, 90-92, 94-99. The profile-ssn pattern above already excludes
+    // the whole 9xx space, so the two can never claim the same value.
+    type: 'profile-itin',
+    pattern: /\b9\d{2}-(?:5\d|6[0-5]|7\d|8[0-8]|9[0-24-9])-(?!0000)\d{4}\b/g,
+  },
+  {
+    // Bare 9-digit runs are far too common to mask on a checksum alone — roughly
+    // one in ten passes by chance, which is how order numbers become permanent
+    // unmaskable placeholders (see f236892). Require a context word; the value is
+    // the capture group.
+    type: 'profile-bank-account',
+    pattern: /\b(?:routing|aba|rtn)(?:\s+(?:number|no\.?|#))?\s*[:=]?\s*(\d{9})\b/gi,
+    captureValue: true,
+    validate: abaCheck,
+  },
+  {
+    // The DEA checksum alone is not selective enough: ~8.6% of arbitrary
+    // 2-letter+7-digit strings pass it (order numbers, SKUs, short commit hashes
+    // included — see f236892). Require a nearby DEA context word, the same way
+    // the routing-number detector above is anchored; the value is the capture
+    // group. State medical licences have no shared format across 50 states, so
+    // this stays scoped to DEA numbers rather than trying to cover them too.
+    type: 'profile-medical-license',
+    pattern: /\bDEA\b(?:\s*(?:number|no\.?|#))?\s*[:=]?\s*([A-Za-z]{2}\d{7})\b/gi,
+    captureValue: true,
+    validate: deaCheck,
+  },
+  {
     type: 'profile-credit-card-number',
     pattern: /\b(?:\d[\s\-]?){13,19}\b/g,
     validate: (match: string) => {
@@ -169,8 +248,12 @@ const DETECTORS: DetectorDef[] = [
   },
   {
     type: 'profile-nationalid',
-    // UK National Insurance
+    // UK National Insurance. Two letters, six digits, one of A-D — a shape that material
+    // numbers, part numbers and SAP object keys hit by accident (the letter classes are
+    // wide and nothing is checksummed), so it masks only where the text says what it is.
+    // The 18-character CURP below needs no anchor: its layout IS the validation.
     pattern: /\b[A-CEGHJ-PR-TW-Z]{2}\d{6}[A-D]\b/g,
+    anchor: NATIONAL_ID_TRIGGERS,
   },
   {
     type: 'profile-nationalid',
@@ -179,20 +262,26 @@ const DETECTORS: DetectorDef[] = [
   },
   {
     type: 'profile-nationalid',
-    // Generic context-anchored
-    pattern: /(?:national\s*id|identification\s*(?:number|no\.?))\s*[:=]?\s*([A-Z0-9\-]{6,20})/gi,
+    // Generic context-anchored. The leading \b keeps the label a whole word: without it
+    // "international identification" contains "national id".
+    pattern: /\b(?:national\s*id|identification\s*(?:number|no\.?))\s*[:=]?\s*([A-Z0-9\-]{6,20})/gi,
     captureValue: true,
   },
   {
     type: 'profile-passport',
     // Context-anchored
-    pattern: /(?:passport\s*(?:number|no\.?|#))\s*[:=]?\s*([A-Z]{0,2}\d{6,9})/gi,
+    pattern: /\b(?:passport\s*(?:number|no\.?|#))\s*[:=]?\s*([A-Z]{0,2}\d{6,9})/gi,
     captureValue: true,
   },
   {
     type: 'profile-driverlicense',
-    // Context-anchored generic
-    pattern: /(?:driver'?s?\s*licen[sc]e|DL)\s*(?:number|no\.?|#)?\s*[:=]?\s*([A-Z0-9\-]{5,15})/gi,
+    // Context-anchored generic. The word boundaries around the trigger are what make the
+    // anchor real: "DL" without them matched INSIDE ordinary words under the /i flag, and
+    // the following [A-Z0-9-]{5,15} then swallowed the rest of the word — "middleware"
+    // masked "eware", "RSADLDNAME" masked "DNAME" (both measured). Any prose containing
+    // "dl" produced a licence placeholder, which is the likeliest source of the 83
+    // DRIVERS_LICENSE masks in the 2026-08-25 incident.
+    pattern: /\b(?:driver'?s?\s*licen[sc]e|DL)\b\s*(?:number|no\.?|#)?\s*[:=]?\s*([A-Z0-9\-]{5,15})/gi,
     captureValue: true,
   },
   {
@@ -242,7 +331,53 @@ const DETECTORS: DetectorDef[] = [
     pattern: /(?:pronouns?|goes\s+by)\s*[:=]?\s*((?:he|she|they|ze|xe|ey|fae)(?:\s*\/\s*(?:him|her|them|zir|xem|em|faer))+)/gi,
     captureValue: true,
   },
+  {
+    type: 'profile-ip-address',
+    pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
+    validate: (v: string) =>
+      v.split('.').every(o => Number(o) <= 255) && !isPrivateOrLocalHost(v),
+  },
+  {
+    // IPv6, including compressed `::` forms. Built as an explicit alternation over the
+    // legal group/elision layouts rather than a loose `(?:g:){1,7}` — a loose pattern
+    // has two failure modes, both verified before this plan was written: it splits
+    // `2001:db8::8a2e:370:7334` into TWO matches (one address masked as two unmaskable
+    // fragments), and it matches an ordinary time like `12:30`. The `(?<![:.\w])` /
+    // `(?![:.\w])` guards stop it biting into a longer token or an IPv4 dotted quad.
+    type: 'profile-ip-address',
+    pattern: new RegExp([
+      '(?<![:.\\w])(?:',
+      '(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}',
+      '|(?:[0-9a-f]{1,4}:){1,7}:',
+      '|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}',
+      '|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}',
+      '|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}',
+      '|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}',
+      '|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}',
+      '|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}',
+      '|:(?::[0-9a-f]{1,4}){1,7}',
+      '|::',
+      ')(?![:.\\w])',
+    ].join(''), 'gi'),
+    validate: (v: string) => v.includes(':') && !isPrivateOrLocalHost(v.toLowerCase()),
+  },
 ];
+
+/**
+ * Base confidence for one tier-1 rule, derived from the rule itself rather than restated
+ * per detector: a rule that needs a trigger word to fire (`anchor`, or an in-pattern
+ * trigger with `captureValue`) is a CONTEXT-ANCHORED rule and scores 0.85; anything else
+ * carries its evidence in the pattern — a checksum or a format exact enough to stand
+ * alone — and scores 0.95.
+ *
+ * Deriving it means a new detector cannot forget to score itself, and cannot claim more
+ * confidence than its own shape earns.
+ */
+function baseConfidence(detector: DetectorDef): number {
+  return detector.anchor || detector.captureValue
+    ? DETECTOR_CONFIDENCE.anchoredRegex
+    : DETECTOR_CONFIDENCE.validatedRegex;
+}
 
 /**
  * Run all regex detectors on the given text
@@ -256,7 +391,11 @@ export function detectRegexEntities(text: string, enabledEntities: EntityConfig[
   const matches: EntityMatch[] = [];
 
   for (const detector of DETECTORS) {
-    if (!enabledTypes.has(detector.type) && !sensitiveDataEnabled) {
+    // `profile-sensitive-data` switches on every detector as a convenience blanket.
+    // Opt-in categories must be excluded: they are off by default deliberately, and a
+    // blanket that silently enabled them would defeat that choice.
+    const blanketApplies = sensitiveDataEnabled && !OPT_IN_ENTITY_TYPES.includes(detector.type);
+    if (!enabledTypes.has(detector.type) && !blanketApplies) {
       continue;
     }
 
@@ -323,6 +462,13 @@ export function detectRegexEntities(text: string, enabledEntities: EntityConfig[
         }
       }
 
+      // Context anchor: a structurally weak pattern masks only when the text nearby says
+      // what the value is. Checked against the ENTITY's start, so the 100-character window
+      // is measured from the value rather than from a label the pattern already consumed.
+      if (detector.anchor && !hasTriggerWord(text, start, detector.anchor)) {
+        continue;
+      }
+
       // Run post-detection validation if defined
       if (detector.validate && !detector.validate(entityText)) {
         continue;
@@ -334,6 +480,7 @@ export function detectRegexEntities(text: string, enabledEntities: EntityConfig[
         start,
         end,
         priority: 1, // Tier 1: structural regex
+        confidence: baseConfidence(detector),
       });
     }
   }

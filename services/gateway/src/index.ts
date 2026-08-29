@@ -5,6 +5,8 @@ import morgan from 'morgan';
 import { ConfigLoader } from '../../../libs/config';
 import { getDefaultLogger } from '../../../libs/logger';
 import type { RequestContext } from '../../../libs/types';
+import { getClientIp } from './utils/clientIp';
+import { getTrustForwardedFor } from './services/configService';
 
 const logger = getDefaultLogger();
 
@@ -35,6 +37,11 @@ const config = configLoader.loadConfig();
 
 const app = express();
 
+// Number of proxies in front of this service, not `true`. `true` trusts the entire
+// forwarded chain, which is itself spoofable. The value is a deployment property —
+// see docs; verify it with the check below rather than assuming.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
+
 // Basic middleware setup
 app.use(bodyParser.json({ 
   limit: config.maxRequestSize,
@@ -64,7 +71,7 @@ app.use((req: express.Request, _res: express.Response, next: express.NextFunctio
     method: req.method,
     path: req.path,
     userAgent: req.get('User-Agent'),
-    clientIp: req.ip || req.connection.remoteAddress,
+    clientIp: getClientIp(req, getTrustForwardedFor()),
     apiKey: req.get('x-api-key'),
     service: 'gateway'
   };
@@ -360,6 +367,21 @@ async function initializeGatewayService(): Promise<void> {
     logger.info('Gateway Service', 'Non-standalone mode but no Valkey available - will use HTTP fallback for configuration');
   } else {
     logger.info('Gateway Service', 'Running in standalone mode - using local configuration');
+
+    // Refuse to start on a pre-restructure config file. In standalone there is
+    // no Admin Service and no UI to notice through: an old-shape file parses,
+    // caches, and silently disengages observability.siem,
+    // observability.pseudonymization and platform.security while the operator
+    // believes they are on. Failing here - before the listener binds - is the
+    // only place that cannot be missed.
+    const legacyShape = configService.getConfigFileLegacyShapeError();
+    if (legacyShape) {
+      logger.error('Gateway Service', legacyShape.message);
+      // Also on stderr directly: logger transports can be buffered, and this
+      // message is the entire value of exiting rather than serving.
+      console.error(`\nFATAL: ${legacyShape.message}\n`);
+      process.exit(1);
+    }
   }
   
   // Initialize systems after configuration is ready

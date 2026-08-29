@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Admin Service Custom Actions Integration Tests', () => {
+describeLive('Admin Service Custom Actions Integration Tests', () => {
   let client: AxiosInstance;
   const baseURL = getAdminServiceUrl();
   const createdKeyIds: string[] = [];

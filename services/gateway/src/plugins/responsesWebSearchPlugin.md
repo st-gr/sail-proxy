@@ -109,36 +109,38 @@ A stalled continuation degrades to a truncated response rather than a hung reque
 ```json
 {
   "api_config": {
-    "defaultHooks": {
-      "openai": {
-        "responses": [
-          {
-            "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
+    "hooks": {
+      "defaults": {
+        "openai": {
+          "responses": [
+            {
+              "request": {
+                "callback": { "id": "pseudonymizationPlugin" },
+                "match": ["header:contentTypeJson"]
+              }
+            },
+            {
+              "request": {
+                "callback": { "id": "responsesWebSearchPlugin" },
+                "match": ["tools:hasWebSearch"]
+              }
             }
-          },
-          {
-            "request": {
-              "callback": { "id": "responsesWebSearchPlugin" },
-              "match": ["tools:hasWebSearch"]
+          ],
+          "responses-stream": [
+            {
+              "request": {
+                "callback": { "id": "pseudonymizationPlugin" },
+                "match": ["header:contentTypeJson"]
+              }
+            },
+            {
+              "request": {
+                "callback": { "id": "responsesWebSearchPlugin" },
+                "match": ["tools:hasWebSearch"]
+              }
             }
-          }
-        ],
-        "responses-stream": [
-          {
-            "request": {
-              "callback": { "id": "pseudonymizationPlugin" },
-              "match": ["header:contentTypeJson"]
-            }
-          },
-          {
-            "request": {
-              "callback": { "id": "responsesWebSearchPlugin" },
-              "match": ["tools:hasWebSearch"]
-            }
-          }
-        ]
+          ]
+        }
       }
     }
   }
@@ -156,17 +158,19 @@ A stalled continuation degrades to a truncated response rather than a hung reque
 
 They are meant to disagree. Normalising them to match reintroduces one of two bugs — a sub-agent call emitted during a continuation round reaching the client without its routing `namespace`, on whichever path you broke. `test/responses-tool-plugin-layering.test.ts` fails by name if you do. The full reasoning is in `responsesNamespaceToolsPlugin.md`.
 
-The `tools:hasWebSearch` hook definition already exists under `api_config.hookDefinitions` (shared with `webSearchPlugin`) and is reused as-is:
+The `tools:hasWebSearch` hook definition already exists under `api_config.hooks.definitions` (shared with `webSearchPlugin`) and is reused as-is:
 
 ```json
 {
-  "hookDefinitions": {
-    "tools:hasWebSearch": {
-      "desc": "Match requests containing web_search tool",
-      "type": "json-path-regex",
-      "path": "$.tools",
-      "regex": "web_search",
-      "flags": "i"
+  "hooks": {
+    "definitions": {
+      "tools:hasWebSearch": {
+        "desc": "Match requests containing web_search tool",
+        "type": "json-path-regex",
+        "path": "$.tools",
+        "regex": "web_search",
+        "flags": "i"
+      }
     }
   }
 }

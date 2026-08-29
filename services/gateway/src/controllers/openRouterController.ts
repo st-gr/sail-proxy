@@ -23,15 +23,6 @@ interface OpenRouterRequest extends Request {
   openRouterRequest?: boolean;
 }
 
-interface ModelMapping {
-  provider: string;
-  max_tokens?: number;
-}
-
-interface OpenRouterConfig {
-  model_mappings?: ModelMapping[];
-}
-
 /**
  * Handle chat completions by forwarding to OpenAI controller
  * The OpenRouter API is compatible with the OpenAI API, so we can reuse the OpenAI controller
@@ -72,7 +63,7 @@ export const handleChatCompletions = async (req: OpenRouterRequest, res: Respons
     
     // If max_tokens is not provided, check for a default in the config for the provider
     if (req.body.max_tokens === undefined) {
-      const openRouterConfig = configService.get('openrouter') as OpenRouterConfig;
+      const openRouterConfig = configService.get('openrouter');
       if (openRouterConfig && openRouterConfig.model_mappings) {
         const providerMapping = openRouterConfig.model_mappings.find(
           m => provider && m.provider.toLowerCase() === provider.toLowerCase()

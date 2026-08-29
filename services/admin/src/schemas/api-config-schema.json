@@ -11,69 +11,754 @@
     "api_config": {
       "type": "object",
       "properties": {
-        "timeouts": {
-          "type": "object",
-          "properties": {
-            "default": {
-              "type": "integer",
-              "minimum": 1000,
-              "maximum": 3600000,
-              "description": "Default timeout in milliseconds"
+        "providers": {
+          "$ref": "#/$defs/providersGroup"
+        },
+        "models": {
+          "$ref": "#/$defs/modelsGroup"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilitiesGroup"
+        },
+        "hooks": {
+          "$ref": "#/$defs/hooksGroup"
+        },
+        "platform": {
+          "$ref": "#/$defs/platformGroup"
+        },
+        "observability": {
+          "$ref": "#/$defs/observabilityGroup"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "providersGroup": {
+      "type": "object",
+      "description": "Settings for each upstream provider, keyed by its wire name in the route (so `aws-bedrock` keeps its hyphen). Only anthropic, aws-bedrock, openai, openrouter and perplexity are read today; any other key is accepted and validated but stays inert until the gateway learns it. Each named provider carries exactly the settings its own request path reads, and a setting under a provider whose code never reads it is rejected here. Per-provider keys: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-3-gateway.md#provider-configuration-keys",
+      "properties": {
+        "anthropic": {
+          "description": "The anthropic provider, served by the gateway's Anthropic request path: the settings every provider carries, plus that path's wire version and its two beta-flag filters.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/providerCommon"
             },
-            "streaming": {
-              "type": "integer",
-              "minimum": 1000,
-              "maximum": 3600000,
-              "description": "Streaming timeout in milliseconds"
+            {
+              "$ref": "#/$defs/anthropicCompatibleProvider"
+            }
+          ],
+          "propertyNames": {
+            "enum": [
+              "emulate_streaming_for_models",
+              "substitute_models",
+              "unsupported_params",
+              "param_renames",
+              "supports_responses_api",
+              "supports_prompt_caching",
+              "anthropic_bedrock_version",
+              "excluded_beta_headers",
+              "supported_beta_headers"
+            ]
+          }
+        },
+        "aws-bedrock": {
+          "description": "The aws-bedrock provider, served by the same Anthropic-shaped request path: the settings every provider carries, plus that path's wire version and its two beta-flag filters - each of which the gateway in fact reads from providers.anthropic, so a value here is accepted and inert.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/providerCommon"
+            },
+            {
+              "$ref": "#/$defs/anthropicCompatibleProvider"
+            }
+          ],
+          "propertyNames": {
+            "enum": [
+              "emulate_streaming_for_models",
+              "substitute_models",
+              "unsupported_params",
+              "param_renames",
+              "supports_responses_api",
+              "supports_prompt_caching",
+              "anthropic_bedrock_version",
+              "excluded_beta_headers",
+              "supported_beta_headers"
+            ]
+          }
+        },
+        "openai": {
+          "description": "The openai provider: the settings every provider carries, plus the Azure api-version appended to a deployed OpenAI model's URL.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/providerCommon"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "openai_deployment_api_version": {
+                  "description": "Azure-OpenAI api-version parameter appended to a deployed OpenAI model's /chat/completions URL. Read only from providers.openai and sent only for that provider, because Perplexity deployments reject the parameter. Written as YYYY-MM-DD, optionally with -preview. Absent means no api-version is appended.",
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}(-preview)?$"
+                }
+              }
+            }
+          ],
+          "propertyNames": {
+            "enum": [
+              "emulate_streaming_for_models",
+              "substitute_models",
+              "unsupported_params",
+              "param_renames",
+              "supports_responses_api",
+              "supports_prompt_caching",
+              "openai_deployment_api_version"
+            ]
+          }
+        },
+        "openrouter": {
+          "description": "The openrouter provider: the settings every provider carries, plus its fallback prices and its per-upstream-provider request defaults.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/providerCommon"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "default_pricing": {
+                  "description": "Fallback OpenRouter prices - completion, image and prompt, each a decimal string. Currently ignored by the gateway; kept so the shipped value validates and stays visible for whatever consumer is added later. Editing it changes no behaviour today.",
+                  "type": "object",
+                  "required": [
+                    "completion",
+                    "image",
+                    "prompt"
+                  ],
+                  "properties": {
+                    "completion": {
+                      "description": "Price for completion tokens, written as a decimal string. Currently ignored by the gateway, like the rest of default_pricing: the OpenRouter-format model list reports fixed prices of its own instead.",
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "image": {
+                      "description": "Price for image input, written as a decimal string. Currently ignored by the gateway, like the rest of default_pricing: the OpenRouter-format model list reports fixed prices of its own instead.",
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "prompt": {
+                      "description": "Price for prompt tokens, written as a decimal string. Currently ignored by the gateway, like the rest of default_pricing: the OpenRouter-format model list reports fixed prices of its own instead.",
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "model_mappings": {
+                  "description": "Per-upstream-provider defaults for OpenRouter requests, whose model ids are written 'provider/model'. The first entry whose provider matches the id's prefix, case-insensitively, supplies max_tokens when the client omits it. That is the only field used: default_context_length and id_prefix are required by this schema but currently ignored by the gateway.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "default_context_length",
+                      "id_prefix",
+                      "provider"
+                    ],
+                    "properties": {
+                      "default_context_length": {
+                        "description": "Required on every entry, but currently ignored by the gateway; kept for compatibility.",
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "id_prefix": {
+                        "description": "Required on every entry, but currently ignored by the gateway; the match is made on provider, not on this.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider": {
+                        "description": "Matched case-insensitively against the part of the client's model id before the slash.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "max_tokens": {
+                        "description": "Applied as the request's max_tokens when the client sends none. Absent leaves the request without one.",
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          ],
+          "propertyNames": {
+            "enum": [
+              "emulate_streaming_for_models",
+              "substitute_models",
+              "unsupported_params",
+              "param_renames",
+              "supports_responses_api",
+              "supports_prompt_caching",
+              "default_pricing",
+              "model_mappings"
+            ]
+          }
+        },
+        "perplexity": {
+          "description": "The perplexity provider: the settings every provider carries, and nothing beyond them - the Perplexity path reads no setting of its own.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/providerCommon"
+            }
+          ],
+          "propertyNames": {
+            "enum": [
+              "emulate_streaming_for_models",
+              "substitute_models",
+              "unsupported_params",
+              "param_renames",
+              "supports_responses_api",
+              "supports_prompt_caching"
+            ]
+          }
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/providerCommon"
+      }
+    },
+    "modelsGroup": {
+      "type": "object",
+      "properties": {
+        "overrides": {
+          "description": "Per-model adjustments merged onto the model list the gateway fetches from SAP AI Core. Each key is a model's internal id, spelled exactly as it appears on the wire.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/modelOverride"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "modelOverride": {
+      "description": "Adjustments for one model, merged onto what SAP AI Core reports for it and keyed above by the model's internal id. The merge is deliberately open: any key not listed below is copied onto the model verbatim and republished in the model list, unvalidated and untyped, rather than ignored. The fields below are the ones the gateway itself acts on.",
+      "type": "object",
+      "properties": {
+        "hooks": {
+          "description": "Hooks for this model, keyed by the request subpath they arm (invoke, invoke-with-response-stream, converse, ...). A subpath listed here REPLACES the endpoint default in hooks.defaults for that subpath rather than merging with it; a subpath not listed falls back to that default. A hook fires only when every rule in its request.match holds, and request.callback.id names the plugin to run.",
+          "type": "object",
+          "patternProperties": {
+            "^[a-zA-Z0-9_/-]+$": {
+              "$ref": "#/$defs/hookEntryArray"
             }
           },
           "additionalProperties": false
         },
-        "logging": {
+        "subpaths_native": {
+          "description": "The subpaths this model serves natively, in the gateway's own spelling (invoke, invoke-with-response-stream, converse, converse-stream). Read as the complete list: while it is present, any subpath missing from it counts as emulated. Absent falls back to invoke plus invoke-with-response-stream. It replaces the model list's own value, is republished on the model entry, and an entry ending in -stream also feeds the streamingSupported rule below.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_/-]+$"
+          }
+        },
+        "subpaths_emulated": {
+          "description": "The subpaths this model reaches through gateway emulation rather than natively. Nothing routes on it - a subpath counts as emulated simply by being absent from subpaths_native - so the list is declarative only: it replaces the model list's own value and is republished on the model entry for clients that inspect it, and nothing more.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_/: -]+$"
+          }
+        },
+        "streamingSupported": {
+          "description": "Whether this model supports streaming responses; camelCase because that is SAP AI Core's own spelling on the model list. For a model that has an overrides entry at all: an explicit true or false here wins; otherwise a subpaths_native entry ending in -stream means true, unless the model list already said false; otherwise a deployment-access model that has an entry but no explicit value is forced to FALSE - so adding an entry for a streaming deployment and omitting this flag switches streaming off. A foundation model keeps its AI-Core value. The result is applied to every version of the model.",
+          "type": "boolean"
+        },
+        "supports_prompt_caching": {
+          "type": "boolean",
+          "description": "Whether this model receives Anthropic prompt-cache breakpoints. Resolution order: this per-model flag, then the provider-level api_config.providers.<provider>.supports_prompt_caching flag, then a default of true for Anthropic-provider models and false for all others. Set false to opt a model out, for example claude-3-haiku; a true on an Anthropic model with no provider-level override changes nothing."
+        },
+        "anthropic_version": {
+          "description": "The anthropic_version the gateway puts into this model's Bedrock invoke request body when the caller supplied none. A body that already carries the field is left alone, and subpaths other than invoke are untouched. The shipped value is bedrock-2023-05-31.",
+          "type": "string",
+          "pattern": "^(bedrock-)?\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "pseudonymization": {
+          "$ref": "#/$defs/pseudonymizationConfig"
+        },
+        "unsupported_params": {
+          "description": "Request parameters this provider or model does not accept. The gateway removes them before forwarding to SAP AI Core, which would otherwise reject the request with 400 \"does not support parameters: [...]\". A per-model list replaces the provider-level list rather than adding to it.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "param_renames": {
+          "description": "Parameter renames applied on the direct-deployment path, for example max_tokens to max_completion_tokens for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map rather than adding to it.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "supports_responses_api": {
+          "description": "Whether this provider or model may be served on /openai/v1/responses. Absent leaves the built-in family rule in place, which admits deployed GPT-5 and later and the o-series.",
+          "type": "boolean"
+        },
+        "cachePricing": {
+          "description": "Prompt-cache prices for this model; camelCase deliberately, a cache_pricing spelling is not read. Both values are decimal cost STRINGS per 1K tokens, never numbers: they are carried through unchanged onto every version's cost list and handed to whatever asks for this model's cache pricing. Absent means this model reports no cache pricing at all.",
           "type": "object",
           "properties": {
-            "components": {
+            "cacheReadInputCostPer1K": {
+              "description": "Cost of reading 1K cached input tokens, as a decimal string - e.g. 0.00020, not 0.0002e0 and not a number.",
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "cacheCreationInputCostPer1K": {
+              "description": "Cost of writing 1K input tokens into the cache, as a decimal string - e.g. 0.00254, not a number.",
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "inject_beta_features": {
+          "description": "Anthropic beta feature flags the gateway adds to this model's Bedrock invoke requests. They are merged with the anthropic-beta header and any anthropic_beta the request body carries, then filtered through supported_beta_headers, excluded_beta_headers and the runtime beta-flag quarantine - so a flag listed here is still dropped if it is not allowed through. An empty list injects nothing.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "contextLength": {
+          "description": "This model's context window in tokens, used only as a fallback: the gateway prefers the latest version's own context length from SAP AI Core and reads this value only when the model list carries none, before falling back to a per-family default. It is reported as context_length, and half of it as max_completion_tokens, in the OpenRouter- and OpenAI-format model lists. 0 is not a usable value.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "capabilitiesGroup": {
+      "type": "object",
+      "properties": {
+        "web_search": {
+          "type": "object",
+          "description": "Hosted web search tool (Perplexity-backed). The one knob here bounds how many searches a single request may run.",
+          "properties": {
+            "max_searches_per_request": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 3,
+              "description": "Cap on hosted web searches one request may perform before the gateway stops continuing the turn. Each search costs a Perplexity call plus a full deployment round trip, so this is a cost control as well as the continuation loop's termination guarantee. A non-integer, zero, negative, or above-10 value falls back to the default of 3 rather than being honoured - the bound must never be configurable away."
+            }
+          },
+          "additionalProperties": false
+        },
+        "file_search": {
+          "type": "object",
+          "description": "OpenAI-compatible document retrieval: /v1/files ingestion, /v1/vector_stores, hybrid search and the hosted file_search tool. Nothing here is required - every field falls back to its own shipped default when absent, so deleting a field is a valid edit rather than an error.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Master switch for the whole feature, default true. It is combined with \"a database is configured\" and \"the migration has run\": false makes every /v1/files and /v1/vector_stores route answer 503 file_search_unavailable, and keeps the ingestion worker and the expiry sweeper from starting. Files and stores already stored are left untouched."
+            },
+            "embedding_model": {
+              "type": "string",
+              "minLength": 1,
+              "default": "text-embedding-3-large",
+              "description": "Embedding model requested from the SAP AI Core orchestration deployment, and recorded on every teacher-log event. Default text-embedding-3-large. Changing it does not re-embed anything already stored, so a store built with another model keeps its old vectors and its recall quality drops silently; recreate the store instead."
+            },
+            "embedding_dimensions": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1536,
+              "description": "Vector width, sent as the embedding model's dimensions parameter and used to create the vector column. Default 1536, and fixed once a store exists: a response vector of any other length is refused, and every store pinned to the old width answers 409 - to a SEARCH as well as to an attach, so it stops answering queries and can never take another file. It stays listable, retrievable and deletable. Changing this on a populated deployment therefore strands its stores rather than migrating them."
+            },
+            "rewrite_query": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether POST /v1/vector_stores/{id}/search rewrites the caller's query through the orchestration deployment before embedding it. Default false. It costs about 1.3s per search and is best-effort - a failed rewrite falls back to the original query and never fails the search. Only that REST path reads this value, a per-request rewrite_query overrides it, and the hosted file_search TOOL always passes false because the model has already turned the user's turn into a query."
+            },
+            "rewrite_query_model": {
+              "type": "string",
+              "minLength": 1,
+              "default": "gpt-5-mini",
+              "description": "Model used for the rewrite call, default gpt-5-mini. Configurable rather than fixed because a model name valid on one SAP AI Core tenant may be rejected by another. Only consulted when rewrite_query is on."
+            },
+            "hybrid": {
               "type": "object",
-              "patternProperties": {
-                "^[a-zA-Z0-9_-]+$": {
-                  "type": "string",
-                  "enum": [
-                    "TRACE",
-                    "DEBUG",
-                    "INFO",
-                    "WARN",
-                    "ERROR",
-                    "FATAL"
-                  ]
+              "description": "Stage 1 recall and the optional stage 2 rerank. Stage 1 runs a vector-similarity ranking and - when lexical_enabled - a full-text ranking, fuses the two with reciprocal rank fusion, and hands the top `candidates` chunks to the reranker.",
+              "properties": {
+                "rrf_k": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 60,
+                  "description": "Reciprocal-rank-fusion constant: each ranking contributes 1/(k + rank) to a chunk's fused score. Default 60. A larger k flattens the gap between neighbouring ranks, so agreement between the two rankings matters more than either one's own top hit; a smaller one lets each ranking's head dominate. Recorded on every teacher-log event, so a change is visible in the labels."
+                },
+                "lexical_enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Whether the full-text ranking runs beside the vector ranking. Default true. False fuses the vector ranking alone, so exact keyword and identifier matches that embeddings miss stop being recalled at all."
+                },
+                "candidates": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 50,
+                  "description": "How many fused chunks stage 1 recalls, default 50. This is the reranker's input size and therefore its per-search cost, and it is also a hard ceiling on the answer: the caller's max_num_results is applied afterwards, so no search can return more chunks than this."
+                },
+                "rerank": {
+                  "type": "object",
+                  "description": "Stage 2: a SAP AI Core-hosted Cohere cross-encoder scores the stage-1 candidates against the query and returns a calibrated relevance score between 0 and 1 - the score that ranking_options.score_threshold filters against.",
+                  "properties": {
+                    "enabled": {
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "enum": [
+                        true,
+                        false,
+                        "auto"
+                      ],
+                      "default": "auto",
+                      "description": "Tri-state, and the three values are not degrees of the same thing. false never reranks: no deployment lookup, no call, and results keep their fused order. \"auto\" (the default) is best-effort - no running reranker deployment, or a failed, timed-out or malformed call, falls back to the fused order rather than failing the search. true DEMANDS stage 2: both \"no deployment found\" and \"the call failed\" fail the search instead, so an operator who asked for reranking is never quietly served unreranked results."
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "default": "cohere-reranker",
+                      "description": "The deployment's model-name string for the rerank call. Default \"cohere-reranker\" - verified live against the tenant, and NOT SAP's published \"cohere-reranker-35\". This is not a provider choice: the gateway speaks exactly one rerank protocol and only the model name varies, which is why the teacher log always records the provider as \"cohere\"."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
             },
-            "defaultLevel": {
-              "type": "string",
-              "enum": [
-                "TRACE",
-                "DEBUG",
-                "INFO",
-                "WARN",
-                "ERROR",
-                "FATAL"
-              ],
-              "description": "Default log level"
+            "chunking": {
+              "type": "object",
+              "description": "Chunk-size defaults. Currently ignored by the gateway: what actually cuts a document is the vector store's own chunking_strategy, which resolves from its own constants - the same 800/400, by coincidence. Editing these two fields changes no chunk boundary; set chunking_strategy on the store instead.",
+              "properties": {
+                "max_chunk_size_tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 800,
+                  "description": "Target chunk size in ESTIMATED tokens - whitespace word count times 1.3, not a real tokenizer. Default 800, which is also the size an \"auto\" store uses; see this section's note for why editing this value does not reach it."
+                },
+                "chunk_overlap_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 400,
+                  "description": "How many estimated tokens each chunk repeats from its predecessor, so a passage split across a boundary is still recalled whole. Default 400. A per-store static strategy is held to between 0 and half of max_chunk_size_tokens; this field is not fed into that path, so no such check applies here."
+                }
+              },
+              "additionalProperties": false
             },
-            "log_folder_path": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Path to log folder"
+            "limits": {
+              "type": "object",
+              "description": "Hard ceilings on what may be uploaded, extracted and attached. Each is enforced where it applies rather than by this schema, so these values are read live and take effect without a restart.",
+              "properties": {
+                "max_file_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 33554432,
+                  "description": "Largest upload POST /v1/files accepts, default 33554432 bytes (32 MiB). Enforced WHILE the upload is read rather than after it, so an oversized body is cut off instead of being buffered into memory, and the caller gets a clean 4xx naming the limit."
+                },
+                "max_tokens_per_file": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 5000000,
+                  "description": "Largest extracted document, in estimated tokens; default 5000000. A file over the limit fails PERMANENTLY rather than being retried. Lowering this does not re-check files that are already ingested."
+                },
+                "max_files_per_store": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 10000,
+                  "description": "Ceiling on files attached to one vector store, default 10000. It caps the file_ids accepted when a store is created - alongside a hard limit of 500 file ids per create call - and refuses a further attach once the store already holds this many."
+                }
+              },
+              "additionalProperties": false
             },
-            "payload_logging_enabled": {
-              "type": "boolean",
-              "description": "Enable payload logging"
+            "ingestion": {
+              "type": "object",
+              "description": "The background worker that extracts, chunks, embeds and stores an attached file. It claims work from the same file_search database pool the search path uses, so these knobs trade ingestion throughput against search latency.",
+              "properties": {
+                "concurrency": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 4,
+                  "description": "How many claim-and-process loops the worker starts, default 4. Each one holds a connection from the 10-connection file_search pool while it works. Read once at startup, so a change needs a restart. Unrelated to the embedder's own fan-out."
+                },
+                "extract_timeout_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 60000,
+                  "description": "Time limit for extracting the text of one file, default 60000 ms. A timeout fails that file rather than the batch."
+                },
+                "max_retries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 3,
+                  "description": "Attempts per file before it is failed; default 3. An integer of 1 or more is used as written. 0 is accepted but read as 1, with a warning: it does NOT mean \"do not retry\" - at 0 every freshly attached file is reaped as retry-exhausted before it can run, and the batch still reports \"completed\" over an empty store. Anything else - negative, fractional, non-numeric - counts as unset and falls back to 3, also with a warning."
+                }
+              },
+              "additionalProperties": false
+            },
+            "blob_storage": {
+              "type": "object",
+              "description": "Where the raw uploaded bytes live. Content is addressed by its sha256 hash and reference-counted, so two uploads of identical content store one copy. The setting is read fresh on every access, so a change takes effect without a restart.",
+              "properties": {
+                "backend": {
+                  "type": "string",
+                  "enum": [
+                    "db",
+                    "local",
+                    "s3"
+                  ],
+                  "default": "db",
+                  "description": "Only \"db\", the default, is production-ready. Choosing \"local\" or \"s3\" does not switch storage: both raise an error that every caller surfaces as 503 file_search_unavailable, so uploads, attaches and downloads stop outright. Those two code paths exist and are unit-tested but have known unresolved defects - a physical-delete race that can permanently lose content on a concurrent re-upload, silent orphaning of existing blobs on a backend switch, and no request timeout on an in-transaction network call."
+                },
+                "local_path": {
+                  "type": "string",
+                  "default": "/var/lib/sail-proxy/blobs",
+                  "description": "Filesystem root for the \"local\" backend - one directory per two-character sha256 prefix beneath it. Default /var/lib/sail-proxy/blobs. Read only when backend is \"local\", which the gateway currently refuses, so this value has no effect today."
+                },
+                "s3": {
+                  "type": "object",
+                  "description": "Bucket coordinates for the \"s3\" backend; credentials are not configured here, the process's own AWS credentials are used. Read only when backend is \"s3\", which the gateway currently refuses, so every field below has no effect today.",
+                  "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Bucket name. It forms the host <bucket>.s3.<region>.amazonaws.com, or the path /<bucket>/<key> when endpoint is set. Ships empty, which is not a usable bucket - the \"s3\" backend would have to be configured before it could be selected."
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "default": "sail-proxy/blobs",
+                      "description": "Key prefix every blob is stored under, default sail-proxy/blobs, so one bucket can hold blobs beside unrelated objects."
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Non-AWS S3 endpoint - MinIO, Ceph, or another S3-compatible gateway. When set, requests go to <endpoint>/<bucket>/<key> instead of the AWS host form. Empty, the default, means AWS."
+                    },
+                    "region": {
+                      "type": "string",
+                      "default": "",
+                      "description": "SigV4 signing region, and part of the hostname when no endpoint is set. Ships empty, and is still required for signing against an S3-compatible endpoint."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "teacher_logging": {
+              "type": "object",
+              "description": "Records each search's candidates and the reranker's scores as teacher labels, for reranker evaluation and distillation. Fire-and-forget by construction: nothing waits for the write, and every failure surfaces only as a warning. All five fields are read live on the search path, so they can be changed from this cockpit without a restart.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether search events are written at all. Off by default, so an install that predates this key never starts writing rows. Deliberately independent of store_chunk_text: turning logging on must never by itself start persisting document contents."
+                },
+                "store_chunk_text": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether each candidate's chunk TEXT is stored beside its hash; off by default, and the text is left empty otherwise. That text is user document content, so this turns the label tables into a second copy of the corpus - the hash alone is enough to join labels back to chunks that still exist."
+                },
+                "sample_rate": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1.0,
+                  "description": "Probability that a search is logged, from 0 to 1; default 1.0. 1 logs every search, 0 logs none, 0.1 logs about one in ten. This is the knob to lower when label volume is a problem - not max_concurrent_writes, which drops writes rather than thinning them."
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "default": "production",
+                  "description": "Free-text label written onto each search event, used whenever the caller passes none. Default \"production\", so an evaluation or backfill run can be told apart from production traffic when the labels are read back."
+                },
+                "max_concurrent_writes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10,
+                  "default": 2,
+                  "description": "Ceiling on teacher-label writes in flight, default 2; surplus writes are dropped, not queued. Capped at the file_search database pool size of 10: above that the ceiling stops bounding anything, because the extra writes simply wait in the pool's own queue - turning \"dropped, not queued\" into \"queued\", the failure the bound exists to prevent. A larger value is clamped with a warning, so a hand-edited api_config.json cannot raise it either."
+                }
+              },
+              "additionalProperties": false
+            },
+            "tool": {
+              "type": "object",
+              "description": "The hosted file_search TOOL block - the tool the model itself calls - as opposed to the raw POST /v1/vector_stores/{id}/search REST path the settings above govern. Each field is checked on read and falls back to its default rather than being coerced, because a hand-edited api_config.json reaches the gateway unvalidated.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Read as a strict boolean, default true - a hand-edited \"true\" or 1 is not read as true and falls back to the default. Currently ignored by the gateway: nothing gates on the resolved value and the tool is offered either way, so setting this false does not hide the tool. Use file_search.enabled to turn the feature off."
+                },
+                "max_searches_per_request": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10,
+                  "default": 3,
+                  "description": "How many file_search calls one request may make before the gateway stops continuing the turn. An integer from 1 to 10 is honoured; anything else - out of range, fractional, non-numeric - counts as unset and falls back to 3 with a warning, so an out-of-range value here is silently not the value that runs."
+                },
+                "max_num_results_default": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50,
+                  "default": 10,
+                  "description": "Chunks returned when a tool call names no max_num_results of its own. An integer from 1 to 50 is honoured, anything else falls back to 10. That range is the same bound a per-call max_num_results is checked against, and OpenAI's own bound for the field. hybrid.candidates is still the hard ceiling on what a search can return."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
         },
-        "hookDefinitions": {
+        "hosted_tools": {
+          "type": "object",
+          "description": "Bounds for the hosted-tool result replay cache: how long a result stays replayable, and how many are held at once.",
+          "properties": {
+            "result_cache_ttl_seconds": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 86400,
+              "default": 3600,
+              "description": "Optional. How long a hosted tool's results remain replayable by a client that replays the call item. A non-integer or out-of-range value falls back to the default of 3600 seconds, same as leaving this unset. A miss re-executes the recorded query rather than degrading the answer."
+            },
+            "result_cache_max_entries": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 10000,
+              "default": 500,
+              "description": "Optional. How many hosted tool results are held in the replay cache at once. A non-integer or out-of-range value falls back to the default of 500 entries, same as leaving this unset. A miss re-executes the recorded query rather than degrading the answer."
+            }
+          },
+          "additionalProperties": false
+        },
+        "namespace_tools": {
+          "type": "object",
+          "description": "How to handle Codex's `namespace` sub-agent wrapper tool, which SAP AI Core rejects outright with a 400.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "flatten",
+                "strip"
+              ],
+              "default": "flatten",
+              "description": "`flatten` (default) lifts a namespace tool's nested function tools to the top level so the request is accepted, then restores the namespace on replayed calls so Codex can still route them. `strip` removes the namespace tool and its nested tools entirely. Any value other than these two falls back to flatten - the alternative is a hard 400 that kills the turn."
+            }
+          },
+          "additionalProperties": false
+        },
+        "custom_tools": {
+          "type": "object",
+          "description": "Codex freeform `custom` tools (apply_patch). `translate` rewrites them into function tools, which both the deployed and orchestration routes accept; `strip` removes them, leaving the model to edit files through shell commands.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "translate",
+                "strip"
+              ],
+              "default": "translate",
+              "description": "`translate` (default) rewrites the freeform custom tool into an ordinary function tool that both routes accept, appending grammar/format guidance to its description since a function tool cannot express a Lark grammar the way a custom tool can. `strip` removes custom tools entirely, leaving the model to edit files through shell commands instead. Any value other than these two falls back to translate - the alternative is a hard 400 that kills the turn."
+            }
+          },
+          "additionalProperties": false
+        },
+        "tool_search": {
+          "type": "object",
+          "description": "Codex's `tool_search` deferred-tool discovery tool. `translate` rewrites it into a function tool, which both the deployed and orchestration routes accept; `strip` removes it, leaving the model unable to discover deferred tools such as MCP servers.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "translate",
+                "strip"
+              ],
+              "default": "translate",
+              "description": "`translate` (default) rewrites the tool_search tool into an ordinary function tool that both routes accept. `strip` removes it entirely. Any value other than these two falls back to translate - the alternative is a hard 400 that kills the turn."
+            },
+            "hoist_discovered_tools": {
+              "type": "boolean",
+              "default": true,
+              "description": "Lift tools discovered by tool_search into the request so the model can call them. Works around codex exposing deferred MCP tools only when the provider base_url is api.openai.com; set false once that is fixed upstream. Safe to leave on either way - names the client already declares are skipped."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "hookEntryArray": {
+      "description": "One subpath's hook list, tried in order. The same shape serves hooks.defaults.<endpoint>.<subpath> and models.overrides.<model>.hooks.<subpath>, so the gateway sees one shape whichever of the two supplied it. A hook fires only when EVERY rule its request.match names matches the request; request.callback.id then names the plugin to run for the phase in progress. A hook whose match does not hold, or whose callback names no plugin registered for that phase, is skipped and the next one is tried - neither is an error at runtime.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "request"
+        ],
+        "properties": {
+          "request": {
+            "description": "What must match, and what to run when it does. Named for the request because the matcher only ever inspects the inbound request; there is no response counterpart, and nothing else on a hook is read.",
+            "type": "object",
+            "required": [
+              "callback",
+              "match"
+            ],
+            "properties": {
+              "callback": {
+                "description": "The plugin to run once every rule in match has matched.",
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "description": "The id a plugin registered itself under, looked up in the gateway's plugin registry for the phase being run. This schema cannot check the cross-reference: an id no plugin registered for that phase is logged as not found and the hook is skipped, so the request passes through unmodified rather than failing.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "strategy": {
+                    "description": "Currently ignored by the gateway; kept for compatibility. The before/after phase is a property of the registered plugin, and each phase looks up only its own plugins, so a value here cannot move a plugin from one phase to another. It is declared only because the shipped configuration carries it on one hook (models.overrides.anthropic--claude-3-haiku--deployed) and this object rejects unknown keys - dropping it from the schema would turn that entry into a rejected key without changing any behaviour.",
+                    "type": "string",
+                    "enum": [
+                      "before",
+                      "after"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "match": {
+                "description": "The rule ids that must ALL match, evaluated in order and abandoned at the first that does not. Each id is a key in hooks.definitions - a cross-reference this schema cannot check: an id defined nowhere there logs a warning and makes the whole hook not match, so a typo silently disables the plugin rather than firing it unconditionally. An empty list is rejected, because a hook meant to run on almost everything is written by naming a deliberately broad rule instead - the shipped payload:any matches any request whose parsed body carries a non-empty string model, which is as close to unconditional as a rule gets and still says so out loud.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "hooksGroup": {
+      "type": "object",
+      "properties": {
+        "definitions": {
+          "description": "The named match rules a hook's request.match can name, keyed by rule id - the key IS the id. Every rule a hook lists must match for that hook to fire, and a rule id defined nowhere here logs a warning and makes the hook match nothing. Rules are cached per id at first use, so an edit takes effect on the next configuration reload rather than mid-process.",
           "type": "object",
           "patternProperties": {
             "^[a-zA-Z0-9_:=-]+$": {
@@ -83,6 +768,7 @@
               ],
               "properties": {
                 "type": {
+                  "description": "Which part of the request the rule tests, and therefore which of the fields below apply. Load-bearing rather than descriptive: only these four values are understood, and anything else is logged as an unknown hook type and matches NOTHING - silently disabling every hook that names the rule.",
                   "type": "string",
                   "enum": [
                     "header",
@@ -92,35 +778,44 @@
                   ]
                 },
                 "name": {
+                  "description": "The request header a 'header' rule reads. Case-insensitive: the name is lowercased before the lookup, matching how the request pipeline normalises header names. A request that does not carry the header never matches. Empty is not 'any header' - such a rule could never fire - so it is rejected here rather than accepted.",
                   "type": "string",
-                  "description": "Header name for header type hooks"
+                  "minLength": 1
                 },
                 "path": {
+                  "description": "Dot-notation path into the parsed JSON request body for a 'json-path' or 'json-path-regex' rule. A leading '$.' is stripped, so '$.max_tokens' and 'max_tokens' address the same value; there is no further JSONPath support - no wildcards, filters or bracket syntax, and a segment containing a dot cannot be addressed. 'json-path' walks objects only. 'json-path-regex' also walks arrays: a numeric segment indexes the array, a non-numeric one takes the first element that carries it. A request with no parsed body, or a path resolving to nothing, does not match.",
                   "type": "string",
-                  "description": "JSON path for json-path type hooks"
+                  "minLength": 1
                 },
                 "equals": {
-                  "description": "Exact match value"
+                  "description": "The value the addressed thing must equal - compared DIFFERENTLY per type. On a `header` rule it is NOT strict equality: media types are compared (the part before the first `;`, lowercased), so `application/json` also matches `application/json; charset=utf-8`. That exists because the strict compare it replaced let charset-appending clients bypass pseudonymization. On a `json-path` rule it IS strict equality. Matcher semantics: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-13-plugin-system.md#matcher-semantics-equals-and-regex",
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
                 },
                 "from": {
-                  "type": "number",
-                  "description": "Range start for header ranges"
+                  "description": "Inclusive lower bound for a 'header' rule matching a numeric header - content-length in every shipped rule. The header value is read as a base-10 integer and must land within [from, to]; a value that does not parse never matches. Read only when equals is absent AND both bounds are present: one bound alone is ignored and the rule degrades to a bare presence check on the header.",
+                  "type": "number"
                 },
                 "to": {
-                  "type": "number",
-                  "description": "Range end for header ranges"
+                  "description": "Inclusive upper bound for a 'header' rule matching a numeric header. There is no open-ended form: to express 'at least 10 KB' the shipped rules pair from with a deliberately huge to (size:min10kb uses 999999999), because omitting either bound turns the rule into a presence check. See from.",
+                  "type": "number"
                 },
                 "regex": {
+                  "description": "A JavaScript regular-expression source. A `json-path-regex` rule tests it against whatever the path resolved to (a string directly, an array element by element, any other object against its JSON form). A `url-regex` rule tests it against the request path and query string the gateway sees, NOT an absolute URL, so `^https?://` can never match. Compiled once and cached per rule; an expression the engine rejects counts as no match. Matcher semantics: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-13-plugin-system.md#matcher-semantics-equals-and-regex",
                   "type": "string",
-                  "description": "Regular expression"
+                  "minLength": 1
                 },
                 "flags": {
+                  "description": "Regular-expression flags applied to regex, e.g. 'i' for case-insensitive. Restricted to the letters the engine actually accepts, because any other value makes compilation fail and that failure is reported as no match - the rule would then silently never fire. Flags are part of the compiled-expression cache key, so two rules differing only in flags do not share one compiled expression. Avoid 'g': a compiled global expression is reused across requests and advances its own position, so such a rule matches every other time.",
                   "type": "string",
-                  "description": "Regular expression flags"
+                  "pattern": "^[dgimsuy]*$"
                 },
                 "desc": {
-                  "type": "string",
-                  "description": "Hook description"
+                  "description": "Free-text note about what this rule is for. Currently ignored by the gateway; it documents the rule for whoever edits this file and has no effect on matching.",
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -165,7 +860,12 @@
                     "required": [
                       "path",
                       "regex"
-                    ]
+                    ],
+                    "not": {
+                      "required": [
+                        "equals"
+                      ]
+                    }
                   }
                 },
                 {
@@ -179,7 +879,12 @@
                   "then": {
                     "required": [
                       "regex"
-                    ]
+                    ],
+                    "not": {
+                      "required": [
+                        "equals"
+                      ]
+                    }
                   }
                 }
               ]
@@ -187,532 +892,151 @@
           },
           "additionalProperties": false
         },
-        "model_list_changes": {
-          "type": "object",
-          "patternProperties": {
-            "^[a-zA-Z0-9_.: -]+$": {
-              "type": "object",
-              "properties": {
-                "hooks": {
-                  "type": "object",
-                  "patternProperties": {
-                    "^[a-zA-Z0-9_/-]+$": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "required": [
-                          "request"
-                        ],
-                        "properties": {
-                          "request": {
-                            "type": "object",
-                            "required": [
-                              "callback",
-                              "match"
-                            ],
-                            "properties": {
-                              "callback": {
-                                "type": "object",
-                                "required": [
-                                  "id"
-                                ],
-                                "properties": {
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  "strategy": {
-                                    "type": "string",
-                                    "enum": [
-                                      "before",
-                                      "after"
-                                    ]
-                                  }
-                                },
-                                "additionalProperties": false
-                              },
-                              "match": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string"
-                                },
-                                "minItems": 1
-                              }
-                            },
-                            "additionalProperties": false
-                          }
-                        },
-                        "additionalProperties": false
-                      }
-                    }
-                  },
-                  "additionalProperties": false
-                },
-                "subpaths_native": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_/-]+$"
-                  }
-                },
-                "subpaths_emulated": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_/: -]+$"
-                  }
-                },
-                "streamingSupported": {
-                  "type": "boolean"
-                },
-                "supports_prompt_caching": {
-                  "type": "boolean",
-                  "description": "Optional. Resolution order: this per-model flag, then the provider-level api_config.<provider>.supports_prompt_caching flag, then a default of true for Anthropic-provider models and false for all others (see src/utils/promptCachingSupport.ts). Set false to opt a model out (e.g. claude-3-haiku). A true on an Anthropic model with no provider-level override is redundant."
-                },
-                "anthropic_version": {
-                  "type": "string",
-                  "pattern": "^(bedrock-)?\\d{4}-\\d{2}-\\d{2}$"
-                },
-                "pseudonymization": {
-                  "$ref": "#/$defs/pseudonymizationConfig"
-                },
-                "unsupported_params": {
-                  "description": "Request parameters this provider/model does not accept; the gateway strips them before forwarding to SAP AI Core (which otherwise returns 400 \"does not support parameters: [...]\"). A per-model list replaces the provider-level list.",
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "param_renames": {
-                  "description": "Parameter renames applied on the direct-deployment path, e.g. {\"max_tokens\":\"max_completion_tokens\"} for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map.",
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "supports_responses_api": {
-                  "description": "Override whether this provider/model may be served on /openai/v1/responses. Absent = built-in family heuristic (deployed GPT-5+/o-series).",
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "pseudonymization": {
-          "description": "Global configuration for the pseudonymizationPlugin. These keys configure the plugin only; if the plugin is not wired into the endpoint/model hook chain, no pseudonymization occurs and the toggles have no effect.",
-          "$ref": "#/$defs/pseudonymizationConfig"
-        },
-        "defaultHooks": {
-          "description": "Per-endpoint default hooks. The optional 'pseudonymization' key force-activates and configures the pseudonymizationPlugin for that endpoint.",
+        "defaults": {
+          "description": "Per-endpoint default hooks, keyed by the endpoint identifier the route uses - 'anthropic', 'openai' and 'aws-bedrock' today. Consulted only when the requested model has no models.overrides.<model>.hooks entry for the subpath: a per-model entry REPLACES the endpoint default for that subpath rather than merging with it.",
           "type": "object",
           "additionalProperties": {
+            "description": "One endpoint's defaults: the optional pseudonymization force-activation block, plus one hook list per request subpath (invoke, invoke-with-response-stream, responses, responses-stream). Unknown keys are rejected, because every other key here is read as a subpath and no route asks for a subpath this endpoint does not serve - so an unrecognised key is a typo that would never run rather than a setting. The subpath pattern deliberately excludes 'pseudonymization', so that key is not also required to be a hook list.",
             "type": "object",
             "properties": {
               "pseudonymization": {
                 "$ref": "#/$defs/pseudonymizationConfig"
               }
             },
-            "additionalProperties": true
+            "patternProperties": {
+              "^(?!pseudonymization$)[a-zA-Z0-9_/-]+$": {
+                "$ref": "#/$defs/hookEntryArray"
+              }
+            },
+            "additionalProperties": false
           }
-        },
-        "anthropic": {
-          "$ref": "#/$defs/providerConfig"
-        },
-        "aws-bedrock": {
-          "$ref": "#/$defs/providerConfig"
-        },
-        "openai": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/providerConfig"
+        }
+      },
+      "additionalProperties": false
+    },
+    "platformGroup": {
+      "type": "object",
+      "properties": {
+        "timeouts": {
+          "type": "object",
+          "description": "Per-request timeout ceilings the gateway applies to outbound LLM calls.",
+          "properties": {
+            "default": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 3600000,
+              "description": "Timeout in milliseconds for non-streaming requests, from 1000 to 3600000. Unset or zero falls back to 120000 ms (120 seconds)."
             },
-            {
+            "streaming": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 3600000,
+              "description": "Timeout in milliseconds for streaming requests, from 1000 to 3600000. Unset or zero falls back to 240000 ms (240 seconds)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "logging": {
+          "type": "object",
+          "description": "Gateway log level and destination. Read by the shared logger at startup, and again whenever the gateway re-initializes it after a configuration change.",
+          "properties": {
+            "components": {
               "type": "object",
-              "properties": {
-                "openai_deployment_api_version": {
+              "description": "Per-component log level override, keyed by the component name exactly as the gateway logs it - for example 'ConfigService' or 'AwsBedrockService'. A component with no entry here uses defaultLevel instead.",
+              "x-keySuggestions": [
+                "AnthropicService",
+                "AwsBedrockService",
+                "ConfigService",
+                "ModelService",
+                "openaiController",
+                "OpenRouterController",
+                "OpenRouterService",
+                "RateLimitManager",
+                "SAPAIService",
+                "UsageTrackingService"
+              ],
+              "patternProperties": {
+                "^[a-zA-Z0-9_-]+$": {
                   "type": "string",
-                  "pattern": "^\\d{4}-\\d{2}-\\d{2}(-preview)?$"
-                }
-              }
-            }
-          ]
-        },
-        "openrouter": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/providerConfig"
-            },
-            {
-              "type": "object",
-              "properties": {
-                "default_pricing": {
-                  "type": "object",
-                  "required": [
-                    "completion",
-                    "image",
-                    "prompt"
+                  "enum": [
+                    "TRACE",
+                    "DEBUG",
+                    "INFO",
+                    "WARN",
+                    "ERROR"
                   ],
-                  "properties": {
-                    "completion": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d+)?$"
-                    },
-                    "image": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d+)?$"
-                    },
-                    "prompt": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d+)?$"
-                    }
-                  },
-                  "additionalProperties": false
-                },
-                "model_mappings": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "default_context_length",
-                      "id_prefix",
-                      "provider"
-                    ],
-                    "properties": {
-                      "default_context_length": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "id_prefix": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "provider": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "max_tokens": {
-                        "type": "integer",
-                        "minimum": 1
-                      }
-                    },
-                    "additionalProperties": false
-                  }
+                  "default": "INFO",
+                  "description": "Log level for this component, overriding defaultLevel while it is present. It is matched case-insensitively against the levels the logger implements (trace, debug, info, warn, error); a value it does not recognize is silently ignored, leaving the previously effective level in place rather than raising an error."
                 }
-              }
+              },
+              "additionalProperties": false
+            },
+            "defaultLevel": {
+              "type": "string",
+              "enum": [
+                "TRACE",
+                "DEBUG",
+                "INFO",
+                "WARN",
+                "ERROR"
+              ],
+              "description": "Log level for any component with no entry in `components`. If `LOG_LEVEL` is set to a recognized level it takes precedence and this field is ignored - and `LOG_LEVEL` ships set in both .env samples and the Kyma manifests, so in a stock deployment the environment wins. Otherwise it is matched case-insensitively against the logger's levels (trace, debug, info, warn, error); an unrecognized value is silently ignored. Precedence: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-11-debugging.md#log-level-resolution"
+            },
+            "log_folder_path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Directory the gateway writes its own log files to and - when payload_logging_enabled is true - request and response payload dumps, under a payloads/ subdirectory. Falls back to ./logs when unset."
+            },
+            "payload_logging_enabled": {
+              "type": "boolean",
+              "description": "When true, writes full request and response bodies to log_folder_path/payloads for debugging. Known-sensitive headers are redacted, but body content is written as-is, so leave this off outside active debugging. Off by default."
             }
-          ]
+          },
+          "additionalProperties": false
         },
         "rate_limit_handling": {
           "type": "object",
+          "description": "Automatic backoff the gateway applies after a provider signals a rate limit - an HTTP 429, or an error message matching a rate-limit keyword. Purely reactive: it delays retries once a rate limit has been seen for a model and subpath, it does not throttle traffic beforehand.",
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Master switch for rate-limit backoff. When false or absent, the delay is always 0 seconds and the rest of this section has no effect."
             },
             "default_delay_seconds": {
               "type": "number",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Delay in seconds applied when a rate limit is detected and neither subpath_specific_delays nor model_specific_delays has an entry for the endpoint. Falls back to 30 when unset or zero."
             },
             "backoff_multiplier": {
               "type": "number",
-              "minimum": 1
+              "minimum": 1,
+              "description": "Multiplier applied to the previous delay on each consecutive rate limit for the same model and subpath: the new delay is the previous one times this, capped at max_delay_seconds. Falls back to 1.5 when unset or zero; keep it at 1 or above, or each consecutive rate limit would wait less rather than more."
             },
             "max_delay_seconds": {
               "type": "number",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Ceiling in seconds that the consecutive-rate-limit backoff above cannot exceed. Falls back to 300 when unset or zero."
             },
             "model_specific_delays": {
               "type": "object",
+              "description": "Per-model delay override in seconds, keyed by the model id exactly as configured under providers and models - for example 'anthropic--claude-4-opus--deployed'. Checked after subpath_specific_delays and before default_delay_seconds; a delay of 0 here counts as no override, because only a non-zero entry is used.",
               "patternProperties": {
                 "^[a-zA-Z0-9_.-]+$": {
                   "type": "number",
-                  "minimum": 0
+                  "minimum": 0,
+                  "description": "Delay in seconds applied for this model when it is rate limited."
                 }
               },
               "additionalProperties": false
             },
             "subpath_specific_delays": {
               "type": "object",
+              "description": "Per-subpath delay override in seconds, keyed by the gateway API subpath - for example 'converse-stream' or 'invoke-with-response-stream'. Checked first, before model_specific_delays and default_delay_seconds; a delay of 0 here counts as no override, because only a non-zero entry is used.",
               "patternProperties": {
                 "^[a-zA-Z0-9_/-]+$": {
                   "type": "number",
-                  "minimum": 0
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
-        "sap_ai_core": {
-          "type": "object",
-          "properties": {
-            "url": {
-              "type": "string",
-              "format": "uri"
-            },
-            "resource_group": {
-              "type": "string",
-              "minLength": 1
-            },
-            "deployment_id": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "additionalProperties": false
-        },
-        "perplexity": {
-          "$ref": "#/$defs/providerConfig"
-        },
-        "web_search": {
-          "type": "object",
-          "properties": {
-            "max_searches_per_request": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10
-            }
-          },
-          "additionalProperties": false
-        },
-        "hosted_tools": {
-          "type": "object",
-          "properties": {
-            "result_cache_ttl_seconds": {
-              "type": "integer",
-              "minimum": 60,
-              "maximum": 86400,
-              "description": "Optional. How long a hosted tool's results remain replayable by a client that replays the call item. Defaults to 3600 seconds. A miss re-executes the recorded query rather than degrading the answer."
-            },
-            "result_cache_max_entries": {
-              "type": "integer",
-              "minimum": 10,
-              "maximum": 10000,
-              "description": "Optional. How many hosted tool results are held in the replay cache at once. Defaults to 500 entries. A miss re-executes the recorded query rather than degrading the answer."
-            }
-          },
-          "additionalProperties": false
-        },
-        "namespace_tools": {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "enum": [
-                "flatten",
-                "strip"
-              ]
-            }
-          },
-          "additionalProperties": false
-        },
-        "custom_tools": {
-          "type": "object",
-          "description": "Codex freeform `custom` tools (apply_patch). `translate` rewrites them into function tools, which both the deployed and orchestration routes accept; `strip` removes them, leaving the model to edit files through shell commands.",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "enum": [
-                "translate",
-                "strip"
-              ],
-              "default": "translate"
-            }
-          },
-          "additionalProperties": false
-        },
-        "file_search": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "embedding_model": {
-              "type": "string",
-              "minLength": 1
-            },
-            "embedding_dimensions": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "rewrite_query": {
-              "type": "boolean"
-            },
-            "rewrite_query_model": {
-              "type": "string",
-              "minLength": 1
-            },
-            "hybrid": {
-              "type": "object",
-              "properties": {
-                "rrf_k": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "lexical_enabled": {
-                  "type": "boolean"
-                },
-                "candidates": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "rerank": {
-                  "type": "object",
-                  "properties": {
-                    "enabled": {
-                      "oneOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "string",
-                          "enum": [
-                            "auto"
-                          ]
-                        }
-                      ]
-                    },
-                    "model": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "additionalProperties": false
-            },
-            "chunking": {
-              "type": "object",
-              "properties": {
-                "max_chunk_size_tokens": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "chunk_overlap_tokens": {
-                  "type": "integer",
-                  "minimum": 0
-                }
-              },
-              "additionalProperties": false
-            },
-            "limits": {
-              "type": "object",
-              "properties": {
-                "max_file_bytes": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "max_tokens_per_file": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "max_files_per_store": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              },
-              "additionalProperties": false
-            },
-            "ingestion": {
-              "type": "object",
-              "properties": {
-                "concurrency": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "extract_timeout_ms": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "max_retries": {
-                  "type": "integer",
-                  "minimum": 0
-                }
-              },
-              "additionalProperties": false
-            },
-            "blob_storage": {
-              "type": "object",
-              "properties": {
-                "backend": {
-                  "type": "string",
-                  "enum": [
-                    "db",
-                    "local",
-                    "s3"
-                  ]
-                },
-                "local_path": {
-                  "type": "string"
-                },
-                "s3": {
-                  "type": "object",
-                  "properties": {
-                    "bucket": {
-                      "type": "string"
-                    },
-                    "prefix": {
-                      "type": "string"
-                    },
-                    "endpoint": {
-                      "type": "string"
-                    },
-                    "region": {
-                      "type": "string"
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "additionalProperties": false
-            },
-            "teacher_logging": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "store_chunk_text": {
-                  "type": "boolean"
-                },
-                "sample_rate": {
-                  "type": "number",
                   "minimum": 0,
-                  "maximum": 1
-                },
-                "source": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "max_concurrent_writes": {
-                  "description": "Ceiling on in-flight teacher-label writes; excess writes are dropped, not queued. Capped at the file_search pg pool size (max: 10, see services/gateway/src/fileSearch/db.ts): above that the semaphore stops bounding anything, because the extra writes simply wait inside pg's own connection queue \u2014 turning 'dropped, not queued' into 'queued', which is the failure mode the bound exists to prevent.",
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 10
-                }
-              }
-            },
-            "tool": {
-              "type": "object",
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "max_searches_per_request": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 10
-                },
-                "max_num_results_default": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 50
+                  "description": "Delay in seconds applied for this subpath when it is rate limited."
                 }
               },
               "additionalProperties": false
@@ -720,55 +1044,13 @@
           },
           "additionalProperties": false
         },
-        "tool_search": {
+        "security": {
           "type": "object",
-          "description": "Codex's `tool_search` deferred-tool discovery tool. `translate` rewrites it into a function tool, which both the deployed and orchestration routes accept; `strip` removes it, leaving the model unable to discover deferred tools such as MCP servers.",
+          "description": "Ingress concerns.",
           "properties": {
-            "mode": {
-              "type": "string",
-              "enum": [
-                "translate",
-                "strip"
-              ],
-              "default": "translate"
-            },
-            "hoist_discovered_tools": {
+            "trust_forwarded_for": {
               "type": "boolean",
-              "default": true,
-              "description": "Lift tools discovered by tool_search into the request so the model can call them. Works around codex exposing deferred MCP tools only when the provider base_url is api.openai.com; set false once that is fixed upstream. Safe to leave on either way - names the client already declares are skipped."
-            }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": true
-    }
-  },
-  "additionalProperties": false,
-  "$defs": {
-    "pseudonymizationConfig": {
-      "description": "pseudonymizationPlugin configuration. Activation ('enabled') and category toggles ('entities') apply only to this plugin; masking occurs only when the plugin runs for the request (registered in the hook chain AND an activation source fires).",
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "method": {
-          "type": "string",
-          "enum": [
-            "pseudonymization",
-            "anonymization"
-          ]
-        },
-        "allow_user_bypass": {
-          "type": "boolean"
-        },
-        "entities": {
-          "description": "Per-category masking toggles. true enables masking of that category, false disables it. Categories not listed keep their plugin default. Unknown category names are ignored.",
-          "type": "object",
-          "patternProperties": {
-            "^profile-[a-z-]+$": {
-              "type": "boolean"
+              "description": "Trust client-supplied X-Forwarded-For and X-Real-IP headers - and the client IP the web framework derives from them - when recording the client IP on security events, instead of using the raw socket peer address. Enable it only behind a proxy that overwrites those headers rather than passing through whatever the client sent; otherwise a client can spoof its own recorded IP."
             }
           },
           "additionalProperties": false
@@ -776,28 +1058,113 @@
       },
       "additionalProperties": false
     },
-    "providerConfig": {
+    "observabilityGroup": {
       "type": "object",
       "properties": {
-        "anthropic_bedrock_version": {
+        "pseudonymization": {
+          "description": "Global settings for the pseudonymization plugin. They configure the plugin only: if it is not wired into the endpoint or model hook chain, nothing is masked and these toggles have no effect.",
+          "$ref": "#/$defs/pseudonymizationConfig"
+        },
+        "siem": {
+          "$ref": "#/$defs/siemConfig"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pseudonymizationConfig": {
+      "description": "Pseudonymization plugin settings. Activation (enabled) and the category toggles (entities) apply to this plugin only; masking happens just when the plugin actually runs for a request - it must be registered in the hook chain and an activation source must fire.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Force-activates masking for a request. Read only where this block sits under models.overrides.<model>.pseudonymization or hooks.defaults.<endpoint>.pseudonymization: true there masks that request, with the per-model block winning over the per-endpoint one. False or absent forces nothing - masking can still run when another activation source fires, such as a trigger word or a masking field in the request body. Under observability.pseudonymization this key is currently ignored; that layer contributes entities, org_suffixes, location_gazetteer, min_confidence and thresholds only. Either way the plugin must be wired into the hook chain, or nothing is masked at all."
+        },
+        "method": {
           "type": "string",
-          "pattern": "^bedrock-\\d{4}-\\d{2}-\\d{2}$"
+          "enum": [
+            "pseudonymization",
+            "anonymization"
+          ],
+          "default": "pseudonymization",
+          "description": "Masking mode: `pseudonymization` masks the request and unmasks the response; `anonymization` masks and never unmasks. Read only where this block force-activates masking (an enabled hook or model override), not under `observability.pseudonymization`. It also gates SIEM: only `pseudonymization` keeps the masked response, so under `anonymization` a content sink gets the prompt but not the response. Omitted, falls back to `pseudonymization`. Modes: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#modes"
         },
-        "excluded_beta_headers": {
+        "allow_user_bypass": {
+          "type": "boolean",
+          "default": false,
+          "description": "Consequential only inside a force-activation block (an enabled hook or model override); not read under `observability.pseudonymization`. Default false. When true, a caller may skip masking via header `x-sail-proxy-pseudonymization: off` (case-insensitive) or body field `pseudonymization_off: true`: the content reaches the LLM unmasked, and, where an enabled SIEM sink sets both `include_content` and `allow_unmasked_content`, that sink too. Details: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#bypassing-forced-pseudonymization"
+        },
+        "entities": {
+          "description": "Per-category masking toggles: `true` masks the category at this layer, `false` does not, and a category not listed inherits the layer below (later layers win). Keys are the known-category set: the on-by-default categories; three opt-in ones that ship off (`profile-org`, `profile-location`, `profile-ip-address`); and `profile-sensitive-data`, a blanket turning all on except those three. A key outside the set is rejected here. Categories and layers: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#configuring-which-categories-are-masked",
+          "type": "object",
+          "patternProperties": {
+            "^(profile-address|profile-bank-account|profile-credit-card-number|profile-driverlicense|profile-email|profile-ethnicity|profile-gender|profile-iban|profile-ip-address|profile-itin|profile-location|profile-medical-license|profile-nationalid|profile-nationality|profile-org|profile-passport|profile-person|profile-phone|profile-political-group|profile-pronouns-gender|profile-religious-group|profile-sensitive-data|profile-sexual-orientation|profile-ssn|profile-trade-union|profile-url|profile-username-password)$": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "org_suffixes": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9._-]+$"
-          }
+          "items": { "type": "string" },
+          "description": "Legal-form suffixes that mark a run of words as an organisation name, e.g. Inc, LLC, GmbH. Matching is case-sensitive by design, so a lower-case 'limited' in prose is deliberately not treated as a legal form; each entry additionally matches fully upper-cased, so an invoice shouting ACME GMBH is recognised as the same organisation as Acme GmbH. It takes effect only while profile-org is enabled in entities; enabling profile-org with this list empty masks NOTHING as an organisation and logs one warning. Each entry is trimmed before matching, and an empty or whitespace-only entry is silently dropped rather than rejected."
         },
-        "supported_beta_headers": {
+        "location_gazetteer": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9._-]+$"
-          }
+          "items": { "type": "string" },
+          "description": "Literal location terms the structural detector masks - case-insensitive, and whole word or whole phrase only; nothing is inferred from capitalisation or context. It takes effect only while profile-location is enabled in entities; enabling profile-location with this list empty masks NOTHING as a location and logs one warning. Each entry is trimmed, and an empty or whitespace-only entry is silently dropped. Ships empty: place names are deployment-specific and this repository is public, so populate it through this admin config app, never in tracked code."
         },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "How much evidence a detected value needs before masking, from 0 to 1 (default 0.5). A value is masked once its score reaches the bar; a plain capitalised name scores about 0.5, a checksum-validated pattern 0.95, a custom rule 1.0. Raising the bar drops plain names first, so tighten one noisy category with `thresholds` instead. Custom rules, validated identifiers and credentials are never lowered by their surroundings. Scoring detail: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#how-a-candidates-score-is-built"
+        },
+        "thresholds": {
+          "description": "Per-category confidence bars, each 0 to 1, overriding `min_confidence` for the categories named; one not listed keeps `min_confidence`. The place to be strict on a single noisy category - `profile-person` at 0.65 demands more evidence for names while validated identifiers stay at the global bar. Keys are the same known-category set `entities` takes; `profile-sensitive-data` is accepted but does nothing. Per-category tuning: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#thresholds--per-category-same-cliff-for-names",
+          "type": "object",
+          "patternProperties": {
+            "^(profile-address|profile-bank-account|profile-credit-card-number|profile-driverlicense|profile-email|profile-ethnicity|profile-gender|profile-iban|profile-ip-address|profile-itin|profile-location|profile-medical-license|profile-nationalid|profile-nationality|profile-org|profile-passport|profile-person|profile-phone|profile-political-group|profile-pronouns-gender|profile-religious-group|profile-sensitive-data|profile-sexual-orientation|profile-ssn|profile-trade-union|profile-url|profile-username-password)$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5
+            }
+          },
+          "additionalProperties": false
+        },
+        "allowlist": {
+          "description": "Values this deployment never masks - an OFF switch, per value. Consulted before the confidence score, so a listed value is exempt however much evidence there is. Use it for a recurring false positive with a name of its own - a product or report title that reads like a person. The layers' lists are CONCATENATED, not replaced, so a lower layer only adds an exemption, never drops one. `terms` vs `patterns`, and the over-broad-entry hazard: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#allowlist--the-off-switch-per-value",
+          "type": "object",
+          "properties": {
+            "terms": {
+              "description": "Literal values, compared against the whole detected value and CASE-SENSITIVELY. Case-sensitive by design: 'Watson Studio' is the product an operator meant to exempt and 'watson studio' in a sentence is not, and a case-insensitive list would also exempt a person whose surname happens to share the spelling. A term only matches a value the detectors produced whole - listing 'Studio' does not exempt 'Watson Studio'. Every entry here is a masking OFF switch for that exact value, so keep the list to values that are genuinely never personal data: a term that happens to be someone's name exempts that person from masking everywhere in this deployment, silently and with nothing in the log to say so.",
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "patterns": {
+              "description": "Regular expressions (JavaScript), each matched against the WHOLE detected value: the gateway wraps every entry in `^(?: )$` itself, so write `Z[A-Z0-9_]+`, not `^Z[A-Z0-9_]+$`. Matching is case-sensitive. Every entry is a masking OFF switch, and a broad one disables masking without failing - `[A-Z].*` switches off almost every personal name detected. A match against a built-in PII sample warns but is STILL applied. Keep each entry narrow. Detail: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#allowlist--the-off-switch-per-value",
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "saturation_warn": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 40,
+          "description": "How many DISTINCT masked values one request may carry before it is reported as saturated (default 40). Reporting only - it never changes what is masked. Above the number the gateway logs one warning per request with per-category counts and the most common value SHAPES (letters as X, digits as 9); no masked value ever appears. The request's usage SIEM event carries the same counts with a `saturated` flag - counts, not text. Reading the report: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#reading-the-saturation-report"
+        }
+      },
+      "additionalProperties": false
+    },
+    "providerCommon": {
+      "type": "object",
+      "description": "The provider settings every provider's request path can reach, so all five named providers carry them. Every field is optional, and an absent field means the gateway's built-in behaviour. This shape on its own is also what a provider key the gateway does not read is validated against: there an unknown key is still accepted rather than rejected, and sits in the file without effect. The five named providers add their own settings on top of these and accept nothing else.",
+      "properties": {
         "emulate_streaming_for_models": {
+          "description": "Models whose answer the gateway collects in full and then replays as a stream, because the deployment cannot stream it itself. Matched against the model name sent upstream, either exactly or with the 'provider--' prefix removed. Used today for the anthropic and openai providers only; an entry under any other provider has no effect.",
           "type": "array",
           "items": {
             "type": "string",
@@ -805,6 +1172,7 @@
           }
         },
         "substitute_models": {
+          "description": "Model renames for this provider: a request naming 'from' is forwarded as 'to', and the response reports the client's original name back. The first matching entry wins in both directions, so when several entries share one 'to', the way back resolves it to the earliest of them.",
           "type": "array",
           "items": {
             "type": "object",
@@ -814,14 +1182,17 @@
             ],
             "properties": {
               "from": {
+                "description": "The model name the client sends.",
                 "type": "string",
                 "minLength": 1
               },
               "to": {
+                "description": "The model name forwarded to SAP AI Core, typically a deployed model id such as anthropic--claude-4.5-sonnet--deployed.",
                 "type": "string",
                 "minLength": 1
               },
               "description": {
+                "description": "Free-text note about this rename, for whoever reads the configuration later. Currently ignored by the gateway; it changes nothing about how the rename behaves.",
                 "type": "string"
               }
             },
@@ -829,7 +1200,7 @@
           }
         },
         "unsupported_params": {
-          "description": "Request parameters this provider/model does not accept; the gateway strips them before forwarding to SAP AI Core (which otherwise returns 400 \"does not support parameters: [...]\"). A per-model list replaces the provider-level list.",
+          "description": "Request parameters this provider or model does not accept. The gateway removes them before forwarding to SAP AI Core, which would otherwise reject the request with 400 \"does not support parameters: [...]\". A per-model list replaces the provider-level list rather than adding to it.",
           "type": "array",
           "items": {
             "type": "string",
@@ -837,7 +1208,7 @@
           }
         },
         "param_renames": {
-          "description": "Parameter renames applied on the direct-deployment path, e.g. {\"max_tokens\":\"max_completion_tokens\"} for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map.",
+          "description": "Parameter renames applied on the direct-deployment path, for example max_tokens to max_completion_tokens for OpenAI reasoning models that reject max_tokens. A per-model map replaces the provider-level map rather than adding to it.",
           "type": "object",
           "additionalProperties": {
             "type": "string",
@@ -845,11 +1216,391 @@
           }
         },
         "supports_responses_api": {
-          "description": "Override whether this provider/model may be served on /openai/v1/responses. Absent = built-in family heuristic (deployed GPT-5+/o-series).",
+          "description": "Whether this provider or model may be served on /openai/v1/responses. Absent leaves the built-in family rule in place, which admits deployed GPT-5 and later and the o-series.",
+          "type": "boolean"
+        },
+        "supports_prompt_caching": {
+          "description": "Whether this provider's models receive Anthropic prompt-cache breakpoints. Resolution order: the per-model models.overrides.<model>.supports_prompt_caching flag, then this provider-level flag, then a default of true for the anthropic provider and false for every other. Setting false where caching does work costs the full uncached input price on every turn, while a needless true was measured as a no-op - so opt out only for a model known to reject it.",
           "type": "boolean"
         }
       },
       "additionalProperties": true
+    },
+    "anthropicCompatibleProvider": {
+      "type": "object",
+      "description": "The settings only the Anthropic request path reads: the wire version it sends and the two beta-flag filters it applies before forwarding. They are declared on the two providers that path serves - anthropic and aws-bedrock - and on no other, because nothing else ever consults them. Each is in fact read from providers.anthropic alone, so a copy under aws-bedrock is accepted here but changes nothing; the individual fields say so.",
+      "properties": {
+        "anthropic_bedrock_version": {
+          "description": "The anthropic-version the gateway sends to SAP AI Core when the client omits the anthropic-version header. Read only from providers.anthropic, so a copy under any other provider - aws-bedrock included - has no effect. Absent falls back to bedrock-2023-05-31.",
+          "type": "string",
+          "pattern": "^bedrock-\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "excluded_beta_headers": {
+          "description": "Anthropic beta flags stripped from a request before it is forwarded, for features the SAP AI Core deployment does not accept. Applied together with the flags the gateway quarantines itself after an upstream 'invalid beta flag' 400. Read only from providers.anthropic; a list under any other provider has no effect.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+$"
+          }
+        },
+        "supported_beta_headers": {
+          "description": "Allowlist of Anthropic beta flags: while it is non-empty only these are forwarded, and excluded_beta_headers still applies on top. Empty or absent means no allowlist at all, so every flag the client sent goes through - which makes adding a first entry here a silent drop of every flag not listed beside it. Read only from providers.anthropic.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+$"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "siemConfig": {
+      "type": "object",
+      "description": "SIEM export. Audit and security events are written to an outbox and delivered to each enabled sink at least once.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch. When false the dispatcher does not start, regardless of per-sink settings."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default rows read per sink per tick; a sink may override it."
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Default dispatch interval in milliseconds; a sink may override it. The timer period is the shortest of all intervals in play."
+        },
+        "reconcile_lookback_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How far back, in milliseconds, the repair pass looks for outbox events that were never handed to a sink. It bounds that scan and stops a newly enabled sink replaying the full retained history; events older than this are never backfilled."
+        },
+        "content_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cap, in UTF-8 bytes, applied to the prompt and to the response independently before a usage event is published. A cut event carries content.truncated: true, so a partial payload is never mistaken for a whole conversation. 0 is accepted and empties the content, marked as truncated. Defaults to 8192, which is also where a negative or non-numeric value lands."
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "security",
+              "audit",
+              "usage"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Event categories to export. 'usage' is one request-completion event per request and is the only category that can carry conversation content; it ships absent from this list, so exporting it is an explicit opt-in."
+        },
+        "sinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40,
+                "description": "Unique sink name; the key used for per-sink delivery rows and backoff state."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "webhook",
+                  "otel",
+                  "datadog",
+                  "azure_sentinel",
+                  "gcs_pubsub",
+                  "s3"
+                ],
+                "description": "Sink implementation. Determines which of the type-specific properties below apply."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Ships false. A sink is dispatched only when both siem.enabled and this are true."
+              },
+              "include_content": {
+                "type": "boolean",
+                "description": "Opt-in: ships the prompt and response of each request to this sink, as part of a usage event. Defaults false, and false on every shipped sink. What it ships is the pseudonymized form - placeholders, not raw PII - unless allow_unmasked_content is also set. Requires 'usage' in siem.categories; the dispatcher removes content entirely for a sink where this is false."
+              },
+              "allow_unmasked_content": {
+                "type": "boolean",
+                "description": "RISK - reads raw conversations. Opt-in to receive content that pseudonymization never masked, because masking was disabled or bypassed for that request: real names, addresses and anything a user pasted, in full, leaving this system. Defaults false, and only has any effect where include_content is also true. Left false, such a request ships metadata only and records content.omitted: 'not-masked'."
+              },
+              "include_credential_material": {
+                "type": "boolean",
+                "description": "Opt-in: ships the raw value of an unresolved credential for forensics. Defaults false; the dispatcher strips the field when false."
+              },
+              "batch_size": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Per-sink override of siem.batch_size."
+              },
+              "interval_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "description": "Per-sink override of siem.interval_ms. Must exceed the sink's send timeout or dispatches queue behind each other."
+              },
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "description": "webhook: full ingest URL."
+              },
+              "token_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "endpoint": {
+                "type": "string",
+                "format": "uri",
+                "description": "otel: OTLP/HTTP logs endpoint."
+              },
+              "headers_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "site": {
+                "type": "string",
+                "minLength": 1,
+                "description": "datadog: site host, e.g. datadoghq.com or datadoghq.eu."
+              },
+              "api_key_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "dcr_endpoint": {
+                "type": "string",
+                "format": "uri",
+                "description": "azure_sentinel: Data Collection Endpoint URL."
+              },
+              "dcr_immutable_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "azure_sentinel: Data Collection Rule immutable id."
+              },
+              "stream_name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "azure_sentinel: custom stream name, e.g. Custom-SailProxy_CL."
+              },
+              "tenant_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F-]{36}$",
+                "description": "azure_sentinel: Entra tenant id."
+              },
+              "client_id": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F-]{36}$",
+                "description": "azure_sentinel: Entra application (client) id."
+              },
+              "client_secret_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "gcs_pubsub: Google Cloud project id."
+              },
+              "topic_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "gcs_pubsub: Pub/Sub topic id."
+              },
+              "service_account_json_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "bucket": {
+                "type": "string",
+                "minLength": 1,
+                "description": "s3: destination bucket."
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1,
+                "description": "s3: AWS region."
+              },
+              "prefix": {
+                "type": "string",
+                "description": "s3: key prefix; objects land at <prefix>/YYYY/MM/DD/HH/<uuid>.ndjson in UTC."
+              },
+              "access_key_id_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              },
+              "secret_access_key_env": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "Name of the credential slot. Never a credential value - api_config.json is tracked in three synced copies in a public repo."
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "webhook"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "url": {},
+                    "token_env": {}
+                  },
+                  "required": [
+                    "url"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "otel"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "endpoint": {},
+                    "headers_env": {}
+                  },
+                  "required": [
+                    "endpoint"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "datadog"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "site": {},
+                    "api_key_env": {}
+                  },
+                  "required": [
+                    "site",
+                    "api_key_env"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "azure_sentinel"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "dcr_endpoint": {},
+                    "dcr_immutable_id": {},
+                    "stream_name": {},
+                    "tenant_id": {},
+                    "client_id": {},
+                    "client_secret_env": {}
+                  },
+                  "required": [
+                    "dcr_endpoint",
+                    "dcr_immutable_id",
+                    "stream_name",
+                    "tenant_id",
+                    "client_id",
+                    "client_secret_env"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "gcs_pubsub"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "project_id": {},
+                    "topic_id": {},
+                    "service_account_json_env": {}
+                  },
+                  "required": [
+                    "project_id",
+                    "topic_id",
+                    "service_account_json_env"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "s3"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "bucket": {},
+                    "region": {},
+                    "access_key_id_env": {},
+                    "secret_access_key_env": {},
+                    "prefix": {}
+                  },
+                  "required": [
+                    "bucket",
+                    "region",
+                    "access_key_id_env",
+                    "secret_access_key_env"
+                  ]
+                }
+              }
+            ]
+          },
+          "description": "Configured sinks. A sink whose settings fail validation is skipped with a warning rather than stopping the others."
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -37,11 +37,11 @@ The query and the conditions it ran under.
 | `id` | `rse_…` primary key; `reranker_candidate_labels.event_id` references it `ON DELETE CASCADE`. |
 | `created_at` | Insert time. |
 | `query_text`, `query_hash` | The caller's original query, and its sha256. The hash is what you group by to find repeated queries without reading them. |
-| `source` | Free-text tag from `teacher_logging.source` — how you separate `production` traffic from an offline harvesting run in the same table. |
+| `source` | Free-text tag from `capabilities.file_search.teacher_logging.source` — how you separate `production` traffic from an offline harvesting run in the same table. |
 | `store_ids`, `owner_email` | Which vector stores were searched, and by whom. |
 | `retrieval_mode` | `reranked` or `rrf_only`. |
 | `reranker_available` | `false` for an `rrf_only` search. **Rows with `reranker_available = false` carry no teacher signal** — they have retrieval ranks but every `teacher_rank` is `NULL`. Filter them out of any training export. |
-| `candidates_requested` / `candidates_returned` | The configured recall width (`hybrid.candidates`) vs. how many chunks recall actually produced and handed to the teacher. `candidates_returned` is the number of label rows this event has. |
+| `candidates_requested` / `candidates_returned` | The configured recall width (`capabilities.file_search.hybrid.candidates`) vs. how many chunks recall actually produced and handed to the teacher. `candidates_returned` is the number of label rows this event has. |
 | `rrf_k`, `lexical_enabled`, `embedding_model`, `embedding_dim` | The retrieval configuration in force. Retrieval config drifts; a dataset that does not record it cannot be pooled across time. |
 | `reranker_provider`, `reranker_model` | Which teacher produced the labels. `NULL` when none did. |
 | `reranker_search_units` | Billed search units reported by the reranker deployment — the cost side of the "is the teacher worth it?" question. |
@@ -65,7 +65,7 @@ The candidate set, with every ranking signal that was available for it.
 | `retrieval_rank` | 1-based rank in the fused RRF ordering, i.e. what retrieval alone would have returned. |
 | `rrf_score` | The fused RRF score: the sum of `1/(rrf_k + rank)` over the arms that recalled this chunk. Not a similarity and not calibrated. |
 | `vector_rank`, `vector_score` | The vector arm's rank and its raw **cosine distance** (lower is better, never inverted). `NULL` when only the lexical arm recalled this chunk. |
-| `lexical_rank`, `lexical_score` | The lexical arm's rank and raw `ts_rank` (higher is better). `NULL` when only the vector arm recalled it, or when `hybrid.lexical_enabled` is false. |
+| `lexical_rank`, `lexical_score` | The lexical arm's rank and raw `ts_rank` (higher is better). `NULL` when only the vector arm recalled it, or when `capabilities.file_search.hybrid.lexical_enabled` is false. |
 | `teacher_rank` | **The training signal.** 1-based position in the teacher's relevance-descending output. `NULL` on an `rrf_only` event. |
 | `teacher_score` | The teacher's raw relevance score. Auxiliary, uncalibrated — see §2. |
 | `selected` | Whether this chunk survived `score_threshold` and `top_k` and was actually served to the caller. |
@@ -98,16 +98,18 @@ Two more things worth stating plainly:
 
 ## 3. Enabling collection
 
-Configured in `api_config.json` under `file_search.teacher_logging` — **not** through environment variables, so it can be flipped at runtime from the admin cockpit without a redeploy.
+Configured in `api_config.json` under `capabilities.file_search.teacher_logging` — **not** through environment variables, so it can be flipped at runtime from the admin cockpit without a redeploy.
 
 ```json
-"file_search": {
-  "teacher_logging": {
-    "enabled": false,
-    "store_chunk_text": false,
-    "sample_rate": 1.0,
-    "source": "production",
-    "max_concurrent_writes": 2
+"capabilities": {
+  "file_search": {
+    "teacher_logging": {
+      "enabled": false,
+      "store_chunk_text": false,
+      "sample_rate": 1.0,
+      "source": "production",
+      "max_concurrent_writes": 2
+    }
   }
 }
 ```

@@ -172,6 +172,14 @@
   display: flex;              /* ensures children see a real cross-axis height */
 }
 
+/* Field-help popover text: a long unbroken token (a doc URL, a JSON snippet) must
+   wrap inside the popover rather than force a horizontal scrollbar. `wrapping: true`
+   on sap.m.Text breaks on whitespace only, so an unbroken run needs this too. */
+.configFormHelpText {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 /* Responsive design */
 @media (max-width: 1024px) {
     .sapFFCL .sapFFlexibleColumnLayout {

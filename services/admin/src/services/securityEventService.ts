@@ -40,39 +40,7 @@ export class SecurityEventService {
    */
   static async createAwsSecurityEvent(eventData: SecurityEventData): Promise<void> {
     try {
-      const securityEvent = {
-        ID: uuidv4(),
-        credential_ID: eventData.credentialId,
-        eventType: eventData.eventType,
-        severity: eventData.severity,
-        description: eventData.description,
-        clientIP: eventData.clientIP || null,
-        userAgent: eventData.userAgent || null,
-        endpoint: eventData.endpoint || null,
-        requestId: eventData.requestId || null,
-        actionTaken: eventData.actionTaken || 'logged',
-        autoBlocked: eventData.autoBlocked || false,
-        investigated: false,
-        createdAt: new Date(),
-        createdBy: 'system'
-      };
-
-      const db = await cds.connect.to('db');
-      await db.run(
-        cds.ql.INSERT.into('sap.llm.gateway.admin.AwsCredentialSecurityEvents').entries(securityEvent)
-      );
-
-      // Automatically create SecurityNotification
-      await this.createNotificationForAwsEvent(securityEvent);
-
-      logger.warn('SecurityEventService', `AWS Security Event Created: ${eventData.eventType}`, {
-        credentialId: eventData.credentialId,
-        severity: eventData.severity,
-        description: eventData.description,
-        clientIP: eventData.clientIP,
-        actionTaken: eventData.actionTaken
-      });
-
+      await this.createAwsSecurityEventOrThrow(eventData);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logger.error('SecurityEventService', `Failed to create AWS security event: ${errorMessage}`, error as Error);
@@ -81,93 +49,145 @@ export class SecurityEventService {
   }
 
   /**
+   * Same as createAwsSecurityEvent, but lets a persistence failure propagate instead of
+   * swallowing it. Used by the SIEM ingest subscriber (securityEventSubscriber.ts), which
+   * must know whether the domain write actually succeeded before it acks the stream entry —
+   * swallowing here would let a DB failure be acked and silently dropped.
+   */
+  static async createAwsSecurityEventOrThrow(eventData: SecurityEventData): Promise<void> {
+    const securityEvent = {
+      ID: uuidv4(),
+      credential_ID: eventData.credentialId,
+      eventType: eventData.eventType,
+      severity: eventData.severity,
+      description: eventData.description,
+      clientIP: eventData.clientIP || null,
+      userAgent: eventData.userAgent || null,
+      endpoint: eventData.endpoint || null,
+      requestId: eventData.requestId || null,
+      actionTaken: eventData.actionTaken || 'logged',
+      autoBlocked: eventData.autoBlocked || false,
+      investigated: false,
+      createdAt: new Date(),
+      createdBy: 'system'
+    };
+
+    const db = await cds.connect.to('db');
+    await db.run(
+      cds.ql.INSERT.into('sap.llm.gateway.admin.AwsCredentialSecurityEvents').entries(securityEvent)
+    );
+
+    // Automatically create SecurityNotification. Best-effort: a notification failure must not
+    // undo the security event write, so it is caught and logged inside createNotificationForAwsEvent.
+    await this.createNotificationForAwsEvent(securityEvent);
+
+    logger.warn('SecurityEventService', `AWS Security Event Created: ${eventData.eventType}`, {
+      credentialId: eventData.credentialId,
+      severity: eventData.severity,
+      description: eventData.description,
+      clientIP: eventData.clientIP,
+      actionTaken: eventData.actionTaken
+    });
+  }
+
+  /**
    * Create and persist an API key security event
    */
   static async createApiKeySecurityEvent(eventData: ApiKeySecurityEventData): Promise<void> {
     try {
-      // Look up the API key's UUID from the database
-      const db = await cds.connect.to('db');
-      const { SELECT } = cds.ql;
-      
-      // First try to find by the actual key string (Gateway sends the key, not the ID)
-      let apiKeyResult = await db.run(
-        SELECT.one.from('sap.llm.gateway.admin.ApiKeys')
-          .columns('ID')
-          .where({ key: eventData.keyId })
-      );
-      
-      // If not found by key, try by ID (fallback for cases where ID is actually sent)
-      if (!apiKeyResult && eventData.keyId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        apiKeyResult = await db.run(
-          SELECT.one.from('sap.llm.gateway.admin.ApiKeys')
-            .columns('ID')
-            .where({ ID: eventData.keyId })
-        );
-      }
-      
-      // If still not found, check rotation history for old keys
-      if (!apiKeyResult) {
-        const rotationResult = await db.run(
-          SELECT.one.from('sap.llm.gateway.admin.ApiKeyRotations')
-            .columns('apiKey_ID')
-            .where({ oldKey: eventData.keyId })
-            .orderBy('createdAt desc')
-        );
-        
-        if (rotationResult) {
-          apiKeyResult = { ID: rotationResult.apiKey_ID };
-          logger.info('SecurityEventService', 'Found API key UUID via rotation history for old key', {
-            oldKey: eventData.keyId.substring(0, 10) + '...',
-            currentApiKeyId: rotationResult.apiKey_ID
-          });
-        }
-      }
-      
-      if (!apiKeyResult) {
-        logger.warn('SecurityEventService', 'API key not found even after checking rotation history', { 
-          keyId: eventData.keyId.substring(0, 10) + '...' 
-        });
-        // Use the key string as the ID temporarily - this will allow notification creation with system owner
-        apiKeyResult = { ID: eventData.keyId };
-      }
-
-      const securityEvent = {
-        ID: uuidv4(),
-        apiKey_ID: apiKeyResult.ID,
-        eventType: eventData.eventType,
-        severity: eventData.severity,
-        description: eventData.description,
-        clientIP: eventData.clientIP || null,
-        userAgent: eventData.userAgent || null,
-        endpoint: eventData.endpoint || null,
-        requestId: eventData.requestId || null,
-        actionTaken: eventData.actionTaken || 'logged',
-        autoBlocked: eventData.autoBlocked || false,
-        investigated: false,
-        createdAt: new Date(),
-        createdBy: 'system'
-      };
-
-      await db.run(
-        cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeySecurityEvents').entries(securityEvent)
-      );
-
-      // Automatically create SecurityNotification
-      await this.createNotificationForApiKeyEvent(securityEvent);
-
-      logger.warn('SecurityEventService', `API Key Security Event: ${eventData.eventType}`, {
-        keyId: eventData.keyId,
-        severity: eventData.severity,
-        description: eventData.description,
-        clientIP: eventData.clientIP,
-        actionTaken: eventData.actionTaken
-      });
-
+      await this.createApiKeySecurityEventOrThrow(eventData);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logger.error('SecurityEventService', `Failed to create API key security event: ${errorMessage}`, error as Error);
       // Don't throw - security event failures shouldn't break the main flow
     }
+  }
+
+  /**
+   * Same as createApiKeySecurityEvent, but lets a persistence failure propagate instead of
+   * swallowing it. Used by the SIEM ingest subscriber (securityEventSubscriber.ts), which
+   * must know whether the domain write actually succeeded before it acks the stream entry —
+   * swallowing here would let a DB failure be acked and silently dropped.
+   */
+  static async createApiKeySecurityEventOrThrow(eventData: ApiKeySecurityEventData): Promise<void> {
+    // Look up the API key's UUID from the database
+    const db = await cds.connect.to('db');
+    const { SELECT } = cds.ql;
+
+    // First try to find by the actual key string (Gateway sends the key, not the ID)
+    let apiKeyResult = await db.run(
+      SELECT.one.from('sap.llm.gateway.admin.ApiKeys')
+        .columns('ID')
+        .where({ key: eventData.keyId })
+    );
+
+    // If not found by key, try by ID (fallback for cases where ID is actually sent)
+    if (!apiKeyResult && eventData.keyId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      apiKeyResult = await db.run(
+        SELECT.one.from('sap.llm.gateway.admin.ApiKeys')
+          .columns('ID')
+          .where({ ID: eventData.keyId })
+      );
+    }
+
+    // If still not found, check rotation history for old keys
+    if (!apiKeyResult) {
+      const rotationResult = await db.run(
+        SELECT.one.from('sap.llm.gateway.admin.ApiKeyRotations')
+          .columns('apiKey_ID')
+          .where({ oldKey: eventData.keyId })
+          .orderBy('createdAt desc')
+      );
+
+      if (rotationResult) {
+        apiKeyResult = { ID: rotationResult.apiKey_ID };
+        logger.info('SecurityEventService', 'Found API key UUID via rotation history for old key', {
+          oldKey: eventData.keyId.substring(0, 10) + '...',
+          currentApiKeyId: rotationResult.apiKey_ID
+        });
+      }
+    }
+
+    if (!apiKeyResult) {
+      logger.warn('SecurityEventService', 'API key not found even after checking rotation history', {
+        keyId: eventData.keyId.substring(0, 10) + '...'
+      });
+      // Use the key string as the ID temporarily - this will allow notification creation with system owner
+      apiKeyResult = { ID: eventData.keyId };
+    }
+
+    const securityEvent = {
+      ID: uuidv4(),
+      apiKey_ID: apiKeyResult.ID,
+      eventType: eventData.eventType,
+      severity: eventData.severity,
+      description: eventData.description,
+      clientIP: eventData.clientIP || null,
+      userAgent: eventData.userAgent || null,
+      endpoint: eventData.endpoint || null,
+      requestId: eventData.requestId || null,
+      actionTaken: eventData.actionTaken || 'logged',
+      autoBlocked: eventData.autoBlocked || false,
+      investigated: false,
+      createdAt: new Date(),
+      createdBy: 'system'
+    };
+
+    await db.run(
+      cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeySecurityEvents').entries(securityEvent)
+    );
+
+    // Automatically create SecurityNotification. Best-effort: a notification failure must not
+    // undo the security event write, so it is caught and logged inside createNotificationForApiKeyEvent.
+    await this.createNotificationForApiKeyEvent(securityEvent);
+
+    logger.warn('SecurityEventService', `API Key Security Event: ${eventData.eventType}`, {
+      keyId: eventData.keyId,
+      severity: eventData.severity,
+      description: eventData.description,
+      clientIP: eventData.clientIP,
+      actionTaken: eventData.actionTaken
+    });
   }
 
   /**

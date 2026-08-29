@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Edge Cases and Error Handling Integration Tests', () => {
+describeLive('Edge Cases and Error Handling Integration Tests', () => {
   let adminClient: AxiosInstance;
   let userClient: AxiosInstance;
   

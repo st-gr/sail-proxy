@@ -602,6 +602,32 @@ class ModelMappingService {
 }
 ```
 
+#### Provider configuration keys
+
+`api_config.providers` holds per-provider settings, keyed by the provider's **wire name** as it
+appears in the route — so `aws-bedrock` keeps its hyphen. Two things about that map are worth
+knowing when editing it:
+
+**Which keys the gateway actually reads.** Only five providers are wired into request handling
+today: `anthropic`, `aws-bedrock`, `openai`, `openrouter`, and `perplexity`. Any **other** provider
+key is still accepted and schema-validated against the shared `providerCommon` shape, so no schema
+change is needed to stage a new provider — but its settings stay **inert** until the gateway itself
+learns to route that provider. (Traceability of every key to its read site is kept in
+`docs/notes/api-config-schema-traceability.md`.)
+
+**Each named provider has a closed key set.** The five named providers each carry exactly the
+settings their own request path reads, enforced by a `propertyNames` enum per provider:
+
+- the **shared** settings (`substitute_models`, `unsupported_params`, `param_renames`,
+  `emulate_streaming_for_models`, `supports_prompt_caching`, `supports_responses_api`, …);
+- the **Anthropic wire version and beta-flag filters** (`anthropic_bedrock_version`,
+  `supported_beta_headers`, `excluded_beta_headers`) — only on `anthropic` and `aws-bedrock`;
+- their **own extension** (`openai_deployment_api_version`; `default_pricing`, `model_mappings`) —
+  only on `openai` and `openrouter` respectively.
+
+A setting written under a provider whose code never reads it is **rejected** at validation, rather
+than silently kept as a value that does nothing. `perplexity` carries only the shared set.
+
 ### Security Implementation
 
 #### Cryptographic Key Management

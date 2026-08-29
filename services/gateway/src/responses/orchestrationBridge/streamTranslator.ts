@@ -19,6 +19,12 @@
  */
 import * as crypto from 'crypto';
 import { sseBlock } from '../../utils/sseFraming';
+// The allow-list of upstream error fields that may reach a client lives in one
+// place. This module renames `location` -> `type` on the way out, so it cannot
+// reuse the envelope helper wholesale, but it MUST NOT widen the field set:
+// filtering through the shared sanitiser first makes that structural rather than
+// a promise in a comment. See upstreamErrorEnvelope.ts's security note.
+import { sanitizeUpstreamErrorObject } from '../../utils/upstreamErrorEnvelope';
 // The SAME mappings the blocking sibling uses. These two describe one turn and must not
 // disagree about how it ended, nor about what it cost — see statusForFinishReason's and
 // translateUsage's own comments.
@@ -39,9 +45,71 @@ interface ToolCallAccumulator {
   args: string;
 }
 
+/**
+ * The client-safe projection of an orchestration error chunk.
+ *
+ * SAP AI Core reports a mid-stream failure as `{error:{request_id, code,
+ * message, location, intermediate_results}}`. Only the first four may be
+ * forwarded: `intermediate_results` carries the fully templated prompt —
+ * developer instructions and the whole conversation — and echoing it into a
+ * client-facing failure frame would hand the caller back content that never
+ * belonged to them. `request_id` is kept deliberately: it is what SAP support
+ * asks for when an orchestration call is escalated.
+ *
+ * `raw` is not always that SAP shape: sapAIService.ts also delivers the
+ * gateway's OWN transport errors through this path as `{error: true, message}`
+ * (stream.on('error') and the raw-chunk catch, around lines 451 and 595) —
+ * `error` there is the boolean `true`, not an object with its own `message`.
+ * `fallbackMessage` is the caller's chunk-level `message` for exactly that
+ * case: used only when `raw` carries no usable `message` of its own, so the
+ * real reason survives instead of collapsing to the generic string below.
+ *
+ * `code` accepts SAP's normal numeric shape and also a string that is
+ * entirely digits (`SapV2IntermediateFailure.code` is typed `string`, and
+ * live payloads have carried a numeric code as one) — never an arbitrary
+ * string, which still falls through to the 502 fallback in `failureStatus`.
+ */
+export function projectStreamError(raw: any, fallbackMessage?: string): { message: string; code?: number; type?: string; request_id?: string } | null {
+  if (!raw) return null;
+  const err: any = typeof raw === 'string'
+    ? { message: raw }
+    : sanitizeUpstreamErrorObject(raw);
+  const ownMessage = typeof err.message === 'string' && err.message.length > 0 ? err.message : undefined;
+  const message = ownMessage
+    ?? (typeof fallbackMessage === 'string' && fallbackMessage.length > 0 ? fallbackMessage : 'orchestration stream failed');
+  const out: { message: string; code?: number; type?: string; request_id?: string } = { message };
+  if (typeof err.code === 'number') {
+    out.code = err.code;
+  } else if (typeof err.code === 'string' && /^\d+$/.test(err.code)) {
+    out.code = Number(err.code);
+  }
+  if (typeof err.location === 'string') out.type = err.location;
+  if (typeof err.request_id === 'string') out.request_id = err.request_id;
+  return out;
+}
+
 export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
   let seq = 0;
   let opened = false;
+  /**
+   * Set once an error chunk arrives. `finish()` returns nothing afterwards: the
+   * stream is already terminal, and a `response.completed` following
+   * `response.failed` would contradict it — both are in TERMINAL_RESPONSE_TYPES,
+   * so a reader that stopped at the first would never see the second anyway,
+   * and one that did not would double-count the turn.
+   */
+  let failure: ReturnType<typeof projectStreamError> = null;
+  /**
+   * Set once `finish()` has run, success or failure. `sapAIService`'s
+   * `stream.on('error')` listener stays attached past `streamChatCompletion`
+   * resolving, so a transport error can still land here during the
+   * controller's `awaitResponsesStreamIdle` — after `finish()` already emitted
+   * `response.completed`. Without this latch that error would set `failure`
+   * post-terminal: a second SSE frame on an already-closed turn, and a turn
+   * that genuinely succeeded reported as 502 by `failureStatus()`. Once set,
+   * the error branch in `onChunk` is a no-op.
+   */
+  let finished = false;
   let textOpen = false;
   let text = '';
   let messageItemId = '';
@@ -75,12 +143,13 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
 
   /**
    * `usage` from the last chunk that carried it, or undefined if none ever did.
-   * `finish()` passes `zeroFillIfMissing: true` because `response.completed` is
-   * terminal — real Responses semantics say a terminal frame always carries
-   * usage (see `responseTranslator.ts`), and `JSON.stringify` would otherwise
-   * drop the key outright, leaving codex to dereference `usage.input_tokens`
-   * off `undefined`. `response.created`/`response.in_progress` stay `undefined`
-   * on purpose: they are not terminal, usage genuinely is not known yet, and no
+   * Every terminal envelope — `finish()`'s `response.completed`/`incomplete` and
+   * `onChunk`'s `response.failed` alike — passes `zeroFillIfMissing: true`
+   * because real Responses semantics say a terminal frame always carries usage
+   * (see `responseTranslator.ts`), and `JSON.stringify` would otherwise drop
+   * the key outright, leaving codex to dereference `usage.input_tokens` off
+   * `undefined`. `response.created`/`response.in_progress` stay `undefined` on
+   * purpose: they are not terminal, usage genuinely is not known yet, and no
    * client reads usage off an in-progress frame.
    */
   const responseEnvelope = (status: string, output: any[], zeroFillIfMissing = false): any => ({
@@ -166,6 +235,47 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
   return {
     onChunk(chunk: any): string[] {
       const out: string[] = [];
+
+      // An orchestration failure arrives as a chunk carrying `error` and nothing
+      // else — no `choices`, no `delta` — so every branch below is a no-op for
+      // it and the turn used to end silently: the client saw `response.created`
+      // (or nothing at all) and then a closed socket, which reads as an empty
+      // but successful answer. Surface it as the Responses API's own terminal
+      // failure event, the same frame the native path emits from its catch
+      // block, so a client learns WHY the turn produced no text.
+      // Items already opened are deliberately NOT closed before the failure frame:
+      // a turn that died mid-sentence has no `output_text.done` to report, and real
+      // OpenAI ends a failed turn the same way — `response.failed` after whatever
+      // partial frames were already sent. Most plugins that act on terminal frames
+      // read `response.output`, which is empty here, so an unclosed item costs them
+      // nothing (verified against responsesNamespaceToolsPlugin,
+      // responsesCustomToolsPlugin and hostedTool/engine) — with one exception:
+      // pseudonymization/index.ts flushes its retained unmask buffers specifically
+      // on `response.completed` (index.ts:852), not on the wider terminal set, so a
+      // buffer still holding a trailing fragment when `response.failed` fires is
+      // never flushed to the client on this path. That drops the fragment on a turn
+      // that already failed — truncation, not a leak; `res.end` (index.ts:995-999)
+      // still tracks the remainder for the leak audit. A tool call still
+      // accumulating when the error lands is dropped rather than emitted, since the
+      // client must not act on a call from a turn the model never completed.
+      const rawError = chunk?.error ?? chunk?.final_result?.error;
+      if (rawError && !failure) {
+        // `finish()` already ran: the turn is terminal (completed or failed), and
+        // an error arriving this late — e.g. sapAIService's `stream.on('error')`
+        // firing during the controller's post-stream idle wait — must not reopen
+        // it with a second frame or flip a success into a 502; see `finished`.
+        if (finished) return out;
+        const fallbackMessage = typeof chunk?.message === 'string' ? chunk.message : undefined;
+        failure = projectStreamError(rawError, fallbackMessage);
+        open(out);
+        out.push(block({
+          type: 'response.failed',
+          response: { ...responseEnvelope('failed', [], true), error: failure },
+        }));
+        return out;
+      }
+      if (failure) return out;
+
       const body = chunk?.final_result ?? chunk ?? {};
       const choice = body?.choices?.[0];
       const delta = choice?.delta ?? {};
@@ -258,7 +368,28 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
       return out;
     },
 
+    /**
+     * The status to record for a turn that failed, or null if it did not. Read by
+     * responsesController after the stream ends, so a failed turn is written to
+     * ApiKeyUsage with the upstream code rather than 200 — six analytics queries in
+     * admin-service.ts derive errorCount from `statusCode >= 400`, and a failure
+     * recorded as success is invisible to every one of them.
+     *
+     * The 502 fallback is here, not at the call site: an upstream failure carrying no
+     * numeric code is still a failure, and defaulting it to 200 would silently
+     * reproduce the bug. `failure` is set once and never cleared, so this keeps
+     * reporting the first failure and stays readable after finish().
+     */
+    failureStatus(): number | null {
+      return failure ? (failure.code ?? 502) : null;
+    },
+
     finish(): string[] {
+      // Latch first: a late error arriving after this call, success or failure,
+      // must find `finished` already true — see `finished`'s own comment.
+      finished = true;
+      // `response.failed` already ended this turn; see `failure`'s own comment.
+      if (failure) return [];
       const out: string[] = [];
       open(out);
       const output: any[] = [];
@@ -349,6 +480,10 @@ export function createOrchestrationBlockTranslator(opts: StreamTranslatorOptions
         return [];
       }
       return translator.onChunk(chunk);
+    },
+    /** Delegates to the wrapped translator, exactly as `finish()` below does. */
+    failureStatus(): number | null {
+      return translator.failureStatus();
     },
     /** The closing frames for the turn. Always emitted, even if no block parsed. */
     finish(): string[] {

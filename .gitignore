@@ -124,3 +124,9 @@ docker/docker-compose.override.yml.backup.*
 # first attempt at this did.
 docs/superpowers/*
 !docs/superpowers/README.md
+
+# Competitive analysis and positioning notes. Fully ignored, README included:
+# this repo is public, so even a tracked stub naming the analysis would disclose
+# internal strategy. Nothing tracked references it, so nothing breaks by its
+# absence — unlike docs/superpowers/, which keeps a README for that reason.
+docs/competitive/

@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('API Keys HTTP Integration Tests - Realistic Usage', () => {
+describeLive('API Keys HTTP Integration Tests - Realistic Usage', () => {
   let client: AxiosInstance;
   const baseURL = getAdminServiceUrl();
   const createdKeyIds: string[] = [];

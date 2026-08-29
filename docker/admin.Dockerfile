@@ -202,8 +202,16 @@ RUN mkdir -p node_modules/@libs && \
     ln -sf /app/libs/dist/service-auth node_modules/@libs/service-auth && \
     ln -sf /app/libs/dist/cache-invalidation node_modules/@libs/cache-invalidation && \
     ln -sf /app/libs/dist/aws-token-validation node_modules/@libs/aws-token-validation && \
+    ln -sf /app/libs/dist/aws-signing node_modules/@libs/aws-signing && \
     echo "=== Verifying @libs symlinks ===" && \
     ls -la node_modules/@libs/ && \
+    for lib in logger types config service-auth cache-invalidation aws-token-validation aws-signing; do \
+        if [ ! -e "node_modules/@libs/$lib/" ]; then \
+            echo "ERROR: @libs/$lib does not resolve - the build produced no /app/libs/dist/$lib"; \
+            exit 1; \
+        fi; \
+    done && \
+    echo "All @libs symlinks resolve" && \
     cd /app/services/admin/dist && \
     echo "=== Creating dynamic symlinks for all service files ===" && \
     mkdir -p services && \
@@ -227,7 +235,35 @@ RUN mkdir -p node_modules/@libs && \
     echo "=== Verifying dynamic symlinks ===" && \
     ls -la services/ && \
     echo "=== Final verification ===" && \
-    echo "Total .js files symlinked: $(ls -1 services/*.js 2>/dev/null | wc -l)"
+    echo "Total .js files symlinked: $(ls -1 services/*.js 2>/dev/null | wc -l)" && \
+    echo "=== Creating symlinks for the siem module ===" && \
+    mkdir -p siem && \
+    if [ -d "services/admin/src/siem" ]; then \
+        for file in services/admin/src/siem/*.js; do \
+            if [ -f "$file" ]; then \
+                basename_file=$(basename "$file") && \
+                ln -sf "../$file" "siem/$basename_file"; \
+            fi; \
+        done && \
+        mkdir -p siem/sinks && \
+        for file in services/admin/src/siem/sinks/*.js; do \
+            if [ -f "$file" ]; then \
+                basename_file=$(basename "$file") && \
+                ln -sf "../../$file" "siem/sinks/$basename_file"; \
+            fi; \
+        done && \
+        ls -la siem/ && \
+        for required in dispatcher dispatcherHandle siemConfigResolver credentialStore secretResolver secretResolverHandle outbox sink siemEvent; do \
+            if [ ! -e "siem/$required.js" ]; then \
+                echo "ERROR: siem/$required.js did not resolve - admin-service.js requires ../siem/$required"; \
+                exit 1; \
+            fi; \
+        done && \
+        echo "All siem symlinks resolve"; \
+    else \
+        echo "ERROR: services/admin/src/siem/ not found - the SIEM export pipeline cannot start"; \
+        exit 1; \
+    fi
 
 USER nodejs
 

@@ -144,6 +144,6 @@ describe('the hoist switch', () => {
 
   it('ships enabled in api_config.json', () => {
     const shipped = require('../api_config.json');
-    expect(shipped.api_config.tool_search.hoist_discovered_tools).toBe(true);
+    expect(shipped.api_config.capabilities.tool_search.hoist_discovered_tools).toBe(true);
   });
 });

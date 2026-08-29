@@ -42,7 +42,7 @@
  * and stashes the verdict on `req.__responsesRoute` for exactly this reason: the deployed
  * (native) route already accepts remote `input_image` urls today and must not be touched by
  * this change, so a request headed there is left alone here even though it carries the same
- * hook (`defaultHooks.openai.responses` / `responses-stream`) as an orchestration-bound one.
+ * hook (`hooks.defaults.openai.responses` / `responses-stream`) as an orchestration-bound one.
  *
  * MASKING ORDER, a known trade-off, not a bug. `pseudonymizationPlugin` sits at index 0 in
  * both hook arrays, ahead of this plugin, and its `replacer.ts` (`:77-88`) walks every string

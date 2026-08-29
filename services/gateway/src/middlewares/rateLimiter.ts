@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
+import { credentialIdentity } from '../utils/credentialIdentity';
+import securityEventEmitter from '../services/securityEventEmitter';
+import { getClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from '../services/configService';
 const logger = getDefaultLogger();
 
 interface RateLimitEntry {
@@ -17,6 +21,7 @@ interface RateLimitedRequest extends Request {
   };
   apiKey?: {
     key: string;
+    id?: string;
   };
   rateLimitRequestId?: string;
   body: {
@@ -46,10 +51,20 @@ const rateLimiter = (req: RateLimitedRequest, res: Response, next: NextFunction)
     
     // Support both API key and AWS authentication
     let identifier: string;
+    let authType: 'api_key' | 'aws_credential';
+    // Set only for a resolved API key (req.apiKey.id is the ApiKeys row's cuid, the same
+    // stable identifier usageTracker.ts already uses for audit/usage events) — carries it
+    // straight through to the SIEM event instead of hashing req.apiKey.key, so the same live
+    // key correlates across event types instead of being a row ID in some and a SHA-256 in
+    // others. Left undefined for AWS credentials and stays on the credentialIdentity() hash.
+    let resolvedCredentialId: string | undefined;
     if (req.isAwsAuthenticated && req.awsCredentials) {
       identifier = req.awsCredentials.accessKeyId;
+      authType = 'aws_credential';
     } else if (req.apiKey && req.apiKey.key) {
       identifier = req.apiKey.key;
+      authType = 'api_key';
+      resolvedCredentialId = req.apiKey.id;
     } else {
       // No valid authentication found, should not reach here normally
       res.status(401).json({
@@ -89,6 +104,41 @@ const rateLimiter = (req: RateLimitedRequest, res: Response, next: NextFunction)
     // In production, look up allowed limit from your ModelRateLimit CDS data.
     const allowed = DEFAULT_RATE_LIMIT;
     if (entry.count >= allowed) {
+      // Fire-and-forget: recording the event must never delay or fail the 429
+      // response. try/catch guards a synchronous throw; .catch guards a
+      // rejected promise from the emitter itself.
+      try {
+        Promise.resolve(
+          securityEventEmitter.emitRateLimitExceeded({
+            // identifier is the raw API key / AWS access key ID (req.apiKey.key /
+            // req.awsCredentials.accessKeyId) — never ship that to a SIEM sink, same as the
+            // failed-auth paths (apiKeyAuth.ts, unifiedTokenAuth.ts, tokenBasedAwsAuth.ts). A
+            // resolved API key ships its stable row ID instead (see resolvedCredentialId
+            // above); only an unresolved credential falls back to hashing the raw value.
+            ...(resolvedCredentialId ? { credentialId: resolvedCredentialId } : credentialIdentity(identifier)),
+            authType,
+            clientIP: getClientIp(req, getTrustForwardedFor()),
+            userAgent: req.get?.('user-agent'),
+            endpoint: req.originalUrl,
+            method: req.method,
+            requestId,
+            statusCode: 429,
+            limitType: 'requests_per_minute',
+            currentCount: entry.count,
+            maxAllowed: allowed,
+            windowSize: '60s'
+          })
+        ).catch((error) => {
+          logger.warn('RateLimiter', 'Failed to emit rate limit exceeded security event', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      } catch (error) {
+        logger.warn('RateLimiter', 'Failed to emit rate limit exceeded security event', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+
       res.status(429).json({ error: 'Rate limit exceeded' });
       return;
     }

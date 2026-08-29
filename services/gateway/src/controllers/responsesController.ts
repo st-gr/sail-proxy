@@ -601,7 +601,13 @@ async function dispatchOrchestration(ctx: {
       updateTokenCounts(usageMetrics, extra.input_tokens || 0, extra.output_tokens || 0, extra.cache_creation_tokens || 0, extra.cache_read_tokens || 0);
     }
 
-    emitUsageEvent(req, usageMetrics, effectiveModel, 200);
+    // A turn that failed mid-stream is recorded with the upstream status, not 200: six
+    // analytics queries in admin-service.ts derive errorCount from `statusCode >= 400`,
+    // and a failure written as a success is invisible to all of them. The HTTP status
+    // stays 200 — SSE headers were flushed long before the failure was known — so this
+    // is the only place the failure can be registered. usageMetrics is passed unchanged
+    // because the tokens burned before the failure were still spent.
+    emitUsageEvent(req, usageMetrics, effectiveModel, translator.failureStatus() ?? 200);
     if (!res.writableEnded) res.end();
     return;
   }
@@ -731,13 +737,13 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // Fail closed. In distributed mode the admin-supplied configuration REPLACES
     // the shipped file config wholesale (configService :380/:755 — no merge), so
     // a configuration activated before this route existed has no `responses` /
-    // `responses-stream` keys under defaultHooks.openai. Masking would then be
+    // `responses-stream` keys under hooks.defaults.openai. Masking would then be
     // silently skipped on the one endpoint the operator locked with
     // allow_user_bypass:false. Scoped to this route only: nothing else changes.
     if (!hookConfig && configService.isPseudonymizationForced('openai')) {
       const message = 'Pseudonymization is force-enabled for the openai endpoint but no plugin hook is configured for '
         + '`responses` / `responses-stream`. Activate a configuration that includes these keys under '
-        + '`defaultHooks.openai` before using this route.';
+        + '`hooks.defaults.openai` before using this route.';
       logger.error('responsesController', `${message} (model=${requestedModel}, subPath=${subPath})`);
       res.status(503).json({ error: { message, type: 'api_error', code: 'pseudonymization_hook_missing' } });
       return;

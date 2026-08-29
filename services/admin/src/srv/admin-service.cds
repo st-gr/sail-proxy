@@ -444,7 +444,11 @@ service AdminService {
     { Value: deployedBy, Label: 'Deployed By' }
   ]
   @Fiori.UI.SelectionFields: [ isActive, deployedBy ]
-  entity ApiConfigurations as projection on admin.ApiConfigurations;
+  // excluding siemCredentials: that composition's target holds ciphertext/iv/salt/authTag -
+  // see the doc comment on SiemCredentials (siem.cds) for why it must never reach OData, and
+  // ApiConfigurations grants READ to 'any', so an un-excluded composition would expose it
+  // to every authenticated user via $expand or direct navigation.
+  entity ApiConfigurations as projection on admin.ApiConfigurations excluding { siemCredentials };
   
   // Add ETag support for optimistic concurrency control
   annotate ApiConfigurations with { modifiedAt @odata.etag };
@@ -457,7 +461,10 @@ service AdminService {
     { Value: deployedAt, Label: 'Deployed' },
     { Value: deployedBy, Label: 'Deployed By' }
   ]
-  entity ActiveConfiguration as projection on admin.ActiveConfiguration;
+  // excluding siemCredentials - see the note on the ApiConfigurations projection above;
+  // this view selects from ApiConfigurations with no column list, so it inherits the
+  // composition too unless excluded here as well.
+  entity ActiveConfiguration as projection on admin.ActiveConfiguration excluding { siemCredentials };
   
   @readonly
   @(requires: 'admin')
@@ -735,7 +742,49 @@ service AdminService {
     };
     error: String;
   };
-  
+
+  @(requires: 'admin')
+  action setSiemCredential(configurationId: UUID, name: String, value: String) returns {
+    success : Boolean;
+    error   : String;
+  };
+
+  @(requires: 'admin')
+  action deleteSiemCredential(configurationId: UUID, name: String) returns {
+    success : Boolean;
+    error   : String;
+  };
+
+  // Metadata only - never the value, never the ciphertext.
+  @(requires: 'admin')
+  action listSiemCredentials(configurationId: UUID) returns array of {
+    name       : String;
+    updatedAt  : Timestamp;
+    updatedBy  : String;
+    maskedHint : String;
+  };
+
+  // Reports SiemCredentials rows nothing can reach any more - see credentialSweep.ts. Never
+  // deletes, never returns a value or ciphertext.
+  @(requires: 'admin')
+  action findOrphanedSiemCredentials() returns array of {
+    configurationId   : UUID;
+    configurationName : String;
+    name              : String;
+    reason            : String;
+    updatedAt         : Timestamp;
+    updatedBy         : String;
+  };
+
+  // Deletes exactly the caller-specified (configurationIds[i], names[i]) pairs - an operator
+  // confirms exactly what goes. Irreversible: a credential value can never be read back.
+  @(requires: 'admin')
+  action deleteOrphanedSiemCredentials(names: array of String, configurationIds: array of UUID) returns {
+    success : Boolean;
+    deleted : Integer;
+    error   : String;
+  };
+
   // Analytics and Reporting Functions
   // Changed from action to function since it's read-only (no side effects)
   function getUsageStatistics(

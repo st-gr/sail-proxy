@@ -26,5 +26,5 @@ export const NATIONALITIES: string[] = [
   'Taiwanese', 'Tajik', 'Tanzanian', 'Thai', 'Togolese', 'Tongan', 'Trinidadian',
   'Tunisian', 'Turkish', 'Turkmen', 'Ugandan', 'Ukrainian', 'Uruguayan', 'Uzbek',
   'Venezuelan', 'Vietnamese', 'Welsh', 'Yemeni', 'Zambian', 'Zimbabwean',
-  'Chamorro', 'Tongan',
+  'Chamorro',
 ];

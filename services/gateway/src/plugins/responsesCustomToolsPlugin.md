@@ -97,7 +97,7 @@ with the 400 it replaces. Both halves are required, and neither is optional:
 
 ## Modes
 
-`configService.getCustomToolMode()` (`api_config.json` → `custom_tools.mode`) selects one of two
+`configService.getCustomToolMode()` (`api_config.json` → `capabilities.custom_tools.mode`) selects one of two
 behaviors for the tool **declaration**. Absent config resolves to the default, `translate`, so
 an install whose `api_config.json` predates this key gets the working behavior rather than the
 400.
@@ -198,7 +198,7 @@ Verified live: Codex discovered three MCP tools through this gateway and called 
 the wire showing 14 tools in from the client and 17 out to the upstream.
 
 **It is switchable, because it works around someone else's bug.** Set
-`tool_search.hoist_discovered_tools` to `false` once Codex stops gating exposure on the host, and
+`capabilities.tool_search.hoist_discovered_tools` to `false` once Codex stops gating exposure on the host, and
 the gateway stops touching the tools array. Leaving it on afterwards is harmless rather than
 damaging: any name the client already declares is skipped, so a client that starts sending its own
 discovered tools gets no duplicates. The switch exists so the workaround is retired deliberately
@@ -208,9 +208,9 @@ rather than silently outliving the bug.
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `custom_tools.mode` | `translate` \| `strip` | `translate` | `strip` removes `apply_patch`; the model falls back to editing files through shell commands |
-| `tool_search.mode` | `translate` \| `strip` | `translate` | `strip` removes `tool_search`; the model cannot discover deferred tools at all |
-| `tool_search.hoist_discovered_tools` | boolean | `true` | `false` disables the hoist above, leaving discovered tools uncallable on this gateway |
+| `capabilities.custom_tools.mode` | `translate` \| `strip` | `translate` | `strip` removes `apply_patch`; the model falls back to editing files through shell commands |
+| `capabilities.tool_search.mode` | `translate` \| `strip` | `translate` | `strip` removes `tool_search`; the model cannot discover deferred tools at all |
+| `capabilities.tool_search.hoist_discovered_tools` | boolean | `true` | `false` disables the hoist above, leaving discovered tools uncallable on this gateway |
 
 Only an explicit `false` disables the hoist — absent or malformed values leave it on, since a
 wrong `true` costs nothing and a wrong `false` silently breaks discovered tools. Note the running
@@ -258,7 +258,7 @@ client-side choice; the hoist is what makes both work at once.
 
 ## Hook wiring
 
-Both `defaultHooks.openai.responses` and `.responses-stream` in `api_config.json` carry an entry
+Both `hooks.defaults.openai.responses` and `.responses-stream` in `api_config.json` carry an entry
 for this plugin, gated the same way `responsesNamespaceToolsPlugin`'s entry is:
 
 ```json

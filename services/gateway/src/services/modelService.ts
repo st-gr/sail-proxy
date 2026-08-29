@@ -413,7 +413,7 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
       }
     });
 
-    // --- Apply model_list_changes from api_config.json ---
+    // --- Apply models.overrides from api_config.json ---
     const modelListChanges = configService.getModelListChanges();
     const modelListChangesCount = Object.keys(modelListChanges).length;
     if (modelListChangesCount > 0) {
@@ -480,7 +480,7 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
         logger.debug('ModelService', `Applied cache pricing to model ${model.internal_id}`);
       }
     });
-    // --- End of applying model_list_changes ---
+    // --- End of applying models.overrides ---
 
     const transformedData = transformModelsToOpenAIFormat(processedModels);
 

@@ -88,7 +88,7 @@ jest.mock('../src/fileSearch/db', () => ({
 // file_search descriptor reads the tool config. The two result bounds come from the real
 // module so the descriptor and this mock cannot agree with each other while disagreeing
 // with configService.
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 const toolConfig = { enabled: true, maxSearchesPerRequest: 5, maxNumResultsDefault: 10 };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,

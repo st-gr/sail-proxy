@@ -6,12 +6,12 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
 const ADMIN_SERVICE_URL = getAdminServiceUrl();
 const ADMIN_AUTH = 'Basic ' + Buffer.from('admin@test.com:admin').toString('base64');
 
-describe('Token Safety Guards', () => {
+describeLive('Token Safety Guards', () => {
   let client: AxiosInstance;
 
   beforeAll(() => {

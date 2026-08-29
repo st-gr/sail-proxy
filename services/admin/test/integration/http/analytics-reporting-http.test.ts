@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Analytics and Reporting HTTP Integration Tests', () => {
+describeLive('Analytics and Reporting HTTP Integration Tests', () => {
   let client: AxiosInstance;
 
   beforeAll(() => {

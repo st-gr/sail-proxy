@@ -1,0 +1,76 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core">
+
+    <!--
+        Schema-driven form view of the selected configuration's api_config: one tab per group
+        (capabilities, hooks, models, observability, platform, providers - see
+        controller/ConfigFormTabs.ts), each holding one collapsible panel per section. `siem`
+        renders inside the observability tab, at the pointer it has always had.
+
+        Placement is load-bearing and was established empirically (task 4 findings): this fragment
+        lives in detailDynamicPage -> header -> DynamicPageHeader -> content. Nothing in
+        Main.controller.ts reads, writes or destroys the header aggregation, while everything in
+        f:content is replaced on every selection by _createDetailContentProgrammatically.
+
+        The container is a Panel and must stay one: _ensureDetailContentVisible walks the whole
+        detail page and forces setVisible(true) on every control whose metadata name is exactly
+        "sap.m.VBox", so a VBox here could never be hidden by the toggle.
+    -->
+    <Panel id="configFormPanel"
+           visible="{viewModel>/formViewActive}"
+           backgroundDesign="Transparent"
+           class="sapUiSmallMarginBeginEnd">
+        <headerToolbar>
+            <OverflowToolbar>
+                <Title id="configFormTitle" text="{i18n>formTitle}" level="H3"/>
+                <ToolbarSpacer/>
+                <Button id="configFormSaveButton"
+                        text="{i18n>formSave}"
+                        icon="sap-icon://save"
+                        type="Accept"
+                        tooltip="{i18n>formSaveTooltip}"
+                        visible="{= ${viewModel>/formEditable} &amp;&amp; ${viewModel>/selectedConfigId} !== null}"
+                        press=".onConfigFormSave"/>
+                <!--
+                    Cancel is an edit affordance, so it follows the same rule Save does: visible
+                    only where the form is editable, which is admin AND inactive. Credential
+                    Set/Clear deliberately do not - rotation stays available on an active
+                    configuration - and are gated inside the credential control instead.
+                -->
+                <Button id="configFormCancelButton"
+                        text="{i18n>formCancel}"
+                        icon="sap-icon://sys-cancel"
+                        type="Transparent"
+                        tooltip="{i18n>formCancelTooltip}"
+                        visible="{= ${viewModel>/formEditable} &amp;&amp; ${viewModel>/selectedConfigId} !== null}"
+                        press=".onConfigFormCancel"/>
+            </OverflowToolbar>
+        </headerToolbar>
+        <content>
+            <!--
+                Both banners sit ABOVE the tab bar and therefore outside the scrolling region each
+                tab now carries (ConfigFormTabs.buildTabScroll). That is deliberate: "this
+                configuration is active and read-only" and a refused save's notice have to stay
+                readable while the operator scrolls to the field they name, not disappear with it.
+                They are also why the region's height is measured rather than hardcoded - a banner
+                coming or going changes how much room is left below them.
+            -->
+            <!-- Same wording the JSON editor already shows for an active configuration. -->
+            <MessageStrip id="configFormActiveStrip"
+                          text="{i18n>formActiveReadOnly}"
+                          type="Information"
+                          showIcon="true"
+                          visible="{viewModel>/selectedConfigIsActive}"
+                          class="sapUiTinyMarginBottom"/>
+            <MessageStrip id="configFormNoticeStrip"
+                          text="{viewModel>/formNotice}"
+                          type="Warning"
+                          showIcon="true"
+                          visible="{= !!${viewModel>/formNotice}}"
+                          class="sapUiTinyMarginBottom"/>
+            <VBox id="configFormContent"/>
+        </content>
+    </Panel>
+
+</core:FragmentDefinition>

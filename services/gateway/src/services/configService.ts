@@ -7,6 +7,8 @@ import axios, { AxiosError } from 'axios';
 import { ValidationTokenUtils } from '../../../../libs/aws-token-validation/validation-token';
 import { adminServiceClient } from '../clients/adminServiceClient';
 import pluginLoader from './pluginLoader';
+import { DEFAULT_CONFIG as FALLBACK_CONFIG } from './defaultConfig';
+import { legacyShapeErrorForFile } from '../utils/legacyConfigShape';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
@@ -26,12 +28,55 @@ interface ModelSubstitution {
   to: string;
 }
 
+/**
+ * Aligned with $defs/providerConfig. Two deviations from the task-1 brief's
+ * literal 8-field text, both made to avoid a real behaviour change:
+ *
+ * - substitute_models is ModelSubstitution[] (array of {from, to}), NOT
+ *   Record<string, string> — $defs/providerConfig.substitute_models actually
+ *   schemas an array of {from, to[, description]}, and getSubstitutedModel/
+ *   getOriginalModel/DEFAULT_CONFIG below already consume it that way.
+ * - supports_prompt_caching?: boolean is added (9th field). It isn't declared
+ *   under $defs/providerConfig's own properties, but the schema's own
+ *   supports_prompt_caching description ("then the provider-level
+ *   api_config.providers.<provider>.supports_prompt_caching flag") and
+ *   getSupportsPromptCaching/promptCachingSupport.ts below both read and rely
+ *   on it as a real provider-level knob (schema gap, additionalProperties
+ *   allows it through unvalidated). See task-1-report.md.
+ */
 interface ProviderConfig {
-  substitute_models?: ModelSubstitution[];
-  emulate_streaming_for_models?: string[];
   anthropic_bedrock_version?: string;
-  openai_deployment_api_version?: string;
+  excluded_beta_headers?: string[];
+  supported_beta_headers?: string[];
+  emulate_streaming_for_models?: string[];
+  substitute_models?: ModelSubstitution[];
+  unsupported_params?: string[];
+  param_renames?: Record<string, string>;
+  supports_responses_api?: boolean;
+  supports_prompt_caching?: boolean;
 }
+
+/**
+ * One entry of openrouter.model_mappings, aligned with api-config-schema.json's
+ * openrouter allOf extension. Read by controllers/openRouterController.ts to
+ * pick a default max_tokens per upstream provider prefix.
+ */
+export interface OpenRouterModelMapping {
+  id_prefix: string;
+  provider: string;
+  default_context_length: number;
+  max_tokens?: number;
+}
+
+/**
+ * openrouter's ProviderConfig, plus its schema-only extension fields
+ * (default_pricing, model_mappings — see ApiConfig.openrouter below). Named
+ * once so ApiConfig.openrouter and the get('openrouter') overload don't drift.
+ */
+type OpenRouterProviderConfig = ProviderConfig & {
+  default_pricing?: { completion: string; image: string; prompt: string };
+  model_mappings?: OpenRouterModelMapping[];
+};
 
 interface TimeoutConfig {
   default?: number;
@@ -39,7 +84,7 @@ interface TimeoutConfig {
 }
 
 interface ModelHooks {
-  [subpath: string]: any;
+  [subpath: string]: unknown;
 }
 
 interface CachePricing {
@@ -47,18 +92,75 @@ interface CachePricing {
   cacheCreationInputCostPer1K?: string;
 }
 
-interface ModelListChange {
-  hooks?: ModelHooks;
-  subpaths_native?: string[];
-  subpaths_emulated?: string[];
-  streamingSupported?: boolean;
-  cachePricing?: CachePricing;
-  [key: string]: any; // Allow additional properties
+/**
+ * Per-category masking toggles + activation for the pseudonymizationPlugin,
+ * aligned with $defs/pseudonymizationConfig. One shape, three layers:
+ * ApiConfig.pseudonymization (global), DefaultHookEntry.pseudonymization
+ * (per-endpoint, via hooks.defaults[endpoint]), and ModelOverride.pseudonymization
+ * (per-model) — plugins/pseudonymization/index.ts reads all three, layered
+ * global → endpoint → model. Exported so that file (and any other consumer)
+ * casts into the same real shape instead of inventing its own.
+ */
+export interface PseudonymizationConfig {
+  enabled?: boolean;
+  method?: 'pseudonymization' | 'anonymization';
+  allow_user_bypass?: boolean;
+  entities?: Record<string, boolean>;
+  org_suffixes?: string[];
+  location_gazetteer?: string[];
+  /**
+   * Confidence a candidate must reach to be masked, for every category with no entry in
+   * `thresholds`. 0–1; absent means the plugin's 0.5 default.
+   * @see plugins/pseudonymization/detectors/confidence.ts
+   */
+  min_confidence?: number;
+  /** Per-category confidence thresholds, overriding `min_confidence` where present. */
+  thresholds?: Record<string, number>;
+  /**
+   * Values this deployment never masks. `terms` are case-sensitive literals; `patterns` are
+   * regex sources, anchored to the whole detected value before compiling. Layered by
+   * CONCATENATION, so a lower layer can only add an exemption, never remove one.
+   * @see plugins/pseudonymization/detectors/allowlist.ts
+   */
+  allowlist?: { patterns?: string[]; terms?: string[] };
+  /**
+   * Distinct masked values a request may carry before it is REPORTED as saturated — one WARN
+   * line and a `saturated: true` block on the SIEM usage event. Report-only: it can never
+   * lower a confidence score or drop a mask. Absent means the plugin's default of 40.
+   * @see plugins/pseudonymization/saturationReport.ts
+   */
+  saturation_warn?: number;
 }
 
-interface ModelListChanges {
-  [modelId: string]: ModelListChange;
-}
+/**
+ * Per-model deltas merged onto the SAP AI Core model list (modelService.ts:416-445).
+ *
+ * Adds four fields beyond the task-1 brief's literal list: hooks,
+ * param_renames, cachePricing (spelled camelCase, not cache_pricing), and a
+ * fully-typed pseudonymization (brief had `{ entities?: unknown }`). The
+ * shipped api-config-schema.json documents hooks/param_renames as real
+ * models.overrides properties and pseudonymization as a full
+ * $defs/pseudonymizationConfig (getHookConfig/getParamRenames below, and
+ * plugins/pseudonymization/index.ts, already read them), and
+ * modelService.ts:467-477 / getCachePricingForModel already read the camelCase
+ * `cachePricing` — the index signature alone types those reads as `unknown`,
+ * which doesn't round-trip through the existing typed call sites without a
+ * cast. Adding the real fields keeps this a pure typing change instead of
+ * introducing a cast. See task-1-report.md.
+ */
+interface ModelOverride {
+  streamingSupported?: boolean;           // AI Core's spelling, kept deliberately
+  subpaths_native?: string[];
+  subpaths_emulated?: string[];
+  unsupported_params?: string[];
+  param_renames?: Record<string, string>;
+  hooks?: ModelHooks;
+  pseudonymization?: PseudonymizationConfig;
+  supports_responses_api?: boolean;
+  supports_prompt_caching?: boolean;
+  cachePricing?: CachePricing;
+  [key: string]: unknown;                 // merge copies arbitrary keys (modelService.ts:434-438);
+}                                         // scoped HERE only, never on ApiConfig
 
 interface LoggingConfig {
   defaultLevel?: string;
@@ -67,14 +169,108 @@ interface LoggingConfig {
   payload_logging_enabled?: boolean;
 }
 
-interface ApiConfig {
-  [provider: string]: any;
-  model_list_changes?: ModelListChanges;
+/**
+ * The `providers` map: route segment → provider configuration. Keys are wire
+ * identifiers, so 'aws-bedrock' keeps its hyphen.
+ */
+interface ProvidersConfig {
+  anthropic?: ProviderConfig;
+  'aws-bedrock'?: ProviderConfig;
+  // openai_deployment_api_version is an openai-specific schema extension
+  // (api-config-schema.json's allOf on top of $defs/providerConfig), read by
+  // getOpenAIDeploymentApiVersion below — not one of ProviderConfig's 8 common
+  // fields, so it's added here rather than widening ProviderConfig for every
+  // provider.
+  openai?: ProviderConfig & { openai_deployment_api_version?: string };
+  // default_pricing/model_mappings are an openrouter-specific schema extension
+  // (api-config-schema.json's allOf on top of $defs/providerConfig), same class
+  // as openai_deployment_api_version above. model_mappings is read by
+  // controllers/openRouterController.ts (via the get('openrouter') overload
+  // below); default_pricing isn't consumed anywhere today but is typed here too
+  // so it isn't silently dropped by a future reader that expects it.
+  openrouter?: OpenRouterProviderConfig;
+  perplexity?: ProviderConfig;
+}
+
+interface ModelsConfig {
+  /** Was `model_list_changes`: per-model deltas merged onto the AI Core model list. */
+  overrides?: Record<string, ModelOverride>;
+}
+
+interface CapabilitiesConfig {
+  web_search?: Record<string, unknown>;
+  file_search?: Record<string, unknown>;
+  hosted_tools?: Record<string, unknown>;
+  namespace_tools?: Record<string, unknown>;
+  custom_tools?: Record<string, unknown>;
+  tool_search?: Record<string, unknown>;
+}
+
+interface HooksConfig {
+  /** Was `hookDefinitions`. */
+  definitions?: Record<string, unknown>;
+  /** Was `defaultHooks`. */
+  defaults?: Record<string, unknown>;
+}
+
+interface PlatformConfig {
   timeouts?: TimeoutConfig;
   logging?: LoggingConfig;
-  default_models?: {
-    [provider: string]: string;
-  };
+  rate_limit_handling?: Record<string, unknown>;
+  security?: { trust_forwarded_for?: boolean };
+}
+
+interface ObservabilityConfig {
+  pseudonymization?: Record<string, unknown>;
+  siem?: Record<string, unknown>;
+}
+
+interface ApiConfig {
+  providers?: ProvidersConfig;
+  models?: ModelsConfig;
+  capabilities?: CapabilitiesConfig;
+  hooks?: HooksConfig;
+  platform?: PlatformConfig;
+  observability?: ObservabilityConfig;
+}
+
+const PROVIDER_KEYS = ['anthropic', 'aws-bedrock', 'openai', 'openrouter', 'perplexity'] as const;
+// No `Record<string, ProviderConfig | undefined>` cast on `api.providers` here:
+// that cast would type EVERY string key (including ones that aren't provider
+// keys) as ProviderConfig, so renaming e.g. 'aws-bedrock' on ProvidersConfig
+// would compile and silently start returning undefined instead of failing the
+// build. Narrowing the *key* via the typeof PROVIDER_KEYS[number] guard keeps
+// the indexed access on the real ProvidersConfig type, so a rename of any one
+// of the five provider keys is a compile error here.
+function providerConfig(api: ApiConfig, provider: string): ProviderConfig | undefined {
+  return PROVIDER_KEYS.includes(provider as typeof PROVIDER_KEYS[number])
+    ? api.providers?.[provider as typeof PROVIDER_KEYS[number]]
+    : undefined;
+}
+
+/**
+ * Raw shape of one `hooks.defaults[endpoint]` entry. `HooksConfig.defaults`
+ * stays `Record<string, unknown>` (every section's *internal* shape stays
+ * untyped except where a reader already needs one) so reaching into it
+ * needs a single local, honest cast rather than threading `unknown` through
+ * isPseudonymizationForced/getHookConfig below. Exported so
+ * plugins/pseudonymization/index.ts casts into the same shape rather than
+ * inventing its own.
+ *
+ * The `[subpath: string]: unknown` index signature IS sanctioned, not a
+ * loosening: api-config-schema.json's `hooks.defaults` entries declare a
+ * `patternProperties` regex for the subpath keys beside the named
+ * `pseudonymization` one — each maps to a hook array ($defs/hookEntryArray,
+ * getHookConfig's `[endpoint]?.[subpath]` read below) whose fields nothing
+ * here reads, so `unknown` stays the honest type, matching how
+ * `hooks.definitions` itself stays `Record<string, unknown>` on HooksConfig.
+ */
+export interface DefaultHookEntry {
+  pseudonymization?: PseudonymizationConfig;
+  [subpath: string]: unknown;
+}
+function defaultHookEntry(api: ApiConfig, endpoint: string): DefaultHookEntry | undefined {
+  return (api.hooks?.defaults as Record<string, DefaultHookEntry> | undefined)?.[endpoint];
 }
 
 interface Config {
@@ -123,25 +319,10 @@ let configurationPromise: Promise<Config> | null = null;
 let configurationResolve: ((config: Config) => void) | null = null;
 let startupRequestSent = false; // Track if we've already sent the initial startup request
 
-// Default configuration if file doesn't exist
-const DEFAULT_CONFIG: Config = {
-  api_config: {
-    openai: {
-      substitute_models: [
-        { from: "GPT-4", to: "o1" },
-        { from: "GPT-3.5", to: "GPT-4" }
-      ],
-      emulate_streaming_for_models: []
-    },
-    anthropic: {
-      substitute_models: [
-        { from: "claude-3-5-haiku-20241022", to: "anthropic--claude-3-haiku" },
-        { from: "claude-3-7-sonnet-20250219", to: "anthropic--claude-3.7-sonnet" }
-      ],
-      emulate_streaming_for_models: ["anthropic--claude-3.7-sonnet"]
-    }
-  }
-};
+// Default configuration if file doesn't exist. Defined in ./defaultConfig so
+// the admin test suite (which owns the schema and the only Ajv dependency) can
+// validate it without loading this module's runtime; typed here.
+const DEFAULT_CONFIG: Config = FALLBACK_CONFIG;
 
 // In-memory cache of the configuration
 let cachedConfig: Config | null = null;
@@ -553,7 +734,7 @@ const reloadPluginModules = (): void => {
       logger.info('ConfigService', `Cleared require cache for ${keys.length} plugin modules`);
     }
     const pluginLoader = require('./pluginLoader');
-    pluginLoader.reloadAll('./src/plugins');
+    pluginLoader.reloadAll();
     logger.info('ConfigService', 'Plugins reloaded successfully');
   } catch (pluginError: any) {
     logger.error('ConfigService', `Error reloading plugins: ${pluginError.message}`);
@@ -816,6 +997,23 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
       
       const source = isStandaloneMode() ? 'local file (standalone mode)' : 'local file (fallback)';
       logger.info('ConfigService', `Loaded configuration from ${source}: ${CONFIG_FILE_PATH}`);
+
+      // An old-shape file parses cleanly and caches happily; every reader of a
+      // moved section then finds nothing, so siem, pseudonymization and
+      // platform.security disengage while the operator believes they are on.
+      // Say so on every load.
+      //
+      // Deliberately NOT a throw and NOT a swap for DEFAULT_CONFIG. This branch
+      // also serves the Admin-Service fallback and loadConfig is lazy (the
+      // per-request priming await lands here), so throwing would turn a
+      // transient admin outage into per-request 500s; and DEFAULT_CONFIG's stub
+      // substitutions would turn an inert config into actively wrong model
+      // routing. Standalone bootstrap refuses to start instead - see
+      // getConfigFileLegacyShapeError below and its caller in index.ts.
+      const legacyShape = legacyShapeErrorForFile(CONFIG_FILE_PATH);
+      if (legacyShape) {
+        logger.error('ConfigService', legacyShape.message);
+      }
     } else if (isStandaloneMode()) {
       // Create the default config file if it doesn't exist (standalone mode only)
       cachedConfig = DEFAULT_CONFIG;
@@ -829,7 +1027,10 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
     
     // Load plugins
     try {
-      pluginLoader.loadAll('./src/plugins');
+      // No argument: the loader anchors the plugins directory on its own module
+      // location. A path here would be resolved against cwd by every caller's
+      // reading of it, and cwd differs per deployment (see DEFAULT_PLUGINS_DIR).
+      pluginLoader.loadAll();
       logger.info('ConfigService', 'Loaded plugins successfully');
     } catch (pluginError: any) {
       logger.error('ConfigService', `Error loading plugins: ${pluginError.message}`);
@@ -842,6 +1043,15 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
     return DEFAULT_CONFIG;
   }
 };
+
+/**
+ * Bootstrap guard: the old-flat-shape verdict for the on-disk config file, or
+ * null when it is absent, unreadable, not JSON, or already restructured.
+ *
+ * Exists so index.ts can refuse to bind the listener in standalone mode without
+ * having to know where CONFIG_FILE_PATH points.
+ */
+export const getConfigFileLegacyShapeError = () => legacyShapeErrorForFile(CONFIG_FILE_PATH);
 
 /**
  * Async version of getConfig for better Admin Service integration
@@ -1041,15 +1251,16 @@ export const patchConfig = async (patchData: Partial<Config>): Promise<Config> =
 export const getSubstitutedModel = (provider: string, modelName: string): string => {
   try {
     const config = getConfig();
-    
+    const pc = config.api_config && providerConfig(config.api_config, provider);
+
     // Check if provider exists in config
-    if (!config.api_config || !config.api_config[provider]) {
+    if (!pc) {
       return modelName;
     }
-    
+
     // Check for substitutions
-    const substitutions = config.api_config[provider].substitute_models || [];
-    const substitution = substitutions.find((sub: any) => sub.from === modelName);
+    const substitutions = pc.substitute_models || [];
+    const substitution = substitutions.find((sub) => sub.from === modelName);
     
     if (substitution) {
       logger.info('ConfigService', `Substituting model: ${modelName} -> ${substitution.to}`);
@@ -1071,15 +1282,16 @@ export const getSubstitutedModel = (provider: string, modelName: string): string
 export const getOriginalModel = (provider: string, substitutedModelName: string): string => {
   try {
     const config = getConfig();
-    
+    const pc = config.api_config && providerConfig(config.api_config, provider);
+
     // Check if provider exists in config
-    if (!config.api_config || !config.api_config[provider]) {
+    if (!pc) {
       return substitutedModelName;
     }
-    
+
     // Check for reverse substitutions
-    const substitutions = config.api_config[provider].substitute_models || [];
-    const reverseSubstitution = substitutions.find((sub: any) => sub.to === substitutedModelName);
+    const substitutions = pc.substitute_models || [];
+    const reverseSubstitution = substitutions.find((sub) => sub.to === substitutedModelName);
     
     if (reverseSubstitution) {
       logger.info('ConfigService', `Reverse substituting model: ${substitutedModelName} -> ${reverseSubstitution.from}`);
@@ -1101,14 +1313,15 @@ export const getOriginalModel = (provider: string, substitutedModelName: string)
 export const shouldEmulateStreaming = (provider: string, modelName: string): boolean => {
   try {
     const config = getConfig();
-    
+    const pc = config.api_config && providerConfig(config.api_config, provider);
+
     // Check if provider exists in config
-    if (!config.api_config || !config.api_config[provider]) {
+    if (!pc) {
       return false;
     }
-    
+
     // Check if model is in the emulation list
-    const emulateList = config.api_config[provider].emulate_streaming_for_models || [];
+    const emulateList = pc.emulate_streaming_for_models || [];
     
     // Check for exact match or stripped version (remove provider prefix)
     if (emulateList.includes(modelName)) {
@@ -1133,7 +1346,7 @@ export const shouldEmulateStreaming = (provider: string, modelName: string): boo
 export const getAnthropicBedrockVersion = (): string => {
   try {
     const config = getConfig();
-    return config?.api_config?.anthropic?.anthropic_bedrock_version || "bedrock-2023-05-31"; // Default if not found
+    return config?.api_config?.providers?.anthropic?.anthropic_bedrock_version || "bedrock-2023-05-31"; // Default if not found
   } catch (error: any) {
     logger.error('ConfigService', `Error getting Anthropic Bedrock version: ${error.message}`);
     return "bedrock-2023-05-31"; // Default on error
@@ -1148,7 +1361,7 @@ export const getAnthropicBedrockVersion = (): string => {
 export const getExcludedBetaHeaders = (): string[] => {
   try {
     const config = getConfig();
-    return config?.api_config?.anthropic?.excluded_beta_headers || [];
+    return config?.api_config?.providers?.anthropic?.excluded_beta_headers || [];
   } catch (error: any) {
     logger.error('ConfigService', `Error getting excluded beta headers: ${error.message}`);
     return [];
@@ -1164,7 +1377,7 @@ export const getExcludedBetaHeaders = (): string[] => {
 export const getSupportedBetaHeaders = (): string[] => {
   try {
     const config = getConfig();
-    return config?.api_config?.anthropic?.supported_beta_headers || [];
+    return config?.api_config?.providers?.anthropic?.supported_beta_headers || [];
   } catch (error: any) {
     logger.error('ConfigService', `Error getting supported beta headers: ${error.message}`);
     return [];
@@ -1187,10 +1400,10 @@ export const getUnsupportedParams = (provider?: string, modelName?: string): str
   try {
     const config = getConfig();
     const providerList = provider
-      ? config?.api_config?.[provider]?.unsupported_params
+      ? providerConfig(config.api_config, provider)?.unsupported_params
       : undefined;
     const modelOverride = modelName
-      ? config?.api_config?.model_list_changes?.[modelName]?.unsupported_params
+      ? config?.api_config?.models?.overrides?.[modelName]?.unsupported_params
       : undefined;
     return resolveUnsupportedParams(providerList, modelOverride);
   } catch (error: any) {
@@ -1207,10 +1420,10 @@ export const getSupportsResponsesApi = (provider?: string, modelName?: string): 
   try {
     const config = getConfig();
     const m = modelName
-      ? config?.api_config?.model_list_changes?.[modelName]?.supports_responses_api
+      ? config?.api_config?.models?.overrides?.[modelName]?.supports_responses_api
       : undefined;
     if (typeof m === 'boolean') return m;
-    const p = provider ? config?.api_config?.[provider]?.supports_responses_api : undefined;
+    const p = provider ? providerConfig(config.api_config, provider)?.supports_responses_api : undefined;
     return typeof p === 'boolean' ? p : undefined;
   } catch (error: any) {
     logger.error('ConfigService', `Error getting supports_responses_api: ${error.message}`);
@@ -1228,10 +1441,10 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
   try {
     const config = getConfig();
     const m = modelName
-      ? config?.api_config?.model_list_changes?.[modelName]?.supports_prompt_caching
+      ? config?.api_config?.models?.overrides?.[modelName]?.supports_prompt_caching
       : undefined;
     if (typeof m === 'boolean') return m;
-    const p = provider ? config?.api_config?.[provider]?.supports_prompt_caching : undefined;
+    const p = provider ? providerConfig(config.api_config, provider)?.supports_prompt_caching : undefined;
     return typeof p === 'boolean' ? p : undefined;
   } catch (error: any) {
     logger.error('ConfigService', `Error getting supports_prompt_caching: ${error.message}`);
@@ -1241,7 +1454,7 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
 
 /**
  * True when pseudonymization is force-enabled for an endpoint via
- * `defaultHooks[endpoint].pseudonymization.enabled` — the same source the
+ * `hooks.defaults[endpoint].pseudonymization.enabled` — the same source the
  * pseudonymization plugin reads for its per-endpoint force flag.
  *
  * Callers use this to fail closed when the force flag is on but the plugin hook
@@ -1254,7 +1467,7 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
 export const isPseudonymizationForced = (endpoint: string): boolean => {
   try {
     const config = getConfig();
-    return config?.api_config?.defaultHooks?.[endpoint]?.pseudonymization?.enabled === true;
+    return defaultHookEntry(config.api_config, endpoint)?.pseudonymization?.enabled === true;
   } catch (error: any) {
     logger.error('ConfigService', `Error getting pseudonymization force flag: ${error.message}`);
     return false;
@@ -1270,7 +1483,7 @@ export const isPseudonymizationForced = (endpoint: string): boolean => {
 export const getWebSearchMaxSearches = (): number => {
   try {
     const config = getConfig();
-    return resolveMaxWebSearches(config?.api_config?.web_search?.max_searches_per_request);
+    return resolveMaxWebSearches(config?.api_config?.capabilities?.web_search?.max_searches_per_request);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the web search cap: ${error.message}`);
     return DEFAULT_MAX_WEB_SEARCHES;
@@ -1287,7 +1500,7 @@ export const getWebSearchMaxSearches = (): number => {
 export const getHostedToolResultCacheTtlSeconds = (): number => {
   try {
     const config = getConfig();
-    return resolveResultCacheTtlSeconds(config?.api_config?.hosted_tools?.result_cache_ttl_seconds);
+    return resolveResultCacheTtlSeconds(config?.api_config?.capabilities?.hosted_tools?.result_cache_ttl_seconds);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the hosted-tool result cache TTL: ${error.message}`);
     return DEFAULT_RESULT_CACHE_TTL_SECONDS;
@@ -1297,7 +1510,7 @@ export const getHostedToolResultCacheTtlSeconds = (): number => {
 export const getHostedToolResultCacheMaxEntries = (): number => {
   try {
     const config = getConfig();
-    return resolveResultCacheMaxEntries(config?.api_config?.hosted_tools?.result_cache_max_entries);
+    return resolveResultCacheMaxEntries(config?.api_config?.capabilities?.hosted_tools?.result_cache_max_entries);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the hosted-tool result cache size: ${error.message}`);
     return DEFAULT_RESULT_CACHE_MAX_ENTRIES;
@@ -1313,7 +1526,7 @@ export const getHostedToolResultCacheMaxEntries = (): number => {
  */
 export const getNamespaceToolMode = (): NamespaceToolMode => {
   try {
-    return resolveNamespaceToolMode(getConfig()?.api_config?.namespace_tools?.mode);
+    return resolveNamespaceToolMode(getConfig()?.api_config?.capabilities?.namespace_tools?.mode);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the namespace tool mode: ${error.message}`);
     return DEFAULT_NAMESPACE_TOOL_MODE;
@@ -1322,7 +1535,7 @@ export const getNamespaceToolMode = (): NamespaceToolMode => {
 
 export const getCustomToolMode = (): CustomToolMode => {
   try {
-    return resolveCustomToolMode(getConfig()?.api_config?.custom_tools?.mode);
+    return resolveCustomToolMode(getConfig()?.api_config?.capabilities?.custom_tools?.mode);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the custom tool mode: ${error.message}`);
     return DEFAULT_CUSTOM_TOOL_MODE;
@@ -1331,7 +1544,7 @@ export const getCustomToolMode = (): CustomToolMode => {
 
 export const getToolSearchMode = (): ToolSearchMode => {
   try {
-    return resolveToolSearchMode(getConfig()?.api_config?.tool_search?.mode);
+    return resolveToolSearchMode(getConfig()?.api_config?.capabilities?.tool_search?.mode);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the tool search mode: ${error.message}`);
     return DEFAULT_TOOL_SEARCH_MODE;
@@ -1340,10 +1553,29 @@ export const getToolSearchMode = (): ToolSearchMode => {
 
 export const getToolSearchHoistDiscoveredTools = (): boolean => {
   try {
-    return resolveHoistDiscoveredTools(getConfig()?.api_config?.tool_search?.hoist_discovered_tools);
+    return resolveHoistDiscoveredTools(getConfig()?.api_config?.capabilities?.tool_search?.hoist_discovered_tools);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting the tool search hoist setting: ${error.message}`);
     return DEFAULT_HOIST_DISCOVERED_TOOLS;
+  }
+};
+
+/**
+ * Whether to trust client-supplied forwarding headers (`X-Forwarded-For`,
+ * `X-Real-IP`) when deriving the client IP recorded on security events.
+ *
+ * Default false: trusting forwarding headers is only safe when a proxy in front
+ * overwrites/appends them correctly, and whether that holds is a deployment
+ * property. An operator who has verified their ingress chain turns it on.
+ *
+ * @see utils/clientIp.ts - the derivation this flag gates
+ */
+export const getTrustForwardedFor = (): boolean => {
+  try {
+    return getConfig()?.api_config?.platform?.security?.trust_forwarded_for === true;
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting trust_forwarded_for: ${error.message}`);
+    return false;
   }
 };
 
@@ -1358,7 +1590,8 @@ export interface FileSearchConfig {
    *  deployment is not guaranteed to work on another's. Verified live
    *  2026-07-30: 'gpt-35-turbo-16k' (this codebase's usual no-model-specified
    *  fallback elsewhere) returns HTTP 400 "Model name ... is not supported"
-   *  on this tenant; 'gpt-4o-mini' is what was actually probed working. */
+   *  on this tenant — still the known-bad fallback, do not restore it.
+   *  2026-08-28: default standardized on 'gpt-5-mini'. */
   rewriteQueryModel: string;
   hybrid: {
     rrfK: number;
@@ -1381,7 +1614,7 @@ export const FILE_SEARCH_DEFAULTS: FileSearchConfig = {
   embeddingModel: 'text-embedding-3-large',
   embeddingDimensions: 1536,
   rewriteQuery: false,
-  rewriteQueryModel: 'gpt-4o-mini',
+  rewriteQueryModel: 'gpt-5-mini',
   hybrid: { rrfK: 60, lexicalEnabled: true, candidates: 50,
             rerank: { enabled: 'auto', model: 'cohere-reranker' } },
   chunking: { maxChunkSizeTokens: 800, chunkOverlapTokens: 400 },
@@ -1392,6 +1625,49 @@ export const FILE_SEARCH_DEFAULTS: FileSearchConfig = {
 };
 
 /**
+ * Raw (snake_case, JSON-shaped) `api_config.capabilities.file_search` section, matching
+ * api-config-schema.json's `file_search` properties. `CapabilitiesConfig.file_search`
+ * itself stays `Record<string, unknown>` (section internals stay
+ * untyped except where a reader needs one — see the `DefaultHookEntry`
+ * comment above), so the three readers below (getFileSearchConfig,
+ * getTeacherLoggingConfig, getFileSearchToolConfig) each cast into this one
+ * shared shape at the point of use instead of threading `unknown` through
+ * every field access.
+ */
+interface FileSearchRawConfig {
+  enabled?: boolean;
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  rewrite_query?: boolean;
+  rewrite_query_model?: string;
+  hybrid?: {
+    rrf_k?: number;
+    lexical_enabled?: boolean;
+    candidates?: number;
+    rerank?: { enabled?: 'auto' | boolean; model?: string };
+  };
+  chunking?: { max_chunk_size_tokens?: number; chunk_overlap_tokens?: number };
+  limits?: { max_file_bytes?: number; max_tokens_per_file?: number; max_files_per_store?: number };
+  ingestion?: { concurrency?: number; extract_timeout_ms?: number; max_retries?: number };
+  blob_storage?: {
+    backend?: 'db' | 'local' | 's3';
+    local_path?: string;
+    s3?: { bucket?: string; prefix?: string; endpoint?: string; region?: string };
+  };
+  teacher_logging?: {
+    enabled?: boolean;
+    store_chunk_text?: boolean;
+    sample_rate?: number;
+    source?: string;
+    max_concurrent_writes?: number;
+  };
+  tool?: { enabled?: boolean; max_searches_per_request?: number; max_num_results_default?: number };
+}
+function fileSearchRawConfig(api: ApiConfig): FileSearchRawConfig | undefined {
+  return api.capabilities?.file_search as FileSearchRawConfig | undefined;
+}
+
+/**
  * file_search (OpenAI-compatible document retrieval) configuration. Absent config
  * yields the shipped defaults, so an install whose api_config.json predates this
  * key gets a working, enabled feature rather than a crash.
@@ -1400,7 +1676,7 @@ export const FILE_SEARCH_DEFAULTS: FileSearchConfig = {
  */
 export const getFileSearchConfig = (): FileSearchConfig => {
   try {
-    const f = getConfig()?.api_config?.file_search;
+    const f = fileSearchRawConfig(getConfig().api_config);
     if (!f) return FILE_SEARCH_DEFAULTS;
     const d = FILE_SEARCH_DEFAULTS;
     return {
@@ -1568,7 +1844,7 @@ export const resolveMaxConcurrentWrites = (configured: number): number => {
  */
 export const getTeacherLoggingConfig = (): TeacherLoggingConfig => {
   try {
-    const t = getConfig()?.api_config?.file_search?.teacher_logging;
+    const t = fileSearchRawConfig(getConfig().api_config)?.teacher_logging;
     if (!t) return TEACHER_LOGGING_DEFAULTS;
     const d = TEACHER_LOGGING_DEFAULTS;
     return {
@@ -1676,7 +1952,7 @@ export const resolveToolEnabled = (configured: unknown): boolean => {
  */
 export const getFileSearchToolConfig = (): FileSearchToolConfig => {
   try {
-    const t = getConfig()?.api_config?.file_search?.tool ?? {};
+    const t = fileSearchRawConfig(getConfig().api_config)?.tool ?? {};
     return {
       enabled: resolveToolEnabled(t.enabled),
       maxSearchesPerRequest: resolveMaxSearchesPerRequest(t.max_searches_per_request),
@@ -1703,13 +1979,13 @@ export const getParamRenames = (provider?: string, modelName?: string): Record<s
   try {
     const config = getConfig();
     const modelOverride = modelName
-      ? config?.api_config?.model_list_changes?.[modelName]?.param_renames
+      ? config?.api_config?.models?.overrides?.[modelName]?.param_renames
       : undefined;
     if (modelOverride && typeof modelOverride === 'object') {
       return modelOverride;
     }
     const providerMap = provider
-      ? config?.api_config?.[provider]?.param_renames
+      ? providerConfig(config.api_config, provider)?.param_renames
       : undefined;
     return (providerMap && typeof providerMap === 'object') ? providerMap : {};
   } catch (error: any) {
@@ -1721,7 +1997,7 @@ export const getParamRenames = (provider?: string, modelName?: string): Record<s
 export const getOpenAIDeploymentApiVersion = (): string | undefined => {
   try {
     const config = getConfig();
-    return config?.api_config?.openai?.openai_deployment_api_version; // Can be undefined if not set
+    return config?.api_config?.providers?.openai?.openai_deployment_api_version; // Can be undefined if not set
   } catch (error: any) {
     logger.error('ConfigService', `Error getting OpenAI deployment API version: ${error.message}`);
     return undefined;
@@ -1741,12 +2017,12 @@ export const getAllProviderConfigs = (): ApiConfig => {
  * Get model list changes
  * @returns The list of model changes
  */
-export const getModelListChanges = (): ModelListChanges => {
+export const getModelListChanges = (): Record<string, ModelOverride> => {
   try {
     const config = getConfig(); // Assuming getConfig returns the whole parsed object
-    return config?.api_config?.model_list_changes || {};
+    return config?.api_config?.models?.overrides || {};
   } catch (error: any) {
-    logger.error('ConfigService', `Error getting model_list_changes: ${error.message}`);
+    logger.error('ConfigService', `Error getting models.overrides: ${error.message}`);
     return {};
   }
 };
@@ -1782,13 +2058,13 @@ export const getTimeout = (isStreaming: boolean = false): number => {
     const config = getConfig();
     const defaultTimeout = 120000; // Default 120 seconds
     
-    if (!config?.api_config?.timeouts) {
+    if (!config?.api_config?.platform?.timeouts) {
       return isStreaming ? 240000 : defaultTimeout; // Default values if not configured
     }
     
     return isStreaming 
-      ? (config.api_config.timeouts.streaming || 240000) // Default 240s for streaming
-      : (config.api_config.timeouts.default || defaultTimeout); // Default 60s for non-streaming
+      ? (config.api_config.platform.timeouts.streaming || 240000) // Default 240s for streaming
+      : (config.api_config.platform.timeouts.default || defaultTimeout); // Default 60s for non-streaming
   } catch (error: any) {
     logger.error('ConfigService', `Error getting timeout configuration: ${error.message}`);
     return isStreaming ? 240000 : 120000; // Default values on error
@@ -1797,25 +2073,31 @@ export const getTimeout = (isStreaming: boolean = false): number => {
 
 /**
  * Get a specific part of the configuration by key.
- * @param key - The top-level key under api_config (e.g., 'openai', 'openrouter').
+ * @param key - A provider key under api_config.providers (e.g., 'openai', 'openrouter').
  * @returns The configuration for the specified key, or undefined if not found.
  */
-export const get = (key: string): ProviderConfig | undefined => {
+// Overloaded so `get('openrouter')` types as OpenRouterProviderConfig (with
+// model_mappings/default_pricing) instead of the generic ProviderConfig — lets
+// controllers/openRouterController.ts drop its `as OpenRouterConfig` cast.
+export function get(key: 'openrouter'): OpenRouterProviderConfig | undefined;
+export function get(key: string): ProviderConfig | undefined;
+export function get(key: string): ProviderConfig | undefined {
   try {
     const config = getConfig();
-    return config?.api_config?.[key];
+    if (key === 'openrouter') return config.api_config.providers?.openrouter;
+    return providerConfig(config.api_config, key);
   } catch (error: any) {
     logger.error('ConfigService', `Error getting config for key '${key}': ${error.message}`);
     return undefined;
   }
-};
+}
 
 /**
  * Get hook configuration for a specific model and subpath.
- * Falls back to per-endpoint defaultHooks when model has no explicit hooks.
+ * Falls back to per-endpoint hooks.defaults when model has no explicit hooks.
  * @param modelId - The model ID
  * @param subpath - The requested subpath
- * @param endpoint - Optional endpoint identifier (e.g. 'anthropic', 'openai', 'aws-bedrock') for defaultHooks fallback
+ * @param endpoint - Optional endpoint identifier (e.g. 'anthropic', 'openai', 'aws-bedrock') for hooks.defaults fallback
  * @returns Hook configuration or null if not found
  */
 export const getHookConfig = (modelId: string, subpath: string, endpoint?: string): any => {
@@ -1829,7 +2111,7 @@ export const getHookConfig = (modelId: string, subpath: string, endpoint?: strin
 
     if (endpoint) {
       const config = getConfig();
-      return config?.api_config?.defaultHooks?.[endpoint]?.[subpath] || null;
+      return defaultHookEntry(config.api_config, endpoint)?.[subpath] || null;
     }
 
     return null;
@@ -1882,13 +2164,18 @@ export const getSAPAICoreConfig = () => {
       };
     }
     
-    const config = getConfig();
-    const sapAIConfig = config?.api_config?.sap_ai_core;
-    
+    // DEAD CODE REMOVED, not "fixed into legitimacy": this branch used to also
+    // read `config.api_config.sap_ai_core` before falling back to env/default.
+    // `sap_ai_core` has never been a section of the shipped api_config.json
+    // (confirmed against its actual top-level keys) even though an older Admin
+    // Service schema documented the key until the restructure dropped it, so
+    // that read was always `undefined` and this branch always resolved to the
+    // env/default fallback below — deleting it changes nothing observable.
+    // See task-1-report.md.
     return {
-      url: process.env.SAP_AI_CORE_URL || sapAIConfig?.url || getDefaultAICoreUrl(),
-      resourceGroup: process.env.SAP_AI_RESOURCE_GROUP || sapAIConfig?.resource_group || 'default',
-      deploymentId: process.env.SAP_AI_DEPLOYMENT_ID || sapAIConfig?.deployment_id,
+      url: process.env.SAP_AI_CORE_URL || getDefaultAICoreUrl(),
+      resourceGroup: process.env.SAP_AI_RESOURCE_GROUP || 'default',
+      deploymentId: process.env.SAP_AI_DEPLOYMENT_ID,
       autoDiscoverDeployment: process.env.SAP_AI_AUTO_DISCOVER_DEPLOYMENT?.toLowerCase() === 'true'
     };
   } catch (error: any) {
@@ -2042,6 +2329,7 @@ function isObject(item: any): boolean {
 export default {
   getConfig,
   getConfigAsync,
+  getConfigFileLegacyShapeError,
   updateConfig,
   patchConfig,
   getSubstitutedModel,

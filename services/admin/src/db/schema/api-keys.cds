@@ -137,7 +137,7 @@ entity ApiKeyUsage : cuid, temporal {
  */
 entity ApiKeySecurityEvents : cuid, managed {
   apiKey            : Association to ApiKeys;
-  eventType         : String(50);           // failed_auth, suspicious_activity, rate_limit_exceeded
+  eventType         : String(50);           // failed_auth, rate_limit_exceeded, credential_rotation
   severity          : String(20);           // low, medium, high, critical
   description       : String(1000);
   

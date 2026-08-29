@@ -2,7 +2,7 @@
  * Task 8: the shim that makes `file_search` REACHABLE.
  *
  * Everything before this task built pieces nothing called: the descriptor existed, the
- * engine was generic over it, `tools:hasFileSearch` sat unused in `hookDefinitions`. This
+ * engine was generic over it, `tools:hasFileSearch` sat unused in `hooks.definitions`. This
  * file is the join, and it is three claims, each of which fails silently if wrong:
  *
  *   1. importing the plugin REGISTERS the descriptor — without it the engine's registry

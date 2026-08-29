@@ -3,12 +3,12 @@
  */
 
 import request from 'supertest';
-import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
 const baseUrl = getAdminServiceUrl();
 const authHeader = 'Basic YWRtaW5AdGVzdC5jb206YWRtaW4=';
 
-describe('Enhanced Configuration Activation Test', () => {
+describeLive('Enhanced Configuration Activation Test', () => {
   // Restores whatever was active before this suite; see active-config-guard.
   guardActiveConfiguration();
 
@@ -82,8 +82,10 @@ describe('Enhanced Configuration Activation Test', () => {
           name: 'Performance Test Config',
           configData: JSON.stringify({
             api_config: {
-              timeouts: { default: 120000 },
-              logging: { defaultLevel: 'INFO' }
+              platform: {
+                timeouts: { default: 120000 },
+                logging: { defaultLevel: 'INFO' }
+              }
             }
           }),
           description: 'Config for testing improved activation performance'

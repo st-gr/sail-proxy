@@ -707,4 +707,79 @@ describe('responsesController: orchestration dispatch', () => {
       expect(res.statusCode).toBe(400);
     });
   });
+
+  /**
+   * A turn that dies mid-stream must be recorded as a failure. ApiKeyUsage.statusCode is
+   * persisted (services/admin/src/db/schema/api-keys.cds:92) and six queries in
+   * admin-service.ts derive errorCount from `statusCode >= 400`, so a failure written as
+   * 200 is invisible in every error-rate figure. The HTTP status stays 200 because SSE
+   * headers are flushed before the failure is known — only the RECORD changes.
+   */
+  describe('usage accounting for a failed stream', () => {
+    const sapError = {
+      error: {
+        request_id: '479128d1-ac71-914a-9cd1-b70e52d0c58a',
+        code: 400,
+        message: "400 - LLM Module: openai does not support parameters: ['tool_choice'], for model=gpt-5.6-sol",
+        location: 'LLM Module',
+      },
+    };
+
+    it('records the upstream status, not 200, when the stream fails', async () => {
+      orchestrationChunks = [sapError];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0][3]).toBe(400);
+    });
+
+    it('records 502 when the upstream failure carries no numeric code', async () => {
+      orchestrationChunks = [{ error: { message: 'upstream exploded' } }];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(usageEvents[0][3]).toBe(502);
+    });
+
+    it('still records 200 for a stream that completes normally', async () => {
+      orchestrationChunks = [
+        { choices: [{ delta: { content: 'Hi ' } }] },
+        { choices: [{ delta: { content: 'there' } }] },
+      ];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(usageEvents[0][3]).toBe(200);
+    });
+
+    it('keeps the tokens consumed before the failure — a failed turn is still billed', async () => {
+      orchestrationChunks = [
+        { choices: [{ delta: { content: 'partial' } }], usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 } },
+        sapError,
+      ];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(usageEvents[0][3]).toBe(400);
+      const metrics = usageEvents[0][1];
+      expect(metrics.inputTokens).toBe(11);
+      expect(metrics.outputTokens).toBe(4);
+    });
+
+    it('still writes response.failed to the client, and no response.completed', async () => {
+      orchestrationChunks = [sapError];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      const frames = res.writes.map((w: string) => JSON.parse(w.replace(/^data: /, '').trim()));
+      expect(frames.filter((f: any) => f.type === 'response.failed')).toHaveLength(1);
+      expect(frames.filter((f: any) => f.type === 'response.completed')).toHaveLength(0);
+    });
+  });
 });

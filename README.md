@@ -485,33 +485,35 @@ Response:
 
 ## Configuration
 
-### Model Configuration (`model_list_changes`)
+### Model Configuration (`models.overrides`)
 
-The `model_list_changes` section in `api_config.json` allows you to customize model behavior and properties beyond their defaults. This is where you configure model-specific settings, enable/disable features, and attach plugins to specific models.
+The `models.overrides` section in `api_config.json` allows you to customize model behavior and properties beyond their defaults. This is where you configure model-specific settings, enable/disable features, and attach plugins to specific models.
 
 ```json
 {
   "api_config": {
-    "model_list_changes": {
-      "anthropic--claude-3-haiku--deployed": {
-        "streamingSupported": true,
-        "subpaths_native": ["invoke", "invoke-with-response-stream", "converse", "converse-stream"],
-        "subpaths_emulated": [],
-        "supports_prompt_caching": false,
-        "anthropic_version": "bedrock-2023-05-31",
-        "hooks": {
-          "invoke-with-response-stream": [
-            {
-              "request": {
-                "match": ["size:1k-3k", "header:x-app=cli"],
-                "callback": { "id": "mockWhimsicalGerundVerb", "strategy": "before" }
+    "models": {
+      "overrides": {
+        "anthropic--claude-3-haiku--deployed": {
+          "streamingSupported": true,
+          "subpaths_native": ["invoke", "invoke-with-response-stream", "converse", "converse-stream"],
+          "subpaths_emulated": [],
+          "supports_prompt_caching": false,
+          "anthropic_version": "bedrock-2023-05-31",
+          "hooks": {
+            "invoke-with-response-stream": [
+              {
+                "request": {
+                  "match": ["size:1k-3k", "header:x-app=cli"],
+                  "callback": { "id": "mockWhimsicalGerundVerb", "strategy": "before" }
+                }
               }
-            }
-          ]
+            ]
+          }
+        },
+        "amazon--titan-text-express": {
+          "streamingSupported": false
         }
-      },
-      "amazon--titan-text-express": {
-        "streamingSupported": false
       }
     }
   }
@@ -527,7 +529,7 @@ The `model_list_changes` section in `api_config.json` allows you to customize mo
 - **`hooks`**: Attach plugins to specific model endpoints for custom behavior
 - **`cachePricing`**: Configure cache token pricing for accurate cost calculation (see Cache Token Pricing section below)
 
-**When to use `model_list_changes`:**
+**When to use `models.overrides`:**
 - Force streaming on/off for specific models
 - Configure prompt caching to reduce costs
 - Add custom plugins for request/response processing
@@ -543,11 +545,13 @@ Note: The actual production prices are materially lower than the values shown he
 ```json
 {
   "api_config": {
-    "model_list_changes": {
-      "anthropic--claude-4-sonnet--deployed": {
-        "cachePricing": {
-          "cacheReadInputCostPer1K": "0.00060",
-          "cacheCreationInputCostPer1K": "0.00762"
+    "models": {
+      "overrides": {
+        "anthropic--claude-4-sonnet--deployed": {
+          "cachePricing": {
+            "cacheReadInputCostPer1K": "0.00060",
+            "cacheCreationInputCostPer1K": "0.00762"
+          }
         }
       }
     }
@@ -596,19 +600,21 @@ Example configuration:
 ```json
 {
   "api_config": {
-    "openai": {
-      "substitute_models": [
-        { "from": "GPT-4", "to": "o1" },
-        { "from": "GPT-3.5", "to": "GPT-4" }
-      ],
-      "emulate_streaming_for_models": []
-    },
-    "anthropic": {
-      "substitute_models": [
-        { "from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-3-haiku" },
-        { "from": "claude-3-7-sonnet-20250219", "to": "anthropic--claude-3.7-sonnet" }
-      ],
-      "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
+    "providers": {
+      "openai": {
+        "substitute_models": [
+          { "from": "GPT-4", "to": "o1" },
+          { "from": "GPT-3.5", "to": "GPT-4" }
+        ],
+        "emulate_streaming_for_models": []
+      },
+      "anthropic": {
+        "substitute_models": [
+          { "from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-3-haiku" },
+          { "from": "claude-3-7-sonnet-20250219", "to": "anthropic--claude-3.7-sonnet" }
+        ],
+        "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
+      }
     }
   }
 }
@@ -618,29 +624,31 @@ Please note that Claude Code uses the above model names that need to be substitu
 
 ### Beta Header Filtering (Allowlist + Denylist)
 
-Anthropic clients such as Claude Code send beta feature flags in the `anthropic-beta` header. SAP AI Core rejects the entire request with HTTP 400 "invalid beta flag" if it sees a flag its Anthropic deployments don't recognize. The gateway filters the outbound `anthropic_beta` array with two hot-reloadable settings under `api_config.anthropic` (no restart needed — changes apply on the next request):
+Anthropic clients such as Claude Code send beta feature flags in the `anthropic-beta` header. SAP AI Core rejects the entire request with HTTP 400 "invalid beta flag" if it sees a flag its Anthropic deployments don't recognize. The gateway filters the outbound `anthropic_beta` array with two hot-reloadable settings under `api_config.providers.anthropic` (no restart needed — changes apply on the next request):
 
 ```json
 {
   "api_config": {
-    "anthropic": {
-      "supported_beta_headers": [
-        "claude-code-20250219",
-        "context-1m-2025-08-07",
-        "interleaved-thinking-2025-05-14",
-        "context-management-2025-06-27",
-        "effort-2025-11-24",
-        "mid-conversation-system-2026-04-07",
-        "afk-mode-2026-01-31",
-        "fine-grained-tool-streaming-2025-05-14"
-      ],
-      "excluded_beta_headers": [
-        "prompt-caching-scope-2026-01-05",
-        "redact-thinking-2026-02-12",
-        "thinking-token-count-2026-05-13",
-        "structured-outputs-2025-12-15",
-        "fallback-credit-2026-06-01"
-      ]
+    "providers": {
+      "anthropic": {
+        "supported_beta_headers": [
+          "claude-code-20250219",
+          "context-1m-2025-08-07",
+          "interleaved-thinking-2025-05-14",
+          "context-management-2025-06-27",
+          "effort-2025-11-24",
+          "mid-conversation-system-2026-04-07",
+          "afk-mode-2026-01-31",
+          "fine-grained-tool-streaming-2025-05-14"
+        ],
+        "excluded_beta_headers": [
+          "prompt-caching-scope-2026-01-05",
+          "redact-thinking-2026-02-12",
+          "thinking-token-count-2026-05-13",
+          "structured-outputs-2025-12-15",
+          "fallback-credit-2026-06-01"
+        ]
+      }
     }
   }
 }
@@ -665,18 +673,22 @@ Clients such as OpenWebUI send `tools` (function calling) and `response_format` 
 ```json
 {
   "api_config": {
-    "perplexity": {
-      "unsupported_params": ["tools", "tool_choice", "response_format"]
+    "providers": {
+      "perplexity": {
+        "unsupported_params": ["tools", "tool_choice", "response_format"]
+      }
     },
-    "model_list_changes": {
-      "sonar": { "unsupported_params": ["tools", "tool_choice"] }
+    "models": {
+      "overrides": {
+        "sonar": { "unsupported_params": ["tools", "tool_choice"] }
+      }
     }
   }
 }
 ```
 
 - **Provider level** — keyed by the model's provider (`owned_by`, lowercased; e.g. `perplexity` covers `sonar`, `sonar-pro` and any future Perplexity model automatically).
-- **Per-model level** — a list in `model_list_changes.<model>` **replaces** the provider list for that model (use `[]` to opt a model back in if it later gains support).
+- **Per-model level** — a list in `models.overrides.<model>` **replaces** the provider list for that model (use `[]` to opt a model back in if it later gains support).
 - Absent at both levels means nothing is stripped, so existing configurations are unaffected.
 
 Dropped parameters are logged at WARN naming the provider, model and parameters, so the behavior is diagnosable. This applies to both the orchestration path and directly-deployed (`--deployed`) models.
@@ -690,8 +702,10 @@ Each follow-up call costs deployment tokens, so the number of searches per reque
 ```json
 {
   "api_config": {
-    "web_search": {
-      "max_searches_per_request": 3
+    "capabilities": {
+      "web_search": {
+        "max_searches_per_request": 3
+      }
     }
   }
 }
@@ -717,9 +731,11 @@ Config can override the built-in defaults per key, for exceptions or a family th
 ```json
 {
   "api_config": {
-    "model_list_changes": {
-      "some-model--deployed": {
-        "param_renames": { "max_tokens": "max_completion_tokens" }
+    "models": {
+      "overrides": {
+        "some-model--deployed": {
+          "param_renames": { "max_tokens": "max_completion_tokens" }
+        }
       }
     }
   }
@@ -964,11 +980,13 @@ curl -X PATCH http://localhost:3000/api/admin/api-config \
   -H "x-api-key: your-api-key" \
   -d '{
     "api_config": {
-      "anthropic": {
-        "substitute_models": [
-          { "from": "claude-3-sonnet-20240229", "to": "claude-3-7-sonnet-20250219" }
-        ],
-        "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
+      "providers": {
+        "anthropic": {
+          "substitute_models": [
+            { "from": "claude-3-sonnet-20240229", "to": "claude-3-7-sonnet-20250219" }
+          ],
+          "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
+        }
       }
     }
   }'
@@ -1003,23 +1021,25 @@ module.exports = [
 
 ```json
 {
-  "model_list_changes": {
-    "your-model-name": {
-      "hooks": {
-        "invoke-with-response-stream": [
-          {
-            "request": {
-              "match": [
-                "size:1k-3k",
-                "header:x-app=cli",
-                "url-regex:.*bedrock.*"
-              ],
-              "callback": {
-                "id": "myUniquePluginId"
+  "models": {
+    "overrides": {
+      "your-model-name": {
+        "hooks": {
+          "invoke-with-response-stream": [
+            {
+              "request": {
+                "match": [
+                  "size:1k-3k",
+                  "header:x-app=cli",
+                  "url-regex:.*bedrock.*"
+                ],
+                "callback": {
+                  "id": "myUniquePluginId"
+                }
               }
             }
-          }
-        ]
+          ]
+        }
       }
     }
   }
@@ -1068,7 +1088,7 @@ Plugins have access to a `utils` object with the following helpers:
 ### Application Settings  
 - `PORT` - Port to run the server on (default: 3000)
 - `CONFIG_FILE_PATH` - Path to store the API configuration (default: './api_config.json')
-- `DEBUG` - Set to `true` for verbose logging (e.g., `DEBUG=true`) that also activates a hard coded AWS API Key, see claude code example. Payload logging no longer requires `DEBUG` — it is controlled by `api_config.logging.payload_logging_enabled` (hot-reloadable via the admin UI; the `PAYLOAD_LOGGING_ENABLED` env var, if set, overrides the config in both directions).
+- `DEBUG` - Set to `true` for verbose logging (e.g., `DEBUG=true`) that also activates a hard coded AWS API Key, see claude code example. Payload logging no longer requires `DEBUG` — it is controlled by `api_config.platform.logging.payload_logging_enabled` (hot-reloadable via the admin UI; the `PAYLOAD_LOGGING_ENABLED` env var, if set, overrides the config in both directions).
 
 ### Gateway Operation Mode
 - `GATEWAY_STANDALONE` - Set to `true` to force standalone mode, disabling all distributed services (Valkey, admin service) regardless of other configuration. Useful for local development or testing without dependencies. (default: `false`)
@@ -1084,25 +1104,27 @@ The repo includes an example plugin called `mockWhimsicalGerundVerb` that demons
 
 ```json
 {
-  "model_list_changes": {
-    "your-model-id": {
-      "hooks": {
-        "invoke-with-response-stream": [
-          {
-            "request": {
-              "match": [
-                "size:1k-3k",
-                "header:x-app=cli", 
-                "payload:maxTokens512",
-                "payload:temperature1",
-                "system:whimsicalPrompt"
-              ],
-              "callback": {
-                "id": "mockWhimsicalGerundVerb"
+  "models": {
+    "overrides": {
+      "your-model-id": {
+        "hooks": {
+          "invoke-with-response-stream": [
+            {
+              "request": {
+                "match": [
+                  "size:1k-3k",
+                  "header:x-app=cli", 
+                  "payload:maxTokens512",
+                  "payload:temperature1",
+                  "system:whimsicalPrompt"
+                ],
+                "callback": {
+                  "id": "mockWhimsicalGerundVerb"
+                }
               }
             }
-          }
-        ]
+          ]
+        }
       }
     }
   }

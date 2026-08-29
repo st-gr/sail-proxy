@@ -242,6 +242,27 @@ app.post('/openai/v1/chat/completions', async (req: AuthenticatedRequest, res: R
 });
 ```
 
+#### Log level resolution
+
+The shared logger (`libs/logger`) resolves its effective level from two sources, and the
+`platform.logging` block in `api_config.json` is only one of them.
+
+- **`platform.logging.defaultLevel`** sets the level for any component that has no entry in
+  `platform.logging.components`. Per-component entries in `components` override it for their own
+  component and are unaffected by the precedence below.
+- **`LOG_LEVEL` (environment) wins.** If `LOG_LEVEL` is set to a level the logger recognizes, it
+  takes precedence and `defaultLevel` is ignored. `LOG_LEVEL` ships **set** in both `.env` samples
+  (`services/gateway/.env.sample`, `services/admin/.env.sample`) and in the Kyma manifests, so in a
+  stock deployment the environment is what actually governs the level.
+- **Recognized levels** are `trace`, `debug`, `info`, `warn`, `error`. Both `LOG_LEVEL` and
+  `defaultLevel` are matched **case-insensitively**.
+- **An unrecognized value is silently ignored** — it does not raise an error; the previously
+  effective level (the built-in default of `info`, or a lower layer's value) stays in place. The
+  schema lists the choices in uppercase because that is what operators type into the config form.
+
+Resolution order, highest priority first: a matching `components[<component>]` entry → a recognized
+`LOG_LEVEL` → a recognized `defaultLevel` → the built-in `info`.
+
 #### Performance Monitoring
 
 **Request Timing Middleware**:

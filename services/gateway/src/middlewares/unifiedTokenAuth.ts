@@ -11,7 +11,10 @@ import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 import apiKeyAuth from './apiKeyAuth';
 import tokenBasedAwsAuth from './tokenBasedAwsAuth';
 import securityEventEmitter from '../services/securityEventEmitter';
+import { credentialIdentity, CredentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
+import { getClientIp as deriveClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from '../services/configService';
 const logger = getDefaultLogger();
 
 interface UnifiedAuthRequest extends Request {
@@ -149,10 +152,10 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
       (req as any).unifiedAuthAttempted = true;
       
       await securityEventEmitter.emitFailedAuth({
-        credentialId: extractCredentialId(req, authType),
+        ...extractCredentialId(req, authType),
         authType,
         reason: validationResult?.error?.message || 'Authentication failed',
-        clientIP: req.ip || req.connection.remoteAddress,
+        clientIP: getClientIp(req),
         userAgent: req.get('User-Agent'),
         endpoint: req.originalUrl,
         method: req.method,
@@ -212,19 +215,22 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
 };
 
 /**
- * Extract credential ID for security event logging
+ * Extract credential identity for security event logging. Both branches here run on a
+ * FAILURE path — the credential did not resolve to a stored row — so the presented value
+ * is never safe to ship as-is; credentialIdentity() hashes it and derives a short hint
+ * (see utils/credentialIdentity.ts).
  */
-function extractCredentialId(req: Request, authType: 'api_key' | 'aws_credential'): string {
+function extractCredentialId(req: Request, authType: 'api_key' | 'aws_credential'): CredentialIdentity {
   if (authType === 'api_key') {
-    return extractApiKey(req) || 'unknown';
+    return credentialIdentity(extractApiKey(req) || 'unknown');
   } else if (authType === 'aws_credential') {
     const authHeader = req.get('Authorization');
     if (authHeader && authHeader.startsWith('AWS4-HMAC-SHA256')) {
       const credentialMatch = authHeader.match(/Credential=([^\/]+)/);
-      return credentialMatch ? credentialMatch[1] : 'unknown';
+      return credentialIdentity(credentialMatch ? credentialMatch[1] : 'unknown');
     }
   }
-  return 'unknown';
+  return credentialIdentity('unknown');
 }
 
 /**
@@ -322,14 +328,11 @@ function extractApiKey(req: Request): string | null {
 }
 
 /**
- * Get client IP address
+ * Get client IP address. Delegates to utils/clientIp's single derivation,
+ * gated on the `security.trust_forwarded_for` config flag.
  */
 function getClientIp(req: Request): string {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-         (req.headers['x-real-ip'] as string) ||
-         req.connection?.remoteAddress ||
-         req.socket?.remoteAddress ||
-         '127.0.0.1';
+  return deriveClientIp(req, getTrustForwardedFor());
 }
 
 /**

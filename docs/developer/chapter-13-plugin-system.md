@@ -76,7 +76,7 @@ The plugin system supports all major provider endpoints:
 - `stripCacheControlScope.ts` - Claude Code compatibility fix (strips unsupported cache_control fields)
 - `repairToolBlocks.ts` - Repairs compressed tool_use/tool_result blocks missing required fields (id, name, tool_use_id)
 - `resizeOversizedImages.ts` - Resizes images exceeding per-model dimension limits in multi-image requests
-- `pseudonymization/` - Detects and masks PII/secrets in outbound requests and unmasks them in responses; activation and per-category masking are configurable in `api_config.json`. See [`services/gateway/src/plugins/pseudonymization.md`](../../services/gateway/src/plugins/pseudonymization.md) for activation methods and category toggles.
+- `pseudonymization/` - Detects and masks PII/secrets in outbound requests and unmasks them in responses; activation and per-category masking are configurable in `api_config.json`. Precision is tuned with four optional keys in the same block: `min_confidence` and `thresholds` (how much evidence a value needs before it is masked, globally and per category), `allowlist` (`terms`, case-sensitive literals, and `patterns`, regex sources the gateway anchors to the whole value — a listed value is exempt no matter what the score says), and `saturation_warn` (report-only: above that many distinct masked values the request logs one warning and the usage SIEM event carries `saturated: true`, but every value is still masked). See [`services/gateway/src/plugins/pseudonymization.md`](../../services/gateway/src/plugins/pseudonymization.md) for activation methods and category toggles, and its "Tuning pseudonymization precision" section for what raising each key costs, how to read the saturation report, and how to re-baseline with the `services/gateway/test/pseudonymization-precision/` harness (the CI regression gate for every detector change).
 
 ## Creating a Plugin
 
@@ -139,39 +139,43 @@ Configure your plugin in `api_config.json`:
 
 ```json
 {
-  "hookDefinitions": {
-    "size:1k-3k": {
-      "type": "header",
-      "name": "content-length",
-      "from": 1024,
-      "to": 3072
-    },
-    "header:x-app=cli": {
-      "type": "header",
-      "name": "x-app",
-      "equals": "cli"
-    },
-    "anthropic:all": {
-      "type": "url-regex",
-      "regex": "anthropic",
-      "flags": "i",
-      "desc": "Match any URL containing 'anthropic'"
+  "hooks": {
+    "definitions": {
+      "size:1k-3k": {
+        "type": "header",
+        "name": "content-length",
+        "from": 1024,
+        "to": 3072
+      },
+      "header:x-app=cli": {
+        "type": "header",
+        "name": "x-app",
+        "equals": "cli"
+      },
+      "anthropic:all": {
+        "type": "url-regex",
+        "regex": "anthropic",
+        "flags": "i",
+        "desc": "Match any URL containing 'anthropic'"
+      }
     }
   },
-  "model_list_changes": {
-    "anthropic--claude-3-haiku--deployed": {
-      "hooks": {
-        "invoke-with-response-stream": [
-          {
-            "request": {
-              "match": ["size:1k-3k", "header:x-app=cli"],
-              "callback": { 
-                "id": "myUniquePluginId", 
-                "strategy": "before" 
+  "models": {
+    "overrides": {
+      "anthropic--claude-3-haiku--deployed": {
+        "hooks": {
+          "invoke-with-response-stream": [
+            {
+              "request": {
+                "match": ["size:1k-3k", "header:x-app=cli"],
+                "callback": { 
+                  "id": "myUniquePluginId", 
+                  "strategy": "before" 
+                }
               }
             }
-          }
-        ]
+          ]
+        }
       }
     }
   }
@@ -180,7 +184,7 @@ Configure your plugin in `api_config.json`:
 
 ### 3. Hook Definition Types
 
-The `hookDefinitions` section supports various matching criteria:
+The `hooks.definitions` section supports various matching criteria:
 
 #### Content Length Range
 ```json
@@ -230,6 +234,41 @@ The `hookDefinitions` section supports various matching criteria:
   "desc": "Match any URL containing 'anthropic'"
 }
 ```
+
+#### Matcher semantics: `equals` and `regex`
+
+The `equals` and `regex` keys are compared differently depending on the rule `type`. The schema
+also constrains which keys a given type accepts, so a key that a type never reads is rejected at
+validation time rather than sitting inert in the config.
+
+**`equals`** — the value the addressed thing must equal:
+
+- **`header`** rule — compared on **media type**, not by strict equality: everything before the
+  first `;` is trimmed and lowercased, so `"application/json"` matches a request sending
+  `Content-Type: application/json; charset=utf-8`. This is deliberate: the strict comparison it
+  replaced silently excluded charset-appending clients (OkHttp, .NET `JsonContent`, older axios),
+  which for `header:contentTypeJson` meant those requests **bypassed pseudonymization on every
+  endpoint**. An expected value that itself contains a `;` restores exact matching, so a rule can
+  still pin a specific charset when it means to.
+- **`json-path`** rule — **strict** equality (`===`) against the value the path resolves to in the
+  request body, so `512` (number) and `"512"` (string) are different rules.
+- **Omitted** — a `header` rule falls through to a `from`/`to` numeric-range check and finally to a
+  bare presence check (the header exists with any value); a `json-path` rule matches when the path
+  resolves to anything at all.
+- **Rejected** on `json-path-regex` and `url-regex` — those match by regular expression and never
+  read `equals`, so the schema forbids the key on them (`not: { required: ["equals"] }`).
+
+**`regex`** — a JavaScript regular-expression **source** string (paired with optional `flags`):
+
+- **`json-path-regex`** rule — tested against whatever the path resolved to: a **string** directly;
+  an **array** element by element, stringifying a non-string element first and matching if **any**
+  element matches; **any other object** against its `JSON.stringify` form.
+- **`url-regex`** rule — tested against `req.url`, i.e. the request **path and query string** as the
+  gateway sees them, **not** an absolute URL. An expression anchored with `^https?://` can therefore
+  never match.
+- Each expression is compiled once and cached per rule id, source and flags. An expression the
+  regex engine rejects is caught and treated as **no match** (never a crash).
+- An **empty** source is rejected by the schema (`minLength: 1`); write a real expression.
 
 ## Plugin Strategies
 
@@ -692,7 +731,7 @@ export = pluginRules;
 ### Common Issues
 
 1. **Plugin not loading**: Check file path and export format
-2. **Match conditions not working**: Verify `hookDefinitions` in `api_config.json`
+2. **Match conditions not working**: Verify `hooks.definitions` in `api_config.json`
 3. **Handler errors**: Check error logs and add proper error handling
 4. **Performance issues**: Profile plugin execution time
 

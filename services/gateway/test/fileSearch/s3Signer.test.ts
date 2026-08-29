@@ -1,4 +1,4 @@
-import { buildS3AuthHeader } from '../../src/fileSearch/blob/s3Signer';
+import { buildS3AuthHeader } from '@libs/aws-signing/s3Signer';
 
 describe('buildS3AuthHeader', () => {
   it('produces a deterministic SigV4 header for a fixed time and key', () => {

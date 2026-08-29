@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Role-Based Access Control Integration Tests', () => {
+describeLive('Role-Based Access Control Integration Tests', () => {
   let adminClient: AxiosInstance;
   let userClient: AxiosInstance;
   let otherUserClient: AxiosInstance;

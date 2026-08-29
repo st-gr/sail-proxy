@@ -91,13 +91,15 @@ Client Request (with web_search server tool)
 
 ```json
 {
-  "hookDefinitions": {
-    "tools:hasWebSearch": {
-      "desc": "Match requests containing web_search tool",
-      "type": "json-path-regex",
-      "path": "$.tools",
-      "regex": "web_search",
-      "flags": "i"
+  "hooks": {
+    "definitions": {
+      "tools:hasWebSearch": {
+        "desc": "Match requests containing web_search tool",
+        "type": "json-path-regex",
+        "path": "$.tools",
+        "regex": "web_search",
+        "flags": "i"
+      }
     }
   }
 }

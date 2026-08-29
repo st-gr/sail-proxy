@@ -1,7 +1,7 @@
 import axios from 'axios';
 import * as crypto from 'crypto';
 import { BlobBackend } from './blobStore';
-import { buildS3AuthHeader } from './s3Signer';
+import { buildS3AuthHeader } from '@libs/aws-signing/s3Signer';
 
 const SHA_RE = /^[0-9a-f]{64}$/;
 

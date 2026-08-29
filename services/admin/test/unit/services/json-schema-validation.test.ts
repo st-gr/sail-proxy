@@ -42,9 +42,11 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              timeouts: {
-                default: "not_a_number",
-                streaming: 600000
+              platform: {
+                timeouts: {
+                  default: "not_a_number",
+                  streaming: 600000
+                }
               }
             }
           })
@@ -64,8 +66,10 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              logging: {
-                defaultLevel: "INVALID_LEVEL"
+              platform: {
+                logging: {
+                  defaultLevel: "INVALID_LEVEL"
+                }
               }
             }
           })
@@ -85,10 +89,12 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              hookDefinitions: {
-                testHook: {
-                  type: "header"
-                  // Missing required 'name' property for header type
+              hooks: {
+                definitions: {
+                  testHook: {
+                    type: "header"
+                    // Missing required 'name' property for header type
+                  }
                 }
               }
             }
@@ -109,10 +115,12 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              openrouter: {
-                default_pricing: {
-                  completion: "0.001"
-                  // Missing required 'image' and 'prompt' properties
+              providers: {
+                openrouter: {
+                  default_pricing: {
+                    completion: "0.001"
+                    // Missing required 'image' and 'prompt' properties
+                  }
                 }
               }
             }
@@ -133,32 +141,36 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              timeouts: {
-                default: 600000,
-                streaming: 600000
-              },
-              logging: {
-                defaultLevel: "INFO",
-                log_folder_path: "./logs",
-                payload_logging_enabled: false,
-                components: {
-                  ConfigService: "DEBUG"
+              platform: {
+                timeouts: {
+                  default: 600000,
+                  streaming: 600000
+                },
+                logging: {
+                  defaultLevel: "INFO",
+                  log_folder_path: "./logs",
+                  payload_logging_enabled: false,
+                  components: {
+                    ConfigService: "DEBUG"
+                  }
+                },
+                rate_limit_handling: {
+                  enabled: true,
+                  default_delay_seconds: 1,
+                  backoff_multiplier: 2,
+                  max_delay_seconds: 60
                 }
               },
-              anthropic: {
-                substitute_models: [
-                  {
-                    from: "claude-3-5-haiku-20241022",
-                    to: "anthropic--claude-3-haiku--deployed",
-                    description: "Test substitution"
-                  }
-                ]
-              },
-              rate_limit_handling: {
-                enabled: true,
-                default_delay_seconds: 1,
-                backoff_multiplier: 2,
-                max_delay_seconds: 60
+              providers: {
+                anthropic: {
+                  substitute_models: [
+                    {
+                      from: "claude-3-5-haiku-20241022",
+                      to: "anthropic--claude-3-haiku--deployed",
+                      description: "Test substitution"
+                    }
+                  ]
+                }
               }
             }
           })
@@ -178,17 +190,21 @@ describe('Configuration Service - JSON Schema Validation', () => {
         data: {
           configData: JSON.stringify({
             api_config: {
-              timeouts: {
-                default: "invalid",
-                streaming: -1
+              platform: {
+                timeouts: {
+                  default: "invalid",
+                  streaming: -1
+                },
+                logging: {
+                  defaultLevel: "INVALID"
+                }
               },
-              logging: {
-                defaultLevel: "INVALID"
-              },
-              hookDefinitions: {
-                badHook: {
-                  type: "header"
-                  // Missing name
+              hooks: {
+                definitions: {
+                  badHook: {
+                    type: "header"
+                    // Missing name
+                  }
                 }
               }
             }
@@ -206,6 +222,34 @@ describe('Configuration Service - JSON Schema Validation', () => {
       result.errors.forEach((error: string) => {
         expect(error).toContain('Schema validation error');
       });
+    });
+
+    // The save path really does use `formatSchemaError`, and really does drop Ajv's umbrella
+    // `propertyNames` error: one message, naming the key and the allowed set, pointed at the key
+    // itself rather than at the provider - see `src/srv/schemaErrors.ts` for why.
+    it('names the key and the allowed set for a setting under a provider that does not read it', async () => {
+      const req = {
+        data: {
+          configData: JSON.stringify({
+            api_config: {
+              providers: {
+                openai: { anthropic_bedrock_version: 'bedrock-2023-05-31' }
+              }
+            }
+          })
+        }
+      };
+
+      const result = await configService.validateConfiguration(req);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual([
+        "Schema validation error at '/api_config/providers/openai/anthropic_bedrock_version': " +
+        'property "anthropic_bedrock_version" is not one of the settings this provider reads ' +
+        '(allowed: emulate_streaming_for_models, substitute_models, unsupported_params, ' +
+        'param_renames, supports_responses_api, supports_prompt_caching, ' +
+        'openai_deployment_api_version)'
+      ]);
     });
   });
 });

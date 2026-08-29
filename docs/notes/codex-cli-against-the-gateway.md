@@ -87,7 +87,94 @@ It is fixable client-side via codex's `model_catalog_json` config key, which tak
 prompt; supplying a hand-written value replaces it, and a wrong one degrades the agent far more
 than fallback metadata does. Reconstructing an undocumented, version-specific 39-field struct to
 silence a warning is a bad trade. Revisit only if the fallback's context window or auto-compact
-limit turns out to hurt in practice — and then get the real catalog, do not invent one.
+limit turns out to hurt in practice — and then get the real catalog, do not invent one. **The
+web-search section below revisits it — with the real catalog, not an invented one.**
+
+## Web search: routing codex's searches through the gateway (Perplexity)
+
+**Runs 2026-08-29**, gateway on `localhost:3000`, codex 0.147.0 AND 0.149.1, model `gpt-5.6-sol`.
+
+**It works, config-only, no fork.** `codex --search` sends the hosted `web_search` tool to the
+gateway, `responsesWebSearchPlugin` runs it via direct Perplexity, and codex answers from the
+gateway's results — on the **deployed** model, on the **latest** codex.
+
+### The mechanism (read from codex's own source, `openai/codex`)
+
+codex has TWO web-search paths, and which one it takes is decided in
+`codex-rs/core/src/tools/spec_plan.rs`:
+
+```rust
+if model_info.use_responses_lite { return Vec::new(); }   // responses-lite models emit NO hosted tools
+let standalone = standalone_web_search_enabled(..) && ext has web.run;
+let web_search_mode = (!standalone && provider.capabilities().web_search)
+    .then_some(config.web_search_mode.value());            // provider web_search cap DEFAULTS to true
+// create_web_search_tool (hosted_spec.rs) then builds {type:web_search, external_web_access}
+// for WebSearchMode Live/Indexed/Cached; None/Disabled -> no tool.
+```
+
+So the **hosted** tool (the one the gateway executes) is emitted only when **all** hold:
+`!model_info.use_responses_lite`, `provider.capabilities().web_search` (default `true`, so
+sail-proxy already qualifies), standalone not available, and the top-level config key
+`web_search` set to a live mode. Otherwise codex either falls back to OpenAI's **standalone**
+search (which never touches the gateway — invisible to gateway logs, visible only in mitmproxy)
+or reports "web_search unavailable".
+
+**`gpt-5.6-sol`'s catalog carries `use_responses_lite: true`**, which trips the early return, so
+out of the box codex searches standalone against OpenAI. That is the whole "it worked in August,
+not now, same codex version" mystery: the delegate-vs-standalone choice is this flag (delivered
+by OpenAI's catalog / account, not by anything local), and August's sessions were in delegate
+mode. There is no codex version that changes this — 0.146.1 and 0.147.0 both search standalone
+now; 0.148+ additionally can't even fetch the capability catalog from a custom provider (it GETs
+`{base_url}/models?client_version=` and wants codex's `{models:[…]}` envelope, not the OpenAI
+`{object,data}` list, so the refresh fails).
+
+### The recipe
+
+Override that one flag via `model_catalog_json` and pick the live mode:
+
+1. Get a **real** catalog once (the `base_instructions` caveat above is why we reuse, not invent):
+   run codex a single time against the real OpenAI provider so it fetches OpenAI's catalog to
+   `~/.codex/models_cache.json` — e.g. `OPENAI_API_KEY=<openai-key> codex -c model_provider=openai
+   -c model=gpt-5.6-sol "hi"`. This writes the authentic 8-model catalog (correct prompts).
+2. Copy it, and set `use_responses_lite: false` on the `gpt-5.6-sol` entry. Save it somewhere
+   stable (we use `~/.codex/sailproxy-web-search-catalog.json`).
+3. In `~/.codex/config.toml`:
+   ```toml
+   model = "gpt-5.6-sol"          # NOT --deployed: /responses auto-resolves it to the deployed twin
+   web_search = "live"            # selects the hosted web_search tool (external_web_access:true)
+   model_catalog_json = "/Users/<you>/.codex/sailproxy-web-search-catalog.json"
+   ```
+
+`model = "gpt-5.6-sol"` (the bare foundation slug codex's catalog recognises) is deliberate: the
+`/responses` deployed-sibling fallback (§ "Model naming" above) resolves it to
+`gpt-5.6-sol--deployed`, so inference runs on the **deployed** model (native Responses) while
+codex still sees a web-search-capable slug. `model_catalog_json` also sidesteps the 0.148+
+provider-catalog-fetch failure, so this works on the latest codex — no version pin needed.
+
+Verified end-to-end: gateway logs show `responsesWebSearchPlugin` → *Rewrote hosted web_search* →
+*Using direct Perplexity* → *Found 20 citations*, and `responsesController` → *Resolved
+gpt-5.6-sol to its deployment gpt-5.6-sol--deployed for the Responses API*.
+
+**Maintenance:** `model_catalog_json` freezes the catalog (codex stops auto-refreshing it), so
+regenerate it (step 1–2) after a codex upgrade if the `ModelInfo` shape changes or the model list
+moves on.
+
+### Search-quota vs. replay — validated live on this path
+
+With web search finally flowing through the gateway, the `web_search.max_searches_per_request`
+cap and the replay handling in the hosted-tool engine are exercised for real (they are unreachable
+on the standalone path). Measured 2026-08-29, cap = 3:
+
+- **Cap holds.** A turn asking for four searches ran exactly three via Perplexity and refused the
+  fourth ("this turn's web-search budget was used up").
+- **Replays do not re-execute.** The next turn replayed the prior turn's `web_search_call` items;
+  the plugin rewrote them but ran **zero** new Perplexity searches — the cached ones were restored
+  and the one that had been capped came back `not_retained` (codex: "Rust's result wasn't
+  available"). So replayed history does **not** burn the per-request cap. This is the fix for the
+  2026-08-10 incident (see `docs/notes/hosted-tool-result-replay-2026-08-10.md`), now confirmed
+  end-to-end rather than only in code: pre-fix the drain re-ran replayed calls and exhausted the
+  cap; post-fix a replay hits the process-local result cache (1 h TTL, owner-scoped) or returns
+  `not_retained`, never a fresh search.
 
 ## Upstream error envelopes — fixed
 

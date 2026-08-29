@@ -57,7 +57,7 @@ function mockCompletionResponse(content: string): void {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockFileSearchConfig = { rewriteQueryModel: 'gpt-4o-mini' };
+  mockFileSearchConfig = { rewriteQueryModel: 'gpt-5-mini' };
   getDeploymentIdMock.mockResolvedValue(DEPLOYMENT_ID);
 });
 
@@ -84,7 +84,7 @@ describe('successful rewrite', () => {
     await rewriteSearchQuery(QUERY);
     const payload = mockPost.mock.calls[0][1];
     expect(payload.config.modules.prompt_templating.model.name).not.toBe('gpt-35-turbo-16k');
-    expect(payload.config.modules.prompt_templating.model.name).toBe('gpt-4o-mini');
+    expect(payload.config.modules.prompt_templating.model.name).toBe('gpt-5-mini');
   });
 
   it('hits the orchestration /v2/completion path for the discovered deployment', async () => {

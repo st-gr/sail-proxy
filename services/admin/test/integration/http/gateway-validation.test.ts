@@ -1,7 +1,7 @@
 import axios from 'axios';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Gateway Validation Functions Integration Tests', () => {
+describeLive('Gateway Validation Functions Integration Tests', () => {
   const baseURL = `${getAdminServiceUrl()}/odata/v4/admin`;
   const client = axios.create({
     baseURL,

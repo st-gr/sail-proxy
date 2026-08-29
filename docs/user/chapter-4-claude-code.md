@@ -263,10 +263,12 @@ When using newer versions of Claude Code (2.1.30+), you may encounter:
 ```json
 {
   "api_config": {
-    "anthropic": {
-      "excluded_beta_headers": [
-        "prompt-caching-scope-2026-01-05"
-      ]
+    "providers": {
+      "anthropic": {
+        "excluded_beta_headers": [
+          "prompt-caching-scope-2026-01-05"
+        ]
+      }
     }
   }
 }

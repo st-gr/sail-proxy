@@ -48,26 +48,30 @@ entity admin.ApiConfiguration {
   isValid: true;
   configData: '{
     "api_config": {
-      "openai": {
-        "substitute_models": [
-          {"from": "GPT-4", "to": "o1"},
-          {"from": "GPT-3.5", "to": "GPT-4"}
-        ],
-        "emulate_streaming_for_models": []
+      "providers": {
+        "openai": {
+          "substitute_models": [
+            {"from": "GPT-4", "to": "o1"},
+            {"from": "GPT-3.5", "to": "GPT-4"}
+          ],
+          "emulate_streaming_for_models": []
+        },
+        "anthropic": {
+          "substitute_models": [
+            {"from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-3-haiku"}
+          ],
+          "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
+        }
       },
-      "anthropic": {
-        "substitute_models": [
-          {"from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-3-haiku"}
-        ],
-        "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
-      },
-      "timeouts": {
-        "default": 60000,
-        "streaming": 300000
-      },
-      "logging": {
-        "defaultLevel": "INFO",
-        "payloadLoggingEnabled": true
+      "platform": {
+        "timeouts": {
+          "default": 60000,
+          "streaming": 300000
+        },
+        "logging": {
+          "defaultLevel": "INFO",
+          "payloadLoggingEnabled": true
+        }
       }
     }
   }';

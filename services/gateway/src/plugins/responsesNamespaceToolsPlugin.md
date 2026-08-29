@@ -43,7 +43,7 @@ Codex routes namespaced tools by the pair `(namespace, name)`, never by name alo
 
 ## Modes
 
-`configService.getNamespaceToolMode()` (`api_config.json` → `namespace_tools.mode`) selects one of two behaviors. Absent config resolves to the default, `flatten`, so an install whose `api_config.json` predates this key gets the working behavior rather than the 400.
+`configService.getNamespaceToolMode()` (`api_config.json` → `capabilities.namespace_tools.mode`) selects one of two behaviors. Absent config resolves to the default, `flatten`, so an install whose `api_config.json` predates this key gets the working behavior rather than the 400.
 
 - **`flatten`** (default) — hoist the nested tools to the top level, stash the `toolName -> namespaceName` map, restore `namespace` on the way back. This is what makes Codex's multi-agent feature actually work.
 - **`strip`** — remove the `namespace` wrapper and its nested tools entirely, keeping only the top-level function tools that were already there. An operator picks this when the flattened tool set is itself unacceptable for a deployment — e.g. a policy that disallows `spawn_agent`/`close_agent`-shaped tools regardless of how they're wrapped — and would rather Codex fall back to its own no-sub-agent behavior than have the gateway offer them. In `strip` mode the stashed map is always empty, which makes the after handler's re-nesting step a guaranteed no-op: there is nothing to restore because nothing was hoisted.
@@ -69,7 +69,7 @@ A nested tool whose name collides with an existing top-level tool is dropped rat
 
 ## Hook wiring
 
-Both `defaultHooks.openai.responses` and `.responses-stream` in `api_config.json` carry a third entry alongside `pseudonymizationPlugin` (index 0, never reordered) and `responsesWebSearchPlugin`:
+Both `hooks.defaults.openai.responses` and `.responses-stream` in `api_config.json` carry a third entry alongside `pseudonymizationPlugin` (index 0, never reordered) and `responsesWebSearchPlugin`:
 
 ```json
 {
@@ -110,8 +110,8 @@ The interceptor holds a partial `tail` across writes, because SSE block boundari
 
 | Hook array | Shipped order | Consumed by | Direction |
 |---|---|---|---|
-| `defaultHooks.openai.responses-stream` | `pseudonymizationPlugin` → **this plugin** → `responsesWebSearchPlugin` | the `res.write` interceptors the `before` handlers install | inside-out — the **last installed is outermost** |
-| `defaultHooks.openai.responses` | `pseudonymizationPlugin` → `responsesWebSearchPlugin` → **this plugin** | the after-handler chain in [`services/pluginExecutor.ts`](../services/pluginExecutor.ts) | in order — each handler receives the previous one's result |
+| `hooks.defaults.openai.responses-stream` | `pseudonymizationPlugin` → **this plugin** → `responsesWebSearchPlugin` | the `res.write` interceptors the `before` handlers install | inside-out — the **last installed is outermost** |
+| `hooks.defaults.openai.responses` | `pseudonymizationPlugin` → `responsesWebSearchPlugin` → **this plugin** | the after-handler chain in [`services/pluginExecutor.ts`](../services/pluginExecutor.ts) | in order — each handler receives the previous one's result |
 
 Both arrays encode the *same* requirement — this plugin must observe whatever web-search produced — and they land on inverted positions because inside-out nesting and in-order chaining are opposites. Making them agree reintroduces one of the two bugs, whichever way they are made to agree. `pseudonymizationPlugin` stays at index 0 in both; only the two tool plugins swap.
 

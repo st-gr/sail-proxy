@@ -32,9 +32,9 @@ export interface ResponsesEligibilityInput {
   modelName: string;
   provider?: string;
   isDeployed: boolean;
-  /** api_config model_list_changes.<model>.supports_responses_api */
+  /** api_config.models.overrides.<model>.supports_responses_api */
   modelFlag?: boolean;
-  /** api_config.<provider>.supports_responses_api */
+  /** api_config.providers.<provider>.supports_responses_api */
   providerFlag?: boolean;
 }
 

@@ -229,6 +229,9 @@ Ollama-specific environment configuration:
 ## Testing
 
 ```bash
+# Deployment-parity check on the bundle (requires build:local + bundle first)
+npm test
+
 # Run the CLI
 sail-proxy
 
@@ -238,6 +241,16 @@ sail-proxy run
 sail-proxy apikey create "test-app"
 sail-proxy status
 ```
+
+`npm test` runs `test/bundled-plugins.test.js`: it loads the bundled gateway's
+plugin loader in-process, from the same cwd the CLI spawns the gateway with, and
+fails if no plugin rules register. That is a real regression this package shipped
+from its initial commit — the loader used to resolve `./src/plugins` against
+`process.cwd()`, which in `bundled/gateway` points nowhere, so the standalone
+deployment silently ran with zero hook plugins (no pseudonymization, no web
+search, no tool rewriting) while Docker and local dev were fine. Startup logs the
+same number: `grep "Registered .* plugin rules" ~/.sail-proxy/logs/gateway.log`
+must never show `0`.
 
 ## Publishing
 

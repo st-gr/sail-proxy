@@ -68,7 +68,7 @@ jest.mock('../src/services/modelService', () => ({
   },
 }));
 
-// Per-test knobs standing in for api_config.json's model_list_changes / provider flags.
+// Per-test knobs standing in for api_config.json's models.overrides / provider flags.
 let modelFlag: boolean | undefined;
 let providerFlag: boolean | undefined;
 jest.mock('../src/services/configService', () => ({

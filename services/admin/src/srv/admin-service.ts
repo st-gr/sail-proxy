@@ -7,6 +7,7 @@ import { getDefaultLogger } from '@libs/logger';
 import { usageEventProcessor } from '../services/usageEventProcessor';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
 import SecurityEventService from '../services/securityEventService';
+import { recordAuditEvent } from '../services/auditEventService';
 import securityEventSubscriber from '../services/securityEventSubscriber';
 import { costRecalculationService } from '../services/costRecalculationService';
 import { securityNotificationConfig } from '../config/security-notifications';
@@ -14,6 +15,16 @@ import { notificationPopulationService } from '../services/notificationPopulatio
 import { dismissNotification, markNotificationSeen, markNotificationUnseen, snoozeNotification, pinNotification, unpinNotification, deleteSecurityNotification } from './notification-handlers';
 import { notificationStreamService } from './notification-stream';
 import { processOrderByForCompatibility } from '../config/database-compatibility';
+import { startDispatcher } from '../siem/dispatcher';
+import { resolveSiemDispatch } from '../siem/siemConfigResolver';
+import { setSiemDispatcherHandle } from '../siem/dispatcherHandle';
+import { refreshSecretResolver, startSecretResolver, stopSecretResolver } from '../siem/secretResolverHandle';
+import {
+  setCredential, deleteCredential, listCredentialNames, MissingCredentialKeyError,
+} from '../siem/credentialStore';
+import type { CredentialMetadata } from '../siem/credentialStore';
+import { findOrphanedCredentials, deleteOrphanedCredentials } from '../siem/credentialSweep';
+import type { OrphanedCredential } from '../siem/credentialSweep';
 const configurationService = require('./config-service');
 const configRestApi = require('./config-rest-api');
 
@@ -37,6 +48,8 @@ interface AdminRequest {
     stringToSign?: string;
     configId?: string;
     configData?: string;
+    configurationId?: string;
+    value?: string;
     reason?: string;
     startDate?: Date;
     endDate?: Date;
@@ -63,6 +76,9 @@ interface AdminRequest {
     count?: number;
     // Bulk action properties
     IDs?: string[];
+    // Orphaned SIEM credential sweep properties
+    names?: string[];
+    configurationIds?: string[];
   };
   user?: { id: string };
   error: (code: number, message: string) => void;
@@ -163,7 +179,9 @@ class AdminService {
     this.initializeCacheInvalidation();
     this.initializeSecurityEventSubscriber();
     this.initializeCostRecalculation();
-    
+    this.initializeSiemDispatcher();
+    this.initializeCredentialSweepReport();
+
     // Register event handlers
     service.on('createApiKey', this.createApiKey.bind(this));
     service.on('disableApiKey', this.disableApiKey.bind(this));
@@ -222,6 +240,11 @@ class AdminService {
     service.on('resetConfiguration', this.resetConfiguration.bind(this));
     service.on('validateConfiguration', this.validateConfiguration.bind(this));
     service.on('getActiveConfiguration', this.getActiveConfiguration.bind(this));
+    service.on('setSiemCredential', this.setSiemCredential.bind(this));
+    service.on('deleteSiemCredential', this.deleteSiemCredential.bind(this));
+    service.on('listSiemCredentials', this.listSiemCredentials.bind(this));
+    service.on('findOrphanedSiemCredentials', this.findOrphanedSiemCredentials.bind(this));
+    service.on('deleteOrphanedSiemCredentials', this.deleteOrphanedSiemCredentials.bind(this));
     
     // Changed from action to function - functions use 'on' handler just like actions
     service.on('getUsageStatistics', this.getUsageStatistics.bind(this));
@@ -288,77 +311,86 @@ class AdminService {
         endpoint: 'createApiKey'
       });
       req.error(403, 'Access denied: Users can only create API keys for themselves');
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.create', email || 'unknown', 'failure', `Access denied: ${userEmail} attempted to create an API key for ${email}`);
       return {} as ApiKeyResponse;
     }
-    
+
     logger.info('AdminService', `[RBAC] API key creation authorized for ${email} by ${userEmail}`, {
       isOwnKey: email === userEmail,
       isAdmin,
       userRoles,
       endpoint: 'createApiKey'
     });
-    
-    // Generate new API key using same format as gateway service  
-    const apiKey = 'sk-' + crypto.randomBytes(24).toString('hex'); // 48 characters total
-    const keyId = crypto.randomUUID(); // Use crypto.randomUUID() like gateway service
-    
-    // Default rate limits
-    const defaultRateLimits = {
-      requestsPerMinute: 60,
-      requestsPerHour: 1000,
-      requestsPerDay: 10000,
-      ...rateLimits
-    };
 
-    // Insert API key record
-    const maskedKey = maskApiKey(apiKey);
-    
-    const INSERT = cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeys').entries({
-      ID: keyId,
-      key: apiKey,
-      maskedKey,
-      name,
-      email,
-      createdBy: req.user?.id || 'system',
-      isActive: true,
-      usageCount: 0
-    });
-    
-    await cds.run(INSERT);
+    try {
+      // Generate new API key using same format as gateway service
+      const apiKey = 'sk-' + crypto.randomBytes(24).toString('hex'); // 48 characters total
+      const keyId = crypto.randomUUID(); // Use crypto.randomUUID() like gateway service
 
-    // Insert rate limits
-    if (Object.keys(defaultRateLimits).length > 0) {
-      const rateLimitId = uuidv4();
-      const INSERT_RATE_LIMITS = cds.ql.INSERT.into('sap.llm.gateway.admin.RateLimits').entries({
-        ID: rateLimitId,
-        apiKey_ID: keyId,
-        ...defaultRateLimits
+      // Default rate limits
+      const defaultRateLimits = {
+        requestsPerMinute: 60,
+        requestsPerHour: 1000,
+        requestsPerDay: 10000,
+        ...rateLimits
+      };
+
+      // Insert API key record
+      const maskedKey = maskApiKey(apiKey);
+
+      const INSERT = cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeys').entries({
+        ID: keyId,
+        key: apiKey,
+        maskedKey,
+        name,
+        email,
+        createdBy: req.user?.id || 'system',
+        isActive: true,
+        usageCount: 0
       });
-      await cds.run(INSERT_RATE_LIMITS);
-    }
 
-    // Insert permissions
-    for (const permission of permissions) {
-      const permissionId = uuidv4();
-      const INSERT_PERMISSION = cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeyPermissions').entries({
-        ID: permissionId,
-        apiKey_ID: keyId,
-        permission,
-        grantedBy: req.user?.id || 'system',
-        grantedAt: new Date()
-      });
-      await cds.run(INSERT_PERMISSION);
-    }
+      await cds.run(INSERT);
 
-    return {
-      id: keyId,
-      key: apiKey,
-      maskedKey,
-      name: name!,
-      email: email!,
-      isActive: true,
-      createdAt: new Date()
-    };
+      // Insert rate limits
+      if (Object.keys(defaultRateLimits).length > 0) {
+        const rateLimitId = uuidv4();
+        const INSERT_RATE_LIMITS = cds.ql.INSERT.into('sap.llm.gateway.admin.RateLimits').entries({
+          ID: rateLimitId,
+          apiKey_ID: keyId,
+          ...defaultRateLimits
+        });
+        await cds.run(INSERT_RATE_LIMITS);
+      }
+
+      // Insert permissions
+      for (const permission of permissions) {
+        const permissionId = uuidv4();
+        const INSERT_PERMISSION = cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeyPermissions').entries({
+          ID: permissionId,
+          apiKey_ID: keyId,
+          permission,
+          grantedBy: req.user?.id || 'system',
+          grantedAt: new Date()
+        });
+        await cds.run(INSERT_PERMISSION);
+      }
+
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.create', keyId, 'success', `API key created for ${email} by ${userEmail}`);
+
+      return {
+        id: keyId,
+        key: apiKey,
+        maskedKey,
+        name: name!,
+        email: email!,
+        isActive: true,
+        createdAt: new Date()
+      };
+    } catch (error) {
+      logger.error('AdminService', `Error creating API key for ${email}: ${error instanceof Error ? error.message : error}`, error instanceof Error ? error : undefined, { email, userEmail });
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.create', email || 'unknown', 'failure', `Failed to create API key for ${email}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
+    }
   }
 
   async disableApiKey(req: AdminRequest): Promise<{ success: boolean; message: string }> {
@@ -496,37 +528,40 @@ class AdminService {
         .where({ ID: keyId });
       
       const result = await cds.run(SELECT);
-      
+
       if (result.length === 0) {
+        await this.recordApiKeyAudit(req, userEmail, 'api_key.revoke', keyId, 'failure', 'API key not found');
         return {
           success: false,
           message: 'API key not found'
         };
       }
-      
+
       if (result[0].email !== userEmail) {
+        await this.recordApiKeyAudit(req, userEmail, 'api_key.revoke', keyId, 'failure', `Access denied: ${userEmail} attempted to delete a key owned by ${result[0].email}`);
         return {
           success: false,
           message: 'Access denied: You can only delete your own API keys'
         };
       }
-      
+
       actualApiKey = result[0].key;
     } else {
       // Admin user - get the API key string for cache invalidation
       const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
         .columns('key')
         .where({ ID: keyId });
-      
+
       const result = await cds.run(SELECT);
-      
+
       if (result.length === 0) {
+        await this.recordApiKeyAudit(req, userEmail, 'api_key.revoke', keyId, 'failure', 'API key not found');
         return {
           success: false,
           message: 'API key not found'
         };
       }
-      
+
       actualApiKey = result[0].key;
     }
     
@@ -560,7 +595,13 @@ class AdminService {
         logger.warn('AdminService', `Failed to invalidate cache for API key ${keyId}:`, error instanceof Error ? error.message : 'Unknown error');
       }
     }
-    
+
+    await this.recordApiKeyAudit(
+      req, userEmail, 'api_key.revoke', keyId,
+      updateResult > 0 ? 'success' : 'failure',
+      updateResult > 0 ? `API key revoked by ${userEmail}` : 'API key not found'
+    );
+
     return {
       success: updateResult > 0,
       message: updateResult > 0 ? 'API key deleted successfully (soft delete)' : 'API key not found'
@@ -748,34 +789,38 @@ class AdminService {
       }
     } catch (error) {
       logger.error('AdminService', `Error reading API key for rotation: ${error instanceof Error ? error.message : error}`, error instanceof Error ? error : undefined, { keyId });
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', 'API key not found or not accessible');
       return { success: false, message: 'API key not found or not accessible' };
     }
-    
+
     if (!apiKey) {
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', 'API key not found');
       return { success: false, message: 'API key not found' };
     }
-    
+
     // Authorization check: Non-admin users can only rotate their own API keys
     if (!isAdmin) {
       if (apiKey.email !== userEmail) {
         logger.warn('AdminService', `Unauthorized API key rotation attempt by user ${userEmail} for key ${keyId} (owner: ${apiKey.email})`);
+        await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', `Access denied: ${userEmail} attempted to rotate a key owned by ${apiKey.email}`, 'high');
         return { success: false, message: 'Access denied: You can only rotate your own API keys' };
       }
     }
-    
+
     // Generate new API key
     const newKey = 'sk-' + crypto.randomBytes(32).toString('hex');
     const newMaskedKey = maskApiKey(newKey);
-    
+
     // Check if new key already exists (very unlikely but safety first)
     const EXISTING_CHECK = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
       .where({ key: newKey, isActive: true });
-    
+
     const existingNewKey = await cds.run(EXISTING_CHECK);
     if (existingNewKey.length > 0) {
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', 'Key collision detected, please retry');
       return { success: false, message: 'Key collision detected, please retry' };
     }
-    
+
     // Update the API key - use transaction for proper draft handling
     try {
       if (isActiveEntity === false) {
@@ -797,6 +842,7 @@ class AdminService {
       }
     } catch (error) {
       logger.error('AdminService', `Error updating API key during rotation: ${error instanceof Error ? error.message : error}`, error instanceof Error ? error : undefined, { keyId });
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', 'Failed to rotate API key');
       return { success: false, message: 'Failed to rotate API key' };
     }
     
@@ -884,7 +930,9 @@ class AdminService {
     }
     
     logger.info('AdminService', `API key rotated successfully for user ${userEmail}, key ID: ${keyId}`);
-    
+
+    await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'success', `API key rotated by ${userEmail}`, 'low');
+
     return {
       success: true,
       newMaskedKey: newMaskedKey,
@@ -1365,6 +1413,7 @@ class AdminService {
     if (!isAdmin && (userId !== userEmail || email !== userEmail)) {
       logger.error('AdminService', `[RBAC] Internal error: Non-admin user fields not properly enforced - userEmail: ${userEmail}, finalUserId: ${userId}, finalEmail: ${email}, endpoint: createAwsCredentials`);
       req.error(403, 'Access denied: Users can only create AWS credentials for themselves');
+      await this.recordAwsCredentialAudit(req, userEmail, 'aws_credential.create', email || userId || 'unknown', 'failure', `Access denied: ${userEmail} attempted to create AWS credentials for ${email || userId}`);
       return {} as AwsCredentialsResponse;
     }
     
@@ -1441,6 +1490,8 @@ class AdminService {
 
     // Calculate AWS region from SAP AI region (same logic as gateway service)
     const awsRegion = this.getAwsRegionFromSapAi(process.env.SAP_AI_REGION || 'us-east-1');
+
+    await this.recordAwsCredentialAudit(req, userEmail, 'aws_credential.create', credentialId, 'success', `AWS credentials created for ${email || userId} by ${userEmail}`);
 
     return {
       id: credentialId,
@@ -1566,15 +1617,17 @@ class AdminService {
     
     if (result.length === 0) {
       req.error(404, 'AWS credentials not found');
+      await this.recordAwsCredentialAudit(req, userId, 'aws_credential.revoke', credentialId, 'failure', 'AWS credentials not found');
       return { success: false, message: 'AWS credentials not found' };
     }
-    
+
     const credential = result[0];
-    
+
     // Authorization check: Non-admin users can only delete their own AWS credentials
     if (!isAdmin) {
       if (credential.userId !== userId) {
         req.error(403, 'Access denied: You can only delete your own AWS credentials');
+        await this.recordAwsCredentialAudit(req, userId, 'aws_credential.revoke', credentialId, 'failure', `Access denied: ${userId} attempted to delete credentials owned by ${credential.userId}`, 'high');
         return { success: false, message: 'Access denied: You can only delete your own AWS credentials' };
       }
     }
@@ -1601,7 +1654,13 @@ class AdminService {
         logger.warn('AdminService', `Failed to invalidate cache for AWS credentials ${credential.accessKeyId}:`, error instanceof Error ? error.message : 'Unknown error');
       }
     }
-    
+
+    await this.recordAwsCredentialAudit(
+      req, userId, 'aws_credential.revoke', credentialId,
+      deleteResult > 0 ? 'success' : 'failure',
+      deleteResult > 0 ? `AWS credentials revoked by ${userId}` : 'AWS credentials not found'
+    );
+
     return {
       success: deleteResult > 0,
       message: deleteResult > 0 ? 'AWS credentials deleted successfully' : 'AWS credentials not found'
@@ -1638,11 +1697,12 @@ class AdminService {
       .where({ ID: credentialId, isActive: true });
     
     const existing = await cds.run(SELECT);
-    
+
     if (existing.length === 0) {
+      await this.recordAwsCredentialAudit(req, userId, 'aws_credential.rotate', credentialId, 'failure', 'AWS credentials not found');
       return { success: false, message: 'AWS credentials not found' };
     }
-    
+
     // Authorization check: Non-admin users can only rotate their own AWS credentials
     if (!isAdmin) {
       if (existing[0].userId !== userId) {
@@ -1653,6 +1713,7 @@ class AdminService {
           isAdmin,
           endpoint: 'rotateAwsCredentials'
         });
+        await this.recordAwsCredentialAudit(req, userId, 'aws_credential.rotate', credentialId, 'failure', `Access denied: ${userId} attempted to rotate credentials owned by ${existing[0].userId}`, 'high');
         return { success: false, message: 'Access denied: You can only rotate your own AWS credentials' };
       }
     }
@@ -1700,10 +1761,31 @@ class AdminService {
     });
     
     await cds.run(INSERT_ROTATION);
-    
+
     // Create notification for rotation event
     await this.createNotificationForRotation(rotationId, existing[0], true, 'manual');
-    
+
+    // Log rotation event in security events using SecurityEventService, matching rotateApiKey.
+    // credential_rotation is SecurityEventType.CREDENTIAL_ROTATION from the gateway - this is
+    // where it gets its first emission on the admin side.
+    try {
+      const { clientIP, userAgent } = this.getClientContext(req);
+      await SecurityEventService.createAwsSecurityEvent({
+        credentialId: existing[0].ID,
+        eventType: 'credential_rotation',
+        severity: 'low',
+        description: `AWS credentials rotated by ${req.user?.id || 'system'}`,
+        clientIP,
+        userAgent,
+        endpoint: '/rotateAwsCredentials',
+        requestId: uuidv4(),
+        actionTaken: 'credential_rotated',
+        autoBlocked: false
+      });
+    } catch (error) {
+      logger.warn('AdminService', `Failed to log security event for AWS credential rotation ${credentialId}:`, error instanceof Error ? error.message : 'Unknown error');
+    }
+
     // Invalidate cache for the rotated AWS credentials (using old accessKeyId)
     try {
       // Cache is keyed by accessKeyId, not credential UUID, so we need to invalidate the old accessKeyId
@@ -1743,7 +1825,9 @@ class AdminService {
     } catch (error) {
       logger.warn('AdminService', `Failed to invalidate local validation cache for rotated AWS credentials ${existing[0].accessKeyId}:`, error instanceof Error ? error.message : 'Unknown error');
     }
-    
+
+    await this.recordAwsCredentialAudit(req, userId, 'aws_credential.rotate', credentialId, 'success', `AWS credentials rotated by ${userId}`, 'low');
+
     return {
       success: true,
       newAccessKeyId,
@@ -1994,6 +2078,211 @@ class AdminService {
         errors: [(error as Error).message],
         warnings: []
       };
+    }
+  }
+
+  /**
+   * True when `configurationId` names the currently active configuration. Only a change to
+   * the active configuration's credentials should reach the running resolver immediately -
+   * editing an inactive configuration must not force a refresh on the running system. The
+   * refresh this gates is a latency optimisation, not the guard on WHICH credentials are
+   * served: the running resolver is pinned to the configuration the dispatcher was built from
+   * (see secretResolver.ts) and reloads only that configuration's credentials, whichever
+   * configuration this call happens to be about.
+   */
+  private async isActiveConfiguration(configurationId: string): Promise<boolean> {
+    const config = await SELECT.one
+      .from('sap.llm.gateway.admin.ApiConfigurations')
+      .columns('isActive')
+      .where({ ID: configurationId });
+    return config?.isActive === true;
+  }
+
+  /**
+   * Stores a SIEM sink credential, scoped to the configuration it was set on. The
+   * credential's NAME is the env var name that api_config.json already records for the
+   * sink; the value never touches that file. Errors never echo the value - an error string
+   * is a log line and a UI toast.
+   */
+  async setSiemCredential(req: AdminRequest): Promise<{ success: boolean; error?: string }> {
+    // Normalised once and reused for validation, storage and the audit resourceId, so a
+    // leading/trailing-whitespace variant of a name can never create a second row that
+    // secretResolver's exact-name lookup then fails to find.
+    const name = req.data.name?.trim();
+    const { value, configurationId } = req.data;
+    const actorId = req.user?.id || 'unknown';
+
+    if (!configurationId) {
+      return { success: false, error: 'configurationId is required' };
+    }
+    if (!name) {
+      return { success: false, error: 'name is required' };
+    }
+    if (!value) {
+      return { success: false, error: 'value is required' };
+    }
+
+    try {
+      await setCredential(configurationId, name, value, actorId);
+      // Rotation is the deliberate exception to "inactive configurations are read-only": a
+      // compromised key cannot wait for a deactivate-edit-reactivate cycle. Waiting out the
+      // resolver's periodic refresh is equally unacceptable, so the running resolver is
+      // refreshed immediately - but only when the configuration just edited is the active one.
+      if (await this.isActiveConfiguration(configurationId)) {
+        await refreshSecretResolver();
+      }
+      await recordAuditEvent({
+        actorId,
+        actorType: 'admin_user',
+        action: 'siem_credential.set',
+        resourceType: 'SiemCredential',
+        resourceId: name,          // the NAME, never the value
+        outcome: 'success',
+        severity: 'high',
+        details: JSON.stringify({ configurationId }),
+      });
+      return { success: true };
+    } catch (error) {
+      logger.error('admin-service', `Failed to store SIEM credential '${name}'`, error as Error);
+      await recordAuditEvent({
+        actorId,
+        actorType: 'admin_user',
+        action: 'siem_credential.set',
+        resourceType: 'SiemCredential',
+        resourceId: name,
+        outcome: 'failure',
+        severity: 'high',
+        details: JSON.stringify({ configurationId }),
+      });
+      // Names the missing configuration - the variable's NAME, never any value - because a
+      // deployment that never wired SIEM_CREDENTIAL_KEY in fails EVERY set this way, and
+      // 'Failed to store the credential' gives the operator nothing to act on. Every other
+      // failure keeps the generic message: it must not describe the store's internals.
+      return {
+        success: false,
+        error: error instanceof MissingCredentialKeyError
+          ? 'SIEM_CREDENTIAL_KEY is not configured on the admin service; the credential was not stored'
+          : 'Failed to store the credential',
+      };
+    }
+  }
+
+  async deleteSiemCredential(req: AdminRequest): Promise<{ success: boolean; error?: string }> {
+    // Same normalisation as setSiemCredential - trims once, reused for validation, the store
+    // lookup and the audit resourceId, so a whitespace-padded name still matches the row that
+    // setSiemCredential (also trimmed) created.
+    const name = req.data.name?.trim();
+    const { configurationId } = req.data;
+    const actorId = req.user?.id || 'unknown';
+
+    if (!configurationId) {
+      return { success: false, error: 'configurationId is required' };
+    }
+    if (!name) {
+      return { success: false, error: 'name is required' };
+    }
+
+    try {
+      await deleteCredential(configurationId, name);
+      // Same immediate-refresh exception as setSiemCredential - only when the configuration
+      // just edited is the active one.
+      if (await this.isActiveConfiguration(configurationId)) {
+        await refreshSecretResolver();
+      }
+      await recordAuditEvent({
+        actorId,
+        actorType: 'admin_user',
+        action: 'siem_credential.delete',
+        resourceType: 'SiemCredential',
+        resourceId: name,
+        outcome: 'success',
+        severity: 'high',
+        details: JSON.stringify({ configurationId }),
+      });
+      return { success: true };
+    } catch (error) {
+      logger.error('admin-service', `Failed to delete SIEM credential '${name}'`, error as Error);
+      await recordAuditEvent({
+        actorId,
+        actorType: 'admin_user',
+        action: 'siem_credential.delete',
+        resourceType: 'SiemCredential',
+        resourceId: name,
+        outcome: 'failure',
+        severity: 'high',
+        details: JSON.stringify({ configurationId }),
+      });
+      return { success: false, error: 'Failed to delete the credential' };
+    }
+  }
+
+  /**
+   * Metadata only. Returning a value or ciphertext here would defeat the whole store.
+   * A store failure is logged and rethrown rather than swallowed into `[]`: an empty array
+   * here is indistinguishable from "nothing stored", and would render as "no credentials
+   * configured" in the Settings UI to an administrator whose credentials are in fact stored,
+   * inviting them to re-enter secrets against a store that is merely unreachable right now.
+   * An unhandled rejection from a CAP action becomes an error response, not a crashed caller,
+   * so there is no safety reason to hide this from the client.
+   */
+  async listSiemCredentials(req: AdminRequest): Promise<CredentialMetadata[]> {
+    const { configurationId } = req.data;
+    if (!configurationId) {
+      throw new Error('configurationId is required');
+    }
+    try {
+      return await listCredentialNames(configurationId);
+    } catch (error) {
+      logger.error('admin-service', 'Failed to list SIEM credentials', error as Error);
+      throw new Error('Failed to list SIEM credentials');
+    }
+  }
+
+  /**
+   * Reports every SiemCredentials row nothing can reach any more - see credentialSweep.ts for
+   * the classification. Never deletes; a credential value can never be read back, so cleanup
+   * is a separate, explicit action (deleteOrphanedSiemCredentials). Same never-return-[]-on-
+   * error reasoning as listSiemCredentials: an empty array here must mean "no orphans", not
+   * "the sweep could not run".
+   */
+  async findOrphanedSiemCredentials(req: AdminRequest): Promise<OrphanedCredential[]> {
+    try {
+      return await findOrphanedCredentials();
+    } catch (error) {
+      logger.error('admin-service', 'Failed to find orphaned SIEM credentials', error as Error);
+      throw new Error('Failed to find orphaned SIEM credentials');
+    }
+  }
+
+  /**
+   * Deletes exactly the (configurationIds[i], names[i]) pairs the caller confirmed. Re-derives
+   * the current orphan set and filters it down to those pairs, rather than trusting the pairs
+   * directly - so a slot that stopped being an orphan between the report and this call (a sink
+   * re-added it, say) is never deleted, and deleteOrphanedCredentials gets the `reason` it
+   * needs for the audit trail.
+   */
+  async deleteOrphanedSiemCredentials(
+    req: AdminRequest,
+  ): Promise<{ success: boolean; deleted: number; error?: string }> {
+    const { names, configurationIds } = req.data;
+    const actorId = req.user?.id || 'unknown';
+
+    if (
+      !Array.isArray(names) || !Array.isArray(configurationIds) ||
+      names.length === 0 || names.length !== configurationIds.length
+    ) {
+      return { success: false, deleted: 0, error: 'names and configurationIds must be non-empty, equal-length arrays' };
+    }
+
+    try {
+      const requested = new Set(names.map((name, i) => `${configurationIds[i]}::${name}`));
+      const orphans = (await findOrphanedCredentials())
+        .filter(o => requested.has(`${o.configurationId}::${o.name}`));
+      const deleted = await deleteOrphanedCredentials(orphans, actorId);
+      return { success: true, deleted };
+    } catch (error) {
+      logger.error('admin-service', 'Failed to delete orphaned SIEM credentials', error as Error);
+      return { success: false, deleted: 0, error: 'Failed to delete orphaned credentials' };
     }
   }
 
@@ -2725,11 +3014,78 @@ class AdminService {
     return roles.some(role => {
       if (typeof role !== 'string') return false;
       return (
-        role === 'admin' || 
-        role === 'Admin' || 
+        role === 'admin' ||
+        role === 'Admin' ||
         role.includes('admin') ||
         role.endsWith('.admin')
       );
+    });
+  }
+
+  /**
+   * Extract client IP and user agent from the CAP request's underlying HTTP request,
+   * same source as the clientIP passed to SecurityEventService elsewhere in this file.
+   * @param req - Request object
+   */
+  private getClientContext(req: any): { clientIP: string; userAgent: string } {
+    const httpReq = req?.http?.req;
+    return {
+      clientIP: httpReq?.ip || httpReq?.connection?.remoteAddress || 'unknown',
+      userAgent: httpReq?.headers?.['user-agent'] || 'unknown'
+    };
+  }
+
+  /**
+   * Record an operator audit event for an API key lifecycle action (create/rotate/revoke).
+   */
+  private async recordApiKeyAudit(
+    req: any,
+    actorId: string | undefined,
+    action: string,
+    resourceId: string | undefined,
+    outcome: 'success' | 'failure',
+    details: string,
+    severity: 'low' | 'medium' | 'high' | 'critical' = 'medium'
+  ): Promise<void> {
+    const { clientIP, userAgent } = this.getClientContext(req);
+    await recordAuditEvent({
+      actorId: actorId || 'unknown',
+      actorType: 'admin_user',
+      action,
+      resourceType: 'ApiKey',
+      resourceId: resourceId || 'unknown',
+      outcome,
+      severity,
+      clientIP,
+      userAgent,
+      details
+    });
+  }
+
+  /**
+   * Record an operator audit event for an AWS credential lifecycle action (create/rotate/revoke).
+   */
+  private async recordAwsCredentialAudit(
+    req: any,
+    actorId: string | undefined,
+    action: string,
+    resourceId: string | undefined,
+    outcome: 'success' | 'failure',
+    details: string,
+    severity: 'low' | 'medium' | 'high' | 'critical' = 'medium'
+  ): Promise<void> {
+    const { clientIP, userAgent } = this.getClientContext(req);
+    await recordAuditEvent({
+      actorId: actorId || 'unknown',
+      actorType: 'admin_user',
+      action,
+      resourceType: 'AwsCredential',
+      resourceId: resourceId || 'unknown',
+      outcome,
+      severity,
+      clientIP,
+      userAgent,
+      details
     });
   }
 
@@ -2785,6 +3141,102 @@ class AdminService {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.warn('AdminService', `Failed to initialize cost recalculation: ${errorMsg}`);
       // Don't throw - cost recalculation is not critical for admin service functionality
+    }
+  }
+
+  /**
+   * Starts the SIEM delivery dispatcher (siem/dispatcher.ts) against the sinks named in
+   * the active configuration (ApiConfigurations.configData, simplified-api-config.cds:10-30),
+   * read the same way getSiemDispatchConfig in securityEventSubscriber.ts reads it. The
+   * decision to start at all, and the construction of each sink, is delegated to
+   * resolveSiemDispatch (siem/siemConfigResolver.ts) — it returns null and this starts no
+   * timers at all unless siem.enabled is true and at least one sink is both individually
+   * enabled and passes validateConfig(); a misconfigured sink is skipped and logged there,
+   * not allowed to stop the others. Never throws: SIEM forwarding is not critical for
+   * admin service startup.
+   */
+  private async initializeSiemDispatcher(): Promise<void> {
+    try {
+      logger.info('AdminService', 'Initializing SIEM dispatcher');
+
+      const cds = require('@sap/cds');
+      const { SELECT } = cds.ql;
+      const rows = await SELECT.from('sap.llm.gateway.admin.ApiConfigurations')
+        .where({ isActive: true })
+        .orderBy('version desc')
+        .limit(1);
+
+      if (!rows || rows.length === 0) {
+        logger.info('AdminService', 'SIEM dispatcher not started: no active configuration found');
+        return;
+      }
+
+      // Starts the live secret resolver and registers its handle (secretResolverHandle.ts)
+      // before any sink is built, and refreshes it once synchronously first, so a sink whose
+      // credential IS stored is not wrongly dropped below for "no credential stored" against
+      // an empty, not-yet-refreshed snapshot. Without this, every sink's resolveSecret
+      // (sink.ts) always returns undefined and the credential store this task built is dead
+      // code in production - see setSiemCredential/deleteSiemCredential's immediate-refresh
+      // call, which only does anything once this handle exists.
+      //
+      // Pinned to rows[0].ID - the very configuration whose configData builds the sinks below -
+      // rather than letting the resolver re-select the active configuration on each refresh.
+      // The sinks are built once here and never rebuilt, so a resolver that followed
+      // activation would hand a running sink another configuration's credentials; see
+      // createSecretResolver's doc comment.
+      const secretResolver = await startSecretResolver(rows[0].ID);
+
+      const configData = JSON.parse(rows[0].configData || '{}');
+      const resolved = resolveSiemDispatch(configData?.api_config?.observability?.siem, secretResolver.resolve);
+
+      for (const warning of resolved?.warnings ?? []) {
+        logger.warn('AdminService', `SIEM dispatcher: ${warning}`);
+      }
+
+      if (!resolved) {
+        logger.info('AdminService', 'SIEM dispatcher not started: siem.enabled is false, or no sink is both enabled and valid');
+        // No dispatcher means nothing will ever call resolve() again - a resolver with no
+        // consumer must not keep polling the DB every 60s for the life of the process.
+        stopSecretResolver();
+        return;
+      }
+
+      // Handed to dispatcherHandle.ts (not stored on `this`) so index.ts's gracefulShutdown
+      // can stop it without requiring this module — see that file's doc comment for why.
+      setSiemDispatcherHandle(startDispatcher(resolved.sinks, resolved.dispatcherConfig));
+
+      logger.info('AdminService', 'SIEM dispatcher started', { sinks: resolved.sinks.map(s => s.name) });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to initialize SIEM dispatcher: ${errorMsg}`);
+      // Don't throw - SIEM forwarding is not critical for admin service functionality. Also
+      // tears down the resolver (a no-op if it was never started) so a failure partway
+      // through this method never leaves an orphaned timer behind.
+      stopSecretResolver();
+    }
+  }
+
+  /**
+   * Reports orphaned SIEM credentials at startup - never sweeps them away. A credential value
+   * can never be read back (credentialSweep.ts), so deleting one is irreversible and must stay
+   * an explicit, confirmed operator action (deleteOrphanedSiemCredentials), never something
+   * that runs unattended on every restart. This only makes orphans visible: a count and their
+   * slot names at `warn`, never a value. Never throws - a sweep must never prevent the admin
+   * service from starting.
+   */
+  private async initializeCredentialSweepReport(): Promise<void> {
+    try {
+      const orphans = await findOrphanedCredentials();
+      if (orphans.length > 0) {
+        logger.warn('AdminService', `${orphans.length} orphaned SIEM credential(s) found`, {
+          names: orphans.map(o => o.name),
+        });
+      } else {
+        logger.info('AdminService', 'No orphaned SIEM credentials found');
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to run orphaned SIEM credential sweep: ${errorMsg}`);
     }
   }
 
@@ -3088,7 +3540,9 @@ class AdminService {
         };
       }
 
-      const validEventTypes = ['failed_auth', 'suspicious_activity', 'rate_limit_exceeded', 'unauthorized_access', 'credential_rotation', 'ip_blocked', 'brute_force_detected'];
+      // Matches gateway SecurityEventType exactly (types/security.ts): this action is called
+      // by the gateway, which can only ever send one of these three.
+      const validEventTypes = ['failed_auth', 'rate_limit_exceeded', 'credential_rotation'];
       if (!validEventTypes.includes(eventType)) {
         return {
           success: false,

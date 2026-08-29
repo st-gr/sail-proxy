@@ -38,7 +38,7 @@ jest.mock('@libs/logger', () => ({
   }),
 }));
 
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: {
@@ -69,9 +69,9 @@ function reqWith(masking: any): any {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockConfig.api_config.pseudonymization = undefined;
-  mockConfig.api_config.defaultHooks = {};
-  mockConfig.api_config.model_list_changes = {};
+  mockConfig.api_config.observability.pseudonymization = undefined;
+  mockConfig.api_config.hooks.defaults = {};
+  mockConfig.api_config.models.overrides = {};
 });
 
 describe('pseudonymization does not activate on a config with no entities', () => {

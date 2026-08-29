@@ -31,12 +31,12 @@ script:post-response {
   console.log('Deployed at:', res.headers['x-config-deployed-at']);
   
   // Validate api_config structure (Gateway service expects this format)
-  if (apiConfig.timeouts) {
-    console.log('Timeouts configured:', apiConfig.timeouts);
+  if (apiConfig.platform?.timeouts) {
+    console.log('Timeouts configured:', apiConfig.platform.timeouts);
   }
   
-  if (apiConfig.anthropic) {
-    console.log('Anthropic config found with', apiConfig.anthropic.substitute_models?.length || 0, 'model substitutions');
+  if (apiConfig.providers?.anthropic) {
+    console.log('Anthropic config found with', apiConfig.providers.anthropic.substitute_models?.length || 0, 'model substitutions');
   }
   
   // Store for next test

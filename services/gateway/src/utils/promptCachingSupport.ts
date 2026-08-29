@@ -26,9 +26,9 @@
  */
 export interface PromptCachingSupportInput {
   provider?: string;
-  /** api_config.model_list_changes.<model>.supports_prompt_caching */
+  /** api_config.models.overrides.<model>.supports_prompt_caching */
   modelFlag?: boolean;
-  /** api_config.<provider>.supports_prompt_caching */
+  /** api_config.providers.<provider>.supports_prompt_caching */
   providerFlag?: boolean;
 }
 

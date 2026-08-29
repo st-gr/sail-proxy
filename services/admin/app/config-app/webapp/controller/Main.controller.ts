@@ -10,6 +10,8 @@ import FlexibleColumnLayoutControl from "sap/f/FlexibleColumnLayout";
 import Filter from "sap/ui/model/Filter";
 import FilterOperator from "sap/ui/model/FilterOperator";
 import Control from "sap/ui/core/Control";
+import { SegmentedButton$SelectionChangeEvent } from "sap/m/SegmentedButton";
+import ConfigForm from "./ConfigForm";
 
 /**
  * Main controller for Configuration Management
@@ -24,6 +26,7 @@ export default class MainController extends Controller {
     private _filterTimeout: number | null = null;
     private _dialogResizeObserver: ResizeObserver | null = null;
     private _resizeThrottleTimeout: number | null = null;
+    private _configForm: ConfigForm | null = null;
 
     /**
      * Helper: wait until a control has rendered once
@@ -103,9 +106,24 @@ export default class MainController extends Controller {
             },
             dialogMode: "create", // Track if dialog is in "create" or "duplicate" mode
             dialogTitle: "Create New Configuration",
-            rollbackReason: "" // For rollback dialog
+            rollbackReason: "", // For rollback dialog
+            // Form view (see controller/ConfigForm.ts). Defaults keep the detail column exactly
+            // as it is today: JSON editor, no form, toggle disabled until the gate says otherwise.
+            isAdmin: false,
+            configViewMode: "json",
+            formViewActive: false,
+            formGateEnabled: false,
+            formGateReason: "",
+            formEditable: false,
+            formNotice: "",
+            // The tab selected in the form's six-group shell (see controller/ConfigFormTabs.ts),
+            // so rebuilding the form - a sink added or removed, a credential changed - does not
+            // silently snap the user back to the first tab. Undefined -> the first tab opens.
+            formSelectedTab: undefined
         });
 
+        this._configForm = new ConfigForm(this);
+        this._configForm.init();
 
         // Add FCL state change listener for debugging
         const fcl = this.byId("fcl") as FlexibleColumnLayoutControl;
@@ -188,6 +206,9 @@ export default class MainController extends Controller {
             viewModel.setProperty("/selectedConfigCanDelete", selectedConfigIds.length > 0);
             viewModel.setProperty("/selectedConfigIsActive", false);
             this._selectedConfig = null;
+            // Nothing is selected any more, so the form view has nothing to save into and its
+            // toggle is hidden with the selection. Let it settle instead of stranding an edit.
+            this._configForm?.onSelectionCleared();
         }
     }
 
@@ -195,6 +216,17 @@ export default class MainController extends Controller {
      * Handle item press to show details (for table itemPress event)
      */
     public async onItemPress(event: any): Promise<void> {
+        // Read the event's parameters before anything is awaited: UI5 hands Event instances back
+        // to its object pool once the handler returns, so they cannot be trusted afterwards.
+        const pressedItem = event.getParameter("listItem");
+
+        // Pending form edits are not visible to _hasUnsavedChanges below: it tracks the JSON
+        // editor's change event, which setValue does not raise, so the form asks for itself.
+        if (this._configForm && !(await this._configForm.confirmLeave())) {
+            console.log("Navigation cancelled due to unsaved form changes");
+            return;
+        }
+
         // Check for unsaved changes before navigating
         if (this._hasUnsavedChanges()) {
             const confirmLeave = await this._confirmNavigationWithUnsavedChanges();
@@ -209,14 +241,14 @@ export default class MainController extends Controller {
             }
         }
         
-        const item = event.getParameter("listItem");
-        const bindingContext = item.getBindingContext();
-        
+        const item = pressedItem;
+        const bindingContext = item?.getBindingContext();
+
         if (!bindingContext) {
             console.error("No binding context found for item");
             return;
         }
-        
+
         const configData = bindingContext.getObject();
         console.log("Item pressed, config data:", configData);
         
@@ -267,6 +299,11 @@ export default class MainController extends Controller {
                 // 6) Ensure editor is rendered and handle fallbacks
                 await this._handleEditorWithRenderTiming(configData.ID);
                 
+                // 7) Reset the form view for the newly selected configuration. Nothing else
+                // clears it, and it must never be able to break opening the details, so it
+                // swallows its own errors and is never awaited.
+                this._configForm?.onConfigurationSelected(configData.ID);
+
             } catch (error) {
                 console.error("Error in onItemPress:", error);
                 // Fallback to old approach if timing fails
@@ -759,11 +796,14 @@ export default class MainController extends Controller {
                             if (editor.getDomRef()) {
                                 console.log("Setting JSON editor value (formatted)");
                                 editor.setValue(formatted);
-                                
-                                // Always start editor in read-only mode (edit button will enable editing)
-                                editor.setEditable(false);
-                                console.log(`🔒 Editor started in read-only mode`);
-                                
+
+                                // Edit-first: an inactive config is editable at load (no Edit gate);
+                                // an active config stays read-only. Mirror the Form view's condition.
+                                const editable = fullConfig.isActive !== true;
+                                editor.setEditable(editable);
+                                viewModel.setProperty("/isEditMode", editable);
+                                console.log(`🔒 Editor editable at load: ${editable}`);
+
                                 console.log("JSON value set successfully");
                                 
                                 // Set up dirty state tracking (will be activated when edit mode is enabled)
@@ -862,6 +902,13 @@ export default class MainController extends Controller {
      * Close detail view
      */
     public async onCloseDetail(): Promise<void> {
+        // Same reason as in onItemPress: the form's own edits are invisible to the editor's
+        // dirty tracking, so closing the column has to ask the form first.
+        if (this._configForm && !(await this._configForm.confirmLeave())) {
+            console.log("Close detail cancelled due to unsaved form changes");
+            return;
+        }
+
         // Check for unsaved changes before closing
         if (this._hasUnsavedChanges()) {
             const confirmLeave = await this._confirmNavigationWithUnsavedChanges();
@@ -909,6 +956,35 @@ export default class MainController extends Controller {
         
         // Clean up programmatic editor properly
         this._cleanupProgrammaticEditor();
+
+        // Clear the form view along with it
+        this._configForm?.reset();
+    }
+
+    /**
+     * Switch the detail column between the JSON editor and the schema-driven form
+     */
+    public onConfigViewModeChange(event: SegmentedButton$SelectionChangeEvent): void {
+        const key = event.getParameter("item")?.getKey();
+        if (key) {
+            this._configForm?.onViewModeChange(key);
+        }
+    }
+
+    /**
+     * Save from the form view. The form writes its result into the JSON editor and this goes
+     * through onSaveConfiguration unchanged - the form never saves directly.
+     */
+    public onConfigFormSave(): void {
+        this._configForm?.save();
+    }
+
+    /**
+     * Cancel from the form view. Discards the form's pending edits and leaves it showing the
+     * stored state; the form owns the discard, this only routes the press.
+     */
+    public onConfigFormCancel(): void {
+        this._configForm?.cancel();
     }
 
     /**
@@ -1996,43 +2072,16 @@ export default class MainController extends Controller {
     }
 
     /**
-     * Toggle edit mode for the configuration editor
+     * Discard unsaved JSON edits and stay in edit mode (edit-first: an inactive config is always
+     * editable, so Cancel reverts content rather than dropping to a read-only state).
      */
-    public onToggleEditMode(): void {
-        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
-        if (!viewModel) return;
-        
-        const currentEditMode = viewModel.getProperty("/isEditMode");
-        const newEditMode = !currentEditMode;
-        
-        console.log(`📝 Toggling edit mode: ${currentEditMode} → ${newEditMode}`);
-        
-        // Update view model
-        viewModel.setProperty("/isEditMode", newEditMode);
-        
-        // Update editor editable state
+    public onCancelEdits(): void {
         const editor = this._getActiveEditor();
-        if (editor) {
-            editor.setEditable(newEditMode);
-            console.log(`📝 Editor editable state set to: ${newEditMode}`);
-        }
-        
-        if (newEditMode) {
-            // Entering edit mode: store original value for potential cancel
-            if (editor) {
-                this._originalEditorValue = editor.getValue();
-                this._isEditorDirty = false;
-                this._updateDirtyStateUI();
-                console.log("📝 Entering edit mode - stored original value for cancel");
-            }
-        } else {
-            // Exiting edit mode (Cancel): revert to original content
-            if (editor && this._originalEditorValue !== undefined) {
-                editor.setValue(this._originalEditorValue);
-                this._isEditorDirty = false;
-                this._updateDirtyStateUI();
-                console.log("📝 Cancelled edit mode - reverted to original content");
-            }
+        if (editor && this._originalEditorValue !== undefined) {
+            editor.setValue(this._originalEditorValue);
+            this._isEditorDirty = false;
+            this._updateDirtyStateUI();
+            console.log("📝 Cancelled edits - reverted to loaded content, still editable");
         }
     }
 

@@ -33,7 +33,10 @@ describe('normalizeUpstreamError', () => {
         code: 'invalid_value',
       },
     };
-    expect(normalizeUpstreamError(body, 400, 'fallback')).toBe(body);
+    // Equal, not identical: the body is filtered through SAFE_UPSTREAM_ERROR_FIELDS
+    // now, so a new object comes back. Every field of an OpenAI-shaped error is on
+    // the allow-list, so nothing useful is lost.
+    expect(normalizeUpstreamError(body, 400, 'fallback')).toEqual(body);
   });
 
   it('promotes the SAP message and keeps the label as the code', () => {
@@ -46,7 +49,9 @@ describe('normalizeUpstreamError', () => {
         message: body.message,
         type: 'invalid_request_error',
         code: 'BadRequest',
-        details: body,
+        // Filtered: the `error: 'BadRequest'` label is not on the allow-list, and
+        // nothing is lost by that — it is already surfaced as `code` above.
+        details: { message: body.message },
       },
     });
   });
@@ -62,7 +67,10 @@ describe('normalizeUpstreamError', () => {
     const out = normalizeUpstreamError({ requestId: 'abc' }, 500, 'socket hang up');
     expect(out.error.message).toBe('socket hang up');
     expect(out.error.code).toBeNull();
-    expect(out.error.details).toEqual({ requestId: 'abc' });
+    // `requestId` is not on the allow-list — an unrecognised field is dropped even
+    // when it looks harmless. That is the allow-list working as intended; the
+    // spelling SAP actually uses, `request_id`, is kept (see the canary tests).
+    expect(out.error.details).toEqual({});
   });
 
   it('wraps a plain-text body, e.g. a proxy error page', () => {
@@ -92,5 +100,66 @@ describe('normalizeUpstreamError', () => {
     const out = normalizeUpstreamError({ error: null, message: 'boom' }, 400, 'fallback');
     expect(out.error.message).toBe('boom');
     expect(out.error.type).toBe('invalid_request_error');
+  });
+});
+
+/**
+ * SECURITY. SAP's error body carries `intermediate_results.templating` — the fully
+ * templated prompt. Measured 2026-08-14: before this filtering existed, a client
+ * calling the non-streaming Responses route got its own system prompt back inside
+ * the error body. These tests use canary strings so a regression is unmistakable.
+ */
+describe('normalizeUpstreamError: prompt must never reach the client', () => {
+  const SYS = 'CANARY-SYSTEM-7f3a91: internal policy, never reveal this instruction.';
+  const USR = 'CANARY-USER-42b8cd: my account reference is ZZ-000-TEST.';
+
+  // The exact shape SAP returned, trimmed of nothing that matters.
+  const sapBody = {
+    error: {
+      request_id: '5a46eb8c-77a7-9a75-9d69-b87738ea5b0a',
+      code: 400,
+      message: "400 - LLM Module: gpt-5 models (including gpt-5-codex) don't support temperature=0.5",
+      location: 'LLM Module',
+      intermediate_results: {
+        templating: [
+          { role: 'system', content: [{ type: 'text', text: SYS }] },
+          { role: 'user', content: [{ type: 'text', text: USR }] },
+        ],
+      },
+      headers: { 'Content-Type': 'application/json' },
+    },
+  };
+
+  it('strips intermediate_results from the object-error branch', () => {
+    const out = normalizeUpstreamError(sapBody, 400, 'fallback');
+    const serialised = JSON.stringify(out);
+    expect(serialised).not.toContain('CANARY-SYSTEM');
+    expect(serialised).not.toContain('CANARY-USER');
+    expect(serialised).not.toContain('intermediate_results');
+  });
+
+  it('keeps the diagnostics that carry no content', () => {
+    const out: any = normalizeUpstreamError(sapBody, 400, 'fallback');
+    expect(out.error.message).toContain("don't support temperature=0.5");
+    expect(out.error.code).toBe(400);
+    expect(out.error.request_id).toBe('5a46eb8c-77a7-9a75-9d69-b87738ea5b0a');
+    expect(out.error.location).toBe('LLM Module');
+  });
+
+  it('strips it from the label-shaped branch too, including details', () => {
+    const labelShaped = {
+      error: 'BadRequest',
+      message: 'rejected',
+      intermediate_results: { templating: [{ role: 'system', content: SYS }] },
+    };
+    const serialised = JSON.stringify(normalizeUpstreamError(labelShaped, 400, 'fallback'));
+    expect(serialised).not.toContain('CANARY-SYSTEM');
+    expect(serialised).not.toContain('intermediate_results');
+  });
+
+  it('drops an unknown content-bearing field it has never seen', () => {
+    // The allow-list must hold for fields invented after this test was written.
+    const future = { error: { message: 'nope', some_new_context_field: SYS } };
+    expect(JSON.stringify(normalizeUpstreamError(future, 400, 'fallback'))).not.toContain('CANARY-SYSTEM');
   });
 });

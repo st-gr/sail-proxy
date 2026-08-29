@@ -9,7 +9,7 @@ jest.mock('@libs/logger', () => ({
   getDefaultLogger: () => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() }),
 }));
 
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: { getConfig: () => mockConfig, getSubstitutedModel: (_p: string, m: string) => m },
@@ -24,13 +24,21 @@ const beforeHandler = (pluginRules as any[]).find((r: any) => r.strategy === 'be
 const masking = { method: 'pseudonymization', entities: [{ type: 'profile-email' }] };
 const frame = (o: any) => `data: ${JSON.stringify(o)}\n\n`;
 
-async function setup(inputText: string) {
+async function setup(inputText: string, entityTypes?: string[]) {
   const written: string[] = [];
   const res: any = {
     write: (c: any) => { written.push(String(c)); return true; },
     end: (c?: any) => { if (typeof c === 'string') written.push(c); },
   };
-  const req: any = { body: { model: 'gpt-5.3-codex--deployed', input: inputText, masking } };
+  const req: any = {
+    body: {
+      model: 'gpt-5.3-codex--deployed',
+      input: inputText,
+      masking: entityTypes
+        ? { method: 'pseudonymization', entities: entityTypes.map((type) => ({ type })) }
+        : masking,
+    },
+  };
   await beforeHandler({ req, res, utils: { logger: mockLogger } });
   return { req, res, written, map: req.__pseudonymizationMap };
 }
@@ -165,5 +173,81 @@ describe('Responses streaming unmask', () => {
     const all = written.join('');
     expect(all).toContain('john@test.com');
     expect(all).not.toContain('MASKED_EMAIL');
+  });
+
+  // ── Terminal SNAPSHOT frames ────────────────────────────────────────────
+  // A Codex custom-tool turn ends with three frames that each repeat the item's
+  // WHOLE input text: `response.custom_tool_call_input.done` (`input`),
+  // `response.output_item.done` (`item.input`) and `response.completed`
+  // (`response.output[].input`). None of the per-delta handlers touches those —
+  // they were unmasked only by the byte-level safety net, which rewrites the
+  // ALREADY-SERIALISED SSE bytes. Shapes below are the real ones observed on
+  // this route (custom_tool_call item, `name: 'exec'`, ctc_/call_ ids).
+
+  it('keeps a snapshot frame valid JSON when the unmasked value needs escaping', async () => {
+    // A credential is the everyday value that carries a backslash. Substituting it
+    // into serialized JSON without re-escaping yields `"...C:\Users..."` — an invalid
+    // escape, so the client cannot parse the frame that carries the tool arguments.
+    const secret = 'C:\\Users\\svc\\p4ssw0rd';
+    const { res, written, map } = await setup(
+      `login with password=${secret} please`, ['profile-username-password'],
+    );
+    const token = map.forward.get(secret);
+    expect(token).toBeTruthy();
+
+    const input = `const r = await tools.exec_command({cmd:"echo ${token}"})`;
+    res.write(frame({
+      type: 'response.custom_tool_call_input.done', input, item_id: 'ctc_1', output_index: 2,
+    }));
+    res.write(frame({
+      type: 'response.output_item.done',
+      item: { id: 'ctc_1', type: 'custom_tool_call', status: 'completed', call_id: 'call_1', input, name: 'exec' },
+      output_index: 2,
+    }));
+    res.write(frame({ type: 'response.completed', response: { status: 'completed' } }));
+
+    const all = written.join('');
+    expect(all).not.toContain('MASKED_USER_PASSWORD');
+
+    for (const block of all.split('\n\n')) {
+      if (!block.startsWith('data: ')) continue;
+      const event = JSON.parse(block.slice('data: '.length));
+      if (event.type === 'response.custom_tool_call_input.done') expect(event.input).toContain(secret);
+      if (event.type === 'response.output_item.done') expect(event.item.input).toContain(secret);
+    }
+  });
+
+  it('flushes the custom-tool input buffer when its output_item.done arrives', async () => {
+    // The four sibling keys are flushed here; `responses_custom_input` was added
+    // with the custom-tool delta handling but never added to this list. Without it
+    // a retained tail is withheld from the item the client finalises on this frame.
+    const { res, written, map } = await setup('Contact john@test.com');
+    const token = map.forward.get('john@test.com');
+
+    res.write(frame({
+      type: 'response.custom_tool_call_input.delta',
+      delta: `mail ${token}MASK`, item_id: 'ctc_1', output_index: 2,
+    }));
+    // "MASK" could still be the start of another placeholder, so the buffer holds it.
+    expect(written.join('')).not.toContain('MASK');
+
+    // No `custom_tool_call_input.done` — this turn's item terminates on output_item.done.
+    // `item.input` deliberately omitted: with it present the snapshot's own text would
+    // satisfy the assertion below and hide whether the buffer was flushed at all.
+    res.write(frame({
+      type: 'response.output_item.done',
+      item: { id: 'ctc_1', type: 'custom_tool_call', status: 'completed', call_id: 'call_1', name: 'exec' },
+      output_index: 2,
+    }));
+
+    // Assert BEFORE response.completed, whose catch-all sweep would hide the gap, and
+    // over the DELTA stream only — that is what a client accumulating deltas receives.
+    const deltas = written.join('').split('\n\n')
+      .filter((b) => b.startsWith('data: '))
+      .map((b) => JSON.parse(b.slice('data: '.length)))
+      .filter((e) => e.type === 'response.custom_tool_call_input.delta')
+      .map((e) => e.delta)
+      .join('');
+    expect(deltas).toBe('mail john@test.comMASK');
   });
 });

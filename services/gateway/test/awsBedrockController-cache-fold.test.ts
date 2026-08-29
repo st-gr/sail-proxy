@@ -50,7 +50,7 @@ jest.mock('../src/services/configService', () => ({
   default: {
     getSubstitutedModel: (_provider: string, modelId: string) => modelId,
     getHookConfig: () => undefined,
-    getConfig: () => ({ api_config: { logging: { payload_logging_enabled: false } } }),
+    getConfig: () => ({ api_config: { platform: { logging: { payload_logging_enabled: false } } } }),
   },
 }));
 

@@ -18,37 +18,41 @@ auth:basic {
 body:json {
   {
     "api_config": {
-      "timeouts": {
-        "default": 180000,
-        "streaming": 360000
+      "providers": {
+        "anthropic": {
+          "substitute_models": [
+            {
+              "from": "claude-3-5-haiku-20241022",
+              "to": "anthropic--claude-3-haiku--deployed"
+            },
+            {
+              "from": "claude-3-5-sonnet-20241022",
+              "to": "anthropic--claude-3.5-sonnet--deployed"
+            }
+          ]
+        },
+        "openai": {
+          "substitute_models": [
+            {
+              "from": "GPT-4",
+              "to": "o1"
+            },
+            {
+              "from": "GPT-3.5",
+              "to": "gpt-4"
+            }
+          ]
+        }
       },
-      "logging": {
-        "defaultLevel": "INFO",
-        "payloadLoggingEnabled": false
-      },
-      "anthropic": {
-        "substitute_models": [
-          {
-            "from": "claude-3-5-haiku-20241022",
-            "to": "anthropic--claude-3-haiku--deployed"
-          },
-          {
-            "from": "claude-3-5-sonnet-20241022",
-            "to": "anthropic--claude-3.5-sonnet--deployed"
-          }
-        ]
-      },
-      "openai": {
-        "substitute_models": [
-          {
-            "from": "GPT-4",
-            "to": "o1"
-          },
-          {
-            "from": "GPT-3.5",
-            "to": "gpt-4"
-          }
-        ]
+      "platform": {
+        "timeouts": {
+          "default": 180000,
+          "streaming": 360000
+        },
+        "logging": {
+          "defaultLevel": "INFO",
+          "payloadLoggingEnabled": false
+        }
       }
     }
   }

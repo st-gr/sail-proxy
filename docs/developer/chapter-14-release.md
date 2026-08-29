@@ -104,6 +104,10 @@ CI (`.github/workflows/ci.yml`) runs tests and Trivy scans on push — it does *
 
 The last two rows matter after config-schema releases: existing installs keep their old `api_config.json`. Ship code that degrades gracefully when new keys are absent (the beta-header allowlist and runtime quarantine were designed this way) — or, where absent keys would silently disable a security control, fail closed.
 
+**Pseudonymization precision keys are the graceful-degradation case, deliberately.** `pseudonymization.min_confidence`, `.thresholds`, `.allowlist` and `.saturation_warn` are all optional, the shipped `api_config.json` sets none of them, and absent reproduces the built-in defaults exactly (0.5 for every category, no exemptions, saturation reported at 40 distinct values). An install that never re-runs setup therefore loses no masking — it only loses the ability to tune it, which is the correct direction to fail for a security control.
+
+**The standalone CLI loaded no plugins at all, from the initial commit until this release.** The gateway's plugin loader resolved its plugins directory against `process.cwd()`, and the three deployments do not share a working directory: local dev starts in `services/gateway` (where `./src/plugins` happens to be right), Docker starts in `/app` and compensated with a symlink (`docker/gateway.Dockerfile`, `ln -s .../dist/services/gateway/src/plugins /app/src/plugins`), and the npm CLI spawns the bundled gateway with `cwd = bundled/gateway` — where `src/plugins` does not exist, so the loader created it empty and logged `Registered 0 plugin rules`. Every hook plugin was silently inert in that deployment, pseudonymization included: masking never ran for standalone npm installs, on any endpoint, at any configuration. The loader now anchors the directory on its own module location (`DEFAULT_PLUGINS_DIR` in `services/gateway/src/services/pluginLoader.ts`), which is correct in all three layouts; the Docker symlink is now redundant but harmless and was left in place. Users get the fix by upgrading the npm package — no configuration change is involved, and nothing about the existing `api_config.json` needs re-merging. Verify a release with `cd npm-dist/sail-proxy && npm test`, which loads the bundled plugins in-process from the CLI's own spawn cwd and fails if the count is zero.
+
 **file_search deployment prerequisites.** Unlike the config-key upgrades above, `file_search` (the OpenAI-compatible `/v1/files` and `/v1/vector_stores` endpoints) depends on things outside `api_config.json` that Docker and Kyma deployments must provision explicitly — an existing install that pulls a new image does **not** get them for free:
 
 - **A Postgres image with the pgvector extension.** `docker/docker-compose.yml` and `kyma/templates/manifests/core/postgres.yaml` both pin `pgvector/pgvector:pg16-trixie` instead of plain `postgres:16`. The gateway runs `CREATE EXTENSION IF NOT EXISTS vector` at startup and only *logs* on failure — it never throws — so a deployment still running plain `postgres:16` silently reports the feature unavailable rather than crashing.
@@ -146,7 +150,7 @@ ALTER DATABASE sap_llm_gateway REFRESH COLLATION VERSION;
 
 `REINDEX` rebuilds every index under the collation rules Postgres is *actually* running with now; `REFRESH COLLATION VERSION` clears the warning so it isn't repeated on every future startup for the same already-fixed database. Apply this exactly the same way whether the volume is a Docker named volume or a Kyma PVC — the mismatch is a property of the on-disk database files versus the glibc the container currently runs, not of the orchestrator.
 
-**Upgrade step for `/openai/v1/responses`:** the route's plugin hooks live under `defaultHooks.openai.responses` / `.responses-stream`. A distributed install whose active configuration predates the route has neither key, so PII masking would be skipped on an endpoint that is force-enabled with `allow_user_bypass: false`. The route therefore answers HTTP 503 `pseudonymization_hook_missing` until an admin activates a configuration that includes them. Existing **standalone** installs are in the same position for the same reason (see the table above — their `api_config.json` is never updated automatically), so they must re-run setup or hand-merge the two keys. Fresh installs ship with them. No other endpoint is affected.
+**Upgrade step for `/openai/v1/responses`:** the route's plugin hooks live under `hooks.defaults.openai.responses` / `.responses-stream`. A distributed install whose active configuration predates the route has neither key, so PII masking would be skipped on an endpoint that is force-enabled with `allow_user_bypass: false`. The route therefore answers HTTP 503 `pseudonymization_hook_missing` until an admin activates a configuration that includes them. Existing **standalone** installs are in the same position for the same reason (see the table above — their `api_config.json` is never updated automatically), so they must re-run setup or hand-merge the two keys. Fresh installs ship with them. No other endpoint is affected.
 
 **Later additions to those same two hook arrays.** Subsequent releases added two more plugin entries and two config keys. An install whose activated configuration predates them gets the endpoint without the corresponding feature — the route still answers, it just behaves as it did before:
 
@@ -154,12 +158,12 @@ ALTER DATABASE sap_llm_gateway REFRESH COLLATION VERSION;
 |---|---|
 | `responsesWebSearchPlugin` hook entries | a hosted `web_search` tool reaches the deployment unrewritten and is rejected with `400 … tools are not allowed for model` |
 | `responsesNamespaceToolsPlugin` hook entries | Codex's `namespace` sub-agent wrapper is rejected the same way, and clients need `--disable multi_agent` again |
-| `web_search.max_searches_per_request` | none — absent falls back to the built-in default of 3 |
-| `namespace_tools.mode` | none — absent falls back to the built-in default of `flatten` |
+| `capabilities.web_search.max_searches_per_request` | none — absent falls back to the built-in default of 3 |
+| `capabilities.namespace_tools.mode` | none — absent falls back to the built-in default of `flatten` |
 
 The two plugin entries are what matter on upgrade; both config keys degrade safely.
 
-**`file_search.rewrite_query` now defaults to `false` — and no existing install picks that up.** Query rewriting sends the search query to the tenant's orchestration deployment to be rewritten before embedding, at a cost of roughly 1.3 seconds per search. The shipped template now sets `rewrite_query: false`, and `FILE_SEARCH_DEFAULTS.rewriteQuery` became `false` too — the latter being what an install whose activated configuration predates the `file_search` block resolves to.
+**`capabilities.file_search.rewrite_query` now defaults to `false` — and no existing install picks that up.** Query rewriting sends the search query to the tenant's orchestration deployment to be rewritten before embedding, at a cost of roughly 1.3 seconds per search. The shipped template now sets `rewrite_query: false`, and `FILE_SEARCH_DEFAULTS.rewriteQuery` became `false` too — the latter being what an install whose activated configuration predates the `file_search` block resolves to.
 
 This is a **new-installs-only** change, by the same rule the table above states for every other config key ("`api_config.json` for existing installs — never automatically"):
 
@@ -179,6 +183,7 @@ Nothing degrades either way: rewriting is best-effort and a search works identic
 - [ ] `git status` clean (tracked files), on the intended branch
 - [ ] `npm whoami` succeeds; `docker login ghcr.io` done
 - [ ] `pnpm release:dry-run` passes preflight
+- [ ] Deployment parity — the bundled gateway registers its plugins: `cd npm-dist/sail-proxy && npm run build:local && npm run bundle && npm test` (expects `Registered N plugin rules` with N > 0, never 0)
 - [ ] `pnpm release:patch|minor|major`
 - [ ] Push the version commit and tag
 - [ ] Spot-check: `npm view @st-gr/sail-proxy version` and the registry image tags match the new version

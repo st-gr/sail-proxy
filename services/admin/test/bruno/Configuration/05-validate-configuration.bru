@@ -17,7 +17,7 @@ auth:basic {
 
 body:json {
   {
-    "configData": "{\"api_config\":{\"timeouts\":{\"default\":60000,\"streaming\":240000},\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\"}]}}}"
+    "configData": "{\"api_config\":{\"providers\":{\"anthropic\":{\"substitute_models\":[{\"from\":\"claude-3-5-haiku-20241022\",\"to\":\"anthropic--claude-3-haiku--deployed\"}]}},\"platform\":{\"timeouts\":{\"default\":60000,\"streaming\":240000}}}}"
   }
 }
 

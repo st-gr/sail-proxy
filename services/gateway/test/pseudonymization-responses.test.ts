@@ -9,7 +9,7 @@ jest.mock('@libs/logger', () => ({
   getDefaultLogger: () => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() }),
 }));
 
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: { getConfig: () => mockConfig, getSubstitutedModel: (_p: string, m: string) => m },

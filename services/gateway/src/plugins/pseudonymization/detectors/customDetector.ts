@@ -5,6 +5,7 @@
  */
 
 import { EntityMatch, CustomEntity } from '../types';
+import { DETECTOR_CONFIDENCE } from './confidenceScores';
 
 /**
  * Run custom regex detectors on the given text
@@ -27,6 +28,9 @@ export function detectCustomEntities(text: string, customEntities?: CustomEntity
           start: match.index,
           end: match.index + match[0].length,
           priority: 0, // Tier 0: highest priority
+          // Operator intent is the strongest evidence there is: 1.0, so no adjustment can
+          // push a configured rule below any threshold in [0,1] except a code-fence one.
+          confidence: DETECTOR_CONFIDENCE.custom,
           placeholder: entity.placeholder, // Custom placeholder prefix
         });
 

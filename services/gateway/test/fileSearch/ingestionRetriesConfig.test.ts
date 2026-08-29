@@ -101,7 +101,7 @@ d('ingestion.max_retries=0 against a real ingest worker (requires FILE_SEARCH_TE
   // itself would prove nothing about whether the fix is actually wired in.
   beforeEach(() => {
     jest.spyOn(configService, 'getConfig').mockReturnValue({
-      api_config: { file_search: { ingestion: { max_retries: 0 } } },
+      api_config: { capabilities: { file_search: { ingestion: { max_retries: 0 } } } },
     } as any);
   });
 

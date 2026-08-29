@@ -209,7 +209,9 @@
 
         <!-- Detail Column - JSON Editor -->
         <f:midColumnPages>
-            <f:DynamicPage id="detailDynamicPage">
+            <f:DynamicPage id="detailDynamicPage"
+                           toggleHeaderOnTitleClick="false"
+                           preserveHeaderStateOnScroll="true">
                 <f:title>
                     <f:DynamicPageTitle>
                         <f:heading>
@@ -222,26 +224,40 @@
                             }"/>
                         </f:heading>
                         <f:actions>
-                            <Button text="Edit" 
-                                    icon="sap-icon://edit" 
-                                    press="onToggleEditMode" 
-                                    enabled="{= ${viewModel>/selectedConfigId} !== null &amp;&amp; !${viewModel>/selectedConfigIsActive}}"
-                                    visible="{= !${viewModel>/isEditMode}}"
-                                    type="Emphasized"/>
-                            <Button text="Cancel" 
-                                    icon="sap-icon://decline" 
-                                    press="onToggleEditMode" 
-                                    visible="{viewModel>/isEditMode}"/>
+                            <!-- JSON / form toggle. Disabled only when the document fails schema
+                                 validation and cannot be represented faithfully; the reason is in
+                                 the tooltip. Being active or non-admin does not disable it - it
+                                 makes the resulting form read-only. -->
+                            <SegmentedButton id="configViewToggle"
+                                    selectedKey="{viewModel>/configViewMode}"
+                                    selectionChange=".onConfigViewModeChange"
+                                    enabled="{viewModel>/formGateEnabled}"
+                                    tooltip="{viewModel>/formGateReason}"
+                                    visible="{= ${viewModel>/selectedConfigId} !== null}">
+                                <items>
+                                    <SegmentedButtonItem key="json" text="{i18n>viewModeJson}" icon="sap-icon://syntax"/>
+                                    <SegmentedButtonItem key="form" text="{i18n>viewModeForm}" icon="sap-icon://form"/>
+                                </items>
+                            </SegmentedButton>
+                            <!-- Cancel / Validate / Save act on the JSON editor. In form
+                                 view that editor is hidden, so they are hidden with it: exactly
+                                 one Save is reachable at a time, and it is the one that owns the
+                                 document the user can see. -->
+                            <Button text="Cancel"
+                                    icon="sap-icon://decline"
+                                    press="onCancelEdits"
+                                    visible="{= ${viewModel>/isEditMode} &amp;&amp; !${viewModel>/formViewActive}}"/>
                             <Button text="Validate" 
                                     icon="sap-icon://validate" 
                                     press="onValidateConfiguration" 
                                     enabled="{= ${viewModel>/selectedConfigId} !== null}"
+                                    visible="{= !${viewModel>/formViewActive}}"
                                     type="Ghost"/>
                             <Button text="Save" 
                                     icon="sap-icon://save" 
                                     press="onSaveConfiguration" 
                                     enabled="{= ${viewModel>/selectedConfigId} !== null &amp;&amp; !${viewModel>/selectedConfigIsActive}}"
-                                    visible="{viewModel>/isEditMode}"
+                                    visible="{= ${viewModel>/isEditMode} &amp;&amp; !${viewModel>/formViewActive}}"
                                     type="Accept"/>
                             <Button icon="sap-icon://decline" 
                                     press="onCloseDetail" 
@@ -249,6 +265,17 @@
                         </f:actions>
                     </f:DynamicPageTitle>
                 </f:title>
+                <!-- The form view. This aggregation is empty and unclaimed today and no controller
+                     path reads, writes or destroys it, unlike f:content which is replaced on every
+                     selection by _createDetailContentProgrammatically. Established by measurement,
+                     see .superpowers/sdd/2026-08-21-config-form-editor/control-tree-findings.md -->
+                <f:header>
+                    <f:DynamicPageHeader id="detailDynamicPageHeader"
+                                         pinnable="false"
+                                         visible="{viewModel>/formViewActive}">
+                        <core:Fragment fragmentName="admin.config.view.ConfigForm" type="XML"/>
+                    </f:DynamicPageHeader>
+                </f:header>
                 <f:content>
                     <VBox visible="{viewModel>/selectedConfigId}" class="sapUiMediumMargin">
                         

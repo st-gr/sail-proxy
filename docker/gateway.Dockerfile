@@ -101,7 +101,14 @@ COPY --chown=nodejs:nodejs --from=build /app/libs ./libs
 COPY --chown=nodejs:nodejs --from=build /app/services/gateway/config ./services/gateway/config
 
 # Create plugins directory structure to match expected path
-# The plugin loader expects ./src/plugins but plugins should remain in their compiled location
+#
+# Part of this image's layout since the first release: with WORKDIR /app the
+# loader's historical cwd-relative './src/plugins' resolved here, and every
+# Docker/Kyma release loaded its plugins through this link. Since the loader
+# resolves the directory from its own module location
+# (services/gateway/src/services/pluginLoader.ts, DEFAULT_PLUGINS_DIR) the link
+# is no longer load-bearing. Kept because removing it changes the image for no
+# functional gain.
 RUN mkdir -p /app/src && \
     chown -R nodejs:nodejs /app/src && \
     ln -s /app/services/gateway/dist/services/gateway/src/plugins /app/src/plugins

@@ -4,6 +4,7 @@ import usageEmitter from '../services/usageEventEmitter';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
+import { emitSiemUsageEvent } from '../services/siemUsageEvent';
 
 /**
  * Extract authentication info from request for usage tracking
@@ -108,6 +109,24 @@ export async function emitUsageEvent(
     }
 
     const authInfo = extractAuthInfo(req);
+
+    // The SIEM usage event is emitted before the auth-info gate below, and independently of
+    // the billing usage event: an operator exporting request-level events to a SIEM wants
+    // the request that could not be attributed to a credential at least as much as the ones
+    // that could. Everything it needs comes off `req` and the arguments already here - no
+    // configuration is read on this line, deliberately, so nothing about the SIEM export can
+    // throw before the billing event below is emitted. The whole call is fire-and-forget and
+    // self-silencing; see services/siemUsageEvent.ts for the two per-sink gates that decide
+    // whether it may carry any content.
+    void emitSiemUsageEvent(req, {
+      model,
+      statusCode,
+      requestId: (req as any).debugRequestId,
+      credentialId: authInfo?.credentialId,
+      authType: authInfo?.authType,
+      endpoint: req.originalUrl || req.url || '',
+    });
+
     if (!authInfo) return; // Skip if no auth info available
 
     // Provider will be resolved by admin service from model data

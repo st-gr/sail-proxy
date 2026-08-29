@@ -1,5 +1,5 @@
 /**
- * Config coverage for the `file_search` *tool* block (`api_config.file_search.tool`),
+ * Config coverage for the `file_search` *tool* block (`api_config.capabilities.file_search.tool`),
  * as distinct from the raw `/vector_stores/{id}/search` REST config covered by
  * test/fileSearch/config.test.ts. Also pins the shipped `rewrite_query` default,
  * which this same change flips from `true` to `false` for both the tool and the
@@ -25,7 +25,7 @@ describe('shipped api_config.json — rewrite_query', () => {
     // fail depending on the caller's working directory rather than this file.
     const configPath = path.join(__dirname, '..', 'api_config.json');
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.api_config.file_search.rewrite_query).toBe(false);
+    expect(cfg.api_config.capabilities.file_search.rewrite_query).toBe(false);
   });
 });
 
@@ -131,7 +131,7 @@ describe('resolveToolEnabled', () => {
   });
 });
 
-// FILE_SEARCH_DEFAULTS backs getFileSearchConfig() only when api_config.file_search
+// FILE_SEARCH_DEFAULTS backs getFileSearchConfig() only when api_config.capabilities.file_search
 // is absent entirely (an install predating the key). That arm — and every field
 // on the constant, not just rewriteQuery — had zero coverage: the existing
 // test/fileSearch/config.test.ts always reads the real shipped api_config.json,
@@ -155,7 +155,7 @@ describe('getFileSearchConfig — fallback defaults (file_search block entirely 
         embeddingModel: 'text-embedding-3-large',
         embeddingDimensions: 1536,
         rewriteQuery: false,
-        rewriteQueryModel: 'gpt-4o-mini',
+        rewriteQueryModel: 'gpt-5-mini',
         hybrid: {
           rrfK: 60,
           lexicalEnabled: true,
@@ -188,7 +188,7 @@ describe('getFileSearchToolConfig', () => {
   // no `file_search.tool` block at all (the shipped config always has one, so
   // the test above alone can never exercise this arm of the accessor).
   it('yields full tool defaults, not {}, when the tool block is absent entirely', () => {
-    withConfig({ api_config: { file_search: {} } }, (configService) => {
+    withConfig({ api_config: { capabilities: { file_search: {} } } }, (configService) => {
       expect(configService.getFileSearchToolConfig()).toEqual({
         enabled: true,
         maxSearchesPerRequest: 3,
@@ -210,8 +210,10 @@ describe('getFileSearchToolConfig', () => {
   it('reads through configured values, including a clamped max_searches_per_request', () => {
     withConfig({
       api_config: {
-        file_search: {
-          tool: { enabled: false, max_searches_per_request: 999, max_num_results_default: 25 },
+        capabilities: {
+          file_search: {
+            tool: { enabled: false, max_searches_per_request: 999, max_num_results_default: 25 },
+          },
         },
       },
     }, (configService) => {
@@ -229,8 +231,10 @@ describe('getFileSearchToolConfig', () => {
     // fields must be checked here, not just max_searches_per_request.
     withConfig({
       api_config: {
-        file_search: {
-          tool: { enabled: 'yes', max_searches_per_request: 5, max_num_results_default: 1e9 },
+        capabilities: {
+          file_search: {
+            tool: { enabled: 'yes', max_searches_per_request: 5, max_num_results_default: 1e9 },
+          },
         },
       },
     }, (configService) => {

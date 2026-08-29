@@ -1,6 +1,6 @@
 /**
  * Payload logging must be togglable purely via api_config.json
- * (logging.payload_logging_enabled) with no DEBUG env var required.
+ * (platform.logging.payload_logging_enabled) with no DEBUG env var required.
  */
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 
@@ -36,7 +36,7 @@ import * as fs from 'fs';
 import { savePayload, isPayloadLoggingEnabled } from '../src/utils/payloadLogger';
 
 const configWithPayloadLogging = (enabled: boolean) => ({
-  api_config: { logging: { log_folder_path: './logs', payload_logging_enabled: enabled } },
+  api_config: { platform: { logging: { log_folder_path: './logs', payload_logging_enabled: enabled } } },
 });
 
 describe('payload logging config toggle (no DEBUG env required)', () => {

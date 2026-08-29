@@ -25,6 +25,12 @@ export function getAdminServiceUrl(): string {
   return process.env.ADMIN_SERVICE_URL || 'http://localhost:4004';
 }
 
+// Gate for live-server suites: without ADMIN_SERVICE_URL set explicitly, a bare
+// `jest` run must not fire HTTP requests at a developer's running admin
+// instance and leave rows (e.g. "Test Configuration After Fix", "...Test Key")
+// behind in that developer's admin.db.
+export const describeLive: jest.Describe = (process.env.ADMIN_SERVICE_URL ? describe : describe.skip) as jest.Describe;
+
 /**
  * Gets the Ollama service URL for testing
  * Defaults to localhost:11434 for local development, configurable via OLLAMA_SERVICE_URL env var

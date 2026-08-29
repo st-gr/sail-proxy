@@ -42,7 +42,19 @@ export const DEFAULT_MASKING_CONFIG: MaskingConfig = {
     { type: 'profile-political-group' },
     { type: 'profile-sexual-orientation' },
     { type: 'profile-trade-union' },
-    { type: 'profile-org' },
-    { type: 'profile-location' },
+    // Checksummed identifiers with no legitimate non-PII reading — safe to default ON,
+    // unlike profile-org / profile-location, whose detection is inherently ambiguous.
+    { type: 'profile-itin' },
+    { type: 'profile-bank-account' },
+    { type: 'profile-medical-license' },
   ],
+  // Generic legal forms. An organisation is recognised ONLY by one of these suffixes —
+  // "Water Department" is not an org, because "Department" is not a legal form. Guessing
+  // from capitalisation alone is what makes org detection a false-positive machine.
+  org_suffixes: [
+    'Inc', 'Inc.', 'LLC', 'L.L.C.', 'Ltd', 'Ltd.', 'Limited', 'Corp', 'Corp.',
+    'Corporation', 'PLC', 'GmbH', 'AG', 'S.A.', 'B.V.', 'Pty', 'LLP',
+  ],
+  // Intentionally empty — see the field docs in types.ts.
+  location_gazetteer: [],
 };

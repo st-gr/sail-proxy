@@ -7,13 +7,13 @@
  *    An empty/absent allowlist means "no allowlist filtering" (legacy behavior).
  * 2. Denylist (excluded): always applied on top of the allowlist result.
  *
- * @see api_config.json - anthropic.supported_beta_headers / anthropic.excluded_beta_headers
+ * @see api_config.json - providers.anthropic.supported_beta_headers / providers.anthropic.excluded_beta_headers
  */
 
 export interface BetaFilterOptions {
-  /** Allowlist from api_config.anthropic.supported_beta_headers; [] disables allowlist filtering */
+  /** Allowlist from api_config.providers.anthropic.supported_beta_headers; [] disables allowlist filtering */
   supported: string[];
-  /** Denylist from api_config.anthropic.excluded_beta_headers */
+  /** Denylist from api_config.providers.anthropic.excluded_beta_headers */
   excluded: string[];
 }
 

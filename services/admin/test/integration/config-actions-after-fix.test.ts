@@ -3,12 +3,12 @@
  */
 
 import request from 'supertest';
-import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
 const baseUrl = getAdminServiceUrl();
 const authHeader = 'Basic YWRtaW5AdGVzdC5jb206YWRtaW4=';
 
-describe('Configuration Actions After Fix', () => {
+describeLive('Configuration Actions After Fix', () => {
   // Restores whatever was active before this suite; see active-config-guard.
   guardActiveConfiguration();
 
@@ -48,8 +48,10 @@ describe('Configuration Actions After Fix', () => {
   it('should validate configuration successfully', async () => {
     const testConfig = {
       api_config: {
-        timeouts: { default: 60000, streaming: 60000 },
-        logging: { defaultLevel: "INFO" }
+        platform: {
+          timeouts: { default: 60000, streaming: 60000 },
+          logging: { defaultLevel: "INFO" }
+        }
       }
     };
 
@@ -69,8 +71,10 @@ describe('Configuration Actions After Fix', () => {
   it('should reject invalid configuration', async () => {
     const invalidConfig = {
       api_config: {
-        timeouts: { default: "invalid" }, // Should be number
-        logging: { defaultLevel: "INVALID_LEVEL" } // Invalid level
+        platform: {
+          timeouts: { default: "invalid" },      // Should be number
+          logging: { defaultLevel: "INVALID_LEVEL" } // Invalid level
+        }
       }
     };
 
@@ -91,8 +95,10 @@ describe('Configuration Actions After Fix', () => {
       name: 'Test Configuration After Fix',
       configData: JSON.stringify({
         api_config: {
-          timeouts: { default: 30000, streaming: 60000 },
-          logging: { defaultLevel: "DEBUG" }
+          platform: {
+            timeouts: { default: 30000, streaming: 60000 },
+            logging: { defaultLevel: "DEBUG" }
+          }
         }
       }),
       description: 'Test config created after hang fix'

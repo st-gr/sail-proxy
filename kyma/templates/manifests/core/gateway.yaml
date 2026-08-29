@@ -121,18 +121,33 @@ spec:
             optional: true
         - secretRef:
             name: gateway-env
-        # setup-kyma.js's updateDeploymentManifests() auto-appends a
-        # non-secret env ConfigMap reference after every gateway-env
-        # secretRef line it finds in this file (the same mechanism that
-        # adds one below, for the `gateway` container). Deliberately not
-        # hand-written here too, to avoid tripping that function's
-        # "already patched?" guard a second time (see the note on the
-        # `gateway` container's own configMapRef below) — though as of the
-        # manifest actually committed here, that guard is already satisfied
-        # by the `gateway` container's reference, so the auto-append is a
-        # no-op for this initContainer today. It doesn't need anything from
-        # gateway-config anyway (VALKEY_URL/ADMIN_SERVICE_URL live in the
-        # gateway-env Secret already attached above).
+        # UNIFIED_TOKEN_SYSTEM_ENABLED lives in this ConfigMap, and
+        # isStandaloneMode() (unifiedAuthConfig.ts:33) reports standalone
+        # whenever it is unset — the VALKEY_URL/ADMIN_SERVICE_URL in the Secret
+        # above are necessary but not sufficient. Without this reference the
+        # migration ran standalone, so migrateCli.ts's `if (!isStandaloneMode())`
+        # pre-fetch was skipped and runMigration() built the vector column from
+        # FILE_SEARCH_DEFAULTS rather than the configured
+        # file_search.embedding_dimensions — the wrong width for any install
+        # that sets one. Standalone also sent configService.ts's "create the
+        # default config file" branch at getConfig()'s local-file fallback into
+        # writing /app/api_config.json as uid 1001 inside a root-owned WORKDIR,
+        # which is the EACCES this container used to log on every boot.
+        # Admin and Valkey are reachable by the time this runs (the
+        # wait-for-admin initContainer above guarantees it), which is precisely
+        # the non-standalone path docker-compose.yml's gateway-migrate comment
+        # names as Kyma's intended approach; getConfigAsync() bounds its own
+        # wait at 10s and falls back to HTTP, so this cannot wedge the pod.
+        #
+        # Hand-written rather than left to setup-kyma.js's
+        # updateDeploymentManifests(): that function's guard (setup-kyma.js:3161)
+        # skips the entire patch when the file already contains
+        # `name: gateway-config`, which the `gateway` container below always
+        # satisfies — so its auto-append never reached this initContainer. One
+        # more reference here keeps that guard satisfied exactly as before,
+        # leaving the auto-append the no-op it already was.
+        - configMapRef:
+            name: gateway-config
         env:
         # An initContainer that exits non-zero blocks the whole pod: the
         # main `gateway` container never starts (all LLM proxying, not just

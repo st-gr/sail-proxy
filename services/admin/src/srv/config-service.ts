@@ -6,12 +6,69 @@ import Ajv from 'ajv';
 import { getDefaultLogger } from '@libs/logger';
 import { modelCostService } from '../services/modelCostService';
 import * as configSchema from '../schemas/api-config-schema.json';
+import { MINIMAL_DEFAULT_CONFIG } from './minimal-default-config';
+import { formatSchemaError } from './schemaErrors';
 
 const logger = getDefaultLogger();
 
 // JSON Schema validator (without formats for now to avoid import issues)
 const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
 const validateConfigSchema = ajv.compile(configSchema);
+
+/**
+ * Reports every SIEM sink after the first that reuses another sink's `name`.
+ *
+ * JSON Schema draft-07 cannot express this: there is no cross-item uniqueness
+ * keyword, and `uniqueItems` compares whole objects, so two sinks differing in
+ * any other field satisfy it while still colliding on `name`. The schema check
+ * above therefore passes a config with two sinks called "s3", and only the
+ * config-app's form gate (webapp/model/validateSection.ts) rejected it — a JSON
+ * PUT or a raw-editor save went straight through.
+ *
+ * It has to be caught, because `name` keys a sink's delivery rows
+ * (`SiemDelivery.sinkName`) and its dispatcher backoff state. Two sinks sharing
+ * a name share delivery rows and mark each other's events delivered: the events
+ * are never exported and nothing reports them missing.
+ *
+ * Mirrors the form's rule — comparison on the trimmed name, blank/missing names
+ * left to the schema's own `required`/`minLength`, the collision reported
+ * against the later of the two sinks, which is the one to rename. Written out
+ * here rather than imported: validateSection.ts belongs to the config-app's own
+ * package and build, and the server must not depend on the frontend.
+ */
+function findDuplicateSinkNames(siem: any): string[] {
+  const sinks = siem?.sinks;
+  if (!Array.isArray(sinks)) {
+    return [];
+  }
+
+  const errors: string[] = [];
+  const seen = new Map<string, number>();
+
+  sinks.forEach((sink: any, index: number) => {
+    const rawName = sink && typeof sink === 'object' ? sink.name : undefined;
+    if (typeof rawName !== 'string') {
+      return;
+    }
+    const name = rawName.trim();
+    if (name.length === 0) {
+      return;
+    }
+
+    const firstIndex = seen.get(name);
+    if (firstIndex === undefined) {
+      seen.set(name, index);
+      return;
+    }
+    errors.push(
+      `Duplicate sink name at 'api_config/observability/siem/sinks/${index}/name': ` +
+      `"${name}" is already used by sink #${firstIndex}. Delivery rows are keyed by sink name, ` +
+      `so two sinks sharing one would mark each other's events delivered.`
+    );
+  });
+
+  return errors;
+}
 
 // Event channels (must match Gateway Service)
 const CONFIG_CHANGE_CHANNEL = 'sap-llm-gateway:config-changed';
@@ -625,9 +682,10 @@ class ConfigurationService {
       if (!isValidSchema) {
         if (validateConfigSchema.errors) {
           for (const error of validateConfigSchema.errors) {
-            const path = error.instancePath || error.schemaPath || 'root';
-            const message = error.message || 'Unknown validation error';
-            errors.push(`Schema validation error at '${path}': ${message}`);
+            const message = formatSchemaError(error);
+            if (message !== null) {
+              errors.push(message);
+            }
           }
         }
         return { valid: false, errors, warnings };
@@ -642,19 +700,20 @@ class ConfigurationService {
       const apiConfig = configData.api_config as any;
 
       // Validate timeouts
-      if (apiConfig.timeouts) {
-        if (apiConfig.timeouts.default && apiConfig.timeouts.default < 1000) {
+      const timeouts = apiConfig.platform?.timeouts;
+      if (timeouts) {
+        if (timeouts.default && timeouts.default < 1000) {
           warnings.push('Default timeout is very low (< 1 second)');
         }
-        if (apiConfig.timeouts.streaming && apiConfig.timeouts.streaming < 30000) {
+        if (timeouts.streaming && timeouts.streaming < 30000) {
           warnings.push('Streaming timeout is very low (< 30 seconds)');
         }
       }
 
       // Validate providers
-      if (apiConfig.anthropic || apiConfig.openai || apiConfig['aws-bedrock'] || apiConfig.openrouter) {
+      if (apiConfig.providers) {
         // Validate model substitutions
-        for (const [provider, config] of Object.entries(apiConfig)) {
+        for (const [provider, config] of Object.entries(apiConfig.providers)) {
           if (typeof config === 'object' && config !== null) {
             const providerConfig = config as any;
             if (providerConfig.substitute_models && Array.isArray(providerConfig.substitute_models)) {
@@ -668,9 +727,12 @@ class ConfigurationService {
         }
       }
 
-      // Validate model_list_changes
-      if (apiConfig.model_list_changes) {
-        for (const [modelId, modelConfig] of Object.entries(apiConfig.model_list_changes)) {
+      // Validate SIEM sink names are distinct
+      errors.push(...findDuplicateSinkNames(apiConfig.observability?.siem));
+
+      // Validate models.overrides
+      if (apiConfig.models?.overrides) {
+        for (const [modelId, modelConfig] of Object.entries(apiConfig.models.overrides as Record<string, unknown>)) {
           const config = modelConfig as any;
           if (config.hooks) {
             for (const [subpath, hooks] of Object.entries(config.hooks)) {
@@ -1004,31 +1066,7 @@ class ConfigurationService {
           });
           
           // Fallback to minimal default if file doesn't exist
-          defaultConfig = {
-            api_config: {
-              openai: {
-                substitute_models: [
-                  { from: "GPT-4", to: "o1" },
-                  { from: "GPT-3.5", to: "GPT-4" }
-                ],
-                emulate_streaming_for_models: []
-              },
-              anthropic: {
-                substitute_models: [
-                  { from: "claude-3-5-haiku-20241022", to: "anthropic--claude-3-haiku" },
-                  { from: "claude-3-7-sonnet-20250219", to: "anthropic--claude-3.7-sonnet" }
-                ],
-                emulate_streaming_for_models: ["anthropic--claude-3.7-sonnet"]
-              },
-              timeouts: {
-                default: 120000,
-                streaming: 240000
-              },
-              logging: {
-                defaultLevel: "info"
-              }
-            }
-          };
+          defaultConfig = MINIMAL_DEFAULT_CONFIG;
         }
         
         const createResult = await this.createConfiguration({

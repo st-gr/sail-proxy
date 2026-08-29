@@ -19,7 +19,7 @@ jest.mock('@libs/logger', () => ({
   getDefaultLogger: () => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() }),
 }));
 
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 // getWebSearchMaxSearches: none of the scenarios below stash __responsesUpstream, so
 // the continuation loop always takes its no-upstream fallback after exactly one
 // search — this just needs to be a positive number for that first iteration to run.

@@ -31,7 +31,7 @@
  * @see hostedTool/engine.ts - the transport machinery and its full frame contract
  * @see fileSearch/descriptor.ts - the file_search implementation
  * @see responsesWebSearchPlugin.ts - the twin, and the first user of the engine
- * @see api_config.json - defaultHooks.openai.responses / responses-stream
+ * @see api_config.json - hooks.defaults.openai.responses / responses-stream
  * @see test/responses-tool-plugin-layering.test.ts - why the two hook arrays disagree
  */
 import { registerDescriptor } from './hostedTool/registry';

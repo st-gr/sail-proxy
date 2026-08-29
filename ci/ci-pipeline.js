@@ -1603,12 +1603,26 @@ async function runCIPipeline() {
       cwd: 'services/gateway',
       description: 'Running Gateway unit tests...'
     });
-    
+
+    // test:unit's --testPathPattern="test/(clients|config)/" does not cover
+    // test/pseudonymization-precision/ (or any other pseudonymization suite). The precision
+    // harness is the regression gate for the pseudonymization detectors — spec
+    // 2026-08-25-pseudonymization-precision — so it must run every CI build, not just locally.
+    await executeCommand('pnpm run test:pseudonymization', {
+      cwd: 'services/gateway',
+      description: 'Running Gateway pseudonymization precision/recall harness...'
+    });
+
     await executeCommand('pnpm run test:unit', {
       cwd: 'services/admin',
       description: 'Running Admin unit tests...'
     });
-    
+
+    await executeCommand('pnpm run test', {
+      cwd: 'libs/test-utils',
+      description: 'Running test-utils unit tests...'
+    });
+
     // Phase 5: Integration Test Environment
     logger.phase('Phase 5: Integration Test Environment Setup');
     
@@ -1697,7 +1711,12 @@ async function runCIPipeline() {
     
     await executeCommand('pnpm run test', {
       cwd: 'services/admin',
-      description: 'Running Admin full test suite...'
+      description: 'Running Admin full test suite...',
+      // describeLive (libs/test-utils) skips the live-server integration
+      // suites unless ADMIN_SERVICE_URL is set explicitly. The admin service
+      // started above in Phase 5 is already listening on :4004, so point the
+      // suites at it rather than let them skip in CI.
+      env: { ...process.env, ADMIN_SERVICE_URL: 'http://localhost:4004' }
     });
     
     await executeCommand('pnpm run test', {

@@ -7,6 +7,8 @@
  */
 
 import { EntityMatch, EntityConfig } from '../types';
+import { hasPersonContext } from './technicalContext';
+import { DETECTOR_CONFIDENCE } from './confidenceScores';
 import { NATIONALITIES } from '../dictionaries/nationalities';
 import { ETHNICITIES } from '../dictionaries/ethnicities';
 import { GENDERS } from '../dictionaries/genders';
@@ -53,9 +55,29 @@ for (const dict of DICTIONARIES) {
 const localPattern = /\bLocal\s+\d+\b/g;
 
 /**
- * Run dictionary detection on the given text
+ * Dictionaries whose terms are ordinary English words — POLITICAL_GROUPS carries
+ * "Independent", "Moderate", "Liberal", "Progressive", "Green Party". In a personnel note
+ * those are affiliations; in a release note or a BW chain listing they are noise, and the
+ * incident of 2026-08-25 masked two of them out of pure technical text. Terms in these
+ * categories only mask with person context nearby (spec: pseudonymization-precision).
+ *
+ * `profile-pronouns-gender` is listed although no dictionary produces it today (its only
+ * producer is the already context-anchored regex): if a pronoun word-list is ever added,
+ * it inherits the gate instead of silently shipping unanchored.
  */
-export function detectDictionaryEntities(text: string, enabledEntities: EntityConfig[]): EntityMatch[] {
+const PERSON_CONTEXT_REQUIRED = new Set(['profile-political-group', 'profile-pronouns-gender']);
+
+/**
+ * Run dictionary detection on the given text.
+ *
+ * `priorMatches` are the candidates the earlier tiers produced; they are read only as
+ * person-context evidence for PERSON_CONTEXT_REQUIRED categories, never modified.
+ */
+export function detectDictionaryEntities(
+  text: string,
+  enabledEntities: EntityConfig[],
+  priorMatches: EntityMatch[] = [],
+): EntityMatch[] {
   const enabledTypes = new Set(enabledEntities.filter(e => e.enabled !== false).map(e => e.type));
   const sensitiveDataEnabled = enabledTypes.has('profile-sensitive-data');
 
@@ -69,13 +91,23 @@ export function detectDictionaryEntities(text: string, enabledEntities: EntityCo
     dict.regex.lastIndex = 0;
     let match: RegExpExecArray | null;
 
+    const needsPerson = PERSON_CONTEXT_REQUIRED.has(dict.type);
+
     while ((match = dict.regex.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (needsPerson && !hasPersonContext(text, start, end, priorMatches)) continue;
       matches.push({
         original: match[0],
         type: dict.type,
-        start: match.index,
-        end: match.index + match[0].length,
+        start,
+        end,
         priority: 3, // Tier 3: dictionary
+        // A word-list hit is exactly as strong as the word list is selective, and these
+        // lists carry ordinary English words. 0.5 sits ON the default threshold: a
+        // dictionary term masks by default, and stops masking the moment anything —
+        // an ALL-CAPS shape, a saturated request — argues against it.
+        confidence: DETECTOR_CONFIDENCE.dictionary,
       });
     }
   }
@@ -91,6 +123,7 @@ export function detectDictionaryEntities(text: string, enabledEntities: EntityCo
         start: match.index,
         end: match.index + match[0].length,
         priority: 3,
+        confidence: DETECTOR_CONFIDENCE.dictionary,
       });
     }
   }

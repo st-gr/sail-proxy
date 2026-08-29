@@ -13,7 +13,7 @@
  * - Absent at both levels means nothing is stripped (prior behavior), so
  *   deployments whose api_config.json predates this key are unaffected.
  *
- * @see api_config.json - <provider>.unsupported_params / model_list_changes.<model>.unsupported_params
+ * @see api_config.json - providers.<provider>.unsupported_params / models.overrides.<model>.unsupported_params
  */
 
 /**

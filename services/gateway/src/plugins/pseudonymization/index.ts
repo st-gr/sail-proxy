@@ -21,7 +21,8 @@
 
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
-import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityConfig } from './types';
+import configService, { PseudonymizationConfig, DefaultHookEntry } from '../../services/configService';
+import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityConfig, AllowlistConfig } from './types';
 import { ReplacementMap } from './replacementMap';
 import { detectEntities } from './detectors';
 import { replaceEntities, maskJsonValue, propagateMaskedValues } from './replacer';
@@ -31,12 +32,20 @@ import { unmaskText, unmaskJsonValue } from './unmasker';
 import { StreamUnmaskBuffer } from './streamBuffer';
 import { entityCache } from './entityCache';
 import {
+  buildSaturationReport,
+  formatSaturationWarning,
+  resolveSaturationWarn,
+  topShapes,
+} from './saturationReport';
+import {
   isResponsesBody,
   extractResponsesInputTexts,
   setResponsesInputText,
   appendResponsesInstructions,
   unmaskResponsesOutput,
 } from '../../utils/responsesBodyAdapter';
+import { beginStreamContentCapture } from '../../services/siemUsageEvent';
+import { appendStreamContent } from '../../services/siemStreamCapture';
 
 interface PluginContext {
   req: Request;
@@ -179,35 +188,170 @@ const KNOWN_ENTITY_TYPES = buildKnownEntityTypes(DEFAULT_MASKING_CONFIG.entities
 
 /**
  * Resolve the DEFAULT entity set for this request by layering api_config.json
- * toggles over DEFAULT_MASKING_CONFIG: global (api_config.pseudonymization.entities)
- * → per-endpoint (defaultHooks[endpoint].pseudonymization.entities) → per-model
- * (model_list_changes[model].pseudonymization.entities); later layers win.
+ * toggles over DEFAULT_MASKING_CONFIG: global (api_config.observability.pseudonymization.entities)
+ * → per-endpoint (hooks.defaults[endpoint].pseudonymization.entities) → per-model
+ * (models.overrides[model].pseudonymization.entities); later layers win.
  * Reads dynamic config per request (hot in distributed mode; standalone requires
  * a restart, as for all plugin config). Falls back to the code defaults on any error.
  */
 function resolveDefaultEntities(req: any): EntityConfig[] {
   try {
-    const configService = require('../../services/configService').default || require('../../services/configService');
     const apiConfig = configService.getConfig()?.api_config;
     if (!apiConfig) return DEFAULT_MASKING_CONFIG.entities;
 
-    let entities = applyEntityToggles(DEFAULT_MASKING_CONFIG.entities, apiConfig.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+    // observability.pseudonymization / hooks.defaults stay Record<string, unknown>
+    // on ApiConfig itself (section internals stay untyped except where a reader
+    // needs one); cast into configService's own real shapes here rather than
+    // threading `unknown` through every field access.
+    const globalPseudo = apiConfig.observability?.pseudonymization as PseudonymizationConfig | undefined;
+    let entities = applyEntityToggles(DEFAULT_MASKING_CONFIG.entities, globalPseudo?.entities, KNOWN_ENTITY_TYPES);
 
     const endpoint = req?.__endpoint;
     if (endpoint) {
-      entities = applyEntityToggles(entities, apiConfig.defaultHooks?.[endpoint]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+      const endpointHooks = apiConfig.hooks?.defaults as Record<string, DefaultHookEntry> | undefined;
+      entities = applyEntityToggles(entities, endpointHooks?.[endpoint]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
     }
 
     const modelName = req?.body?.model;
     if (modelName) {
       const substituted = configService.getSubstitutedModel('anthropic', modelName) || modelName;
-      entities = applyEntityToggles(entities, apiConfig.model_list_changes?.[substituted]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
+      entities = applyEntityToggles(entities, apiConfig.models?.overrides?.[substituted]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
     }
 
     return entities;
   } catch {
     return DEFAULT_MASKING_CONFIG.entities;
   }
+}
+
+// Categories already warned about (one WARN per category per process, not per request),
+// mirroring `warnedUnknownToggles` in entityToggles.ts.
+const warnedEmptyProducer = new Set<string>();
+
+/**
+ * Resolve the org/location detector inputs from api_config, layered the same way as
+ * entity toggles: global → per-endpoint → per-model, later layers winning.
+ *
+ * Also warns when a category is enabled with nothing for it to match. An operator who
+ * enables location masking and populates no gazetteer gets ZERO masking; without this
+ * warning they would only discover that by auditing masked output, which is how these
+ * two categories stayed broken in the first place.
+ */
+/**
+ * The three configuration layers for this request, in application order:
+ * global (`observability.pseudonymization`) → per-endpoint
+ * (`hooks.defaults.<endpoint>.pseudonymization`) → per-model
+ * (`models.overrides.<model>.pseudonymization`). Later layers win.
+ *
+ * One walker for every layered pseudonymization setting: `resolveDefaultEntities` predates
+ * it and applies its own toggle merge per layer, but the list-valued and scalar settings
+ * below all read the SAME three pointers, and a second hand-written walk would be a second
+ * place for the order to drift.
+ */
+function pseudonymizationLayers(req: any): (PseudonymizationConfig | undefined)[] {
+  const apiConfig = configService.getConfig()?.api_config;
+  const endpointHooks = apiConfig?.hooks?.defaults as Record<string, DefaultHookEntry> | undefined;
+  return [
+    apiConfig?.observability?.pseudonymization as PseudonymizationConfig | undefined,
+    req?.__endpoint ? endpointHooks?.[req.__endpoint]?.pseudonymization : undefined,
+    req?.body?.model
+      ? apiConfig?.models?.overrides?.[
+          configService.getSubstitutedModel('anthropic', req.body.model) || req.body.model
+        ]?.pseudonymization
+      : undefined,
+  ];
+}
+
+/**
+ * Resolve the confidence gate for this request — `min_confidence` and the per-category
+ * `thresholds` map — from the same three layers.
+ *
+ * `min_confidence` is a scalar: the last layer that sets one wins outright. `thresholds` is
+ * merged PER CATEGORY, the way `entities` is: a per-model block that pins
+ * `profile-person` does not silently discard a global `profile-org` threshold. Absent
+ * everywhere, both are omitted and the detector defaults apply (0.5 for every category).
+ *
+ * Values are not validated here — `resolveThresholds` in detectors/confidence.ts drops
+ * anything outside [0,1], so one function decides what a valid threshold is.
+ */
+function resolveConfidenceConfig(req: any): { min_confidence?: number; thresholds?: Record<string, number> } {
+  const resolved: { min_confidence?: number; thresholds?: Record<string, number> } = {};
+  try {
+    for (const layer of pseudonymizationLayers(req)) {
+      if (typeof layer?.min_confidence === 'number') resolved.min_confidence = layer.min_confidence;
+      if (layer?.thresholds && typeof layer.thresholds === 'object') {
+        resolved.thresholds = { ...resolved.thresholds, ...layer.thresholds };
+      }
+    }
+  } catch {
+    // Fall through to the code defaults, as resolveDefaultEntities does.
+  }
+  return resolved;
+}
+
+/**
+ * The two task-3 keys, from the same three layers.
+ *
+ * `allowlist` is layered by CONCATENATION rather than by replacement, and that is the whole
+ * decision: an allow-list is a list of things a deployment has judged safe, so a per-model
+ * block adding one entry must not silently discard the global list of twenty. A lower layer
+ * can therefore only ever ADD an exemption, never remove one — the same direction
+ * `thresholds`' per-category merge goes, and the opposite of `org_suffixes` /
+ * `location_gazetteer`, where the last layer replaces outright because those lists define a
+ * detector's whole vocabulary.
+ *
+ * `saturation_warn` is a scalar: the last layer that sets one wins. Not validated here —
+ * `resolveSaturationWarn` in saturationReport.ts drops anything that is not an integer of at
+ * least 1, so one function decides what a valid bar is.
+ */
+function resolveReportingConfig(req: any): { allowlist?: AllowlistConfig; saturation_warn?: number } {
+  const patterns: string[] = [];
+  const terms: string[] = [];
+  let saturationWarn: number | undefined;
+
+  try {
+    for (const layer of pseudonymizationLayers(req)) {
+      const allowlist = layer?.allowlist;
+      if (Array.isArray(allowlist?.patterns)) patterns.push(...allowlist.patterns);
+      if (Array.isArray(allowlist?.terms)) terms.push(...allowlist.terms);
+      if (typeof layer?.saturation_warn === 'number') saturationWarn = layer.saturation_warn;
+    }
+  } catch {
+    // Fall through to the code defaults, as resolveDefaultEntities does.
+  }
+
+  const resolved: { allowlist?: AllowlistConfig; saturation_warn?: number } = {};
+  if (patterns.length > 0 || terms.length > 0) resolved.allowlist = { patterns, terms };
+  if (saturationWarn !== undefined) resolved.saturation_warn = saturationWarn;
+  return resolved;
+}
+
+function resolveMaskingLists(req: any, entities: EntityConfig[]): { org_suffixes: string[]; location_gazetteer: string[] } {
+  let orgSuffixes = DEFAULT_MASKING_CONFIG.org_suffixes ?? [];
+  let gazetteer = DEFAULT_MASKING_CONFIG.location_gazetteer ?? [];
+
+  try {
+    for (const layer of pseudonymizationLayers(req)) {
+      if (Array.isArray(layer?.org_suffixes)) orgSuffixes = layer.org_suffixes;
+      if (Array.isArray(layer?.location_gazetteer)) gazetteer = layer.location_gazetteer;
+    }
+  } catch {
+    // Fall through to the code defaults, as resolveDefaultEntities does.
+  }
+
+  const enabled = new Set(entities.filter(e => e.enabled !== false).map(e => e.type));
+  if (enabled.has('profile-org') && orgSuffixes.length === 0 && !warnedEmptyProducer.has('profile-org')) {
+    warnedEmptyProducer.add('profile-org');
+    getDefaultLogger().warn('Pseudonymization',
+      "profile-org is enabled but org_suffixes is empty — NOTHING will be masked as an organisation. Populate pseudonymization.org_suffixes in api_config.json.");
+  }
+  if (enabled.has('profile-location') && gazetteer.length === 0 && !warnedEmptyProducer.has('profile-location')) {
+    warnedEmptyProducer.add('profile-location');
+    getDefaultLogger().warn('Pseudonymization',
+      "profile-location is enabled but location_gazetteer is empty — NOTHING will be masked as a location. Populate pseudonymization.location_gazetteer in api_config.json.");
+  }
+
+  return { org_suffixes: orgSuffixes, location_gazetteer: gazetteer };
 }
 
 /**
@@ -260,7 +404,8 @@ function scanAndStripTriggerword(req: any): MaskingConfig | null {
 
   if (!found) return null;
 
-  return { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method: found };
+  const entities = resolveDefaultEntities(req);
+  return { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method: found };
 }
 
 interface ForcedConfigResolution {
@@ -276,30 +421,32 @@ interface ForcedConfigResolution {
  */
 function getModelForcedConfig(req: any): ForcedConfigResolution | null {
   try {
-    const configService = require('../../services/configService').default || require('../../services/configService');
     const config = configService.getConfig();
 
     // Per-model force flag
     const modelName = req.body?.model;
     if (modelName) {
       const substituted = configService.getSubstitutedModel('anthropic', modelName) || modelName;
-      const modelListChanges = config?.api_config?.model_list_changes;
+      const modelListChanges = config?.api_config?.models?.overrides;
       const modelConfig = modelListChanges?.[substituted];
       if (modelConfig?.pseudonymization?.enabled) {
         const method = modelConfig.pseudonymization.method || 'pseudonymization';
         const allowBypass = modelConfig.pseudonymization.allow_user_bypass === true;
-        return { config: { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method }, allowBypass, source: 'model' };
+        const entities = resolveDefaultEntities(req);
+        return { config: { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method }, allowBypass, source: 'model' };
       }
     }
 
-    // Per-endpoint force flag (defaultHooks[endpoint].pseudonymization.enabled)
+    // Per-endpoint force flag (hooks.defaults[endpoint].pseudonymization.enabled)
     const endpoint = req.__endpoint;
     if (endpoint) {
-      const endpointConfig = config?.api_config?.defaultHooks?.[endpoint];
+      const endpointHooks = config?.api_config?.hooks?.defaults as Record<string, DefaultHookEntry> | undefined;
+      const endpointConfig = endpointHooks?.[endpoint];
       if (endpointConfig?.pseudonymization?.enabled) {
         const method = endpointConfig.pseudonymization.method || 'pseudonymization';
         const allowBypass = endpointConfig.pseudonymization.allow_user_bypass === true;
-        return { config: { ...DEFAULT_MASKING_CONFIG, entities: resolveDefaultEntities(req), method }, allowBypass, source: 'endpoint' };
+        const entities = resolveDefaultEntities(req);
+        return { config: { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method }, allowBypass, source: 'endpoint' };
       }
     }
 
@@ -528,9 +675,28 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // events as they are emitted.
     if (maskingConfig.method === 'pseudonymization' && res) {
       installSseUnmaskInterceptor(req, res, map);
+
+      // Streamed responses only, and only when an enabled sink is opted into content: start
+      // accumulating the masked deltas in memory so the usage SIEM event can carry the
+      // response half. The after handler below stashes it directly for a non-streaming
+      // response; a streamed one is assembled at end of stream instead. Costs nothing when
+      // no sink asked for content - see services/siemStreamCapture.ts.
+      beginStreamContentCapture(req, res);
     }
 
     logger.info(`Masked ${allEntities.length} entities (${map.size} unique) across ${messages.length} messages; propagated ${propagated} additional occurrence(s)`);
+
+    // Saturation REPORT. Runs here, after every text has been masked, and reads only the
+    // result: it cannot reach a score, a threshold or a detector, and the entities counted
+    // are exactly the ones that were masked. The block is attached whether or not the bar
+    // was passed — the counts are cheap and a `saturated: false` event is what makes a rising
+    // trend visible — while the WARN line fires only above it, once per request.
+    const saturationWarn = resolveSaturationWarn(maskingConfig.saturation_warn);
+    const saturation = buildSaturationReport(allEntities, saturationWarn);
+    (req as any).__pseudonymizationSaturation = saturation;
+    if (saturation.saturated) {
+      logger.warn(formatSaturationWarning(saturation, topShapes(allEntities), saturationWarn));
+    }
 
     // Async: store detected entities in learned cache (non-blocking)
     if (allEntities.length > 0) {
@@ -588,6 +754,14 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
 
     const responseText = extractResponseText(upstreamResponse);
     if (responseText) {
+      // Stashed BEFORE unmasking, which is the only moment the response exists in its
+      // masked form: one line below it is replaced with the real values for the client.
+      // Read by services/siemUsageEvent.ts, and only ever shipped to a sink that opted into
+      // content. Deliberately not done on the streaming path above — a streamed response is
+      // never one string in this handler, and reassembling one here purely to export it
+      // would mean buffering every response in memory whether or not any sink wants it.
+      (req as any).__siemMaskedResponse = responseText;
+
       const unmasked = unmaskText(responseText, map);
       setResponseText(upstreamResponse, unmasked);
       logger.debug(`Unmasked response text (${responseText.length} → ${unmasked.length} chars)`);
@@ -729,6 +903,12 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     let event: any;
     try { event = JSON.parse(jsonStr); } catch { return block; }
 
+    // Does this frame carry any placeholder at all? One substring scan on a string
+    // already in hand, no regex — the same test `safetyNetUnmask` makes per write, so
+    // the per-chunk cost is unchanged. False for the overwhelming majority of frames.
+    const carriesPlaceholder = map.reverse.size > 0
+      && (jsonStr.includes('MASKED_') || jsonStr.includes('masked-url-'));
+
     let modified = false;
     let syntheticPrefix = '';
 
@@ -746,6 +926,10 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         && typeof event.delta.text === 'string') {
       const idx = event.index ?? 0;
       const buf = getBuf(`text:${idx}`);
+      // One array push, on the text as it stands BEFORE unmasking - the masked form, which
+      // is the only form a SIEM sink may be shipped. Nothing is parsed for this: the JSON is
+      // already decoded here for the unmask that follows.
+      appendStreamContent(req, 'sse-wire', event.delta.text);
       event.delta.text = buf.append(event.delta.text);
       track(`text:${idx}`, event.delta.text);
       modified = true;
@@ -767,6 +951,8 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     // deltas are JSON fragments, so a placeholder can split mid-token.
     if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
       const key = `responses_text:${event.output_index ?? 0}`;
+      // Same capture as the Anthropic text_delta above: assistant prose, still masked.
+      appendStreamContent(req, 'sse-wire', event.delta);
       event.delta = getBuf(key).append(event.delta);
       track(key, event.delta);
       modified = true;
@@ -846,6 +1032,12 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       const idx = event.output_index ?? 0;
       flushResponsesKey(`responses_text:${idx}`);
       flushResponsesKey(`responses_args:${idx}`);
+      // A custom_tool_call is one of the item kinds that can finish here, and on a
+      // stream that terminates the item with output_item.done alone (no
+      // custom_tool_call_input.done) this is the only flush point before the
+      // stream-terminal sweep — without it the retained tail is withheld from the
+      // delta stream the client accumulates while it finalises the item.
+      flushResponsesKey(`responses_custom_input:${idx}`);
       flushResponsesKey(`responses_summary:${idx}`);
       flushResponsesKey(`responses_refusal:${idx}`);
     }
@@ -921,6 +1113,28 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       }
     }
 
+    // Whatever the handlers above did not reach — most importantly the TERMINAL
+    // SNAPSHOT frames, which repeat an item's whole text rather than a delta of it
+    // (`response.custom_tool_call_input.done`.input, `response.output_item.done`
+    // .item.input, `response.completed`.response.output[]) — is unmasked here, inside
+    // the PARSED event, so JSON.stringify re-escapes the substituted value. The
+    // byte-level safety net below cannot: rewriting already-serialized bytes drops a
+    // value that contains `"`, `\` or a newline (a masked credential, a Windows path)
+    // straight into a JSON string literal, and the client cannot parse the frame that
+    // carries the tool arguments. That net now only covers blocks that are not JSON
+    // at all (the BedrockStreamParser raw-text fallback it was written for).
+    //
+    // Runs AFTER the delta handlers on purpose: a delta's placeholder must go through
+    // its StreamUnmaskBuffer, which owns partial-token retention across frames. By the
+    // time this runs, a delta holds only complete-and-already-unmasked text plus any
+    // token this request's map cannot resolve, which unmaskJsonValue leaves alone.
+    if (carriesPlaceholder) {
+      // Assigned, not just mutated: a frame whose JSON is a bare string or number is
+      // returned by value, and unmaskJsonValue has nothing to mutate in place.
+      event = unmaskJsonValue(event, map);
+      modified = true;
+    }
+
     if (modified) {
       const newStr = eventName
         ? `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`
@@ -937,6 +1151,13 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   // `data: <text>` on a parse miss) would otherwise reach the client masked. This is
   // idempotent on already-unmasked output (no reverse-map keys remain to match) and
   // only touches whole tokens, so it never disturbs the buffer's partial-retention.
+  //
+  // It still runs over the WHOLE outgoing string, parsed blocks included — the parsed-event
+  // unmask in processBlock narrows what is left for it to find, it does not exclude anything
+  // from it. Two things genuinely reach the client only through this net: a block that is
+  // not JSON at all, and an object KEY carrying a placeholder, which unmaskJsonValue walks
+  // past by design (it rewrites values only). For those the byte-level substitution and its
+  // JSON-escaping hazard still apply.
   const safetyNetUnmask = (s: string): string => {
     if (map.reverse.size === 0) return s;
     if (!s.includes('MASKED_') && !s.includes('masked-url-')) return s;
@@ -1075,6 +1296,11 @@ function handleStreamingChunk(
   // ─── Text deltas (existing behavior) ────────────────────────────────────
   const deltaText = extractResponseText(chunk);
   if (deltaText) {
+    // The masked delta, captured before the unmask buffer sees it. This site runs upstream of
+    // the res.write interceptor and therefore wins the capture's source lock, which is what
+    // keeps the same text from also being appended in its unmasked form at the wire.
+    appendStreamContent(req, 'after-chain', deltaText);
+
     const finishReason = chunk?.final_result?.choices?.[0]?.finish_reason
       || chunk?.choices?.[0]?.finish_reason;
 

@@ -8,6 +8,7 @@ import * as modelUtils from '../utils/modelUtils';
 import modelService from '../services/modelService';
 import * as imageUtils from '../utils/imageUtils';
 import configService from '../services/configService';
+import { sanitizeUpstreamErrorObject } from '../utils/upstreamErrorEnvelope';
 import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExecutor';
 import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
@@ -445,7 +446,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
 
         // Create a unique ID for this completion
         const completionId = `chatcmpl-${Date.now()}`;
-        const model = req.body.model || 'gpt-35-turbo-16k';
+        const model = req.body.model || 'gpt-5-mini';
         const createdTimestamp = Math.floor(Date.now() / 1000);
 
         // Send initial message with role
@@ -774,7 +775,13 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
               message: err.details?.message || err.message,
               type: 'sap_ai_core_error',
               code: err.details?.status || err.status || 500,
-              ...(process.env.DEBUG === 'true' ? { details: err.details } : {})
+              // Filtered even behind the DEBUG gate, like awsBedrockController: SAP's
+              // error body carries intermediate_results.templating, and turning DEBUG
+              // on to diagnose a streaming failure must not start writing templated
+              // prompts into the client's stream. See utils/upstreamErrorEnvelope.ts.
+              ...(process.env.DEBUG === 'true'
+                ? { details: sanitizeUpstreamErrorObject(err.details) }
+                : {})
             }
           };
 
@@ -889,7 +896,7 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
     logger.info('openaiController', `OpenAI request: model=${openAIReq.model}, messages=${openAIReq.messages.length}, max_tokens=${openAIReq.max_tokens}, stream=${openAIReq.stream}`);
   }
   
-  const modelName = openAIReq.model || "gpt-35-turbo-16k";
+  const modelName = openAIReq.model || "gpt-5-mini";
   
   // Add debug logging for model name
   logger.info('openaiController', `Processing request for model: ${modelName}`);

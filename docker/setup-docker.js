@@ -1081,6 +1081,11 @@ class DockerSetup {
       this.sharedSecrets.VALIDATION_TOKEN_SECRET = this.generateSecureToken();
       this.sharedSecrets.METADATA_ENCRYPTION_KEY = this.generateSecureToken();
       this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY = this.generateSecureToken();
+      // Admin-only (the gateway never touches SiemCredentials). Without it every
+      // setSiemCredential call in the running stack fails - services/admin/src/siem/
+      // credentialStore.ts refuses to encrypt under a default key - and .env.sample ships
+      // the placeholder `changeme`, which is a guessable master key, not a usable one.
+      this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSecureToken();
       
       // Database credentials (16 chars hex, safe for env files)
       this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
@@ -1277,6 +1282,22 @@ class DockerSetup {
     
     console.log('📝 Creating Admin .env file...');
     
+    // This rewrites .env from .env.sample, so a real SIEM_CREDENTIAL_KEY already in the
+    // existing file is carried over rather than replaced - the same carry-over setupGatewayEnv
+    // does for its shared secrets. Rotating this key does not merely re-key the
+    // SiemCredentials rows: it makes every stored SIEM sink credential undecryptable, and they
+    // must be re-entered by hand. A database-credential update pass must not cost that
+    // silently. The `else if` is the independent guard FILE_SEARCH_RUNTIME_PASSWORD needs for
+    // the same reason - a caller supplying `--config` (or a pre-populated sharedSecrets) skips
+    // the generation block in setupServiceEnvFiles entirely, and without this the placeholder
+    // `changeme` from .env.sample would be written through as the master key.
+    const existingAdminEnv = fs.existsSync(envPath) ? await this.parseEnvFile(envPath) : {};
+    if (existingAdminEnv.SIEM_CREDENTIAL_KEY && existingAdminEnv.SIEM_CREDENTIAL_KEY !== 'changeme') {
+      this.sharedSecrets.SIEM_CREDENTIAL_KEY = existingAdminEnv.SIEM_CREDENTIAL_KEY;
+    } else if (!this.sharedSecrets.SIEM_CREDENTIAL_KEY) {
+      this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSecureToken();
+    }
+    
     // Prepare updates
     const updates = {};
     
@@ -1284,6 +1305,8 @@ class DockerSetup {
     updates.VALIDATION_TOKEN_SECRET = this.sharedSecrets.VALIDATION_TOKEN_SECRET;
     updates.METADATA_ENCRYPTION_KEY = this.sharedSecrets.METADATA_ENCRYPTION_KEY;
     updates.AWS_SECRET_ENCRYPTION_KEY = this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY;
+    // Admin-only: encrypts the SiemCredentials rows the SIEM sinks authenticate with.
+    updates.SIEM_CREDENTIAL_KEY = this.sharedSecrets.SIEM_CREDENTIAL_KEY;
     
     // Include database credentials for CAP configuration replacement
     if (this.sharedSecrets.POSTGRES_PASSWORD) {

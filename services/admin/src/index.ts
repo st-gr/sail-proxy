@@ -5,6 +5,8 @@ require('./polyfills/path-to-regexp-polyfill');
 const cds = require('@sap/cds');
 import { initializeAuthentication, setupUserContext, getAuthenticationMode } from './auth/authInit';
 import { getDefaultLogger } from '@libs/logger';
+import { stopSiemDispatcher } from './siem/dispatcherHandle';
+import { stopSecretResolver } from './siem/secretResolverHandle';
 
 const logger = getDefaultLogger();
 
@@ -578,6 +580,48 @@ async function startProgrammatically(port: number, authMode: string) {
         });
       });
       
+      // Stop the SIEM dispatcher (siem/dispatcher.ts) before the DB disconnect below: left
+      // running, a tick landing in the window between the two runs reconcileOutbox /
+      // readUndelivered against a disconnecting connection, and worse, an in-flight send()
+      // can succeed while the markDelivered that follows it fails against the closed DB --
+      // delivered but never marked, so it is re-sent on next start (Task 7C). stop() only
+      // clears the dispatcher's timers; it does not await whatever send() is already in
+      // flight. That is a deliberate choice, not an oversight: waiting for an in-flight send
+      // to settle would block shutdown on an external SIEM endpoint's latency (or a hang --
+      // see siem-dispatcher.test.ts's "a sink whose send() never resolves" case) past
+      // Kubernetes's SIGTERM-to-SIGKILL grace window, trading a bounded and small race for an
+      // unbounded one. The at-least-once delivery contract (dispatcher.ts's top comment)
+      // already tolerates the rare duplicate this can still produce for whatever send() was
+      // truly in flight at the moment of the signal; stopping first just shrinks that window
+      // from "the whole shutdown" down to "one in-flight send," rather than trying to close
+      // it to zero.
+      try {
+        // stopSiemDispatcher() (siem/dispatcherHandle.ts) reports whether it actually
+        // stopped something -- log accordingly rather than unconditionally, since a false
+        // return (no handle set) is not the same outcome as "a running dispatcher was just
+        // stopped" and an unconditional success log would mask exactly the failure mode this
+        // fix exists to prevent.
+        if (stopSiemDispatcher()) {
+          logger.info('Server', 'SIEM dispatcher stopped');
+        } else {
+          logger.info('Server', 'SIEM dispatcher was not running; nothing to stop');
+        }
+      } catch (error) {
+        logger.warn('Server', 'Error stopping SIEM dispatcher:', error);
+      }
+
+      // Same reasoning as the dispatcher above: stop the secret resolver's periodic refresh
+      // timer (secretResolverHandle.ts) so a stopped service leaves no live timer behind.
+      try {
+        if (stopSecretResolver()) {
+          logger.info('Server', 'SIEM secret resolver stopped');
+        } else {
+          logger.info('Server', 'SIEM secret resolver was not running; nothing to stop');
+        }
+      } catch (error) {
+        logger.warn('Server', 'Error stopping SIEM secret resolver:', error);
+      }
+
       // Close database connections gracefully
       if (cds.db) {
         logger.info('Server', 'Closing database connections...');

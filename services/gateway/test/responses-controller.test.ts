@@ -256,8 +256,12 @@ describe('responsesController', () => {
       expect(res.body.error.message).toBe(SAP_ERROR.message);
       expect(res.body.error.type).toBe('invalid_request_error');
       expect(res.body.error.code).toBe('BadRequest');
-      // Nothing is discarded: the raw upstream body stays reachable for debugging.
-      expect(res.body.error.details).toEqual(SAP_ERROR);
+      // `details` is filtered through SAFE_UPSTREAM_ERROR_FIELDS, not verbatim.
+      // SAP's error body carries `intermediate_results` — the templated prompt —
+      // and returning it to the caller was a real disclosure (measured 2026-08-14).
+      // The label survives as `code` above, so nothing diagnostic is lost here.
+      expect(res.body.error.details).toEqual({ message: SAP_ERROR.message });
+      expect(JSON.stringify(res.body)).not.toContain('intermediate_results');
     });
 
     it('carries the upstream message into the mid-stream response.failed frame', async () => {
@@ -418,7 +422,7 @@ describe('responsesController', () => {
   it('fails closed with 503 when pseudonymization is force-enabled but the hook config is missing', async () => {
     // A configuration activated before this route existed: the admin config
     // replaces the file config wholesale, so `responses` is absent from
-    // defaultHooks.openai while the force flag is still on.
+    // hooks.defaults.openai while the force flag is still on.
     configState.pseudonymizationForced = true;
     configState.hookConfig = undefined;
 
@@ -646,7 +650,12 @@ describe('responsesController', () => {
     await expect(handleResponses(req, res, () => {})).resolves.toBeUndefined();
 
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: { message: 'hosted tool not supported', type: 'invalid_request_error' } });
+    // `code: null` is added by the envelope: it is required by NormalisedUpstreamError
+    // and OpenAI's own error object always carries it. The upstream's own fields are
+    // preserved; only the allow-list filtering and this fill-in are applied.
+    expect(res.body).toEqual({
+      error: { message: 'hosted tool not supported', type: 'invalid_request_error', code: null },
+    });
     expect(usageEvents).toHaveLength(1);
     expect(usageEvents[0][3]).toBe(400);
     // The drained, parsed body reaches the log — not the raw stream.

@@ -4,7 +4,7 @@
 import { Request, Response } from 'express';
 import { sapAIService } from './sapAIService';
 import { getModelDetails } from './modelService';
-import { getConfig, getSubstitutedModel, getHookConfig } from './configService';
+import { getConfig, getConfigAsync, getSubstitutedModel, getHookConfig } from './configService';
 import { pluginExecutor } from './pluginExecutor';
 import { processAnthropicMessages } from './anthropicMessageService';
 import { transformToolsToSAPFormat, transformToolChoiceToSAPFormat } from './anthropicToolsService';
@@ -74,8 +74,22 @@ export const transformRequestToSAPFormat = async (
   anthropicReq: AnthropicRequest, 
   debugRequestId?: string
 ): Promise<SAPPayload> => {
-  const config = await import('./configService').then(m => m.getConfigAsync());
-  const originalModelName = anthropicReq.model || (config as any).api_config?.default_models?.anthropic || "claude-3-5-haiku-20241022";
+  // Prime the config cache before getSubstitutedModel's synchronous
+  // configService.getConfig() call below. On the happy path index.ts already
+  // awaits config priming at startup, but that startup await only logs and
+  // continues on failure, so a request landing before priming completes would
+  // otherwise hit getConfig() unprimed — which either throws (caught inside
+  // getSubstitutedModel, silently skipping substitution) or returns
+  // DEFAULT_CONFIG (a stub with no real provider overrides), also skipping
+  // substitution, neither of which retries. Re-awaiting getConfigAsync() here
+  // gives every request its own chance to (re)prime the cache; its resolved
+  // value isn't used directly — getSubstitutedModel re-reads the (now current)
+  // cache itself. This await was previously bundled with a since-removed dead
+  // read of the nonexistent `api_config.default_models` (see task-1-report.md);
+  // restored on its own because it primes the cache, not because it produced a
+  // value anything here needs.
+  await getConfigAsync();
+  const originalModelName = anthropicReq.model || "claude-3-5-haiku-20241022";
   const substitutedModelName = getSubstitutedModel('anthropic', originalModelName);
 
   // Determine originalProvider

@@ -344,7 +344,7 @@ function getModelContextLength(model: SAPModel): number {
     }
   }
   
-  // Check for explicit contextLength from model_list_changes config
+  // Check for explicit contextLength from models.overrides config
   if (model.contextLength) {
     return model.contextLength;
   }

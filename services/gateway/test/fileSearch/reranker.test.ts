@@ -54,7 +54,7 @@ import { rerank, getRerankerDeploymentId } from '../../src/fileSearch/reranker';
 const logger = mockLogger;
 
 const RUNNING_DEPLOYMENT = {
-  id: 'd905318da42e6e4d',
+  id: 'd0000000000000a1',
   status: 'RUNNING',
   scenarioId: 'foundation-models',
   configurationName: 'cohere-reranker-config',
@@ -94,7 +94,7 @@ describe('reranker', () => {
     it('finds a RUNNING foundation-models deployment by configured model name', async () => {
       mockDeploymentList([RUNNING_DEPLOYMENT]);
 
-      expect(await getRerankerDeploymentId(true)).toBe('d905318da42e6e4d');
+      expect(await getRerankerDeploymentId(true)).toBe('d0000000000000a1');
     });
 
     it('ignores a deployment that is not RUNNING', async () => {
@@ -125,8 +125,8 @@ describe('reranker', () => {
       const first = await getRerankerDeploymentId(true);
       const second = await getRerankerDeploymentId(); // no forceRefresh
 
-      expect(first).toBe('d905318da42e6e4d');
-      expect(second).toBe('d905318da42e6e4d');
+      expect(first).toBe('d0000000000000a1');
+      expect(second).toBe('d0000000000000a1');
       expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
@@ -237,7 +237,7 @@ describe('reranker', () => {
       await rerank('q', ['a'], 1);
 
       const url = mockPost.mock.calls[0][0];
-      expect(url).toBe('https://sap.example/v2/inference/deployments/d905318da42e6e4d/rerank');
+      expect(url).toBe('https://sap.example/v2/inference/deployments/d0000000000000a1/rerank');
     });
 
     it('sends Authorization and AI-Resource-Group headers, mirroring searchExecutor', async () => {

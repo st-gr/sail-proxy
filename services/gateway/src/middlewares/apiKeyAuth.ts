@@ -1,8 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import apiKeyService from '../services/apiKeyService';
 import securityEventEmitter from '../services/securityEventEmitter';
+import { credentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
+import { getClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from '../services/configService';
 const logger = getDefaultLogger();
 
 interface AuthenticatedRequest extends Request {
@@ -175,7 +178,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
         credentialId: 'missing',
         authType: 'api_key',
         reason: 'No API key provided',
-        clientIP: req.ip || req.connection.remoteAddress,
+        clientIP: getClientIp(req, getTrustForwardedFor()),
         userAgent: req.get('User-Agent'),
         endpoint: req.originalUrl,
         method: req.method,
@@ -224,10 +227,12 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
       // Emit security event for invalid API key (only if not already emitted by unified auth)
       if (!(req as any).unifiedAuthAttempted) {
         await securityEventEmitter.emitFailedAuth({
-          credentialId: apiKey as string,
+          // This key did not resolve to a stored row, so never ship it as-is — hash +
+          // hint it (see utils/credentialIdentity.ts).
+          ...credentialIdentity(apiKey as string),
           authType: 'api_key',
           reason: 'Invalid API key provided',
-          clientIP: req.ip || req.connection.remoteAddress,
+          clientIP: getClientIp(req, getTrustForwardedFor()),
           userAgent: req.get('User-Agent'),
           endpoint: req.originalUrl,
           method: req.method,

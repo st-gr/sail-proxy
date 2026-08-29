@@ -54,7 +54,7 @@ describe('getTeacherLoggingConfig', () => {
     });
 
     it('yields the shipped defaults', () => {
-      const svc = loadWith({ api_config: { file_search: {} } });
+      const svc = loadWith({ api_config: { capabilities: { file_search: {} } } });
       expect(svc.getTeacherLoggingConfig()).toEqual({
         enabled: false,
         storeChunkText: false,

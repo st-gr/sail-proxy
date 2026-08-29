@@ -13,7 +13,7 @@ const os = require('os');
 
 const execAsync = promisify(exec);
 
-async function runCommand(command, description) {
+async function runCommand(command, description, options = {}) {
   console.log(`\n${description}...`);
   try {
     const { stdout, stderr } = await execAsync(command);
@@ -21,7 +21,14 @@ async function runCommand(command, description) {
     if (stderr) console.error('Warning:', stderr.trim());
     return { success: true, stdout, stderr };
   } catch (error) {
-    console.error(`Error: ${error.message}`);
+    // allowFailure is for probing a resource that is legitimately absent:
+    // `kubectl get` exits non-zero with NotFound on stderr, which is an
+    // answer, not a fault. Callers branch on `.success` instead. Shell
+    // redirection would be the other way to silence it, but there is no
+    // spelling of it that works on both cmd.exe and sh — `2>nul` creates a
+    // file called nul under sh, `2>/dev/null` fails under cmd.exe — so the
+    // discarding happens here, in portable JavaScript.
+    if (!options.allowFailure) console.error(`Error: ${error.message}`);
     return { success: false, error };
   }
 }
@@ -34,7 +41,7 @@ async function deployAndWait(service, type, manifestPath) {
       path.join(manifestPath, 'core', `${service}.yaml`);
       
   await runCommand(
-    `kubectl apply -f ${filePath}`,
+    `kubectl apply -f "${filePath}"`,
     `Deploying ${service}`
   );
   
@@ -42,6 +49,57 @@ async function deployAndWait(service, type, manifestPath) {
     `kubectl -n sail-proxy rollout status ${type}/${service} --timeout=300s`,
     `Waiting for ${service} to be ready`
   );
+}
+
+// The api_config ConfigMap embeds a full copy of api_config.json as a YAML block
+// scalar, indented four spaces. This is the exact rendering setup-kyma.js's
+// createApiConfigMap() produces; keep the two in step.
+function renderApiConfigMap(apiConfigContent, namespace) {
+  return `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-api-config
+  namespace: ${namespace}
+data:
+  api_config.json: |
+${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
+`;
+}
+
+// templates/configmaps/ is gitignored: every file in it is a local artifact of
+// the last setup-kyma.js run. admin-api-config.yaml therefore carries whatever
+// api_config.json looked like on the day setup was run, and deploying it
+// afterwards seeds the cluster with that stale copy — which is how a machine
+// set up before the six-group restructure of api_config.json would push the old
+// flat shape to a cluster whose schema rejects it. Re-render it from the
+// repository's api_config.json immediately before applying, so the ConfigMap is
+// never older than the checkout.
+function refreshApiConfigMap(templatesPath) {
+  const configMapPath = path.join(templatesPath, 'configmaps', 'admin-api-config.yaml');
+  const apiConfigPath = path.resolve(templatesPath, '..', '..', 'services', 'admin', 'api_config.json');
+
+  if (!fs.existsSync(configMapPath)) {
+    // No ConfigMap yet means setup-kyma.js has not run; it will generate one.
+    return;
+  }
+  if (!fs.existsSync(apiConfigPath)) {
+    console.log('⚠️  services/admin/api_config.json not found - leaving admin-api-config.yaml untouched');
+    return;
+  }
+
+  // Preserve the namespace the ConfigMap was generated with rather than assuming
+  // the default, so a non-default namespace is not silently rewritten.
+  const existing = fs.readFileSync(configMapPath, 'utf8');
+  const namespaceMatch = existing.match(/^\s+namespace:\s*(\S+)\s*$/m);
+  const namespace = namespaceMatch ? namespaceMatch[1] : 'sail-proxy';
+
+  const refreshed = renderApiConfigMap(fs.readFileSync(apiConfigPath, 'utf8'), namespace);
+  if (refreshed === existing) {
+    return;
+  }
+
+  fs.writeFileSync(configMapPath, refreshed);
+  console.log('🔄 Refreshed admin-api-config.yaml from services/admin/api_config.json (it was stale)');
 }
 
 async function cleanupAndApplyIstioSystemPolicies(templatesPath) {
@@ -59,11 +117,17 @@ async function cleanupAndApplyIstioSystemPolicies(templatesPath) {
   
   try {
     // Only look for policies created by this system (sail-proxy specific)
-    const { stdout } = await execAsync('kubectl get authorizationpolicies -n istio-system -o name | grep "allowlist-sail-proxy"');
-    if (stdout.trim()) {
-      const policies = stdout.trim().split('\n');
+    // Filtering happens here rather than through `| grep`: grep does not exist
+    // on Windows, and its exit-1-on-no-match was doubling as control flow —
+    // both the match and the "nothing matched" branch are explicit now.
+    const { stdout } = await execAsync('kubectl get authorizationpolicies -n istio-system -o name');
+    const policies = stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.includes('allowlist-sail-proxy'));
+    if (policies.length > 0) {
       console.log(`Found existing sail-proxy IP allowlist policies: ${policies.join(', ')}`);
-      
+
       // Force delete only sail-proxy allowlist policies
       for (const policy of policies) {
         await runCommand(
@@ -71,19 +135,21 @@ async function cleanupAndApplyIstioSystemPolicies(templatesPath) {
           `Force removing existing sail-proxy policy ${policy}`
         );
       }
-      
+
       // Wait a moment for deletion to complete
       console.log('Waiting for policy deletion to complete...');
       await new Promise(resolve => setTimeout(resolve, 2000));
+    } else {
+      console.log('No existing sail-proxy IP allowlist policies found');
     }
   } catch (error) {
-    // No existing policies found or kubectl error - proceed with deployment
+    // kubectl error (no istio-system, no cluster access) - proceed with deployment
     console.log('No existing sail-proxy IP allowlist policies found');
   }
   
   // Apply new istio-system manifests with force to ensure replacement
   await runCommand(
-    `kubectl apply -f ${istioSystemManifestsPath}/ --force-conflicts=true --server-side`,
+    `kubectl apply -f "${istioSystemManifestsPath}/" --force-conflicts=true --server-side`,
     'Force applying istio-system IP allowlist configuration'
   );
 }
@@ -111,8 +177,12 @@ async function ensureConnectivityProxyAllowlist(savedConfig) {
   // 1) Is the Connectivity Proxy present? Read its Gateway hosts (authoritative source).
   let hosts = [];
   try {
+    // Double quotes, not single: cmd.exe does not strip single quotes, so kubectl
+    // would receive them as part of the jsonpath and fail to parse it. Double
+    // quotes are stripped by both cmd.exe and sh, and they still stop sh from
+    // brace-expanding {...} or globbing [*].
     const { stdout } = await execAsync(
-      "kubectl get gateway connectivity-proxy-tunnel -n kyma-system -o jsonpath='{.spec.servers[*].hosts[*]}'");
+      'kubectl get gateway connectivity-proxy-tunnel -n kyma-system -o jsonpath="{.spec.servers[*].hosts[*]}"');
     hosts = stdout.split(/\s+/).map(h => h.trim()).filter(Boolean);
   } catch (e) {
     console.log('No connectivity-proxy-tunnel Gateway found, skipping cp allowlist (no SCC tunnel in this cluster)');
@@ -193,7 +263,7 @@ spec:
   fs.writeFileSync(tmpPath, manifest);
   try {
     await runCommand(
-      `kubectl apply -f ${tmpPath} --force-conflicts=true --server-side`,
+      `kubectl apply -f "${tmpPath}" --force-conflicts=true --server-side`,
       'Applying SCC Connectivity Proxy ALLOW policies (cp tunnel + healthcheck)');
   } finally {
     fs.unlinkSync(tmpPath);
@@ -240,7 +310,7 @@ async function deployToKyma() {
   // 1. Create namespace with Istio injection enabled
   console.log('Step 1: Creating namespace with Istio injection enabled...');
   await runCommand(
-    `kubectl apply -f ${path.join(manifestPath, 'core', 'namespace.yaml')}`,
+    `kubectl apply -f "${path.join(manifestPath, 'core', 'namespace.yaml')}"`,
     'Creating namespace'
   );
   
@@ -281,16 +351,30 @@ spec:
   mtls:
     mode: PERMISSIVE`;
   
-  await runCommand(
-    `echo '${peerAuthYaml}' | kubectl apply -f -`,
-    'Creating PeerAuthentication'
-  );
+  // Via a temp file rather than `echo '<yaml>' |`: multi-line YAML wrapped in
+  // single quotes is sh-only syntax, and cmd.exe would hand the quotes and the
+  // unsplit lines straight to kubectl. This is the same approach
+  // applyConnectivityProxyAllowPolicies() already uses for its generated
+  // manifests, for the same shell-quoting reason.
+  const peerAuthPath = path.join(os.tmpdir(), 'sail-proxy-peerauthentication.yaml');
+  fs.writeFileSync(peerAuthPath, peerAuthYaml);
+  try {
+    // Path is quoted: os.tmpdir() honours TEMP, which on Windows can resolve to
+    // a directory containing spaces, and double quotes are the one form both
+    // cmd.exe and sh strip correctly.
+    await runCommand(
+      `kubectl apply -f "${peerAuthPath}"`,
+      'Creating PeerAuthentication'
+    );
+  } finally {
+    fs.unlinkSync(peerAuthPath);
+  }
   
   // Apply DestinationRules for non-mesh services
   const destinationRulesPath = path.join(manifestPath, 'networking', 'destination-rules.yaml');
   if (fs.existsSync(destinationRulesPath)) {
     await runCommand(
-      `kubectl apply -f ${destinationRulesPath}`,
+      `kubectl apply -f "${destinationRulesPath}"`,
       'Applying DestinationRules for non-mesh services'
     );
   }
@@ -329,7 +413,7 @@ spec:
       const secretFilePath = path.join(secretsPath, secretFile);
       if (fs.existsSync(secretFilePath)) {
         await runCommand(
-          `kubectl apply -f ${secretFilePath}`,
+          `kubectl apply -f "${secretFilePath}"`,
           `Applying ${secretFile}`
         );
       }
@@ -339,8 +423,9 @@ spec:
   // Apply configmaps - required for nginx and dex
   const configmapsPath = path.join(templatesPath, 'configmaps');
   if (fs.existsSync(configmapsPath)) {
+    refreshApiConfigMap(templatesPath);
     await runCommand(
-      `kubectl apply -f ${configmapsPath}/`,
+      `kubectl apply -f "${configmapsPath}/"`,
       'Applying configmaps'
     );
   }
@@ -349,7 +434,7 @@ spec:
   const networkPoliciesPath = path.join(manifestPath, 'core', 'network-policies.yaml');
   if (fs.existsSync(networkPoliciesPath)) {
     await runCommand(
-      `kubectl apply -f ${networkPoliciesPath}`,
+      `kubectl apply -f "${networkPoliciesPath}"`,
       'Applying network policies'
     );
   } else {
@@ -369,7 +454,7 @@ spec:
   const dexRbacPath = path.join(manifestPath, 'auth', 'dex-rbac.yaml');
   if (fs.existsSync(dexRbacPath)) {
     await runCommand(
-      `kubectl apply -f ${dexRbacPath}`,
+      `kubectl apply -f "${dexRbacPath}"`,
       'Applying Dex RBAC (ServiceAccount, ClusterRole, ClusterRoleBinding)'
     );
   }
@@ -395,7 +480,7 @@ spec:
   const networkingPath = path.join(manifestPath, 'networking');
   if (fs.existsSync(networkingPath)) {
     await runCommand(
-      `kubectl apply -f ${networkingPath}/`,
+      `kubectl apply -f "${networkingPath}/"`,
       'Applying networking manifests'
     );
   }
@@ -422,14 +507,15 @@ spec:
   
   // First check if VirtualService exists (streaming deployment)
   const vsResult = await runCommand(
-    'kubectl -n sail-proxy get virtualservice sail-proxy-streaming -o json 2>nul || echo "none"',
-    'Checking VirtualService status'
+    'kubectl -n sail-proxy get virtualservice sail-proxy-streaming -o json',
+    'Checking VirtualService status',
+    { allowFailure: true }
   );
-  
+
   let isStreamingDeployment = false;
   let hostFromVS = null;
-  
-  if (vsResult.success && vsResult.stdout && !vsResult.stdout.includes('none')) {
+
+  if (vsResult.success && vsResult.stdout) {
     try {
       const vs = JSON.parse(vsResult.stdout);
       isStreamingDeployment = true;
@@ -438,10 +524,11 @@ spec:
       if (gateways.length > 0) {
         // Get the Gateway to find the host
         const gatewayResult = await runCommand(
-          `kubectl -n sail-proxy get gateway ${gateways[0].replace('sail-proxy/', '')} -o json 2>/dev/null || echo "none"`,
-          'Getting Gateway details'
+          `kubectl -n sail-proxy get gateway ${gateways[0].replace('sail-proxy/', '')} -o json`,
+          'Getting Gateway details',
+          { allowFailure: true }
         );
-        if (gatewayResult.success && !gatewayResult.stdout.includes('none')) {
+        if (gatewayResult.success && gatewayResult.stdout) {
           const gateway = JSON.parse(gatewayResult.stdout);
           hostFromVS = gateway.spec?.servers?.[0]?.hosts?.[0] || 'unknown';
         }
@@ -455,11 +542,12 @@ spec:
   if (!isStreamingDeployment) {
     // Fallback: check for APIRule (legacy deployment)
     const apiRuleResult = await runCommand(
-      'kubectl -n sail-proxy get apirule sail-proxy -o json 2>nul || echo "none"',
-      'Checking APIRule status'
+      'kubectl -n sail-proxy get apirule sail-proxy -o json',
+      'Checking APIRule status',
+      { allowFailure: true }
     );
-    
-    if (apiRuleResult.success && apiRuleResult.stdout && !apiRuleResult.stdout.includes('none')) {
+
+    if (apiRuleResult.success && apiRuleResult.stdout) {
       try {
         const apiRule = JSON.parse(apiRuleResult.stdout);
         const status = apiRule.status?.state || 'Unknown';
@@ -547,8 +635,14 @@ spec:
   console.log('- If ingress fails, ensure nginx has sidecar: kubectl -n sail-proxy get pod -l app=nginx');
 }
 
-// Run the deployment
-deployToKyma().catch(error => {
-  console.error('Deployment failed:', error);
-  process.exit(1);
-});
+// Run the deployment. Guarded so the ConfigMap rendering helpers can be
+// required from tests; the script is only ever invoked as `node deploy-kyma.js`
+// (directly or spawned by setup-kyma.js), so require.main is always this file.
+if (require.main === module) {
+  deployToKyma().catch(error => {
+    console.error('Deployment failed:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = { renderApiConfigMap, refreshApiConfigMap };

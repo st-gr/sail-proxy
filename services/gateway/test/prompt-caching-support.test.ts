@@ -55,7 +55,7 @@ describe('resolvePromptCachingSupport', () => {
 describe('configService.getSupportsPromptCaching', () => {
   it('resolves a provider-level flag', () => {
     withConfig({
-      api_config: { anthropic: { supports_prompt_caching: false } },
+      api_config: { providers: { anthropic: { supports_prompt_caching: false } } },
     }, (configService) => {
       expect(configService.getSupportsPromptCaching('anthropic')).toBe(false);
     });
@@ -64,9 +64,11 @@ describe('configService.getSupportsPromptCaching', () => {
   it('a per-model flag overrides the provider-level flag', () => {
     withConfig({
       api_config: {
-        anthropic: { supports_prompt_caching: true },
-        model_list_changes: {
-          'anthropic--claude-3-haiku': { supports_prompt_caching: false },
+        providers: { anthropic: { supports_prompt_caching: true } },
+        models: {
+          overrides: {
+            'anthropic--claude-3-haiku': { supports_prompt_caching: false },
+          },
         },
       },
     }, (configService) => {

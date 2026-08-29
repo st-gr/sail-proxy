@@ -5,6 +5,8 @@ import { Request, Response, NextFunction } from 'express';
 
 // Use require for CommonJS module
 import configService from '../services/configService';
+import { legacyShapeError } from '../utils/legacyConfigShape';
+import { DEFAULT_CONFIG } from '../services/defaultConfig';
 
 interface ConfigRequest extends Request {
   query: {
@@ -48,12 +50,20 @@ export const updateConfig = async (req: UpdateConfigRequest, res: Response, next
     
     // Validate the request body
     if (!newConfig || !newConfig.api_config) {
-      res.status(400).json({ 
+      res.status(400).json({
         error: 'Invalid configuration format: missing api_config'
       });
       return;
     }
-    
+
+    // Reject a pre-restructure body outright: deep-merging it would answer 200
+    // while changing nothing the gateway reads.
+    const legacyError = legacyShapeError(newConfig.api_config);
+    if (legacyError) {
+      res.status(400).json(legacyError);
+      return;
+    }
+
     // Update the configuration
     const updatedConfig = await configService.updateConfig(newConfig as any);
     res.json(updatedConfig);
@@ -71,12 +81,21 @@ export const patchConfig = async (req: PatchConfigRequest, res: Response, next: 
     
     // Validate the request body
     if (!patchData) {
-      res.status(400).json({ 
-        error: 'Invalid patch data: empty request body' 
+      res.status(400).json({
+        error: 'Invalid patch data: empty request body'
       });
       return;
     }
-    
+
+    // Same diagnostic as PUT. A PATCH is where this bites hardest: the merge is
+    // partial by design, so an old-shape body looks exactly like a successful
+    // narrow update until the caller notices the setting never applied.
+    const legacyError = legacyShapeError(patchData.api_config);
+    if (legacyError) {
+      res.status(400).json(legacyError);
+      return;
+    }
+
     // Patch the configuration
     const updatedConfig = await configService.patchConfig(patchData);
     res.json(updatedConfig);
@@ -90,28 +109,10 @@ export const patchConfig = async (req: PatchConfigRequest, res: Response, next: 
  */
 export const resetConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // Use the default configuration from the service
-    const defaultConfig = {
-      api_config: {
-        openai: {
-          substitute_models: [
-            { from: "GPT-4", to: "o1" },
-            { from: "GPT-3.5", to: "GPT-4" }
-          ],
-          emulate_streaming_for_models: []
-        },
-        anthropic: {
-          substitute_models: [
-            { from: "claude-3-5-haiku-20241022", to: "anthropic--claude-3-haiku" },
-            { from: "claude-3-7-sonnet-20250219", to: "anthropic--claude-3.7-sonnet" }
-          ],
-          emulate_streaming_for_models: ["anthropic--claude-3.7-sonnet"]
-        }
-      }
-    };
-    
-    // Update with the default config
-    const updatedConfig = await configService.updateConfig(defaultConfig);
+    // The same object the service falls back to, imported rather than repeated:
+    // an inline third copy is invisible to the fallback-schema test, which is
+    // exactly how the lowercase `defaultLevel: "info"` defect was born.
+    const updatedConfig = await configService.updateConfig(DEFAULT_CONFIG);
     res.json(updatedConfig);
   } catch (err) {
     next(err);

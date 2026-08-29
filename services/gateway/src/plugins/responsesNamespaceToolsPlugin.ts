@@ -70,8 +70,8 @@ const INTERCEPTOR_FLAG = '__namespaceToolsInterceptorInstalled';
  * LAYERING — the order is load-bearing, and THE TWO HOOK ARRAYS SHIP IN OPPOSITE ORDERS
  * ON PURPOSE. Do not normalise them to match:
  *
- *   defaultHooks.openai.responses-stream : pseudonymization -> this plugin -> web-search
- *   defaultHooks.openai.responses        : pseudonymization -> web-search -> this plugin
+ *   hooks.defaults.openai.responses-stream : pseudonymization -> this plugin -> web-search
+ *   hooks.defaults.openai.responses        : pseudonymization -> web-search -> this plugin
  *
  * Same requirement in both — this plugin must observe whatever web-search produced — but
  * two consumers that walk the array in opposite directions:
@@ -286,7 +286,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
 
 /**
  * The non-streaming response side. This must be the LAST tool plugin in
- * `defaultHooks.openai.responses` — `executeAfterPlugins` chains after handlers in array
+ * `hooks.defaults.openai.responses` — `executeAfterPlugins` chains after handlers in array
  * order, and responsesWebSearchPlugin's rebuilds `output` from a continuation POST this
  * handler would otherwise never see. That is the opposite position to the one this plugin
  * takes in `responses-stream`; the LAYERING note above explains why the two must disagree.

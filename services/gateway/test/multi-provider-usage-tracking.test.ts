@@ -20,6 +20,16 @@ jest.mock('../src/config/unifiedAuthConfig', () => ({
   isStandaloneMode: jest.fn(() => false)
 }));
 
+// usageTracker now reaches configService (through services/siemUsageEvent, which reads the
+// per-sink SIEM content gates). Mocked so this stays a unit test: the real module builds an
+// AdminServiceClient at import time.
+jest.mock('../src/services/configService', () => ({
+  __esModule: true,
+  default: { getConfig: () => ({ api_config: {} }) },
+  getConfig: () => ({ api_config: {} }),
+  getTrustForwardedFor: () => false,
+}));
+
 // Mock admin service client
 const mockCallAdminAction = jest.fn();
 // @ts-ignore - Jest mock typing issues

@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
-import { getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl, guardActiveConfiguration } from '@libs/test-utils';
 
-describe('Configuration Lifecycle HTTP Integration Tests', () => {
+describeLive('Configuration Lifecycle HTTP Integration Tests', () => {
   // Restores whatever was active before this suite; see active-config-guard.
   guardActiveConfiguration();
 
@@ -37,27 +37,31 @@ describe('Configuration Lifecycle HTTP Integration Tests', () => {
     test('should handle configuration validation', async () => {
       const validConfig = {
         api_config: {
-          timeouts: {
-            default: 300000,
-            streaming: 300000
+          providers: {
+            anthropic: {
+              substitute_models: [{
+                from: 'claude-3-5-haiku-20241022',
+                to: 'anthropic--claude-3-haiku--v1',
+                description: 'Test model substitution'
+              }]
+            }
           },
-          logging: {
-            defaultLevel: 'DEBUG',
-            log_folder_path: './logs',
-            payload_logging_enabled: true
-          },
-          anthropic: {
-            substitute_models: [{
-              from: 'claude-3-5-haiku-20241022',
-              to: 'anthropic--claude-3-haiku--v1',
-              description: 'Test model substitution'
-            }]
-          },
-          rate_limit_handling: {
-            enabled: true,
-            default_delay_seconds: 2,
-            backoff_multiplier: 1.5,
-            max_delay_seconds: 30
+          platform: {
+            timeouts: {
+              default: 300000,
+              streaming: 300000
+            },
+            logging: {
+              defaultLevel: 'DEBUG',
+              log_folder_path: './logs',
+              payload_logging_enabled: true
+            },
+            rate_limit_handling: {
+              enabled: true,
+              default_delay_seconds: 2,
+              backoff_multiplier: 1.5,
+              max_delay_seconds: 30
+            }
           }
         }
       };
@@ -80,12 +84,14 @@ describe('Configuration Lifecycle HTTP Integration Tests', () => {
     test('should reject invalid configuration', async () => {
       const invalidConfig = {
         api_config: {
-          timeouts: {
-            default: "invalid", // Should be number
-            streaming: -1 // Should be positive
-          },
-          logging: {
-            defaultLevel: "INVALID_LEVEL" // Invalid log level
+          platform: {
+            timeouts: {
+              default: "invalid", // Should be number
+              streaming: -1 // Should be positive
+            },
+            logging: {
+              defaultLevel: "INVALID_LEVEL" // Invalid log level
+            }
           }
         }
       };
@@ -106,8 +112,10 @@ describe('Configuration Lifecycle HTTP Integration Tests', () => {
     test('should handle configuration creation', async () => {
       const validConfig = {
         api_config: {
-          timeouts: { default: 60000, streaming: 60000 },
-          logging: { defaultLevel: "INFO" }
+          platform: {
+            timeouts: { default: 60000, streaming: 60000 },
+            logging: { defaultLevel: "INFO" }
+          }
         }
       };
 
@@ -240,15 +248,17 @@ describe('Configuration Lifecycle HTTP Integration Tests', () => {
     test('should provide detailed validation errors for complex invalid configurations', async () => {
       const invalidConfig = {
         api_config: {
-          timeouts: {
-            default: "not_a_number",
-            streaming: -500,
-            invalid_timeout: 999
-          },
-          logging: {
-            defaultLevel: "INVALID",
-            log_folder_path: null,
-            invalid_setting: true
+          platform: {
+            timeouts: {
+              default: "not_a_number",
+              streaming: -500,
+              invalid_timeout: 999
+            },
+            logging: {
+              defaultLevel: "INVALID",
+              log_folder_path: null,
+              invalid_setting: true
+            }
           },
           invalid_section: {
             bad_setting: "value"

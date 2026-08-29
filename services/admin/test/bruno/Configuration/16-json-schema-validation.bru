@@ -17,7 +17,7 @@ auth:basic {
 
 body:json {
   {
-    "configData": "{\"api_config\":{\"timeouts\":{\"default\":\"not_a_number\",\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INVALID_LEVEL\"},\"anthropic\":{\"substitute_models\":[{\"from\":\"valid-model\"}]}}}"
+    "configData": "{\"api_config\":{\"providers\":{\"anthropic\":{\"substitute_models\":[{\"from\":\"valid-model\"}]}},\"platform\":{\"timeouts\":{\"default\":\"not_a_number\",\"streaming\":600000},\"logging\":{\"defaultLevel\":\"INVALID_LEVEL\"}}}}"
   }
 }
 

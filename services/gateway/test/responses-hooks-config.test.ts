@@ -18,7 +18,7 @@
  *
  * Walks EVERY hook array in the shipped config, not just the two Responses subpaths: the
  * same divergence exists per-model for the Anthropic `webSearchPlugin` under
- * `model_list_changes.*.hooks.*`, and those entries had nothing guarding them — reverting
+ * `models.overrides.*.hooks.*`, and those entries had nothing guarding them — reverting
  * all 18 of them left the whole suite green.
  */
 import { describe, it, expect } from '@jest/globals';
@@ -84,9 +84,9 @@ describe('shipped tool-plugin hook gating', () => {
     // time of writing; adding a model raises it, so this is a floor, not a pin.
     expect(toolHookArrays.length).toBeGreaterThanOrEqual(20);
     const paths = toolHookArrays.map(([p]) => p);
-    expect(paths).toContain('api_config.defaultHooks.openai.responses');
-    expect(paths).toContain('api_config.defaultHooks.openai.responses-stream');
-    expect(paths.filter(p => p.includes('model_list_changes')).length).toBeGreaterThanOrEqual(18);
+    expect(paths).toContain('api_config.hooks.defaults.openai.responses');
+    expect(paths).toContain('api_config.hooks.defaults.openai.responses-stream');
+    expect(paths.filter(p => p.includes('models.overrides')).length).toBeGreaterThanOrEqual(18);
   });
 
   describe.each(toolHookArrays)('%s', (_path, entries) => {
@@ -122,18 +122,18 @@ describe('shipped tool-plugin hook gating', () => {
 
 /**
  * `tools:hasFileSearch` is only a gate if the loader can actually resolve it. It was added
- * to `hookDefinitions` in Task 5, ahead of any consumer; a hook entry naming a rule that
+ * to `hooks.definitions` in Task 5, ahead of any consumer; a hook entry naming a rule that
  * does not exist is the failure mode this closes.
  */
 describe('the file-search hook rule resolves', () => {
-  it('defines tools:hasFileSearch in hookDefinitions', () => {
-    const defs = apiConfig.api_config.hookDefinitions;
+  it('defines tools:hasFileSearch in hooks.definitions', () => {
+    const defs = apiConfig.api_config.hooks.definitions;
     expect(defs['tools:hasFileSearch']).toBeDefined();
     expect(defs['tools:hasFileSearch'].regex).toBe('file_search');
   });
 
-  it('names only rules that hookDefinitions defines, in every hook array', () => {
-    const defs = Object.keys(apiConfig.api_config.hookDefinitions);
+  it('names only rules that hooks.definitions defines, in every hook array', () => {
+    const defs = Object.keys(apiConfig.api_config.hooks.definitions);
     for (const [, entries] of collectHookArrays(apiConfig, '', [])) {
       for (const entry of entries) {
         for (const rule of entry.request?.match || []) expect(defs).toContain(rule);

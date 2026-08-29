@@ -8,9 +8,11 @@ import { isStandaloneMode } from '../config/unifiedAuthConfig';
 
 interface LoggingConfig {
   api_config?: {
-    logging?: {
-      log_folder_path?: string;
-      payload_logging_enabled?: boolean;
+    platform?: {
+      logging?: {
+        log_folder_path?: string;
+        payload_logging_enabled?: boolean;
+      };
     };
   };
 }
@@ -36,8 +38,8 @@ const getLoggingConfig = (): { logFolderPath: string; payloadLoggingEnabled: boo
   try {
     // Use ConfigService to get centralized configuration
     const config = configService.getConfig();
-    logFolderPath = config.api_config?.logging?.log_folder_path || './logs';
-    payloadLoggingEnabled = config.api_config?.logging?.payload_logging_enabled || false;
+    logFolderPath = config.api_config?.platform?.logging?.log_folder_path || './logs';
+    payloadLoggingEnabled = config.api_config?.platform?.logging?.payload_logging_enabled || false;
     
     logger.debug('PayloadLogger', `Loaded config from ConfigService (standalone: ${isStandaloneMode()}): logFolderPath=${logFolderPath}, payloadLoggingEnabled=${payloadLoggingEnabled}`);
   } catch (error: any) {

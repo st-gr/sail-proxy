@@ -16,348 +16,451 @@ fontsize: 18px
 
 ## Manage Access & Monitor Usage with Admin Cockpit
 
-The Admin Cockpit is a comprehensive web-based management interface available in Docker deployments. It provides enterprise-grade user management, API key administration, usage analytics, and security monitoring capabilities.
+The Admin Cockpit is a web-based management interface available in Docker deployments. It covers API key administration, gateway-issued AWS SigV4 credentials, usage analytics, security notifications, and gateway configuration.
 
-**Note**: The Admin Cockpit is only available in Docker deployments, not in the CLI version. For CLI users, basic management is available through command-line tools.
+**Note**: The Admin Cockpit is only available in Docker deployments, not in the CLI version.
 
 ### Accessing the Admin Cockpit
 
 #### Prerequisites
-- **Docker deployment** of SAIL-PROXY with OAuth2 authentication configured
-- **Valid user account** through your configured OAuth2 provider (GitHub, Okta, LDAP)
-- **Admin or appropriate role** permissions
+- **Docker deployment** of SAIL-PROXY with authentication configured
+- **Valid user account** through your configured identity provider
+- **`admin` role** — API key administration, credential management and configuration changes are restricted to it. A few read-only and self-service operations (such as a user's own notification state) are open to the `user` role.
 
 #### Login Process
 
 1. **Navigate to the Admin Cockpit**:
-   - URL: `https://your-domain.com/admin/` or `http://localhost:8080/admin/`
+   - URL: `https://your-domain.example.invalid/admin/` or `http://localhost:8080/admin/`
 
-2. **Authenticate through OAuth2**:
-   ![OAuth2 Login Screen](/docs/assets/oauth2-login.png)
-   - Click "Login with GitHub" (or your configured provider)
-   - Complete the OAuth2 authentication flow
-   - First user automatically becomes an administrator
+2. **Authenticate** through your configured identity provider.
 
-3. **Access the Dashboard**:
-   ![Admin Dashboard](/docs/assets/admin-dashboard-main.png)
-   - Overview of system health and usage
-   - Quick access to all management functions
+3. **Access the shell**, which hosts the individual applications.
+
+Roles are supplied by your identity provider and evaluated as CDS `@restrict` rules on the service. The cockpit does not assign or edit roles itself — see [Chapter 7](chapter-7-roles.md).
+
+### The Applications
+
+The cockpit shell hosts five applications:
+
+| Application | Purpose |
+|---|---|
+| API Keys | Create, rotate, enable/disable and delete gateway API keys |
+| AWS Credentials | Issue and manage SigV4 credentials for the Bedrock-compatible route |
+| Usage Analytics | Request, token and latency statistics by provider and model |
+| Security Notifications | Review, snooze, pin and dismiss security notifications |
+| Configuration | Versioned gateway configuration with activation and rollback |
 
 ### API Key Management
 
 #### Creating API Keys
 
-1. **Navigate to API Keys section**:
-   ![API Key Management](/docs/assets/api-key-management.png)
+Create a key from the API Keys application by supplying:
 
-2. **Create New API Key**:
-   - Click "Create API Key"
-   - Fill in the details:
-     ```
-     Name: Development Key - John Doe
-     Description: Personal development environment
-     Rate Limit: 1000 requests/hour
-     IP Restrictions: 192.168.1.0/24 (optional)
-     Expiration Date: 2025-04-28 (optional)
-     ```
+```
+Name:  Development Key - John Doe
+Email: john.doe@example.invalid
+```
 
-3. **Configure Permissions**:
-   - **Models**: Select which models this key can access
-   - **Endpoints**: Choose API formats (OpenAI, Anthropic, Bedrock, etc.)
-   - **Features**: Enable streaming, tool use, embeddings as needed
+The generated key is returned **once** and is not retrievable afterwards. Copy it immediately and store it in your password manager.
 
-4. **Generate and Secure the Key**:
-   - Copy the generated key immediately (shown only once)
-   - Store securely in your password manager
-   - Key format: `sp-proj-1a2b3c4d5e6f7g8h9i0j...` (64 characters)
+Key format: `sk-` followed by 48 hexadecimal characters.
+
+Only a masked form of the key is stored for display in the list report.
 
 #### Managing Existing Keys
 
-**View Key Details**:
+Each key record carries:
+
 ```
-Key ID: sp-proj-1a2b3c4d...
-Name: Development Key - John Doe
-Created: 2025-01-15 09:30 UTC
-Last Used: 2025-01-28 14:22 UTC
-Requests Today: 47 / 1000
-Status: Active
+Name:        Development Key - John Doe
+Email:       john.doe@example.invalid
+Masked Key:  sk-1a2b...
+Status:      Active
+Last Used:   2025-01-28 14:22 UTC
+Usage Count: 47
+Created:     2025-01-15 09:30 UTC
 ```
 
 **Key Operations**:
-- **Edit**: Modify name, description, rate limits, IP restrictions
-- **Rotate**: Generate new key value while preserving configuration
-- **Suspend**: Temporarily disable without deletion
-- **Revoke**: Permanently disable and delete
+- **Rotate**: generate a new key value while preserving the record and its configuration
+- **Update key value**: set a specific key value
+- **Disable / Enable**: deactivate or reactivate a key without deleting it
+- **Delete**: soft delete — the record is marked deleted rather than removed
+- **Disable by email**: deactivate every key belonging to one email address in a single action
 
-**Bulk Operations**:
-- Select multiple keys for bulk suspension/revocation
-- Export key usage reports
-- Set organization-wide defaults
+#### Rate Limiting
 
-#### API Key Security Features
+Each key has an associated rate limit record:
 
-**Rate Limiting**:
-- Per-key request limits (hourly, daily, monthly)
-- Token usage limits to control costs
-- Automatic throttling with configurable backoff
+- Requests per minute (default 60)
+- Requests per hour (default 1000)
+- Requests per day (default 10000)
+- Requests per month (default 100000)
+- Burst limit (default 10)
 
-**Access Controls**:
-- IP address allowlists/blocklists
-- Time-based access restrictions
-- Geographic restrictions (future feature)
-- Referrer-based restrictions for web applications
+Additional named time windows can be defined per key, each with its own duration and request limit — for example a `startup_burst` window.
 
-**Monitoring**:
-- Real-time usage tracking
-- Security event alerts
-- Unusual activity detection
-- Failed authentication logging
+#### Permissions
+
+Keys carry permission entries such as `models:read` or `chat:create`, each with an optional scope restriction, recorded with who granted it and when.
 
 ### AWS Credential Management
 
-For organizations using AWS Bedrock integration, the Admin Cockpit provides secure AWS credential management.
+This section covers credentials for the **Bedrock-compatible route**, which accepts AWS SigV4-signed requests.
 
-#### Adding AWS Credentials
+**Important**: these credentials are **issued by the cockpit**. They are not your AWS account credentials, and the cockpit does not accept an existing AWS access key. Clients use the issued credentials to sign requests to SAIL-PROXY; SAIL-PROXY verifies the signature.
 
-1. **Navigate to AWS Credentials section**:
+#### Issuing Credentials
 
-2. **Create New Credential Set**:
-   ```
-   Name: Production AWS Account
-   Description: Main production environment credentials
-   AWS Access Key ID: AKIA...
-   AWS Secret Access Key: [encrypted at rest]
-   Default Region: us-east-1
-   IP Restrictions: 10.0.0.0/8 (optional)
-   ```
+Supply a name, description, optional expiry and permissions. The cockpit generates and returns:
 
-3. **Configure Permissions**:
-   - **Bedrock Models**: Select accessible Bedrock models
-   - **Regions**: Specify allowed AWS regions
-   - **Features**: Enable Claude, Jurassic, Titan models as needed
-
-#### AWS Security Features
-
-**SigV4 Authentication**:
-- Full AWS Signature Version 4 implementation
-- Automatic signature generation and validation
-- Support for temporary credentials and assume role
-
-**Encryption**:
-- AWS secrets encrypted with AES-256
-- Hardware security module (HSM) support
-- Key rotation capabilities
-
-**Access Controls**:
-- IAM policy integration
-- Cross-account role assumption
-- Service-specific permissions
-
-### Usage Analytics & Monitoring
-
-#### Usage Dashboard
-
-![Usage Analytics Dashboard](/docs/assets/usage-analytics-dashboard.png)
-
-**Real-time Metrics**:
-- **Requests per minute**: Live request volume
-- **Active Users**: Current concurrent users
-- **Response Times**: Average and P95 latencies
-- **Error Rates**: Failed requests and error types
-
-**Historical Analytics**:
-- **Usage Trends**: Daily/weekly/monthly patterns
-- **Cost Analysis**: Token usage and estimated costs
-- **Model Distribution**: Popular models and usage patterns
-- **User Activity**: Individual user usage statistics
-
-#### Usage Reports
-
-**Generate Custom Reports**:
 ```
-Report Parameters:
-- Time Range: Last 30 days
-- Users: All users / Specific users
-- Models: All models / Specific models
-- Metrics: Requests, Tokens, Costs, Response Times
-- Format: PDF, Excel, CSV
+Access Key ID:     AKIA... (16 characters)
+Secret Access Key: [returned once only]
+Region:            ...
+Expires At:        ...
 ```
 
-**Automated Reports**:
-- Daily usage summaries
-- Weekly cost reports
-- Monthly trend analysis
-- Security incident reports
+The secret is shown once at creation and once again after a rotation.
 
-**Cost Management**:
-- **Budget Alerts**: Notifications when usage exceeds thresholds
-- **Cost Allocation**: Usage breakdown by user, project, or department
-- **Forecasting**: Predicted usage and costs based on trends
-- **Optimization Recommendations**: Suggestions for cost reduction
+#### Credential Operations
 
-#### Performance Monitoring
+- **Rotate**: issue a new access key ID and secret for the record
+- **Enable / Disable**: control whether the credential is accepted
+- **Delete**: remove the credential
+- **IP restrictions**: restrict a credential to given source addresses
+- **Permissions**: restrict what the credential may do
 
-**Service Health**:
-- **Gateway Status**: Service availability and response times
-- **Database Health**: Connection pool status and query performance
-- **Cache Performance**: Redis hit rates and memory usage
-- **External Dependencies**: SAP AI Core connectivity and latency
+Expired credentials are listed separately from active ones.
 
-**Alerts and Notifications**:
-```
-Alert Types:
-- High error rates (>5% in 5 minutes)
-- Unusual usage patterns (10x normal volume)
-- Failed authentication attempts (>10 in 1 minute)
-- Service downtime
-- Budget threshold exceeded
-```
+#### Security Features
 
-### Security Event Management
+**Signature verification**: the gateway implements AWS Signature Version 4 verification for inbound requests on this route.
 
-#### Security Dashboard
+**Encryption at rest**: the secret access key is encrypted with AES-256-CBC before storage, using a key derived from the configured encryption secret. It is decryptable by the service because signature verification requires the original secret.
 
-![Security Events Dashboard](/docs/assets/security-events-dashboard.png)
+**Auditing**: credential usage, rotations and security events are recorded per credential.
 
-**Event Categories**:
-- **Authentication Events**: Login successes/failures, token usage
-- **Authorization Events**: Permission denials, role changes
-- **Usage Anomalies**: Unusual patterns, volume spikes
-- **System Events**: Configuration changes, service restarts
+### Usage Analytics
 
-**Real-time Monitoring**:
-- Live security event stream
-- Automatic threat detection
-- Geolocation tracking (for suspicious access)
-- Device fingerprinting
+The Usage Analytics application reports, broken down by provider and by model:
 
-#### Incident Response
+- Total requests
+- Input tokens
+- Cache-creation tokens and cache-read tokens
+- Output tokens
+- Average response time
+- Error count
+- Cost per token, where cost data is available
 
-**Automated Responses**:
-- Temporary account lockout after failed attempts
-- API key suspension for suspicious activity
-- Rate limiting escalation
-- Administrator notifications
+**Export**: the table can be exported as **CSV**.
 
-**Manual Interventions**:
-- Immediate API key revocation
-- User account suspension
-- IP address blocking
-- Service isolation
+### Security Notifications
 
-**Audit Trail**:
-- Complete event history with immutable logging
-- Evidence collection for security incidents
-- Compliance reporting (SOX, GDPR, etc.)
-- Integration with SIEM systems
+The Security Notifications application presents security notifications raised by the system, with these operations:
+
+- Mark seen / unseen
+- Dismiss
+- Snooze until a chosen time
+- Pin / unpin
+- Delete
+- Bulk mark-seen and bulk delete across selected notifications
+
+Each user sees their own notification state.
 
 ### Configuration Management
 
-#### Gateway Configuration
+The Configuration application manages gateway configuration as **versioned records**:
 
-**Real-time Config Updates**:
-```json
-{
-  "model_substitutions": {
-    "gpt-4o": "gpt-4o-azure",
-    "claude-3-5-sonnet": "anthropic--claude-3-5-sonnet"
-  },
-  "rate_limits": {
-    "default": "1000/hour",
-    "premium": "5000/hour"
-  },
-  "caching": {
-    "enabled": true,
-    "ttl": 300
-  }
-}
-```
+- **Create** a new configuration version
+- **Validate** a configuration before activating it
+- **Activate** a version, making it the live configuration
+- **Roll back** to a previous version
+- **History**: review previous versions and the current activation status
 
-**Configuration Validation**:
-- JSON schema validation
-- Dependency checking
-- Rollback capabilities
-- A/B testing support
+#### Form View
 
-**Environment Management**:
-- Development/staging/production configurations
-- Feature flag management
-- Deployment coordination
-- Configuration versioning
+A configuration's detail page carries a **JSON / Form** toggle in its title bar. **Form** shows the
+whole `api_config` document as typed controls — six tabs, one per top-level group — instead of raw
+JSON. The JSON editor is never taken away: the toggle switches back to it at any time, and it stays
+the way to make a change the form does not offer.
 
-#### System Settings
+**The gate.** Form is enabled only while the configuration's **whole document** passes the same
+schema the backend enforces on save. The check runs in the browser, for **every role** — not only
+admins — so an admin and a non-admin get the same verdict on the same document. While it does not
+pass, the toggle is disabled and its tooltip names the failing JSON pointer, for example:
 
-**Authentication Settings**:
-- OAuth2 provider configuration
-- Session timeout settings
-- Multi-factor authentication requirements
-- Password policies
+> This configuration does not pass schema validation and cannot be shown as a form. Use the JSON editor.
+> Schema validation error at '/api_config/platform/timeouts/default': must be integer
 
-**Integration Settings**:
-- SAP AI Core connection parameters
-- External service endpoints
-- Webhook configurations
-- Monitoring integrations
+The form is a faithful view or it is not offered at all — that is what the gate is for. Fix the
+document in the JSON editor and the toggle enables again.
 
-### User & Role Management
+**The tabs.** Six, alphabetical: **Capabilities**, **Hooks**, **Models**, **Observability**,
+**Platform**, **Providers** — the six groups the `api_config` schema allows and no others. Each tab
+holds one collapsible panel per section that group declares, also alphabetical: the Platform tab,
+for instance, carries Logging, Rate Limit Handling, Security and Timeouts. The tab you were last on
+survives a redraw of the form.
 
-#### User Administration
+**Sections the document does not carry.** Such a section shows the notice *Not present in this
+configuration.* rather than an empty panel — showing a section's fields at their schema defaults
+would invite you to read defaults as configured values. Below the notice is **Add section**, whose
+tooltip reads *Add this section to the configuration, empty, so its settings can be filled in here*.
+Pressing it writes the empty container — `{}`, or `[]` for a list — at that section's own place in
+the document and redraws the panel with its fields, its own **[+]**, or both; a toast confirms
+*Section added. It is not saved yet.* Nothing reaches the database until you save.
 
-**User Listing**:
-```
-Username: john.doe@company.com
-Name: John Doe
-Role: API Key Manager
-Status: Active
-Last Login: 2025-01-28 14:30 UTC
-API Keys: 3 active
-Usage This Month: 15,234 tokens
-```
+This is what makes the form usable on a configuration that carries only a handful of settings. Before
+it, a section the document lacked was a dead end: the JSON editor was the only way to bring one into
+existence.
 
-**User Operations**:
-- Edit user profile and contact information
-- Change role assignments
-- Suspend/activate accounts
-- Reset passwords (if local authentication)
-- View detailed activity history
+**Fields.** Every field carries an **information icon** beside its label. Pressing it opens a popover
+holding the schema's own description of that setting — what reads it, what it does, and what happens
+if it is wrong. The same description remains available as the control's hover tooltip; the icon is
+there because a tooltip nobody hovers is a description nobody reads. Sections carry the same icon
+next to their title where the schema describes them. A field the schema requires is marked with the
+standard required-field indicator. Enumerations render as dropdowns over exactly the values the
+schema allows, numbers as numeric fields carrying their own minimum and maximum, booleans as
+switches. A value that genuinely cannot be represented as a typed control is shown as JSON in place,
+with a notice saying why, rather than being silently dropped.
 
-#### Bulk User Management
+**Provider panels.** Each of the five providers the gateway reads — Anthropic, AWS Bedrock, Openai,
+Openrouter, Perplexity — shows only the settings its own request path reads, not the union of all
+five. Six are common to every provider: Emulate Streaming For Models, Substitute Models, Unsupported
+Params, Param Renames, Supports Responses API and Supports Prompt Caching. Anthropic Bedrock Version,
+Excluded Beta Headers and Supported Beta Headers appear on **Anthropic** and **AWS Bedrock** only,
+because only the Anthropic request path reads them; Openai adds its Azure api-version, Openrouter its
+fallback prices and model mappings. A setting written under a provider that does not read it is
+refused by the gate rather than kept as a value that quietly does nothing — so a beta-header list
+belongs under Anthropic, not under Openai. A provider key the gateway does not read yet is still
+accepted, with the six common settings and no restriction on what else it carries.
 
-**CSV Import/Export**:
-- Bulk user creation from employee directories
-- Export user lists for reporting
-- Sync with external identity providers
-- Automated user lifecycle management
+**Tuning masking, under Observability → Pseudonymization.** Four fields decide precision, and each
+one is also available per endpoint (**Hooks → Defaults**) and per model (**Models → Overrides**).
+`min_confidence` (0 to 1, default 0.5) is how much evidence a value needs before it is masked, and
+`thresholds` overrides it for one category at a time. **Leave both alone unless you have measured
+the effect.** A plain name — no honorific, no mail address beside it — scores exactly 0.5, so one
+step up to 0.55 stops roughly three quarters of the names in ordinary prose being masked, whether
+you take that step globally or only for `profile-person`. Mail addresses, IBANs, card numbers and
+credentials are unaffected up to 0.8, so raising the bar is a reasonable way to quieten one of
+*those* categories and never a way to quieten names. To stop one particular value being masked,
+name it in the allow-list below — that is what it is for.
+`allowlist` names what must never be masked here: `terms` are literals,
+compared case-sensitively against the whole detected value, and `patterns` are regular expressions
+the gateway anchors to the whole value for you, so write `Z[A-Z0-9_]+` rather than `^Z[A-Z0-9_]+$`.
+An entry in either list wins over every score. The allow-lists of the three layers are added
+together rather than replaced, so a per-model list extends the global one and can never cancel it.
+`saturation_warn` (default 40) only reports: above that many distinct masked values in one request,
+the gateway logs one line with the counts per category and the value shapes — letters as `X`, digits
+as `9`, never a value — and the request's usage SIEM event says `saturated: true`. The masking
+itself is unchanged by it; a request that trips the number still masks everything it found.
 
-### Administrative Tasks
+**Keyed maps.** Twenty-two places in the schema are open-ended maps rather than a fixed set of
+fields — among them the per-provider map under **Providers**, the per-model map under **Models →
+Overrides**, the endpoint and subpath maps under **Hooks → Defaults**, `hooks.definitions`, each
+provider's and each model override's `param_renames`, the `entities` and `thresholds` maps of every
+pseudonymization block, `platform.logging.components`, and the two delay maps under **Platform →
+Rate Limit Handling**. Every one of them carries the same affordances:
 
-#### System Maintenance
+- **[+]** to add a key, on an editable form. The dialog rejects an empty key, a key whose spelling
+  the map does not allow, and a key already present — naming the clash: *The key "anthropic" is
+  already configured here. Choose a different key, or edit the existing "anthropic" panel.* Where
+  the schema constrains the spelling, the dialog says so and enforces it over the **whole** key, not
+  a fragment of it: `bad key` in `platform.logging.components` is refused with *The key must match
+  this section's own rule: `^[a-zA-Z0-9_-]+$`*, and the dialog stays open. A new key is created with
+  a schema-valid empty entry — for a map of plain values, at the value the schema defaults to, so a
+  new `components` entry starts at `INFO` — and is not stored until you save;
+- **[-]** to remove one key, after a confirmation that names it and says everything under it goes
+  with it;
+- a **filter** above the entries, which hides and reveals panels without changing the document, and
+  stays usable on a read-only configuration — a two-dozen-entry override list is no easier to read
+  for someone who may not edit it. A **top-level** map — Providers, Model Overrides, Hook
+  Definitions, Hook Defaults — always shows its filter, so the row above the entries does not appear
+  and vanish as entries are added. A map **nested inside a section** shows one only once it holds
+  **more than eight** entries: a search box over two delay overrides is an affordance for a problem
+  nobody has.
 
-**Database Management**:
-- View connection status and performance
-- Execute maintenance queries
-- Backup and restore operations
-- Data retention policy enforcement
+**Lists.** A list the form renders as panels rather than a table carries **[+]** to append an entry.
+For a hook list under **Hooks → Defaults → *endpoint* → *subpath***, **[+]** appends an entry
+carrying every field the schema *requires* and nothing else, so it starts valid in shape and empty in
+content; a toast confirms *Entry #0 added. It is not saved yet.* Such entries are numbered `#0`,
+`#1`, … and open collapsed. The SIEM sink list is the one whose entries pick their fields by their
+`type`, so its **[+]** opens the sink dialog described under *SIEM Sinks and Credentials in the Form*
+instead; the sink's remaining required fields are filled on its panel afterwards.
 
-**Cache Management**:
-- Clear cache entries
-- View cache statistics
-- Configure cache policies
-- Monitor memory usage
+**Editability.** JSON-backed fields are editable only for an **admin** on an **inactive**
+configuration — two independent conditions:
 
-**Log Management**:
-- Search and filter system logs
-- Download log files
-- Configure log levels
-- Integrate with external logging systems
+| Role | Configuration | Fields | Save / Cancel |
+|---|---|---|---|
+| admin | inactive | editable | shown |
+| admin | **active** | read-only | hidden |
+| non-admin | inactive | read-only | hidden |
+| non-admin | active | read-only | hidden |
 
-#### Health Checks
+An active configuration additionally shows the same message the JSON editor already shows for one:
+"This configuration is currently active and therefore read-only. Deactivate it first to make
+changes." **Add section**, the map and list **[+]**/**[-]** and the SIEM sink affordances follow the
+same rule and are absent altogether on a read-only configuration — the information icons stay, so the
+schema's descriptions remain readable by anyone who can see the configuration at all.
 
-**System Diagnostics**:
-- Service connectivity tests
-- Database health checks
-- External API availability
-- Performance benchmarks
+**Minimal documents.** The form does not require a complete configuration. A document carrying only,
+say, `platform.timeouts` and `platform.logging.defaultLevel` opens in the form like any other: every
+group the schema declares gets its tab, every section it lacks gets its notice and its **Add
+section**, and an edit made in it lands at that setting's own place in the document rather than at
+the document root. Turning on **Platform → Rate Limit Handling → Enabled** on such a document adds
+`platform.rate_limit_handling.enabled` and touches nothing else; adding `Gateway` under **Logging →
+Components** adds `platform.logging.components.Gateway` at `INFO`; adding a model under **Models →
+Overrides** adds that one key. Building `hooks.defaults.anthropic.invoke[0]` from an empty Hooks tab
+is four presses — **Add section**, then **[+]** for the endpoint, the subpath and the entry — and
+places the entry at exactly that path; the entry itself is completed by filling `callback.id` and
+adding at least one `match` rule (typing a value and pressing Enter adds the token).
+
+**Saving.**
+
+- A save that would fail schema validation is refused **client-side**, without contacting the
+  server, and the fields at fault are marked in place with the reason on the field — a value of
+  `500` in `platform.timeouts.default` is refused with *must be >= 1000* on that field, while the
+  neighbouring Streaming field is left alone. The whole document is checked, not only the tab you
+  are on.
+- A save that passes is not treated as saved until the stored configuration says so. The form sends
+  the document, then **reads the configuration back** and compares it with what it sent; only then
+  does it clear the unsaved state and return to the JSON editor. A save the server did not persist
+  leaves the form open with your changes still in it.
+- **Cancel** discards every unsaved edit in the form, after a confirmation, and returns to the
+  stored configuration.
+- Leaving the form with unsaved changes — switching back to the JSON editor, selecting a different
+  configuration, or closing the detail column — prompts to **Save**, **Discard**, or **Cancel**. No
+  route out of the form drops an edit silently.
+- Fields you did not touch are written back exactly as they were: the form never materialises a
+  schema default into a document that did not carry one. Saving does re-indent the stored JSON to
+  two spaces, which is what the JSON editor's own save has always done — a version diff will show
+  that reformatting on the first save of a configuration created before it.
+
+**Known limitations.** Things the form shows that are worth reading with care. The first two are
+settings the form renders because the schema declares them, but which the gateway does not act on;
+the rest are gaps in the form itself, each with the JSON editor as its way round:
+
+- `hooks.*.request.callback.strategy` is **inert**. The before/after phase is a property of the
+  registered plugin, not of the configuration, so changing this dropdown moves nothing. It is worse
+  than inert to look at: because the schema declares no default for it, the dropdown displays its
+  first value (`before`) even on an entry that sets nothing. Nothing is written back unless you
+  change it — a save that leaves it alone leaves the document byte-for-byte as it was — but do not
+  read the displayed value as the configured one.
+- The three Anthropic settings on the **AWS Bedrock** panel — Anthropic Bedrock Version, Excluded
+  Beta Headers, Supported Beta Headers — are **inert there**. The Anthropic-shaped request path is
+  what reads them, and it reads them from `providers.anthropic` alone, whichever of the two
+  providers the request was routed to. They are shown on both panels because both are served by
+  that path; set them under **Anthropic**. Each field's tooltip says so.
+- `capabilities.file_search.chunking.*` and `capabilities.file_search.tool.enabled` are read but
+  **not acted on** — chunk boundaries come from the vector store's own `chunking_strategy`, and
+  nothing gates on the resolved `tool.enabled`. Both fields' tooltips say so.
+- Per-entry panels under **Hooks** are numbered `#0`, `#1`, … rather than named, because a hook
+  entry carries no name to label with. The numbering restarts within each endpoint's list, so
+  several unrelated panels on the tab read `#0`.
+- The **JSON / Form** toggle lives in the detail page's title bar and is not reachable below roughly
+  **600 px** of viewport width — on a phone the detail page offers the JSON editor only, and no
+  overflow control exposes the toggle. The form is a desktop and tablet affordance.
+
+#### SIEM Event Export
+
+The gateway can export its own security and audit events — not LLM prompts or responses, except
+where explicitly opted in — to an external SIEM. The export is configured under the
+configuration's `siem` section and covered in operational and security detail in
+[the pseudonymization security assessment, §12](../security/pseudonymization-security-assessment.md#12-siem-event-export);
+this section documents only what an operator sets and meets in the cockpit.
+
+**The export ships available but off.** The master switch (`enabled`) and all six sink types the
+shipped configuration lists — webhook, OTel, Datadog, Azure Sentinel, GCS Pub/Sub, S3 — ship with
+their own `enabled: false`, and the shipped `categories` list is `["security", "audit"]`, without
+`usage`. Nothing is exported until an operator turns on the master switch, turns on at least one
+sink, and — for the one category that can carry conversation content — adds `usage` to
+`categories`.
+
+#### SIEM Sinks and Credentials in the Form
+
+The Observability tab's **SIEM** section carries the sink list, with two affordances beyond the
+ordinary fields:
+
+- **[+]** on the Sinks section opens a dialog asking for a sink **type** and a **name**. The name opens preset to `<type>_<YYYYMMDD>_<HHMMSS>` (UTC) so it is unique by construction, but stays editable; the dialog rejects a name already used by another sink in the configuration, because that name is the key for the sink's delivery rows and would make the two sinks mark each other's events delivered. The type cannot be changed once the sink is created — remove the sink and add a new one to change it.
+- **[-]** on a sink removes it after a confirmation. Removing a sink does **not** delete any credential stored for its slots — they stay stored against the configuration, just no longer reachable from the form; the confirmation names them if any are stored.
+
+**SIEM sink credentials** are the deliberate exception to the editability rule above:
+- An admin can **Set** or **Clear** a sink's credential even while the configuration is active — rotating a compromised key does not have to wait for a deactivate-edit-reactivate cycle. Every other field of an active configuration stays read-only.
+- A non-admin gets no credential controls, on any configuration.
+- A credential's value can never be read back through the cockpit — not even by an admin. The form shows only whether a value is currently stored, a masked hint once one is (e.g. `abcd…wxyz`), and who set it and when; the credential slot's name is carried in the row's tooltip rather than shown as text.
+- Credentials are stored encrypted, scoped to the configuration they were set on, and deleted along with it. There is **no environment-variable fallback** — the credential store is the only source a sink resolves a credential from.
+- Rotating the gateway's `SIEM_CREDENTIAL_KEY` master key makes every previously stored credential undecryptable; each one must be re-entered by hand afterward. See the security assessment, §12.5, for why.
+- **Duplicating a configuration does not duplicate its credentials.** The duplicate carries the same sink definitions — including the same `*_env` slot names — but starts with no stored values for them; an admin sets each one again through the new configuration's own form.
+
+#### SIEM Global Settings
+
+These apply to the whole export and sit directly under `siem` in the configuration:
+
+| Setting | What it does | If you get it wrong |
+|---|---|---|
+| `enabled` | Master switch. The dispatcher does not start at all while this is off, regardless of any sink's own `enabled`. | Left off, no sink ever sends anything, even if every sink is individually enabled. |
+| `batch_size` | Default number of outbox rows a sink reads per dispatch tick. A sink may override it. | Too low under sustained load slows a sink's own backlog drain; the setting does not affect other sinks. |
+| `interval_ms` | Default milliseconds between dispatch ticks. A sink may override it; the effective timer period is the shortest interval across every sink in play. | Too low increases dispatch overhead for no throughput benefit once a sink has nothing new to send. |
+| `reconcile_lookback_ms` | Bounds the periodic repair pass that backfills a delivery row for an outbox row that is missing one, to rows that **landed in the outbox** (not the event's own timestamp) within this many milliseconds of now. Ships at `86400000` (24 hours). | A newly enabled sink only ever backfills events that landed within this window — **events that landed earlier are never backfilled to it**, silently. This is a deliberate bound (it is also what keeps the repair pass cheap as the outbox grows), but an operator relying on a new sink to pick up older history should know it will not. |
+| `categories` | Which event categories are exported: `security`, `audit`, `usage`. Ships as `["security", "audit"]` — `usage` is left out deliberately, since it is the only category that can carry conversation content, so exporting it is an explicit opt-in. | Adding `usage` without also setting a sink's `include_content` exports request-completion metadata (model, endpoint, status) with no prompt or response text; content requires the separate opt-ins below as well. |
+| `content_max_bytes` | Caps the prompt and the response of a `usage` event independently, in UTF-8 bytes, before it is written. Ships at `8192`. A cut event carries `content.truncated: true`. | Set high, a large conversation is exported closer to whole; set low, more of it is cut — either way a `truncated` event is flagged, never silently shortened. |
+
+#### SIEM Sink Settings
+
+Every sink shares these fields, plus the fields specific to its `type`.
+
+**Common to every sink type:**
+
+| Setting | What it does | If you get it wrong |
+|---|---|---|
+| `name` | Identifies the sink and keys its per-sink delivery rows and backoff state. Must be unique in the configuration — the form enforces this. | Two sinks sharing a name would mark each other's events delivered, so events meant for one sink are silently treated as sent and never actually exported there. |
+| `type` | Which sink implementation this is: `webhook`, `otel`, `datadog`, `azure_sentinel`, `gcs_pubsub`, or `s3`. Fixed at creation. | Not applicable — the form does not allow setting this to the wrong thing after creation; remove and re-add the sink to change it. |
+| `enabled` | Ships `false`. The sink is dispatched only when this **and** the global `enabled` are both true. | Left off, the sink is fully configured but never sends. |
+| `include_content` | Opt-in: ships the prompt and response of a `usage` event to this sink, in their masked form. Ships `false`. Requires `usage` in the global `categories`. | Left off (the default), this sink never receives conversation content, regardless of `categories`. |
+| `allow_unmasked_content` | **Risk.** Only has any effect when `include_content` is also on. Opts in to receiving content that pseudonymization never masked — because masking was disabled or bypassed for that request — as full, raw text: real names, addresses, anything a user pasted. Ships `false`. | Turning this on is a second, separate path for unmasked conversation content to leave the gateway to a third party — the exposure the pseudonymization guarantees exist to prevent. Left off, such a request instead ships metadata only, with `content.omitted: 'not-masked'`. |
+| `include_credential_material` | Opt-in: ships the raw presented value of an unresolved credential (e.g. an invalid API key someone tried), for forensic use. Ships `false`. | Left off (the default), an unresolved credential's value is stripped before the event reaches this sink. |
+| `batch_size` / `interval_ms` | Per-sink overrides of the global defaults above. | `interval_ms` should exceed this sink's own send timeout, or dispatches to it queue up behind each other. |
+
+**Type-specific fields**, all required unless noted:
+
+| Type | Fields |
+|---|---|
+| `webhook` | `url` (ingest URL, required); `token_env` (credential slot name, optional) |
+| `otel` | `endpoint` (OTLP/HTTP logs endpoint, required); `headers_env` (credential slot name, optional) |
+| `datadog` | `site` (host, e.g. `datadoghq.com` or `datadoghq.eu`, required); `api_key_env` (credential slot name, required) |
+| `azure_sentinel` | `dcr_endpoint` (Data Collection Endpoint URL); `dcr_immutable_id` (Data Collection Rule immutable id); `stream_name` (e.g. `Custom-SailProxy_CL`); `tenant_id` and `client_id` (Entra ids); `client_secret_env` (credential slot name) — all required |
+| `gcs_pubsub` | `project_id`; `topic_id`; `service_account_json_env` (credential slot name) — all required |
+| `s3` | `bucket`; `region`; `access_key_id_env` and `secret_access_key_env` (credential slot names) — all required; `prefix` optional. Objects land at `<prefix>/YYYY/MM/DD/HH/<uuid>.ndjson`, in UTC |
+
+A field named `*_env` never holds a credential value — it names a credential **slot**, constrained
+to `^[A-Z][A-Z0-9_]*$`. The value itself is entered through the form's credential **Set** control,
+described above, never typed into the configuration.
+
+### Operational Actions
+
+The service also exposes:
+
+- **Health**: a health action reporting service status
+- **Cache statistics**: current cache metrics
+- **Cache invalidation**: invalidate cache entries, including clearing by key pattern
+- **Security events**: query recorded security events
+- **Usage statistics**: aggregate usage figures
+
+### Audit Trail
+
+Security and audit events are captured and persisted. The audit event history is append-only by convention: the application creates records and neither updates nor deletes them.
+
+### What the Admin Cockpit Does Not Do
+
+These are commonly expected but are **not** part of the cockpit today:
+
+- **User and role administration** — there is no user directory, role assignment, bulk user import or password management in the cockpit. Roles come from your identity provider; see [Chapter 7](chapter-7-roles.md).
+- **Cost management** — no budget thresholds, cost allocation, forecasting or spend alerts. Usage Analytics reports cost per token only.
+- **Alerting** — no alert rules, thresholds, or notification routing for error rates, traffic anomalies or downtime.
+- **Automated incident response** — no automatic account lockout, automatic key suspension, or IP blocking.
+- **Scheduled reporting** — reports are exported manually as CSV; there are no scheduled or emailed reports, and no PDF or Excel output.
+- **Log and database administration** — no log search or download, no log level configuration, no backup, restore or maintenance queries.
 
 ---
 

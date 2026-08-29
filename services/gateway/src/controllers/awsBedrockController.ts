@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Use require for CommonJS modules
 import awsBedrockService from '../services/awsBedrockService';
 import configService from '../services/configService';
+import { sanitizeUpstreamErrorObject, unwrapUpstreamError } from '../utils/upstreamErrorEnvelope';
 import modelService from '../services/modelService';
 import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExecutor';
 import { getDefaultLogger } from '@libs/logger';
@@ -221,12 +222,30 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
       return;
     }
 
+    // SAP nests the real reason under `error`, so `error.message` here is axios's
+    // "Request failed with status code 400" — a status restated, naming no cause.
+    // Unwrap first and prefer the upstream's own message; a caller debugging a
+    // rejected parameter needs "temperature: range: 0..1", not the status again.
+    // Two shapes arrive here. sapAIService-style callers attach `.details`; the
+    // native bedrock path rethrows the raw axios error (awsBedrockService.ts:455),
+    // which carries the upstream body on `response.data` and no `.details` at all.
+    // Reading only the first is why this used to report the status back as the
+    // reason even when SAP had explained itself.
+    const upstream = sanitizeUpstreamErrorObject(
+      unwrapUpstreamError(error.details ?? error.response?.data),
+    );
+
     res.status(statusCode).json({
       error: {
-        message: error.message || 'Internal server error',
+        message: upstream.message || error.message || 'Internal server error',
         type: error.type || 'api_error',
         code: statusCode,
-        details: process.env.DEBUG === 'true' ? error.details : undefined
+        ...(upstream.request_id ? { request_id: upstream.request_id } : {}),
+        ...(upstream.location ? { location: upstream.location } : {}),
+        // Filtered even behind the DEBUG gate: an operator turning DEBUG on to
+        // diagnose a 400 should not thereby start returning templated prompts to
+        // callers. See utils/upstreamErrorEnvelope.ts.
+        details: process.env.DEBUG === 'true' ? upstream : undefined
       }
     });
   }

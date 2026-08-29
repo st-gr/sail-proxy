@@ -59,7 +59,7 @@
     "dev": "tsx src/index.ts",
     "dev:nobundle": "SKIP_BUNDLE=true tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "echo 'Tests will be implemented'"
+    "test": "node test/run-all.js"
   },
   "bundledDependencies": [
     "@sap-llm-gateway/service-key-parser"

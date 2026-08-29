@@ -4,8 +4,8 @@
  * THE HEADLINE, because it looks like a mistake and is not: the two hook arrays ship in
  * OPPOSITE orders, deliberately.
  *
- *   defaultHooks.openai.responses-stream : pseudonymization -> image -> namespace -> web-search -> file-search
- *   defaultHooks.openai.responses        : pseudonymization -> image -> web-search -> file-search -> namespace
+ *   hooks.defaults.openai.responses-stream : pseudonymization -> image -> namespace -> web-search -> file-search
+ *   hooks.defaults.openai.responses        : pseudonymization -> image -> web-search -> file-search -> namespace
  *
  * (The two hosted-tool plugins — web-search and file-search — are the same engine under two
  * ids and two `match` rules; what matters below is where the pair sits relative to the
@@ -152,7 +152,7 @@ function toolTurnReq(): any {
  * the wrong thing.
  */
 const apiConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'api_config.json'), 'utf-8'));
-const hookIds = (subpath: string): string[] => (apiConfig.api_config.defaultHooks.openai[subpath] as any[])
+const hookIds = (subpath: string): string[] => (apiConfig.api_config.hooks.defaults.openai[subpath] as any[])
   .map(entry => entry?.request?.callback?.id)
   .filter((id: unknown): id is string => typeof id === 'string');
 
@@ -161,7 +161,7 @@ const NON_STREAM_HOOK_IDS = hookIds('responses');
 
 /** The `match` array of one plugin's entry in a subpath, for the gating assertions. */
 const matchOf = (subpath: string, id: string): string[] => {
-  const entry = (apiConfig.api_config.defaultHooks.openai[subpath] as any[])
+  const entry = (apiConfig.api_config.hooks.defaults.openai[subpath] as any[])
     .find(e => e?.request?.callback?.id === id);
   return entry?.request?.match ?? [];
 };
@@ -239,7 +239,7 @@ describe('the shipped hook arrays, in full', () => {
 //   const apiConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'api_config.json'), 'utf-8'));
 // Reuse it — do not introduce a second read of the config.
 const idsOf = (hookName: string): string[] =>
-  apiConfig.api_config.defaultHooks.openai[hookName].map((h: any) => h.request.callback.id);
+  apiConfig.api_config.hooks.defaults.openai[hookName].map((h: any) => h.request.callback.id);
 
 it('keeps pseudonymization innermost and custom-tools outside it on the stream path', () => {
   const stream = idsOf('responses-stream');

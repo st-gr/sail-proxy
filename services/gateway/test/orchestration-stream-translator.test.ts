@@ -6,7 +6,10 @@
  * and exactly one response.completed to close.
  */
 import { describe, it, expect } from '@jest/globals';
-import { createResponsesStreamTranslator } from '../src/responses/orchestrationBridge/streamTranslator';
+import {
+  createResponsesStreamTranslator,
+  createOrchestrationBlockTranslator,
+} from '../src/responses/orchestrationBridge/streamTranslator';
 
 const OPTS = { model: 'anthropic--claude-4.8-opus', responseId: 'resp_1' };
 
@@ -392,5 +395,196 @@ describe('reasoning output item', () => {
     t.onChunk(textChunk('Hello.'));
     const all = [...frames(t.onChunk(textChunk(' There.'))), ...frames(t.finish())];
     expect(all.filter((f) => f.item?.type === 'reasoning')).toHaveLength(0);
+  });
+});
+
+/**
+ * SAP AI Core reports a mid-stream failure as a chunk carrying `error` and no
+ * `choices`. Before this was handled, every branch of onChunk was a no-op for
+ * such a chunk and the turn ended silently — the client saw a closed socket and
+ * read it as an empty but successful answer. Measured live against
+ * gpt-5.6-sol, which SAP rejects with
+ * "400 - LLM Module: openai does not support parameters: ['tool_choice']":
+ * codex reported "tokens used 0" and showed no error at all.
+ */
+describe('orchestration stream errors', () => {
+  const sapError = {
+    error: {
+      request_id: '479128d1-ac71-914a-9cd1-b70e52d0c58a',
+      code: 400,
+      message: "400 - LLM Module: openai does not support parameters: ['tool_choice'], for model=gpt-5.6-sol",
+      location: 'LLM Module',
+      intermediate_results: { templating: [{ role: 'developer', content: 'SECRET PROMPT' }] },
+    },
+  };
+
+  it('emits response.failed carrying the upstream message', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const f = frames(t.onChunk(sapError));
+    const failed = f.find((x) => x.type === 'response.failed');
+    expect(failed).toBeDefined();
+    expect(failed.response.status).toBe('failed');
+    expect(failed.response.error.message).toContain('does not support parameters');
+    expect(failed.response.error.code).toBe(400);
+  });
+
+  it('opens the stream first, so response.failed is never the very first frame', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const f = frames(t.onChunk(sapError));
+    expect(f[0].type).toBe('response.created');
+    expect(f[f.length - 1].type).toBe('response.failed');
+  });
+
+  it('keeps the SAP request_id, which support asks for on escalation', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const failed = frames(t.onChunk(sapError)).find((x) => x.type === 'response.failed');
+    expect(failed.response.error.request_id).toBe('479128d1-ac71-914a-9cd1-b70e52d0c58a');
+  });
+
+  it('never forwards intermediate_results — it holds the templated prompt', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const blocks = t.onChunk(sapError);
+    expect(blocks.join('')).not.toContain('SECRET PROMPT');
+    expect(blocks.join('')).not.toContain('intermediate_results');
+  });
+
+  it('does not also emit response.completed, which would contradict the failure', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const all = [...frames(t.onChunk(sapError)), ...frames(t.finish())];
+    expect(all.filter((x) => x.type === 'response.completed')).toHaveLength(0);
+    expect(all.filter((x) => x.type === 'response.failed')).toHaveLength(1);
+  });
+
+  it('reports only the first error when the upstream repeats it', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const all = [...frames(t.onChunk(sapError)), ...frames(t.onChunk(sapError)), ...frames(t.finish())];
+    expect(all.filter((x) => x.type === 'response.failed')).toHaveLength(1);
+  });
+
+  it('still completes normally when no error arrives', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const all = [...frames(t.onChunk(textChunk('hi'))), ...frames(t.finish())];
+    expect(all.filter((x) => x.type === 'response.failed')).toHaveLength(0);
+    expect(all.filter((x) => x.type === 'response.completed')).toHaveLength(1);
+  });
+
+  // sapAIService's stream.on('error') and its raw-chunk catch both deliver the
+  // GATEWAY'S OWN transport errors through this same callback, shaped
+  // `{error: true, message}` — `error` is the boolean `true`, not an object
+  // carrying its own `message`. Before this fix, projectStreamError(true)
+  // discarded that message and every internal failure surfaced as the generic
+  // "orchestration stream failed" string, hiding the real reason.
+  it('preserves the message on the internal {error: true, message} shape', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const f = frames(t.onChunk({ error: true, message: 'Stream error: socket hang up' }));
+    const failed = f.find((x) => x.type === 'response.failed');
+    expect(failed.response.error.message).toBe('Stream error: socket hang up');
+  });
+
+  it('ignores an error chunk that arrives after finish() has already run', () => {
+    // sapAIService's stream.on('error') listener stays attached past
+    // streamChatCompletion resolving, so an error can land during the
+    // controller's post-stream idle wait — after finish() already emitted
+    // response.completed. That must not reopen the turn.
+    const t = createResponsesStreamTranslator(OPTS);
+    const opening = frames(t.onChunk(textChunk('hi')));
+    const closing = frames(t.finish());
+    expect(closing.some((x) => x.type === 'response.completed')).toBe(true);
+
+    const late = t.onChunk(sapError);
+    expect(late).toEqual([]);
+    expect(t.failureStatus()).toBeNull();
+
+    const all = [...opening, ...closing];
+    expect(all.filter((x) => x.type === 'response.failed')).toHaveLength(0);
+    expect(all.filter((x) => x.type === 'response.completed')).toHaveLength(1);
+  });
+
+  it('carries a usage block on response.failed even when no chunk supplied usage', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    const f = frames(t.onChunk(sapError));
+    const failed = f.find((x) => x.type === 'response.failed');
+    expect(failed.response).toHaveProperty('usage');
+    expect(failed.response.usage).toEqual({
+      input_tokens: 0,
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+      output_tokens: 0,
+      total_tokens: 0,
+    });
+  });
+});
+
+/**
+ * The status the usage event records for a failed turn. The 502 fallback lives in the
+ * translator rather than at the call site so every consumer agrees: an upstream failure
+ * with no numeric code is still a failure, and recording 200 for it is the defect this
+ * exists to prevent.
+ */
+describe('failureStatus', () => {
+  const withCode = {
+    error: {
+      code: 400,
+      message: "400 - LLM Module: openai does not support parameters: ['tool_choice'], for model=gpt-5.6-sol",
+      location: 'LLM Module',
+    },
+  };
+
+  it('is null before anything has gone wrong', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    expect(t.failureStatus()).toBeNull();
+  });
+
+  it('is still null after an ordinary chunk', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk({ final_result: { choices: [{ delta: { content: 'hi' } }] } });
+    expect(t.failureStatus()).toBeNull();
+  });
+
+  it('reports the upstream code once an error chunk arrives', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk(withCode);
+    expect(t.failureStatus()).toBe(400);
+  });
+
+  it('falls back to 502 when the upstream error carries no numeric code', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk({ error: { message: 'upstream exploded' } });
+    expect(t.failureStatus()).toBe(502);
+  });
+
+  // SapV2IntermediateFailure types `code` as `string`, and live payloads have
+  // carried a numeric code as one — a digit-only string must not fall through
+  // to the generic 502, but an arbitrary non-numeric string still should.
+  it('honours a numeric-string code', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk({ error: { code: '400', message: 'bad request as a string code' } });
+    expect(t.failureStatus()).toBe(400);
+  });
+
+  it('falls back to 502 when the code is a non-numeric string', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk({ error: { code: 'BAD_REQUEST', message: 'non-numeric code' } });
+    expect(t.failureStatus()).toBe(502);
+  });
+
+  it('keeps reporting the FIRST failure when the upstream repeats itself', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk(withCode);
+    t.onChunk({ error: { code: 500, message: 'later, different' } });
+    expect(t.failureStatus()).toBe(400);
+  });
+
+  it('survives finish() — the controller reads it after the stream ends', () => {
+    const t = createResponsesStreamTranslator(OPTS);
+    t.onChunk(withCode);
+    t.finish();
+    expect(t.failureStatus()).toBe(400);
+  });
+
+  it('is exposed by the block translator too, which wraps the same state', () => {
+    const t = createOrchestrationBlockTranslator(OPTS);
+    expect(t.failureStatus()).toBeNull();
+    t.onBlock(`data: ${JSON.stringify(withCode)}\n\n`);
+    expect(t.failureStatus()).toBe(400);
   });
 });

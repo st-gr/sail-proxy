@@ -191,6 +191,28 @@ Two tool types that SAP AI Core rejects are handled for you, so no Codex flags a
 
 Verified against Codex CLI 0.145.0 and 0.146.0. See the project's `docs/user/chapter-2-features.md` for the full `config.toml`.
 
+## Launch a coding harness
+
+Point Codex CLI, Claude Code, or OpenCode at the gateway — no hand-editing their config:
+
+```bash
+sail-proxy endpoint set local                 # or a remote gateway:
+sail-proxy endpoint set https://gw.example --key-env SP_KEY
+sail-proxy endpoint show
+
+sail-proxy codex "…"        # start the harness against the gateway
+sail-proxy claude
+sail-proxy opencode
+
+sail-proxy codex --dry-run "…"                 # preview what will run, change nothing
+```
+
+- `endpoint set` chooses which gateway (local or remote) the harnesses use; `endpoint show`
+  prints it and the key source.
+- `codex`, `claude`, and `opencode` configure the tool and launch it against that endpoint.
+- `--dry-run` shows exactly what would run without changing anything on disk or starting the
+  harness — handy for checking an endpoint first.
+
 ## Usage Examples
 
 ### With OpenAI SDK

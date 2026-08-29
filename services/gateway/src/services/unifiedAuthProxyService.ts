@@ -9,6 +9,8 @@ import { Request, Response, NextFunction } from 'express';
 import { UnifiedAuthRequest } from '../middlewares/unifiedTokenAuth';
 import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 import { getDefaultLogger } from '@libs/logger';
+import { getClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from './configService';
 const logger = getDefaultLogger();
 
 export interface UnifiedProxyRequest extends UnifiedAuthRequest {
@@ -329,14 +331,11 @@ export class UnifiedAuthProxyService {
   }
 
   /**
-   * Get client IP address
+   * Get client IP address. Delegates to utils/clientIp's single derivation,
+   * gated on the `security.trust_forwarded_for` config flag.
    */
   private getClientIp(req: Request): string {
-    return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-           (req.headers['x-real-ip'] as string) ||
-           req.connection?.remoteAddress ||
-           req.socket?.remoteAddress ||
-           '127.0.0.1';
+    return getClientIp(req, getTrustForwardedFor());
   }
 
   /**

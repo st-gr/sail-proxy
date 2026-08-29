@@ -41,7 +41,7 @@
  * request body already minted, and a retrieved chunk was never in the request body.
  *
  * Registered by `plugins/responsesFileSearchPlugin.ts`, whose two hook entries
- * (`defaultHooks.openai.responses` / `responses-stream`, gated on `tools:hasFileSearch`)
+ * (`hooks.defaults.openai.responses` / `responses-stream`, gated on `tools:hasFileSearch`)
  * are what make any of this reachable at runtime.
  *
  * VERIFIED LIVE (2026-08-04), because this deployment has rejected two earlier

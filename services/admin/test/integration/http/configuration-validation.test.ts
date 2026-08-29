@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Configuration Auto-Validation Integration Tests', () => {
+describeLive('Configuration Auto-Validation Integration Tests', () => {
   let client: AxiosInstance;
   let testConfigId: string;
 
@@ -26,18 +26,20 @@ describe('Configuration Auto-Validation Integration Tests', () => {
       environment: 'test',
       configData: JSON.stringify({
         api_config: {
+          platform: {
+            timeouts: {
+              default: 60000,
+              streaming: 60000
+            },
+            logging: {
+              defaultLevel: 'INFO'
+            }
+          },
           providers: {
             openai: {
               base_url: 'https://api.openai.com/v1',
               models: ['gpt-4']
             }
-          },
-          timeouts: {
-            default: 60000,
-            streaming: 60000
-          },
-          logging: {
-            defaultLevel: 'INFO'
           }
         }
       }),
@@ -128,6 +130,16 @@ describe('Configuration Auto-Validation Integration Tests', () => {
 
       const validConfig = {
         api_config: {
+          platform: {
+            timeouts: {
+              default: 120000,
+              streaming: 120000
+            },
+            logging: {
+              defaultLevel: 'DEBUG',
+              payload_logging_enabled: true
+            }
+          },
           providers: {
             openai: {
               base_url: 'https://api.openai.com/v1',
@@ -137,14 +149,6 @@ describe('Configuration Auto-Validation Integration Tests', () => {
               base_url: 'https://api.anthropic.com',
               models: ['claude-3-sonnet']
             }
-          },
-          timeouts: {
-            default: 120000,
-            streaming: 120000
-          },
-          logging: {
-            defaultLevel: 'DEBUG',
-            payload_logging_enabled: true
           },
           rate_limits: {
             default: {
@@ -177,12 +181,14 @@ describe('Configuration Auto-Validation Integration Tests', () => {
 
       const minimalValidConfig = {
         api_config: {
-          timeouts: {
-            default: 60000,
-            streaming: 60000
-          },
-          logging: {
-            defaultLevel: 'INFO'
+          platform: {
+            timeouts: {
+              default: 60000,
+              streaming: 60000
+            },
+            logging: {
+              defaultLevel: 'INFO'
+            }
           }
         }
       };
@@ -281,18 +287,20 @@ describe('Configuration Auto-Validation Integration Tests', () => {
       
       const validConfig = {
         api_config: {
+          platform: {
+            timeouts: {
+              default: 60000,
+              streaming: 60000
+            },
+            logging: {
+              defaultLevel: 'INFO'
+            }
+          },
           providers: {
             openai: {
               base_url: 'https://api.openai.com/v1',
               models: ['gpt-4']
             }
-          },
-          timeouts: {
-            default: 60000,
-            streaming: 60000
-          },
-          logging: {
-            defaultLevel: 'INFO'
           }
         }
       };

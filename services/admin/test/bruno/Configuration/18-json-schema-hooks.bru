@@ -17,7 +17,7 @@ auth:basic {
 
 body:json {
   {
-    "configData": "{\"api_config\":{\"hookDefinitions\":{\"invalidHook\":{\"type\":\"header\"}},\"model_list_changes\":{\"test-model\":{\"hooks\":{\"chat/completions\":[{\"request\":{\"callback\":{\"id\":\"test-hook\"},\"match\":[]}}]}}}}}"
+    "configData": "{\"api_config\":{\"models\":{\"overrides\":{\"test-model\":{\"hooks\":{\"chat/completions\":[{\"request\":{\"callback\":{\"id\":\"test-hook\"},\"match\":[]}}]}}}},\"hooks\":{\"definitions\":{\"invalidHook\":{\"type\":\"header\"}}}}}"
   }
 }
 

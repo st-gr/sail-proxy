@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { getAdminServiceUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl } from '@libs/test-utils';
 
-describe('Configuration Management HTTP Integration Tests', () => {
+describeLive('Configuration Management HTTP Integration Tests', () => {
   let client: AxiosInstance;
   const createdConfigurations: string[] = [];
 
@@ -155,6 +155,15 @@ describe('Configuration Management HTTP Integration Tests', () => {
         configId: testConfigId,
         configData: JSON.stringify({
           api_config: {
+            platform: {
+              timeouts: {
+                default: 60000,
+                streaming: 60000
+              },
+              logging: {
+                defaultLevel: 'INFO'
+              }
+            },
             providers: {
               openai: {
                 base_url: 'https://api.openai.com/v1',
@@ -170,13 +179,6 @@ describe('Configuration Management HTTP Integration Tests', () => {
                 requests_per_minute: 120,
                 requests_per_hour: 2000
               }
-            },
-            timeouts: {
-              default: 60000,
-              streaming: 60000
-            },
-            logging: {
-              defaultLevel: 'INFO'
             }
           }
         }),

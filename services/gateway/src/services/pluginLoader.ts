@@ -6,6 +6,13 @@ import * as path from 'path';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { Request } from 'express';
+// configService imports this module statically (for loadAll/reloadAll), so this
+// is a real circular import. It's safe: both sides only touch each other's
+// exports inside function bodies (matchAll here, loadAll/reloadAll there), never
+// at module top level, so by the time either runs, both modules have finished
+// initializing. Was a require('./configService') inside matchAll for the same
+// reason; static here now so the type carries through instead of being `any`.
+import configService from './configService';
 
 interface PluginRule {
   id: string;
@@ -159,17 +166,42 @@ function loadPlugin(filePath: string): PluginRule[] {
 }
 
 /**
+ * The plugins directory that ships alongside this module.
+ *
+ * Anchored on `__dirname`, never on `process.cwd()`. This file always sits in
+ * `<gateway-src>/services/`, so its sibling `<gateway-src>/plugins/` is the
+ * right answer in every layout we ship:
+ *
+ *   local dev (ts-node)  services/gateway/src/services            -> services/gateway/src/plugins            (.ts)
+ *   docker               /app/services/gateway/dist/services/gateway/src/services
+ *                                                                 -> …/dist/services/gateway/src/plugins     (.js)
+ *   npm-dist CLI         bundled/gateway/services/gateway/src/services
+ *                                                                 -> bundled/gateway/services/gateway/src/plugins (.js)
+ *
+ * cwd is NOT any of those consistently: docker starts in `/app` and the
+ * standalone CLI starts in `bundled/gateway` (it spawns the gateway with that
+ * cwd - npm-dist/sail-proxy/src/commands/server.ts). Against cwd the old
+ * relative `./src/plugins` pointed at a directory that does not exist there,
+ * which `loadAll` then happily created empty, so the CLI registered 0 rules and
+ * every hook plugin - pseudonymization included - silently never ran.
+ */
+export const DEFAULT_PLUGINS_DIR = path.resolve(__dirname, '..', 'plugins');
+
+/**
  * Load all plugins from a directory
- * @param pluginsDir - Path to plugins directory
+ * @param pluginsDir - Path to plugins directory. Absolute paths are used as
+ *   given (that is the explicit override); a relative path is resolved against
+ *   THIS module's directory, not the process working directory. Defaults to the
+ *   shipped plugins directory.
  * @returns Map of rule IDs to rule objects
  */
-export const loadAll = function(pluginsDir: string): Record<string, PluginRule> {
+export const loadAll = function(pluginsDir: string = DEFAULT_PLUGINS_DIR): Record<string, PluginRule> {
   try {
-    // Ensure absolute path
-    const absolutePluginsDir = path.isAbsolute(pluginsDir) 
-      ? pluginsDir 
-      : path.join(process.cwd(), pluginsDir);
-    
+    // Ensure absolute path - resolved against this module, see DEFAULT_PLUGINS_DIR
+    const absolutePluginsDir = path.isAbsolute(pluginsDir)
+      ? pluginsDir
+      : path.resolve(__dirname, pluginsDir);
+
     logger.info('PluginLoader', `Loading plugins from ${absolutePluginsDir}`);
     
     // Create directory if it doesn't exist
@@ -251,10 +283,13 @@ export const matchAll = function(req: Request, ruleIds: string[] | any): boolean
   }
   
   try {
-    // Import configService when needed
-    const configService = require('./configService');
     const config = configService.getConfig();
-    const hookDefinitions = config?.api_config?.hookDefinitions || {};
+    // HooksConfig.definitions is Record<string, unknown> (its internal shape
+    // is deliberately untyped on ApiConfig itself — see configService.ts's
+    // DefaultHookEntry/FileSearchRawConfig comments); this file already has the
+    // real per-entry shape as HookDefinition, matching api-config-schema.json's
+    // hooks.definitions patternProperties, so cast once here at the point of use.
+    const hookDefinitions = (config?.api_config?.hooks?.definitions || {}) as Record<string, HookDefinition>;
     
     // All rules must match for success - early exit optimization
     for (const ruleId of ruleIds) {
@@ -264,7 +299,7 @@ export const matchAll = function(req: Request, ruleIds: string[] | any): boolean
       if (!hookDef) {
         hookDef = hookDefinitions[ruleId];
         if (!hookDef) {
-          logger.warn('PluginLoader', `Rule '${ruleId}' not found in hookDefinitions`);
+          logger.warn('PluginLoader', `Rule '${ruleId}' not found in hooks.definitions`);
           return false;
         }
         // Cache the hook definition
@@ -521,7 +556,7 @@ function matchUrlRegexOptimized(req: Request, hookDef: HookDefinition, ruleId: s
  * Used when configuration is updated to ensure fresh plugin rules
  * @param pluginsDir - Directory to load plugins from
  */
-export const reloadAll = function(pluginsDir: string = './plugins'): void {
+export const reloadAll = function(pluginsDir: string = DEFAULT_PLUGINS_DIR): void {
   logger.info('PluginLoader', 'Reloading plugins due to config update');
   
   // Clear all global caches for fresh load

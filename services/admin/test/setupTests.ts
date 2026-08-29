@@ -10,6 +10,9 @@ beforeAll(() => {
   process.env.NODE_ENV = 'test';
   
   // Set service URLs for integration tests
+  // This assignment MUST stay inside beforeAll: describeLive (libs/test-utils/src/test-config.ts)
+  // reads ADMIN_SERVICE_URL at module-collection time, so hoisting it to module scope would
+  // silently re-enable all 19 live-server suites against a developer's running admin on :4004.
   process.env.ADMIN_SERVICE_URL = process.env.ADMIN_SERVICE_URL || getAdminServiceUrl();
   process.env.GATEWAY_URL = process.env.GATEWAY_URL || getGatewayUrl();
 });

@@ -27,7 +27,7 @@
  * @see hostedTool/engine.ts - the transport machinery and its full frame contract
  * @see hostedTool/descriptor.ts - what a hosted tool has to implement
  * @see webSearch/descriptor.ts - the web_search implementation
- * @see api_config.json - defaultHooks.openai.responses / responses-stream
+ * @see api_config.json - hooks.defaults.openai.responses / responses-stream
  * @see responsesWebSearchPlugin.md - documentation
  */
 import { registerDescriptor } from './hostedTool/registry';

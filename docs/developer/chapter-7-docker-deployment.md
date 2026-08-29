@@ -681,6 +681,9 @@ CLIENT_SECRET=production-client-secret
 VALIDATION_TOKEN_SECRET=your-production-secret
 METADATA_ENCRYPTION_KEY=your-production-encryption-key
 AWS_SECRET_ENCRYPTION_KEY=your-production-aws-key
+# Admin service only. Encrypts the stored SIEM sink credentials; without it every
+# credential Set fails. Rotating it makes the stored credentials undecryptable.
+SIEM_CREDENTIAL_KEY=your-production-siem-credential-key
 
 # Database Configuration
 POSTGRES_PASSWORD=secure-production-password

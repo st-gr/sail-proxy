@@ -19,11 +19,19 @@ interface RateLimitConfig {
   model_specific_delays?: Record<string, number>;
 }
 
-interface Config {
-  api_config: {
-    [provider: string]: any;
-    rate_limit_handling?: RateLimitConfig;
-  };
+/**
+ * `rate_limit_handling` lives under `ApiConfig.platform` (configService.ts) as
+ * `Record<string, unknown>` — its *internal* shape is deliberately untyped
+ * there, as for every other section. This file still wants strict field access
+ * (`.enabled`, `.subpath_specific_delays`, ...), so rather than re-declaring a
+ * second, driftable `Config`/`ApiConfig` shadow with its own `[provider:
+ * string]: any` (the shadow this reconciles), it reads the config through
+ * configService's own inferred return type and casts only the one section it
+ * needs, right here at the point of use. Renaming or moving the section makes
+ * this line fail to compile instead of silently reading `undefined` forever.
+ */
+function rateLimitConfigFrom(config: Awaited<ReturnType<typeof configService.getConfigAsync>>): RateLimitConfig | undefined {
+  return config?.api_config?.platform?.rate_limit_handling as RateLimitConfig | undefined;
 }
 
 interface RateLimitStatus {
@@ -64,9 +72,9 @@ class RateLimitManager {
    * @returns Delay in seconds
    */
   async getConfiguredDelay(modelId: string, subpath: string): Promise<number> {
-    const config: Config = await configService.getConfigAsync();
-    const rateLimitConfig = config?.api_config?.rate_limit_handling;
-    
+    const config = await configService.getConfigAsync();
+    const rateLimitConfig = rateLimitConfigFrom(config);
+
     if (!rateLimitConfig || !rateLimitConfig.enabled) {
       return 0;
     }
@@ -151,8 +159,8 @@ class RateLimitManager {
 
     if (existing) {
       // Apply exponential backoff for consecutive rate limits
-      const config: Config = await configService.getConfigAsync();
-      const rateLimitConfig = config?.api_config?.rate_limit_handling;
+      const config = await configService.getConfigAsync();
+      const rateLimitConfig = rateLimitConfigFrom(config);
       const backoffMultiplier = rateLimitConfig?.backoff_multiplier || 1.5;
       const maxDelay = rateLimitConfig?.max_delay_seconds || 300;
       

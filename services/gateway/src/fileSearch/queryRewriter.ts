@@ -38,9 +38,8 @@
  * HTTP 400 ("Model name 'gpt-35-turbo-16k' is not supported") from this
  * tenant's orchestration `/v2/completion`. A model name that works on one
  * SAP AI Core tenant is not guaranteed to work on another's, so this reads
- * `getFileSearchConfig().rewriteQueryModel` (default `'gpt-4o-mini'`,
- * confirmed working: ~1.3s, clean single-line rewrite) rather than a
- * constant. Do not restore `gpt-35-turbo-16k` here.
+ * `getFileSearchConfig().rewriteQueryModel` (default `'gpt-5-mini'`) rather
+ * than a constant. Do not restore `gpt-35-turbo-16k` here.
  */
 import axios from 'axios';
 import configService from '../services/configService';

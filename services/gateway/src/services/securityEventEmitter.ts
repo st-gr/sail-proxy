@@ -2,7 +2,8 @@
  * Security Event Emitter Service
  * 
  * Handles publishing security events from gateway to admin service.
- * Mirrors the usage event emitter pattern with Valkey pub/sub and memory fallback.
+ * Appends to the bounded `siem-events` Valkey stream (with a memory-queue
+ * fallback), unlike the usage event emitter, which still uses pub/sub.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -10,14 +11,12 @@ import {
   SecurityEvent, 
   SecurityEventBatch, 
   SecurityEventEmitterConfig,
-  SecurityEventContext,
   FailedAuthEventData,
-  SuspiciousActivityEventData,
   RateLimitEventData,
-  UnauthorizedAccessEventData,
   SecurityEventType,
   SecurityEventSeverity,
-  SecurityEventAction
+  SecurityEventAction,
+  SiemUsageEvent
 } from '../types/security';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
@@ -40,9 +39,12 @@ class SecurityEventEmitter {
    * Non-blocking operation - failures are logged but don't affect request processing
    */
   public async emit(event: SecurityEvent): Promise<void> {
+    // Declared outside the try block so the catch can still fall back to the
+    // memory queue if publishToValkey throws after enrichment.
+    let enrichedEvent: SecurityEvent | undefined;
     try {
       // Add gateway metadata
-      const enrichedEvent: SecurityEvent = {
+      enrichedEvent = {
         ...event,
         eventId: event.eventId || uuidv4(),
         timestamp: event.timestamp || new Date().toISOString(),
@@ -50,7 +52,7 @@ class SecurityEventEmitter {
         gatewayVersion: '1.0.0'
       };
 
-      // Try Valkey pub/sub first if available and working  
+      // Try the Valkey stream first if available and working
       if (this.valkeyClient && this.valkeyClient.status === 'ready') {
         await this.publishToValkey(enrichedEvent);
         return;
@@ -59,29 +61,78 @@ class SecurityEventEmitter {
       // Fallback to memory queue
       this.addToMemoryQueue(enrichedEvent);
     } catch (error) {
+      // publishToValkey rethrows on failure; fall back to the memory queue here
+      // so an XADD error doesn't silently drop the event.
+      if (enrichedEvent) {
+        this.addToMemoryQueue(enrichedEvent);
+      }
       // Log error but don't throw - security event failures shouldn't break the main flow
-      logger.warn('SecurityEventEmitter', 'Failed to emit security event', { 
+      logger.warn('SecurityEventEmitter', 'Failed to emit security event', {
         eventId: event.eventId,
         eventType: event.eventType,
-        error: error instanceof Error ? error.message : 'Unknown error' 
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
 
-  private async publishToValkey(event: SecurityEvent): Promise<void> {
-    if (!this.valkeyClient) return;
-    
+  /**
+   * Emit a request-completion (`usage`) event.
+   *
+   * Unlike emit(), this does NOT fall back to the memory queue. Two reasons, both about the
+   * fallback rather than about the event: the queue drains through
+   * `processSecurityEvents` on the admin side, which persists what it is given into the
+   * domain security-event tables — the wrong home for a usage event (see
+   * securityEventSubscriber.isUsageEvent) — and usage events arrive once per request, so a
+   * bounded in-memory queue shared with security events would be filled by them and evict
+   * the failed-auth events it exists to protect. With no stream available the event is
+   * dropped, which is the correct degraded behaviour for a per-request export.
+   */
+  public async emitUsage(event: SiemUsageEvent): Promise<void> {
+    if (!this.valkeyClient || this.valkeyClient.status !== 'ready') {
+      logger.debug('SecurityEventEmitter', 'No stream available; dropping usage SIEM event', {
+        requestId: event.requestId,
+      });
+      return;
+    }
     try {
-      await this.valkeyClient.publish('security-events', JSON.stringify(event));
-      logger.debug('SecurityEventEmitter', 'Published security event to Valkey', {
+      await this.publishToValkey({
+        ...event,
+        eventId: event.eventId || uuidv4(),
+        timestamp: event.timestamp || new Date().toISOString(),
+        source: 'gateway',
+        gatewayVersion: '1.0.0',
+      });
+    } catch {
+      // publishToValkey already logged it. Nothing else to try, by design.
+    }
+  }
+
+  private async publishToValkey(event: SecurityEvent | SiemUsageEvent): Promise<void> {
+    if (!this.valkeyClient) return;
+
+    try {
+      // A stream, not pub/sub: pub/sub drops messages published while no subscriber is
+      // connected, so an admin restart lost events. Stream entries live server-side and
+      // are acknowledged only after the admin has persisted them.
+      //
+      // MAXLEN ~ bounds the stream because this Valkey has no persistence and an
+      // emptyDir volume (kyma/manifests/core/valkey.yaml:14-15) — unbounded growth
+      // would OOM the pod. The cap is a safety valve; Postgres is the record.
+      await this.valkeyClient.xadd(
+        'siem-events', 'MAXLEN', '~', '100000', '*',
+        'event', JSON.stringify(event),
+      );
+      logger.debug('SecurityEventEmitter', 'Appended security event to siem-events stream', {
         eventId: event.eventId,
         eventType: event.eventType,
-        severity: event.severity
+        severity: event.severity,
       });
     } catch (error) {
-      // If Valkey fails, fallback to memory
-      this.addToMemoryQueue(event);
-      throw error; // Re-throw to trigger warning log
+      logger.warn('SecurityEventEmitter', 'Failed to append to siem-events stream', {
+        eventId: event.eventId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;   // let emit() fall through to the memory queue
     }
   }
 
@@ -177,6 +228,8 @@ class SecurityEventEmitter {
     const event: SecurityEvent = {
       eventId: uuidv4(),
       credentialId: data.credentialId,
+      credentialHint: data.credentialHint,
+      credentialMaterial: data.credentialMaterial,
       authType: data.authType,
       eventType: SecurityEventType.FAILED_AUTH,
       severity: SecurityEventSeverity.HIGH,
@@ -200,45 +253,14 @@ class SecurityEventEmitter {
   }
 
   /**
-   * Create and emit a suspicious activity event
-   */
-  public async emitSuspiciousActivity(data: SuspiciousActivityEventData): Promise<void> {
-    const severity = data.riskScore && data.riskScore > 0.8 ? 
-      SecurityEventSeverity.HIGH : SecurityEventSeverity.MEDIUM;
-
-    const event: SecurityEvent = {
-      eventId: uuidv4(),
-      credentialId: data.credentialId,
-      authType: data.authType,
-      eventType: SecurityEventType.SUSPICIOUS_ACTIVITY,
-      severity,
-      description: `Suspicious activity detected: ${data.activityType} - ${data.details}`,
-      timestamp: new Date().toISOString(),
-      clientIP: data.clientIP,
-      userAgent: data.userAgent,
-      endpoint: data.endpoint,
-      method: data.method,
-      requestId: data.requestId,
-      statusCode: data.statusCode,
-      actionTaken: SecurityEventAction.MONITORED,
-      source: 'gateway',
-      metadata: {
-        activityType: data.activityType,
-        details: data.details,
-        riskScore: data.riskScore
-      }
-    };
-
-    await this.emit(event);
-  }
-
-  /**
    * Create and emit a rate limit exceeded event
    */
   public async emitRateLimitExceeded(data: RateLimitEventData): Promise<void> {
     const event: SecurityEvent = {
       eventId: uuidv4(),
       credentialId: data.credentialId,
+      credentialHint: data.credentialHint,
+      credentialMaterial: data.credentialMaterial,
       authType: data.authType,
       eventType: SecurityEventType.RATE_LIMIT_EXCEEDED,
       severity: SecurityEventSeverity.HIGH,
@@ -259,68 +281,6 @@ class SecurityEventEmitter {
         maxAllowed: data.maxAllowed,
         windowSize: data.windowSize
       }
-    };
-
-    await this.emit(event);
-  }
-
-  /**
-   * Create and emit an unauthorized access event
-   */
-  public async emitUnauthorizedAccess(data: UnauthorizedAccessEventData): Promise<void> {
-    const event: SecurityEvent = {
-      eventId: uuidv4(),
-      credentialId: data.credentialId,
-      authType: data.authType,
-      eventType: SecurityEventType.UNAUTHORIZED_ACCESS,
-      severity: SecurityEventSeverity.HIGH,
-      description: `Unauthorized access attempt to ${data.attemptedResource}`,
-      timestamp: new Date().toISOString(),
-      clientIP: data.clientIP,
-      userAgent: data.userAgent,
-      endpoint: data.endpoint,
-      method: data.method,
-      requestId: data.requestId,
-      statusCode: data.statusCode || 403,
-      actionTaken: SecurityEventAction.BLOCKED,
-      source: 'gateway',
-      metadata: {
-        attemptedResource: data.attemptedResource,
-        requiredPermissions: data.requiredPermissions,
-        actualPermissions: data.actualPermissions
-      }
-    };
-
-    await this.emit(event);
-  }
-
-  /**
-   * Emit a generic security event
-   */
-  public async emitGenericEvent(
-    eventType: SecurityEventType,
-    severity: SecurityEventSeverity,
-    description: string,
-    context: SecurityEventContext,
-    metadata?: any
-  ): Promise<void> {
-    const event: SecurityEvent = {
-      eventId: uuidv4(),
-      credentialId: context.credentialId,
-      authType: context.authType,
-      eventType,
-      severity,
-      description,
-      timestamp: new Date().toISOString(),
-      clientIP: context.clientIP,
-      userAgent: context.userAgent,
-      endpoint: context.endpoint,
-      method: context.method,
-      requestId: context.requestId,
-      statusCode: context.statusCode,
-      actionTaken: SecurityEventAction.LOGGED,
-      source: 'gateway',
-      metadata
     };
 
     await this.emit(event);

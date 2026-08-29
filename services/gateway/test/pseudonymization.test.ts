@@ -18,7 +18,7 @@ jest.mock('@libs/logger', () => ({
 }));
 
 // Mutable mock config used by getModelForcedConfig — bypass tests rewrite it per-test.
-const mockConfig: any = { api_config: { defaultHooks: {}, model_list_changes: {} } };
+const mockConfig: any = { api_config: { hooks: { defaults: {} }, models: { overrides: {} }, observability: {} } };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: {
@@ -56,9 +56,9 @@ describe('Pseudonymization Plugin', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     // Reset layered config between tests so toggles don't leak across cases.
-    mockConfig.api_config.pseudonymization = undefined;
-    mockConfig.api_config.defaultHooks = {};
-    mockConfig.api_config.model_list_changes = {};
+    mockConfig.api_config.observability.pseudonymization = undefined;
+    mockConfig.api_config.hooks.defaults = {};
+    mockConfig.api_config.models.overrides = {};
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -347,26 +347,68 @@ describe('Pseudonymization Plugin', () => {
         method: 'pseudonymization',
         entities: [{ type: 'profile-person' }, { type: 'profile-email' }],
       };
-      const matches = detectEntities('Contact info: john.smith@sandiego.gov', config);
+      // A person name outside the email gives the overlap loop below something real to
+      // check. Without it, an empty personMatches array would make that loop pass
+      // vacuously — exactly the pattern this test used to have.
+      const matches = detectEntities('Priya Anand — contact info: john.smith@sandiego.gov', config);
       // Email is longer than any potential person match inside it
       const emailMatches = matches.filter(m => m.type === 'profile-email');
       expect(emailMatches).toHaveLength(1);
-      // No person match should overlap with the email
+      // Person detection genuinely fired for this input.
       const personMatches = matches.filter(m => m.type === 'profile-person');
+      expect(personMatches.map(m => m.original)).toContain('Priya Anand');
+      // No person match should overlap with the email
       for (const p of personMatches) {
         expect(p.start >= emailMatches[0].end || p.end <= emailMatches[0].start).toBe(true);
       }
     });
 
-    it('should filter allow-list entries', () => {
+    // These lock in behaviour that currently works by accident: the wink model emits no
+    // PERSON entities at all, so detection rests entirely on the capitalisation heuristic.
+    // Without positive assertions, a change that silently disabled it would go unnoticed —
+    // which is exactly how the org/location categories stayed broken.
+    it('detects an English person name via the capitalisation heuristic', () => {
       const config: MaskingConfig = {
         method: 'pseudonymization',
-        entities: [{ type: 'profile-person' }, { type: 'profile-location' }],
-        allow_list: ['San Diego', 'City of San Diego'],
+        entities: [{ type: 'profile-person' }],
       };
-      const matches = detectEntities('John Smith works in San Diego', config);
-      const locations = matches.filter(m => m.original === 'San Diego');
-      expect(locations).toHaveLength(0);
+      const matches = detectEntities('Ana Ruiz visited the office.', config);
+      expect(matches.map(m => m.original)).toContain('Ana Ruiz');
+    });
+
+    it('detects Spanish names in Spanish-language text', () => {
+      const config: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-person' }],
+      };
+      const matches = detectEntities('Por favor contacte a Maria Gonzalez sobre el permiso.', config);
+      expect(matches.map(m => m.original)).toContain('Maria Gonzalez');
+    });
+
+    it('does not mask Spanish common nouns', () => {
+      const config: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-person' }],
+      };
+      const matches = detectEntities('Las flores del campo crecen cerca de la vega.', config);
+      expect(matches).toHaveLength(0);
+    });
+
+    it('should filter allow-list entries', () => {
+      const base: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-person' }, { type: 'profile-location' }],
+      };
+      const text = 'John Smith works in San Diego';
+
+      // Control: without the allow-list the term IS detected (as a person, via the
+      // capitalisation heuristic). Without this assertion the test below passes even
+      // when detection is completely broken — which it was for profile-location.
+      const unfiltered = detectEntities(text, base);
+      expect(unfiltered.filter(m => m.original === 'San Diego')).toHaveLength(1);
+
+      const matches = detectEntities(text, { ...base, allow_list: ['San Diego', 'City of San Diego'] });
+      expect(matches.filter(m => m.original === 'San Diego')).toHaveLength(0);
     });
 
     it('should prioritize custom regex over other detectors', () => {
@@ -499,6 +541,32 @@ describe('Pseudonymization Plugin', () => {
       const result = unmaskText(text, map);
 
       expect(result).toBe(text);
+    });
+
+    it('sees a placeholder added after an earlier unmask on the same map', () => {
+      // The alternation regex is cached per map and keyed on the reverse map's size.
+      // Unmasking before the map is complete must not freeze the earlier regex in.
+      const map = new ReplacementMap('pseudonymization');
+      const first = map.getPlaceholder('profile-person', 'John Smith');
+      expect(unmaskText(first, map)).toBe('John Smith');
+
+      const second = map.getPlaceholder('profile-email', 'john@example.com');
+      expect(unmaskText(`${first} at ${second}`, map))
+        .toBe('John Smith at john@example.com');
+    });
+
+    it('keeps two maps independent (the cache is per map, not global)', () => {
+      const a = new ReplacementMap('pseudonymization');
+      const b = new ReplacementMap('pseudonymization');
+      const pa = a.getPlaceholder('profile-person', 'Alice Adams');
+      const pb = b.getPlaceholder('profile-person', 'Bob Brown');
+
+      expect(unmaskText(pa, a)).toBe('Alice Adams');
+      expect(unmaskText(pb, b)).toBe('Bob Brown');
+      // Same size in both maps — a size-only cache key shared globally would
+      // resolve one map's placeholder against the other's regex.
+      expect(unmaskText(pb, a)).toBe(pb);
+      expect(unmaskText(pa, b)).toBe(pa);
     });
   });
 
@@ -856,7 +924,7 @@ describe('Pseudonymization Plugin', () => {
 
     // ─── Bypass mechanics ────────────────────────────────────────────────────
     function setEndpointForce(endpoint: string, allowBypass: boolean): void {
-      mockConfig.api_config.defaultHooks[endpoint] = {
+      mockConfig.api_config.hooks.defaults[endpoint] = {
         pseudonymization: { enabled: true, method: 'pseudonymization', allow_user_bypass: allowBypass },
       };
     }
@@ -1522,7 +1590,7 @@ describe('Pseudonymization Plugin', () => {
       `<sail-proxy:pseudonymization:on> John Smith, john@test.com, at 123 Main Street. ${extra}`;
 
     it('global toggle disables a category (address off; person/email still masked)', async () => {
-      mockConfig.api_config.pseudonymization = { entities: { 'profile-address': false } };
+      mockConfig.api_config.observability.pseudonymization = { entities: { 'profile-address': false } };
       const req: any = { body: { messages: [{ role: 'user', content: trigger('') }] } };
       await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
       const masked = req.body.messages[0].content as string;
@@ -1532,8 +1600,8 @@ describe('Pseudonymization Plugin', () => {
     });
 
     it('per-model overrides global (global off, model on → masked)', async () => {
-      mockConfig.api_config.pseudonymization = { entities: { 'profile-address': false } };
-      mockConfig.api_config.model_list_changes = {
+      mockConfig.api_config.observability.pseudonymization = { entities: { 'profile-address': false } };
+      mockConfig.api_config.models.overrides = {
         'test-model': { pseudonymization: { entities: { 'profile-address': true } } },
       };
       const req: any = { body: { model: 'test-model', messages: [{ role: 'user', content: trigger('') }] } };
@@ -1544,11 +1612,11 @@ describe('Pseudonymization Plugin', () => {
     });
 
     it('per-endpoint overrides global, per-model overrides endpoint (model wins)', async () => {
-      mockConfig.api_config.pseudonymization = { entities: { 'profile-phone': true } };
-      mockConfig.api_config.defaultHooks = {
+      mockConfig.api_config.observability.pseudonymization = { entities: { 'profile-phone': true } };
+      mockConfig.api_config.hooks.defaults = {
         anthropic: { pseudonymization: { entities: { 'profile-phone': true } } },
       };
-      mockConfig.api_config.model_list_changes = {
+      mockConfig.api_config.models.overrides = {
         'test-model': { pseudonymization: { entities: { 'profile-phone': false } } },
       };
       const req: any = {

@@ -1,8 +1,34 @@
 import * as crypto from 'crypto';
-import { getSigningKey, calculateSignature } from '../../middlewares/awsSigV4Auth';
 
 const SERVICE = 's3';
 const ALGORITHM = 'AWS4-HMAC-SHA256';
+
+/**
+ * Derive signing key and calculate signature — copied verbatim (unchanged) from
+ * services/gateway/src/middlewares/awsSigV4Auth.ts, which implements INBOUND SigV4
+ * validation for an Express middleware. Duplicated here rather than imported so this
+ * shared lib has no dependency on a gateway-only, Express-based module (and the
+ * gateway-only services it in turn imports).
+ */
+function getSigningKey(secret: string, date: string, region: string, service: string): Buffer {
+  const kDate = crypto.createHmac('sha256', 'AWS4' + secret).update(date).digest();
+
+  let kRegion: Buffer;
+  if (region === '*') {
+    kRegion = kDate; // For SigV4a
+  } else {
+    kRegion = crypto.createHmac('sha256', kDate).update(region).digest();
+  }
+
+  const kService = crypto.createHmac('sha256', kRegion).update(service).digest();
+  const kSigning = crypto.createHmac('sha256', kService).update('aws4_request').digest();
+
+  return kSigning;
+}
+
+function calculateSignature(signingKey: Buffer, stringToSign: string): string {
+  return crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+}
 
 export interface S3AuthHeaderParams {
   method: string;

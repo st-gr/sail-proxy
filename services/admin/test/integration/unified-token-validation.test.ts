@@ -6,7 +6,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { getAdminServiceUrl, getGatewayUrl } from '@libs/test-utils';
+import { describeLive, getAdminServiceUrl, getGatewayUrl } from '@libs/test-utils';
 
 const ADMIN_SERVICE_URL = getAdminServiceUrl();
 const GATEWAY_SERVICE_URL = getGatewayUrl();
@@ -40,7 +40,7 @@ interface UnifiedValidationResponse {
   };
 }
 
-describe('Unified Token Validation System', () => {
+describeLive('Unified Token Validation System', () => {
   let context: TestContext;
 
   beforeAll(() => {

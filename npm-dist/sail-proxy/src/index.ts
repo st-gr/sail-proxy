@@ -12,6 +12,8 @@ import { modelsCommand } from './commands/models';
 import { ollamaCommand } from './commands/ollama';
 import { updateCommand } from './commands/update';
 import { logsCommand } from './commands/logs';
+import { endpointCommand } from './commands/endpoint';
+import { ADAPTERS, runLauncher } from './commands/launch';
 
 // Utils
 import { getConfigDir, ensureConfigDir, isFirstRun } from './utils/paths';
@@ -41,6 +43,7 @@ program.addCommand(modelsCommand);
 program.addCommand(ollamaCommand);
 program.addCommand(updateCommand);
 program.addCommand(logsCommand);
+program.addCommand(endpointCommand);
 
 // Default action when no command is specified
 program.action(async () => {
@@ -71,5 +74,20 @@ program.action(async () => {
   }
 });
 
-// Parse command line arguments
-program.parse(process.argv);
+// Dispatch a known harness name (e.g. `sail-proxy codex ...`) to the launcher
+// instead of the default commander parse.
+const argv = process.argv.slice(2);
+const first = argv.find(a => !a.startsWith('-'));
+if (first && ADAPTERS[first]) {
+  const idx = argv.indexOf(first);
+  const flags = argv.slice(0, idx);
+  const passthrough = argv.slice(idx + 1);
+  const noWebSearch = flags.includes('--no-web-search') || passthrough.includes('--no-web-search');
+  const dryRun = flags.includes('--dry-run') || passthrough.includes('--dry-run');
+  runLauncher(first, passthrough.filter(a => a !== '--no-web-search' && a !== '--dry-run'), { noWebSearch, dryRun })
+    .then(code => process.exit(code))
+    .catch(e => { console.error(chalk.red(e.message)); process.exit(1); });
+} else {
+  // Parse command line arguments
+  program.parse(process.argv);
+}

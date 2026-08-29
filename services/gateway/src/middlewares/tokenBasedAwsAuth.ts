@@ -8,8 +8,11 @@ import {
   ValidationResponse as TokenValidationResponse 
 } from '../../../../libs/aws-token-validation/validation-token';
 import securityEventEmitter from '../services/securityEventEmitter';
+import { credentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
+import { getClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from '../services/configService';
 const logger = getDefaultLogger();
 
 interface ParsedAuthHeader {
@@ -204,9 +207,12 @@ class TokenBasedAwsAuth {
         
         logger.warn('TokenBasedAwsAuth', `Authentication failed for ${secretLabel(parsed.accessKeyId)}: ${errorMessage}`);
         
-        // Emit security event using SecurityEventEmitter
+        // Emit security event using SecurityEventEmitter. accessKeyId is a public
+        // identifier by AWS design, but this is still an unresolved credential (the
+        // signature/lookup failed) — hash + hint it the same as an unresolved API key,
+        // for consistency (see utils/credentialIdentity.ts).
         await securityEventEmitter.emitFailedAuth({
-          credentialId: parsed.accessKeyId,
+          ...credentialIdentity(parsed.accessKeyId),
           authType: 'aws_credential',
           reason: errorMessage,
           clientIP: this.getClientIp(req),
@@ -464,12 +470,10 @@ class TokenBasedAwsAuth {
     ).join('/');
   }
 
+  // Delegates to utils/clientIp's single derivation, gated on the
+  // `security.trust_forwarded_for` config flag.
   private getClientIp(req: Request): string {
-    return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-           (req.headers['x-real-ip'] as string) ||
-           req.connection.remoteAddress ||
-           req.ip ||
-           'unknown';
+    return getClientIp(req, getTrustForwardedFor());
   }
 
   private sanitizeHeaders(headers: any): Record<string, string> {
