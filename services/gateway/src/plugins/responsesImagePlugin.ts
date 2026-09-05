@@ -44,6 +44,15 @@
  * this change, so a request headed there is left alone here even though it carries the same
  * hook (`hooks.defaults.openai.responses` / `responses-stream`) as an orchestration-bound one.
  *
+ * IMAGE-TOKEN CAPTURE. This plugin is also where the orchestration bridge's request-time
+ * image references are collected for `imageTokenCapture.ts` (Task 9): SAP orchestration,
+ * unlike the native Responses route, never reports image tokens back, so the gateway has
+ * to compute them itself from each image's dimensions -- off the hot path, well after this
+ * plugin (and the response) have finished. Every `input_image` part's (post-inline) url is
+ * pushed onto `req.__imageRefs`, whether it started out remote (now a `data:` url with the
+ * bytes already in hand, no extra fetch needed later) or was already a `data:` url the
+ * client sent directly.
+ *
  * MASKING ORDER, a known trade-off, not a bug. `pseudonymizationPlugin` sits at index 0 in
  * both hook arrays, ahead of this plugin, and its `replacer.ts` (`:77-88`) walks every string
  * under `body.input` — `image_url` values included — replacing anything that matches a
@@ -86,6 +95,13 @@ function setUrl(part: any, url: string): void {
   else part.image_url = { ...part.image_url, url };
 }
 
+/** Accumulate an image reference for imageTokenCapture.ts's deferred compute (Task 9). */
+function addImageRef(req: Request, ref: string): void {
+  const refs: string[] = (req as any).__imageRefs || [];
+  refs.push(ref);
+  (req as any).__imageRefs = refs;
+}
+
 /**
  * A download failure ends the request with a 400 that names the real cause, rather than
  * letting a mangled/unreachable url ride through to the bridge's opaque
@@ -119,11 +135,19 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
       for (const part of item.content) {
         if (part?.type !== 'input_image') continue;
         const url = extractUrl(part);
-        if (typeof url !== 'string' || !REMOTE_URL_RE.test(url)) continue;
+        if (typeof url !== 'string') continue;
+
+        if (!REMOTE_URL_RE.test(url)) {
+          // Already a `data:` url (or some other local reference) -- nothing to inline,
+          // but still a ref imageTokenCapture.ts needs for its deferred token compute.
+          addImageRef(req, url);
+          continue;
+        }
 
         try {
           const dataUrl = await imageUtils.remoteUrlToDataUrl(url);
           setUrl(part, dataUrl);
+          addImageRef(req, dataUrl);
           pluginLogger.info(`responsesImagePlugin: inlined a remote input_image (${url}) as a data URL`);
         } catch (error: any) {
           pluginLogger.error(`responsesImagePlugin: failed to download input_image from "${url}": ${error.message}`);

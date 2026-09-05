@@ -500,4 +500,622 @@ describeLive('Role-Based Access Control Integration Tests', () => {
       }
     });
   });
+
+  describe('Lifecycle write matrix (admin-only isActive / expiresAt)', () => {
+    const keys = '/odata/v4/admin/ApiKeys';
+    const creds = '/odata/v4/admin/AwsCredentials';
+    const FUTURE = '2030-01-01T00:00:00.000Z';
+    let userKeyId: string;
+    let userCredId: string;
+    let userCredAccessKeyId: string;
+
+    async function draftEdit(client: AxiosInstance, base: string, id: string, patch: Record<string, unknown>) {
+      await client.post(`${base}(ID=${id},IsActiveEntity=true)/AdminService.draftEdit`, { PreserveChanges: true });
+      await client.patch(`${base}(ID=${id},IsActiveEntity=false)`, patch);
+      const activate = await client.post(`${base}(ID=${id},IsActiveEntity=false)/AdminService.draftActivate`, {});
+      if (activate.status >= 300) {
+        // Best-effort cleanup so a failed activation doesn't leave a draft blocking later tests.
+        try {
+          await client.delete(`${base}(ID=${id},IsActiveEntity=false)`);
+        } catch {
+          // ignore
+        }
+      }
+      return activate;
+    }
+
+    /**
+     * Make a credential expire without storing a past date: past dates are rejected on update, so
+     * the admin sets a TTL out and we wait for it to lapse. This is also the proof that an admin's
+     * expiresAt edit is honoured by the validation paths below.
+     *
+     * Both ends are anchored to the same deadline rather than using a fixed sleep: the draft flow
+     * below is three sequential OData round-trips (draftEdit -> PATCH -> draftActivate), and the
+     * past-date guard runs at activation, so on a slow runner an unanchored short TTL can already
+     * be in the past by the time activation happens. Anchoring keeps the total wait bounded while
+     * guaranteeing the deadline is still in the future when it is submitted.
+     */
+    async function expireViaAdmin(base: string, id: string) {
+      const deadline = Date.now() + 8000;
+      const soon = new Date(deadline).toISOString();
+      const a = await draftEdit(adminClient, base, id, { expiresAt: soon });
+      expect([200, 201, 204]).toContain(a.status);
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline + 500 - Date.now())));
+    }
+
+    beforeAll(async () => {
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'lifecycle user key', email: 'user@test.com' });
+      expect(k.status).toBe(200);
+      userKeyId = k.data.id;
+      createdApiKeys.push(userKeyId);
+
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'lifecycle user cred',
+        description: 'lifecycle matrix', expiresAt: FUTURE, permissions: []
+      });
+      expect(c.status).toBe(200);
+      userCredId = c.data.id;
+      userCredAccessKeyId = c.data.accessKeyId;
+      createdAwsCredentials.push(userCredAccessKeyId);
+    });
+
+    test('user draft edit does not change isActive on their own API key', async () => {
+      const a = await draftEdit(userClient, keys, userKeyId, { isActive: false });
+      expect([200, 201, 204]).toContain(a.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+    });
+
+    test('user draft edit cannot smuggle isActive through activation', async () => {
+      const a = await draftEdit(userClient, keys, userKeyId, { isActive: false, name: 'renamed by owner' });
+      expect([200, 201, 204]).toContain(a.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+      expect(row.data.name).toBe('renamed by owner');
+    });
+
+    test('user draft edit does not change expiresAt on their own API key', async () => {
+      const before = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      const a = await draftEdit(userClient, keys, userKeyId, { expiresAt: FUTURE });
+      expect([200, 201, 204]).toContain(a.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.expiresAt).toBe(before.data.expiresAt);
+    });
+
+    test('admin can flip isActive and set expiresAt on any API key', async () => {
+      const off = await draftEdit(adminClient, keys, userKeyId, { isActive: false });
+      expect([200, 201, 204]).toContain(off.status);
+      const on = await draftEdit(adminClient, keys, userKeyId, { isActive: true, expiresAt: FUTURE });
+      expect([200, 201, 204]).toContain(on.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+      expect(new Date(row.data.expiresAt).toISOString()).toBe(FUTURE);
+    });
+
+    test('created API key carries a default expiresAt ~90 days out', async () => {
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      // set to FUTURE above; create a fresh key to observe the default
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'default expiry probe', email: 'user@test.com' });
+      expect(k.status).toBe(200);
+      createdApiKeys.push(k.data.id);
+      const fresh = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      const days = (new Date(fresh.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+      expect(row.status).toBe(200);
+    });
+
+    test('a refresh moves expiresAt forward for the owner as well as an administrator', async () => {
+      // Park the date well beyond the standard period so "moved to ~90 days" is a real change.
+      const parked = await draftEdit(adminClient, keys, userKeyId, { expiresAt: FUTURE });
+      expect([200, 201, 204]).toContain(parked.status);
+
+      const byOwner = await userClient.post(`${keys}(ID=${userKeyId},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(byOwner.status).toBe(200);
+      expect(byOwner.data.success).toBe(true);
+      const afterOwner = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      const ownerDays = (new Date(afterOwner.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(ownerDays).toBeGreaterThan(89);
+      expect(ownerDays).toBeLessThanOrEqual(90);
+
+      const byAdmin = await adminClient.post(`${keys}(ID=${userKeyId},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(byAdmin.data.success).toBe(true);
+      const afterAdmin = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      const adminDays = (new Date(afterAdmin.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(adminDays).toBeGreaterThan(89);
+      expect(adminDays).toBeLessThanOrEqual(90);
+    });
+
+    test('an owner refresh of an AWS credential also moves expiresAt forward', async () => {
+      const parked = await draftEdit(adminClient, creds, userCredId, { expiresAt: FUTURE });
+      expect([200, 201, 204]).toContain(parked.status);
+      const r = await userClient.post(`${creds}(ID=${userCredId},IsActiveEntity=true)/AdminService.rotateAwsCredentials`, {});
+      expect(r.status).toBe(200);
+      expect(r.data.success).toBe(true);
+      const row = await adminClient.get(`${creds}(ID=${userCredId},IsActiveEntity=true)`);
+      const days = (new Date(row.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+      // The rotation replaced the access key: track the new one for cleanup, and keep
+      // userCredAccessKeyId current so later tests (e.g. the unified-path expiry test)
+      // address the credential that actually exists rather than the superseded key.
+      createdAwsCredentials.push(r.data.newAccessKeyId);
+      userCredAccessKeyId = r.data.newAccessKeyId;
+    });
+
+    test('owner cannot rotate an inactive key', async () => {
+      const off = await adminClient.post('/odata/v4/admin/disableApiKey', { keyId: userKeyId });
+      expect(off.status).toBe(200);
+      expect(off.data.success).toBe(true);
+      const r = await userClient.post(`${keys}(ID=${userKeyId},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(r.data.success).toBe(false);
+      expect(r.data.message).toMatch(/inactive/);
+      const on = await adminClient.post('/odata/v4/admin/enableApiKey', { keyId: userKeyId });
+      expect(on.status).toBe(200);
+      expect(on.data.success).toBe(true);
+    });
+
+    test('user cannot enable or disable an API key through the unbound actions', async () => {
+      const disable = await userClient.post('/odata/v4/admin/disableApiKey', { keyId: userKeyId });
+      expect([403]).toContain(disable.status); // @requires: CAP answers before the handler runs
+      const enable = await userClient.post('/odata/v4/admin/enableApiKey', { keyId: userKeyId });
+      expect([403]).toContain(enable.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+    });
+
+    test('admin can disable and re-enable an API key through the unbound actions', async () => {
+      const off = await adminClient.post('/odata/v4/admin/disableApiKey', { keyId: userKeyId });
+      expect(off.status).toBe(200);
+      expect(off.data.success).toBe(true);
+      const disabled = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(disabled.data.isActive).toBe(false);
+      const on = await adminClient.post('/odata/v4/admin/enableApiKey', { keyId: userKeyId });
+      expect(on.status).toBe(200);
+      expect(on.data.success).toBe(true);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+    });
+
+    test('user cannot enable/disable their own AWS credential; draft edit does not change isActive', async () => {
+      const disable = await userClient.post(`${creds}(ID=${userCredId},IsActiveEntity=true)/AdminService.disableAwsCredentials`, {});
+      expect([403, 404]).toContain(disable.status); // grant removed: CAP answers 403 (or 404 when it hides the action)
+      const a = await draftEdit(userClient, creds, userCredId, { isActive: false });
+      expect([200, 201, 204]).toContain(a.status);
+      const row = await adminClient.get(`${creds}(ID=${userCredId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+    });
+
+    test('admin can disable and re-enable an AWS credential', async () => {
+      const off = await adminClient.post(`${creds}(ID=${userCredId},IsActiveEntity=true)/AdminService.disableAwsCredentials`, {});
+      expect(off.status).toBe(200);
+      expect(off.data.success).toBe(true);
+      const on = await adminClient.post(`${creds}(ID=${userCredId},IsActiveEntity=true)/AdminService.enableAwsCredentials`, {});
+      expect(on.data.success).toBe(true);
+    });
+
+    // ---- Expiration is preset on NEW (the create form opens with a date, not an empty field) ----
+
+    test.each([
+      ['user', () => userClient],
+      ['admin', () => adminClient],
+    ])('NEW ApiKeys draft presets expiresAt ~90 days out for a %s', async (_role, client) => {
+      const d = await client().post(keys, { name: 'new draft expiry probe' });
+      expect([200, 201]).toContain(d.status);
+      expect(d.data.expiresAt).not.toBeNull();
+      const days = (new Date(d.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+      expect(d.data.isActive).toBe(true);
+      expect(d.data.usageCount).toBe(0);
+      await client().delete(`${keys}(ID=${d.data.ID},IsActiveEntity=false)`);
+    });
+
+    test.each([
+      ['user', () => userClient],
+      ['admin', () => adminClient],
+    ])('NEW AwsCredentials draft presets expiresAt ~90 days out for a %s', async (_role, client) => {
+      const d = await client().post(creds, { name: 'new draft expiry probe' });
+      expect([200, 201]).toContain(d.status);
+      expect(d.data.expiresAt).not.toBeNull();
+      const days = (new Date(d.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+      expect(d.data.region).toBe('us-east-1');
+      expect(d.data.sapAiRegion).not.toBeNull();
+      await client().delete(`${creds}(ID=${d.data.ID},IsActiveEntity=false)`);
+    });
+
+    test('a NEW ApiKeys draft belongs to a non-admin creator; an admin picks the owner', async () => {
+      const mine = await userClient.post(keys, { name: 'new draft owner probe' });
+      expect(mine.data.email).toBe('user@test.com');
+      await userClient.delete(`${keys}(ID=${mine.data.ID},IsActiveEntity=false)`);
+
+      const theirs = await adminClient.post(keys, { name: 'new draft owner probe' });
+      expect(theirs.data.email).toBeNull();
+      await adminClient.delete(`${keys}(ID=${theirs.data.ID},IsActiveEntity=false)`);
+    });
+
+    // ---- A date in the past is never accepted ----
+
+    test('an admin draft edit to a past expiresAt is refused and the stored date is unchanged', async () => {
+      const before = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      const a = await draftEdit(adminClient, keys, userKeyId, { expiresAt: '2020-01-01T00:00:00.000Z' });
+      expect(a.status).toBe(400);
+      expect(JSON.stringify(a.data)).toMatch(/Expires At must be in the future/);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.expiresAt).toBe(before.data.expiresAt);
+    });
+
+    test('an admin draft edit to a past expiresAt on AWS credentials is refused', async () => {
+      const before = await adminClient.get(`${creds}(ID=${userCredId},IsActiveEntity=true)`);
+      const a = await draftEdit(adminClient, creds, userCredId, { expiresAt: '2020-01-01T00:00:00.000Z' });
+      expect(a.status).toBe(400);
+      expect(JSON.stringify(a.data)).toMatch(/Expires At must be in the future/);
+      const row = await adminClient.get(`${creds}(ID=${userCredId},IsActiveEntity=true)`);
+      expect(row.data.expiresAt).toBe(before.data.expiresAt);
+    });
+
+    test('createAwsCredentials with a past expiresAt is refused', async () => {
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'past date probe',
+        description: 'past date probe', expiresAt: '2020-01-01T00:00:00.000Z', permissions: []
+      });
+      expect(c.status).toBe(400);
+      expect(JSON.stringify(c.data)).toMatch(/Expires At must be in the future/);
+    });
+
+    test('createApiKey with a past expiresAt is refused', async () => {
+      // The action does not declare expiresAt, so CAP rejects the property before the handler
+      // runs; beforeCreateApiKey carries the same guard for the draft/CREATE path.
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', {
+        name: 'past date probe', email: 'user@test.com', expiresAt: '2020-01-01T00:00:00.000Z'
+      });
+      expect(k.status).toBe(400);
+    });
+
+    // ---- Expiry is enforced on the validation paths, and locks the credential ----
+
+    test('an expired AWS credential is rejected on the unified path and auto-locked', async () => {
+      await expireViaAdmin(creds, userCredId);
+      // Token shape matches UnifiedTokenData (validation-service.ts) and encoding matches
+      // createUnifiedValidationToken: base64 JSON, identifier (not accessKeyId), requestMetadata.
+      const tokenData = {
+        authType: 'aws_credential',
+        identifier: userCredAccessKeyId,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      };
+      const token = Buffer.from(JSON.stringify(tokenData)).toString('base64');
+      const v = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token });
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(false);
+      const row = await adminClient.get(`${creds}(ID=${userCredId},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(false);
+    });
+
+    test('an expired AWS credential is rejected on the legacy token path and auto-locked', async () => {
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'legacy expiry probe',
+        description: 'legacy expiry probe', expiresAt: FUTURE, permissions: []
+      });
+      expect(c.status).toBe(200);
+      createdAwsCredentials.push(c.data.accessKeyId);
+      await expireViaAdmin(creds, c.data.id);
+
+      // Legacy token shape (decodeSecureToken): base64 JSON keyed by accessKeyId, not identifier.
+      const token = Buffer.from(JSON.stringify({
+        accessKeyId: c.data.accessKeyId,
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      })).toString('base64');
+      const v = await adminClient.post('/odata/v4/validation/validateAwsCredentialsByToken', {
+        token, stringToSign: 'x', signature: 'y'
+      });
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(false);
+      expect(v.data.error?.code).toBe('CREDENTIAL_EXPIRED');
+      // No credential metadata leaks on the rejection path.
+      expect(v.data.credentialMetadata).toBeUndefined();
+      const row = await adminClient.get(`${creds}(ID=${c.data.id},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(false);
+    });
+
+    test('an expired API key is rejected by validateApiKey and auto-locked', async () => {
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'expiry lock probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      await expireViaAdmin(keys, k.data.id);
+      const v = await adminClient.get(`/odata/v4/validation/validateApiKey(key='${k.data.key}',clientIp='127.0.0.1',userAgent='jest')`);
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(false);
+      const row = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(false);
+    });
+
+    test('an expired API key is rejected on the unified path and auto-locked', async () => {
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'unified expiry probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      // The admin shortens the expiration and the validation path honours the new date.
+      await expireViaAdmin(keys, k.data.id);
+      const tokenData = {
+        authType: 'api_key',
+        identifier: k.data.key,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      };
+      const token = Buffer.from(JSON.stringify(tokenData)).toString('base64');
+      const v = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token });
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(false);
+      expect(v.data.error?.code).toBe('API_KEY_EXPIRED');
+      const row = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(false);
+    });
+
+    // ---- The admin-only never-expires flag ----
+
+    test('an admin sets neverExpires and the key loses its date; a user sees it read-only', async () => {
+      const on = await draftEdit(adminClient, keys, userKeyId, { neverExpires: true });
+      expect([200, 201, 204]).toContain(on.status);
+
+      const asAdmin = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(asAdmin.data.neverExpires).toBe(true);
+      expect(asAdmin.data.expiresAt).toBeNull();
+      expect(asAdmin.data.neverExpiresFC).toBe(3);
+      // Expires At goes read-only on a flagged row: there is no date left to edit.
+      expect(asAdmin.data.expiresAtFC).toBe(1);
+
+      const asOwner = await userClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(asOwner.data.neverExpires).toBe(true);
+      expect(asOwner.data.neverExpiresFC).toBe(1);
+      expect(asOwner.data.isActiveFC).toBe(1);
+    });
+
+    test('a user draft edit cannot clear neverExpires on their own key', async () => {
+      const a = await draftEdit(userClient, keys, userKeyId, { neverExpires: false, name: 'renamed while flagged' });
+      expect([200, 201, 204]).toContain(a.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.neverExpires).toBe(true);
+      expect(row.data.expiresAt).toBeNull();
+      expect(row.data.name).toBe('renamed while flagged');
+    });
+
+    test('a refresh leaves a never-expiring key dateless, for the owner and for an admin', async () => {
+      const byOwner = await userClient.post(`${keys}(ID=${userKeyId},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(byOwner.data.success).toBe(true);
+      const afterOwner = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(afterOwner.data.expiresAt).toBeNull();
+      expect(afterOwner.data.neverExpires).toBe(true);
+
+      const byAdmin = await adminClient.post(`${keys}(ID=${userKeyId},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(byAdmin.data.success).toBe(true);
+      const afterAdmin = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(afterAdmin.data.expiresAt).toBeNull();
+    });
+
+    test('expiresAtFC is correct from a narrow $select, not just when neverExpires is also selected', async () => {
+      // Regression for the Fiori Elements SideEffects re-read after toggling Never Expires in a
+      // draft: it issues exactly this narrow $select (an FC virtual without neverExpires), which
+      // must not see expiresAtFC computed from an undefined neverExpires.
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'fc select probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      const flag = await draftEdit(adminClient, keys, k.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(flag.status);
+
+      const narrow = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)?$select=expiresAtFC`);
+      expect(narrow.data.expiresAtFC).toBe(1);
+
+      const both = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)?$select=neverExpiresFC,expiresAtFC`);
+      expect(both.data.neverExpiresFC).toBe(3);
+      expect(both.data.expiresAtFC).toBe(1);
+
+      const asOwner = await userClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)?$select=neverExpiresFC,expiresAtFC`);
+      expect(asOwner.data.neverExpiresFC).toBe(1);
+      expect(asOwner.data.expiresAtFC).toBe(1);
+    });
+
+    test('an admin clearing neverExpires without a date gets the standard period back', async () => {
+      const off = await draftEdit(adminClient, keys, userKeyId, { neverExpires: false });
+      expect([200, 201, 204]).toContain(off.status);
+      const row = await adminClient.get(`${keys}(ID=${userKeyId},IsActiveEntity=true)`);
+      expect(row.data.neverExpires).toBe(false);
+      const days = (new Date(row.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+      expect(row.data.expiresAtFC).toBe(3);
+    });
+
+    test('neverExpires keeps a lapsed API key valid on the unified path and unlocked', async () => {
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'never expires probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      // Let the date actually lapse, then flag the key: the flag is what keeps it valid, since
+      // setting it clears the date and the validation path stops consulting one.
+      await expireViaAdmin(keys, k.data.id);
+      const on = await draftEdit(adminClient, keys, k.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(on.status);
+
+      const tokenData = {
+        authType: 'api_key',
+        identifier: k.data.key,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      };
+      const token = Buffer.from(JSON.stringify(tokenData)).toString('base64');
+      const v = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token });
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(true);
+      const row = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true); // not auto-locked
+      expect(row.data.expiresAt).toBeNull();
+    });
+
+    test('neverExpires keeps a lapsed AWS credential valid on the unified path and unlocked', async () => {
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'never expires cred probe',
+        description: 'never expires probe', expiresAt: FUTURE, permissions: []
+      });
+      expect(c.status).toBe(200);
+      createdAwsCredentials.push(c.data.accessKeyId);
+      await expireViaAdmin(creds, c.data.id);
+      const on = await draftEdit(adminClient, creds, c.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(on.status);
+
+      const tokenData = {
+        authType: 'aws_credential',
+        identifier: c.data.accessKeyId,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      };
+      const token = Buffer.from(JSON.stringify(tokenData)).toString('base64');
+      const v = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token });
+      expect(v.status).toBe(200);
+      expect(v.data.valid).toBe(true);
+      const row = await adminClient.get(`${creds}(ID=${c.data.id},IsActiveEntity=true)`);
+      expect(row.data.isActive).toBe(true);
+      expect(row.data.expiresAt).toBeNull();
+      expect(row.data.neverExpiresFC).toBe(3);
+    });
+
+    test('the flag does not rescue an inactive credential on either unified path', async () => {
+      // neverExpires answers "has this lapsed", not "is this allowed" - a disabled credential
+      // stays rejected, so the flag can never become a way around an administrator's disable.
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'flagged but inactive probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      const flagKey = await draftEdit(adminClient, keys, k.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(flagKey.status);
+      const off = await adminClient.post('/odata/v4/admin/disableApiKey', { keyId: k.data.id });
+      expect(off.data.success).toBe(true);
+
+      const keyToken = Buffer.from(JSON.stringify({
+        authType: 'api_key',
+        identifier: k.data.key,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      })).toString('base64');
+      const vKey = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token: keyToken });
+      expect(vKey.status).toBe(200);
+      expect(vKey.data.valid).toBe(false);
+      expect(vKey.data.error?.code).toBe('API_KEY_NOT_FOUND'); // the lookup filters on isActive
+
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'flagged but inactive cred probe',
+        description: 'flagged inactive probe', expiresAt: FUTURE, permissions: []
+      });
+      createdAwsCredentials.push(c.data.accessKeyId);
+      const flagCred = await draftEdit(adminClient, creds, c.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(flagCred.status);
+      const credOff = await adminClient.post(`${creds}(ID=${c.data.id},IsActiveEntity=true)/AdminService.disableAwsCredentials`, {});
+      expect(credOff.data.success).toBe(true);
+
+      const credToken = Buffer.from(JSON.stringify({
+        authType: 'aws_credential',
+        identifier: c.data.accessKeyId,
+        requestMetadata: { clientIp: '127.0.0.1', method: 'POST', endpoint: '/odata/v4/validation/validateUnifiedAuthByToken' },
+        requestId: uuidv4(),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000
+      })).toString('base64');
+      const vCred = await adminClient.post('/odata/v4/validation/validateUnifiedAuthByToken', { token: credToken });
+      expect(vCred.status).toBe(200);
+      expect(vCred.data.valid).toBe(false);
+    });
+
+    test('a flagged AWS credential never appears among the expired ones', async () => {
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'expired view probe',
+        description: 'expired view probe', expiresAt: FUTURE, permissions: []
+      });
+      createdAwsCredentials.push(c.data.accessKeyId);
+      // Let the date genuinely lapse, so without the flag the row would qualify for the view.
+      await expireViaAdmin(creds, c.data.id);
+      const lapsed = await adminClient.get('/odata/v4/admin/ExpiredAwsCredentials');
+      expect(lapsed.status).toBe(200);
+      expect((lapsed.data.value || []).map((r: any) => r.ID)).toContain(c.data.id);
+
+      const on = await draftEdit(adminClient, creds, c.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(on.status);
+      const after = await adminClient.get('/odata/v4/admin/ExpiredAwsCredentials');
+      expect(after.status).toBe(200);
+      expect((after.data.value || []).map((r: any) => r.ID)).not.toContain(c.data.id);
+    });
+
+    test('an admin unticking the flag settles the date inside the draft, before activation', async () => {
+      // Expires At is Mandatory (FC 7) for admins on AWS credentials, so a draft left at
+      // { neverExpires: false, expiresAt: null } could never be activated from the app. The draft
+      // handler settles the pair, so the date is already there when the form re-reads the draft.
+      const c = await adminClient.post('/odata/v4/admin/createAwsCredentials', {
+        userId: 'user@test.com', email: 'user@test.com', name: 'draft settle probe',
+        description: 'draft settle probe', expiresAt: FUTURE, permissions: []
+      });
+      createdAwsCredentials.push(c.data.accessKeyId);
+      const flagged = await draftEdit(adminClient, creds, c.data.id, { neverExpires: true });
+      expect([200, 201, 204]).toContain(flagged.status);
+
+      await adminClient.post(`${creds}(ID=${c.data.id},IsActiveEntity=true)/AdminService.draftEdit`, { PreserveChanges: true });
+      // Ticking the box clears the date in the draft rather than leaving a stale one on display.
+      await adminClient.patch(`${creds}(ID=${c.data.id},IsActiveEntity=false)`, { neverExpires: true });
+      const stillFlagged = await adminClient.get(`${creds}(ID=${c.data.id},IsActiveEntity=false)`);
+      expect(stillFlagged.data.neverExpires).toBe(true);
+      expect(stillFlagged.data.expiresAt).toBeNull();
+      expect(stillFlagged.data.expiresAtFC).toBe(1);
+
+      // Unticking it fills the date in, so the Mandatory field has a value and activation passes.
+      await adminClient.patch(`${creds}(ID=${c.data.id},IsActiveEntity=false)`, { neverExpires: false });
+      const draft = await adminClient.get(`${creds}(ID=${c.data.id},IsActiveEntity=false)`);
+      expect(draft.data.neverExpires).toBe(false);
+      expect(draft.data.expiresAt).not.toBeNull();
+      expect(draft.data.expiresAtFC).toBe(7);
+      const draftDays = (new Date(draft.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(draftDays).toBeGreaterThan(89);
+      expect(draftDays).toBeLessThanOrEqual(90);
+
+      const activate = await adminClient.post(`${creds}(ID=${c.data.id},IsActiveEntity=false)/AdminService.draftActivate`, {});
+      expect([200, 201, 204]).toContain(activate.status);
+      const row = await adminClient.get(`${creds}(ID=${c.data.id},IsActiveEntity=true)`);
+      expect(row.data.neverExpires).toBe(false);
+      expect(row.data.expiresAt).not.toBeNull();
+    });
+
+    test('a NEW draft presets neverExpires to false for both roles', async () => {
+      const mine = await userClient.post(keys, { name: 'never expires preset probe' });
+      expect(mine.data.neverExpires).toBe(false);
+      await userClient.delete(`${keys}(ID=${mine.data.ID},IsActiveEntity=false)`);
+
+      const cred = await adminClient.post(creds, { name: 'never expires preset probe' });
+      expect(cred.data.neverExpires).toBe(false);
+      await adminClient.delete(`${creds}(ID=${cred.data.ID},IsActiveEntity=false)`);
+    });
+
+    test('an owner cannot refresh a key that has expired but is not yet locked', async () => {
+      const k = await adminClient.post('/odata/v4/admin/createApiKey', { name: 'expired refresh probe', email: 'user@test.com' });
+      createdApiKeys.push(k.data.id);
+      await expireViaAdmin(keys, k.data.id);
+      // No validation call yet, so the key is still isActive - only the date has lapsed.
+      const still = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      expect(still.data.isActive).toBe(true);
+
+      const r = await userClient.post(`${keys}(ID=${k.data.id},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(r.data.success).toBe(false);
+      expect(r.data.message).toMatch(/expired/);
+
+      // An administrator may still refresh it, and that moves the date forward again.
+      const byAdmin = await adminClient.post(`${keys}(ID=${k.data.id},IsActiveEntity=true)/AdminService.rotateApiKey`, {});
+      expect(byAdmin.data.success).toBe(true);
+      const row = await adminClient.get(`${keys}(ID=${k.data.id},IsActiveEntity=true)`);
+      const days = (new Date(row.data.expiresAt).getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+    });
+  });
 });

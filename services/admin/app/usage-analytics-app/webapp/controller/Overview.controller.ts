@@ -4,6 +4,8 @@ import MessageToast from "sap/m/MessageToast";
 import ODataModel from "sap/ui/model/odata/v4/ODataModel";
 import DateRangeSelection from "sap/m/DateRangeSelection";
 import Select from "sap/m/Select";
+import Popover from "sap/m/Popover";
+import FormattedText from "sap/m/FormattedText";
 import VizFrame from "sap/viz/ui5/controls/VizFrame";
 import VizPopover from "sap/viz/ui5/controls/Popover";
 import FlattenedDataset from "sap/viz/ui5/data/FlattenedDataset";
@@ -12,7 +14,42 @@ import FeedItem from "sap/viz/ui5/controls/common/feeds/FeedItem";
 // import { EdmType } from "sap/ui/export/util/Type";
 
 export default class OverviewController extends Controller {
-    
+
+    private _sapCostInfoPopover?: Popover;
+
+    /**
+     * Explains how the SAP Cost tile amount is computed: the SAP AI Core Capacity-Unit billing
+     * chain (model tokens -> GenAI Tokens -> Capacity Units -> SAP Cost). Opened by pressing a
+     * SAP Cost tile on the Overview or Cost tab.
+     */
+    public onSapCostTileInfo(event: any): void {
+        if (!this._sapCostInfoPopover) {
+            this._sapCostInfoPopover = new Popover({
+                title: "How SAP Cost is computed",
+                placement: "Auto",
+                contentWidth: "30rem",
+                content: [
+                    new FormattedText({
+                        htmlText:
+                            "<p><strong>SAP Cost</strong> is the SAP AI Core Capacity-Unit billing amount, built from captured token usage:<br/>" +
+                            "model tokens &#8594; <strong>GenAI Tokens</strong> &#8594; <strong>Capacity Units</strong> &#8594; <strong>SAP Cost</strong>.</p>" +
+                            "<p><strong>GenAI Tokens</strong> = inputTokens&#215;inputRate + outputTokens&#215;outputRate " +
+                            "+ (cacheReadTokens&#215;cacheReadFactor)&#215;cacheReadRate " +
+                            "+ (cacheWriteTokens&#215;cacheWriteFactor)&#215;cacheWriteRate + imageTokens&#215;imageRate.<br/>" +
+                            "The per-model rates come from the <strong>ModelCosts</strong> table &#8212; the /v2 model-discovery data SAP publishes " +
+                            "(SAP Note 3437766, &#8220;GenAI tokens per 1,000 model tokens&#8221;), divided by 1,000. The cache factors " +
+                            "calibrate the API-reported cache counts to what SAP actually meters (e.g. cache-read &#8776; 2&#215;).</p>" +
+                            "<p><strong>Capacity Units</strong> = GenAI Tokens &#215; <strong>CU Factor</strong> (1.90385, configurable via platform.billing.cuFactor).</p>" +
+                            "<p><strong>SAP Cost</strong> = Capacity Units &#215; <strong>$/CU price</strong> (per usage type and validity period, maintained in SAP Capacity Unit Prices).</p>"
+                    })
+                ]
+            });
+            this._sapCostInfoPopover.addStyleClass("sapUiContentPadding");
+            this.getView()?.addDependent(this._sapCostInfoPopover);
+        }
+        this._sapCostInfoPopover.openBy(event.getSource());
+    }
+
     public onInit(): void {
         // Ensure we have the viewModel before proceeding
         const oView = this.getView();
@@ -209,7 +246,9 @@ export default class OverviewController extends Controller {
         
         try {
             console.log("Loading live data from CAP service...");
+            await this._loadApiKeyOwners();
             await this._loadLiveData();
+            await this._loadSapBillingStats();
         } catch (error) {
             console.error("Error loading usage statistics:", error);
             MessageToast.show("Error loading usage statistics from service.");
@@ -296,6 +335,131 @@ export default class OverviewController extends Controller {
         }
     }
 
+    /** Cached API key id -> owner (name + email), so usage tables never show a raw GUID. */
+    private _apiKeyOwners: Record<string, { name?: string; email?: string }> = {};
+
+    /**
+     * Fetch the API key id -> owner (name + email) map once per load. The stats/usage data
+     * key on the key GUID only; this resolves each to its owner-facing identity (the service
+     * RBAC-filters ApiKeys, so a non-admin only sees their own). Best-effort: on failure the
+     * map is left empty and the tables fall back to the id. Two owners can both name a key
+     * 'claude', which is why email is shown alongside the name.
+     */
+    private async _loadApiKeyOwners(): Promise<void> {
+        const oDataModel = this.getView()?.getModel() as ODataModel;
+        if (!oDataModel) {
+            this._apiKeyOwners = {};
+            return;
+        }
+        const owners: Record<string, { name?: string; email?: string }> = {};
+        try {
+            const keysBinding = oDataModel.bindList("/ApiKeys", undefined, undefined, undefined, {
+                $select: "ID,name,email"
+            });
+            const keyContexts = await keysBinding.requestContexts(0, 1000);
+            keyContexts.forEach(context => {
+                const key = context.getObject() as { ID?: string; name?: string; email?: string };
+                if (key?.ID) {
+                    owners[key.ID] = { name: key.name, email: key.email };
+                }
+            });
+        } catch (error) {
+            console.warn("API key owner lookup failed; usage tables will show ids", error);
+        }
+        this._apiKeyOwners = owners;
+    }
+
+    /**
+     * Load the SAP-native Capacity-Unit / cost aggregates (Task 11), beside the dollar-estimate
+     * data loaded by _loadLiveData above. Read directly from the two OData entity sets rather
+     * than folded into the getUsageStatistics() pipeline: capacityUnits/genAiTokens/
+     * imageInputTokens are on ApiKeyUsageStats (currency-neutral, safe to sum per apiKey);
+     * sapCost is priced per currency, so it lives on the separate ApiKeyUsageSapCostStats view
+     * (grouped by apiKey + sapCostCurrency) to avoid summing different currencies together.
+     * Failures here are logged and leave the SAP billing tables empty - they must never break
+     * the main dashboard load.
+     */
+    private async _loadSapBillingStats(): Promise<void> {
+        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
+        const oDataModel = this.getView()?.getModel() as ODataModel;
+        if (!viewModel || !oDataModel) {
+            return;
+        }
+
+        try {
+            // Resolve each api key GUID to its owner name + email from the map loaded up
+            // front by _loadApiKeyOwners (the stats views key on the GUID only).
+            const ownerById = this._apiKeyOwners;
+
+            const withOwner = (rows: any[]): any[] =>
+                rows.map(row => {
+                    const owner = ownerById[row.apiKey_ID] || {};
+                    return { ...row, apiKeyName: owner.name, apiKeyEmail: owner.email };
+                });
+
+            const capacityBinding = oDataModel.bindList("/ApiKeyUsageStats", undefined, undefined, undefined, {
+                $select: "apiKey_ID,totalImageInputTokens,totalGenAiTokens,totalCapacityUnits"
+            });
+            const capacityContexts = await capacityBinding.requestContexts();
+            const capacityRows = withOwner(capacityContexts.map(context => context.getObject()));
+
+            // sapCost lives on a separate view grouped by apiKey + currency (a key can be
+            // billed in more than one currency). Aggregate it per key from the PRICED rows
+            // only (sapCostCurrency set); the unpriced rows - usage with no matching
+            // ModelCosts/price yet - carry a null currency and would otherwise show as empty
+            // $0.00 lines. Then fold the per-key cost into the capacity rows so there is one
+            // row per API key.
+            const costBinding = oDataModel.bindList("/ApiKeyUsageSapCostStats", undefined, undefined, undefined, {
+                $select: "apiKey_ID,sapCostCurrency,totalSapCost"
+            });
+            const costContexts = await costBinding.requestContexts();
+            const costByKey: Record<string, { sapCost: number; currency: string }> = {};
+            costContexts.map(context => context.getObject()).forEach((row: any) => {
+                if (!row.sapCostCurrency) return; // skip unpriced (null-currency) rows
+                const entry = costByKey[row.apiKey_ID] || { sapCost: 0, currency: row.sapCostCurrency };
+                entry.sapCost += Number(row.totalSapCost) || 0;
+                entry.currency = row.sapCostCurrency;
+                costByKey[row.apiKey_ID] = entry;
+            });
+
+            const merged = capacityRows.map((row: any) => {
+                const cost = costByKey[row.apiKey_ID];
+                const sapCost = cost ? cost.sapCost : null;
+                const cu = Number(row.totalCapacityUnits) || 0;
+                return {
+                    ...row,
+                    sapCost,
+                    sapCostCurrency: cost ? cost.currency : null,
+                    // Effective price per Capacity Unit so the row's arithmetic closes:
+                    // Capacity Units x Price per CU = SAP Cost (the missing reconciliation link).
+                    pricePerCu: sapCost != null && cu > 0 ? sapCost / cu : null
+                };
+            });
+            viewModel.setProperty("/charts/sapBillingCapacityStats", merged);
+
+            // Column totals for the bottom-of-table footer, so the figures can be reconciled
+            // against the SAP invoice (which reports one total per service + subaccount).
+            const currencies = new Set(merged.filter(r => r.sapCostCurrency).map(r => r.sapCostCurrency));
+            viewModel.setProperty("/charts/sapBillingTotals", {
+                totalImageInputTokens: merged.reduce((s, r) => s + (Number(r.totalImageInputTokens) || 0), 0),
+                totalGenAiTokens: merged.reduce((s, r) => s + (Number(r.totalGenAiTokens) || 0), 0),
+                totalCapacityUnits: merged.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0),
+                totalSapCost: merged.reduce((s, r) => s + (Number(r.sapCost) || 0), 0),
+                // Blended effective price per CU for the footer: total SAP Cost / total Capacity Units.
+                pricePerCu: (() => {
+                    const cu = merged.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0);
+                    const cost = merged.reduce((s, r) => s + (Number(r.sapCost) || 0), 0);
+                    return cu > 0 && cost > 0 ? cost / cu : null;
+                })(),
+                // A single-currency total is reconcilable; mixed currencies are not summed into one.
+                sapCostCurrency: currencies.size === 1 ? [...currencies][0] : null
+            });
+        } catch (error) {
+            console.error("Failed to load SAP-native CU/cost analytics:", error);
+            viewModel.setProperty("/charts/sapBillingCapacityStats", []);
+            viewModel.setProperty("/charts/sapBillingTotals", {});
+        }
+    }
 
     /**
      * Process and transform raw usage data for UI consumption
@@ -582,6 +746,10 @@ export default class OverviewController extends Controller {
         // Prepare Top K API keys and AWS credentials by cost with individual token field mappings
         const topApiKeys = [...apiKeyCosts].map((apiKey: any) => ({
             ...apiKey,
+            // Owner-facing identity resolved from the ApiKeys map (rows key on the GUID
+            // keyId): show the name with the owner email beside it, never a raw GUID.
+            keyName: apiKey.keyName || this._apiKeyOwners[apiKey.keyId]?.name,
+            email: apiKey.email || this._apiKeyOwners[apiKey.keyId]?.email,
             inputTokens: apiKey.totalInputTokens || 0,
             cacheCreationInputTokens: apiKey.totalCacheCreationInputTokens || 0,
             cacheReadInputTokens: apiKey.totalCacheReadInputTokens || 0,
@@ -631,6 +799,24 @@ export default class OverviewController extends Controller {
         viewModel.setProperty("/charts/topEmailsByUsage", filteredTopEmailsByUsage);
         viewModel.setProperty("/charts/topApiKeys", filteredTopApiKeys);
         viewModel.setProperty("/charts/topAwsCredentials", filteredTopAwsCredentials);
+
+        // Column totals for the footer (Totals) row of every Cost-tab table, so the figures
+        // can be reconciled against the SAP invoice (one total per service + subaccount).
+        const sumFields = (rows: any[], fields: string[]): Record<string, number> => {
+            const totals: Record<string, number> = {};
+            fields.forEach(f => { totals[f] = (rows || []).reduce((s, r) => s + (Number(r[f]) || 0), 0); });
+            return totals;
+        };
+        const usageTotalFields = ["inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens", "totalCost", "totalRequests"];
+        viewModel.setProperty("/charts/modelCostTotals", sumFields(modelCostData, [
+            "inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
+            "inputCost", "cacheCreationCost", "cacheReadCost", "outputCost", "totalCost"
+        ]));
+        viewModel.setProperty("/charts/topEmailsTotals", sumFields(filteredTopEmailsByUsage, [
+            ...usageTotalFields, "uniqueApiKeysUsed", "uniqueAwsCredentialsUsed"
+        ]));
+        viewModel.setProperty("/charts/topApiKeysTotals", sumFields(filteredTopApiKeys, usageTotalFields));
+        viewModel.setProperty("/charts/topAwsCredentialsTotals", sumFields(filteredTopAwsCredentials, usageTotalFields));
 
         // Update KPIs with better cost calculation
         const costKpis = viewModel.getProperty("/kpis") || {};
@@ -1339,7 +1525,7 @@ export default class OverviewController extends Controller {
         csvContent += `Time Period: ${dateRange ? this.formatDateRange(dateRange) : 'All Time'}\n`;
         csvContent += `User: ${userContext?.email || 'All Users'} (${userContext?.isAdmin ? 'Admin' : 'Regular User'})\n\n`;
         
-        csvContent += "API Key Name,Total Requests,Input Tokens (k),Input Rate per 1k Tokens,Cache Create Tokens (k),Cache Create Rate per 1k Tokens,Cache Read Tokens (k),Cache Read Rate per 1k Tokens,Output Tokens (k),Output Rate per 1k Tokens,Total Cost,Avg Response Time (ms),Error Count,Last Activity\n";
+        csvContent += "API Key Name,Owner Email,Total Requests,Input Tokens (k),Input Rate per 1k Tokens,Cache Create Tokens (k),Cache Create Rate per 1k Tokens,Cache Read Tokens (k),Cache Read Rate per 1k Tokens,Output Tokens (k),Output Rate per 1k Tokens,Total Cost,Avg Response Time (ms),Error Count,Last Activity\n";
         
         filteredData.forEach((apiKey: any) => {
             const lastActivity = apiKey.lastActivity ? new Date(apiKey.lastActivity).toLocaleString() : "Never";
@@ -1355,7 +1541,7 @@ export default class OverviewController extends Controller {
             const cacheReadRatePer1k = (cacheReadTokensK > 0) ? (apiKey.totalCacheReadInputCost || 0) / cacheReadTokensK : 0;
             const outputRatePer1k = (outputTokensK > 0) ? (apiKey.totalOutputCost || 0) / outputTokensK : 0;
             
-            csvContent += `"${apiKey.keyName || 'Unknown'}",${apiKey.totalRequests || 0},${inputTokensK.toFixed(3)},${inputRatePer1k.toFixed(3)},${cacheCreateTokensK.toFixed(3)},${cacheCreateRatePer1k.toFixed(3)},${cacheReadTokensK.toFixed(3)},${cacheReadRatePer1k.toFixed(3)},${outputTokensK.toFixed(3)},${outputRatePer1k.toFixed(3)},${apiKey.totalCost || 0},${apiKey.avgResponseTime || 0},${apiKey.errorCount || 0},"${lastActivity}"\n`;
+            csvContent += `"${apiKey.keyName || 'Unknown'}","${apiKey.email || ''}",${apiKey.totalRequests || 0},${inputTokensK.toFixed(3)},${inputRatePer1k.toFixed(3)},${cacheCreateTokensK.toFixed(3)},${cacheCreateRatePer1k.toFixed(3)},${cacheReadTokensK.toFixed(3)},${cacheReadRatePer1k.toFixed(3)},${outputTokensK.toFixed(3)},${outputRatePer1k.toFixed(3)},${apiKey.totalCost || 0},${apiKey.avgResponseTime || 0},${apiKey.errorCount || 0},"${lastActivity}"\n`;
         });
         
         // Download CSV file
@@ -1576,6 +1762,18 @@ export default class OverviewController extends Controller {
             currency: 'USD',
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
+        }).format(value);
+    }
+
+    // SAP-native sapCost is priced per sapCostCurrency (USD, EUR, ...), unlike the dollar-estimate
+    // columns which are always USD - the currency must be shown alongside the amount rather than
+    // assumed, so this formatter (unlike formatSmartCurrency) takes it as a second bound part.
+    public formatSapCost(value: number, currency: string): string {
+        if (!value && value !== 0) return "";
+        // Currency's own convention (2 decimals for USD) - not the 6-decimal DB precision.
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: currency || 'USD'
         }).format(value);
     }
 

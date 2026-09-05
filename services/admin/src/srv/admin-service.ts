@@ -6,10 +6,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDefaultLogger } from '@libs/logger';
 import { usageEventProcessor } from '../services/usageEventProcessor';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
+import { lifecycleChangeViolation, defaultExpiresAt, rotationPolicy, creationExpiresAt, expiresAtInPast, normalizeLifecycle } from '../services/credentialLifecycle';
 import SecurityEventService from '../services/securityEventService';
 import { recordAuditEvent } from '../services/auditEventService';
 import securityEventSubscriber from '../services/securityEventSubscriber';
 import { costRecalculationService } from '../services/costRecalculationService';
+import { reconcile } from '../services/reconciliationService';
+import { seedSapCapacityUnitPrice } from '../db/data/sap-capacity-unit-price-seed';
+import { backfillNeverExpires } from '../db/data/never-expires-backfill';
 import { securityNotificationConfig } from '../config/security-notifications';
 import { notificationPopulationService } from '../services/notificationPopulationService';
 import { dismissNotification, markNotificationSeen, markNotificationUnseen, snoozeNotification, pinNotification, unpinNotification, deleteSecurityNotification } from './notification-handlers';
@@ -43,6 +47,7 @@ interface AdminRequest {
     userId?: string;
     description?: string;
     expiresAt?: Date;
+    neverExpires?: boolean;
     accessKeyId?: string;
     signature?: string;
     stringToSign?: string;
@@ -79,6 +84,13 @@ interface AdminRequest {
     // Orphaned SIEM credential sweep properties
     names?: string[];
     configurationIds?: string[];
+    // Invoice reconciliation properties (reconcileInvoice)
+    from?: Date | string;
+    to?: Date | string;
+    invoiceGenAiTokens?: number | string;
+    invoiceCapacityUnits?: number | string;
+    invoiceCacheReadInputTokens?: number | string;
+    invoiceCacheWriteInputTokens?: number | string;
   };
   user?: { id: string };
   error: (code: number, message: string) => void;
@@ -91,6 +103,7 @@ interface ApiKeyResponse {
   name: string;
   email: string;
   isActive: boolean;
+  expiresAt: string | null;
   createdAt: Date;
 }
 
@@ -179,6 +192,8 @@ class AdminService {
     this.initializeCacheInvalidation();
     this.initializeSecurityEventSubscriber();
     this.initializeCostRecalculation();
+    this.initializeSapCapacityUnitPrice();
+    this.initializeNeverExpiresBackfill();
     this.initializeSiemDispatcher();
     this.initializeCredentialSweepReport();
 
@@ -193,7 +208,10 @@ class AdminService {
     service.on('rotateApiKey', this.rotateApiKey.bind(this));
     
     // Register draft and CRUD operation handlers
-    service.on('NEW', 'ApiKeys', this.newApiKey.bind(this));
+    // NEW draft: prefill the create form. Registered on the draft entity with before() - the
+    // on('NEW', 'ApiKeys') form never fires under lean draft, which is why Expires At came back
+    // empty. Same pattern as SapCapacityUnitPrice.drafts below.
+    service.before('NEW', 'ApiKeys.drafts', this.beforeNewApiKey.bind(this));
     service.before('CREATE', 'ApiKeys', this.beforeCreateApiKey.bind(this));
     service.before('UPDATE', 'ApiKeys', this.beforeUpdateApiKeyActive.bind(this));
     service.before('UPDATE', 'ApiKeys.drafts', this.beforeUpdateApiKeyDraft.bind(this));
@@ -209,7 +227,7 @@ class AdminService {
     service.on('UPDATE', 'ApiKeys', this.onUpdateApiKey.bind(this));
     
     // Register AWS Credentials draft and CRUD operation handlers
-    service.on('NEW', 'AwsCredentials', this.newAwsCredentials.bind(this));
+    service.before('NEW', 'AwsCredentials.drafts', this.beforeNewAwsCredentials.bind(this));
     service.before('CREATE', 'AwsCredentials', this.beforeCreateAwsCredentials.bind(this));
     service.before('UPDATE', 'AwsCredentials', this.beforeUpdateAwsCredentialsActive.bind(this));
     service.before('UPDATE', 'AwsCredentials.drafts', this.beforeUpdateAwsCredentialsDraft.bind(this));
@@ -221,8 +239,37 @@ class AdminService {
     
     // Decrypt secretAccessKey for display
     service.after('READ', 'AwsCredentials', this.afterReadAwsCredentials.bind(this));
-    
+
+    // Lifecycle field control (isActiveFC/expiresAtFC/neverExpiresFC): admin-only editability.
+    // The before-READ handler guarantees neverExpires is loaded whenever a client $select asks
+    // for one of these FC virtuals without it, so the after-READ computation below never sees an
+    // undefined neverExpires just because the caller's column list omitted it (e.g. Fiori Elements'
+    // SideEffects re-read after toggling Never Expires, which selects expiresAtFC alone).
+    service.before('READ', ['ApiKeys', 'ApiKeys.drafts', 'AwsCredentials', 'AwsCredentials.drafts'], this.beforeReadLifecycleFieldControl.bind(this));
+    service.after('READ', ['ApiKeys', 'ApiKeys.drafts', 'AwsCredentials', 'AwsCredentials.drafts'], this.afterReadLifecycleFieldControl.bind(this));
+
     // Removed virtual field handlers for clean projection approach
+
+    // Reject a new/edited rate or price whose [dateFrom,dateTo) window overlaps an
+    // existing row with the same lookup key (model / usageType). Runs before the
+    // via-base-table writers below so the persist step never sees an overlapping row.
+    // CREATE auto-delimits: a new price row extends to the end of time and closes the
+    // previously-open row for its usage type. UPDATE keeps the plain overlap reject (editing
+    // a row's own window is a manual correction, not a supersession).
+    service.before('CREATE', 'SapCapacityUnitPrice', this.beforeCreateSapCapacityUnitPrice.bind(this));
+    service.before('UPDATE', 'SapCapacityUnitPrice', this.beforeWriteSapCapacityUnitPrice.bind(this));
+    // NEW draft: prefill Valid To with the end of time so the create form shows it up front
+    // (CREATE forces the same value on activation; this just surfaces it in the draft).
+    service.before('NEW', 'SapCapacityUnitPrice.drafts', this.beforeNewSapCapacityUnitPrice.bind(this));
+
+    // Force redirection to base table when CAP writes to service view - same fix as
+    // ApiKeys/AwsCredentials above. SapCapacityUnitPrice is a draft-enabled projection,
+    // but generic CREATE/UPDATE/DELETE against it fails with "cannot modify <entity>
+    // because it is a view" under @cap-js/sqlite, so writes are redirected to the base
+    // admin.SapCapacityUnitPrice table.
+    service.on('CREATE', 'SapCapacityUnitPrice', this.onCreateSapCapacityUnitPrice.bind(this));
+    service.on('UPDATE', 'SapCapacityUnitPrice', this.onUpdateSapCapacityUnitPrice.bind(this));
+    service.on('DELETE', 'SapCapacityUnitPrice', this.onDeleteSapCapacityUnitPrice.bind(this));
     
     
     service.on('createAwsCredentials', this.createAwsCredentials.bind(this));
@@ -248,6 +295,7 @@ class AdminService {
     
     // Changed from action to function - functions use 'on' handler just like actions
     service.on('getUsageStatistics', this.getUsageStatistics.bind(this));
+    service.on('reconcileInvoice', this.reconcileInvoice.bind(this));
     service.on('getSecurityEvents', this.getSecurityEvents.bind(this));
     service.on('processUsageEvents', this.processUsageEvents.bind(this));
     service.on('processSecurityEvents', this.processSecurityEvents.bind(this));
@@ -337,6 +385,24 @@ class AdminService {
 
       // Insert API key record
       const maskedKey = maskApiKey(apiKey);
+      // Expiration is admin-managed: owners get the configured default, admins may pre-set a date
+      // or flag the key as never-expiring. The createApiKey action declares neither expiresAt nor
+      // neverExpires, so req.data never carries them and the branches below are inert; they hold
+      // the rule if the signature ever gains them.
+      const wantsNeverExpires = isAdmin && req.data.neverExpires === true;
+      if (!wantsNeverExpires && expiresAtInPast(req.data.expiresAt)) {
+        req.error(400, 'Expires At must be in the future');
+        return {} as ApiKeyResponse;
+      }
+      const lifecycle = normalizeLifecycle({
+        neverExpires: wantsNeverExpires,
+        expiresAt: creationExpiresAt({
+          isAdmin,
+          requested: req.data.expiresAt,
+          fallback: defaultExpiresAt()
+        })
+      });
+      const expiresAt = lifecycle.expiresAt === null ? null : new Date(lifecycle.expiresAt).toISOString();
 
       const INSERT = cds.ql.INSERT.into('sap.llm.gateway.admin.ApiKeys').entries({
         ID: keyId,
@@ -346,6 +412,8 @@ class AdminService {
         email,
         createdBy: req.user?.id || 'system',
         isActive: true,
+        expiresAt,
+        neverExpires: lifecycle.neverExpires,
         usageCount: 0
       });
 
@@ -384,6 +452,7 @@ class AdminService {
         name: name!,
         email: email!,
         isActive: true,
+        expiresAt,
         createdAt: new Date()
       };
     } catch (error) {
@@ -397,54 +466,34 @@ class AdminService {
     const { keyId } = req.data;
     
     // Extract user information for authorization
-    const userEmail = this.getUserEmail(req);
     const userRoles = this.getUserRoles(req);
     const isAdmin = this.isAdmin(userRoles);
-    
-    // Get the actual API key string for cache invalidation
-    let actualApiKey: string | null = null;
-    
-    // Authorization check: Non-admin users can only disable their own API keys
+
+    // Authorization check: only an administrator may change the active state, not even the owner
+    // (the action is @(requires: 'admin'), so CAP normally answers 403 before this handler runs).
     if (!isAdmin) {
-      const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
-        .columns('email', 'key')
-        .where({ ID: keyId });
-      
-      const result = await cds.run(SELECT);
-      
-      if (result.length === 0) {
-        return {
-          success: false,
-          message: 'API key not found'
-        };
-      }
-      
-      if (result[0].email !== userEmail) {
-        return {
-          success: false,
-          message: 'Access denied: You can only disable your own API keys'
-        };
-      }
-      
-      actualApiKey = result[0].key;
-    } else {
-      // Admin user - get the API key string for cache invalidation
-      const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
-        .columns('key')
-        .where({ ID: keyId });
-      
-      const result = await cds.run(SELECT);
-      
-      if (result.length === 0) {
-        return {
-          success: false,
-          message: 'API key not found'
-        };
-      }
-      
-      actualApiKey = result[0].key;
+      return {
+        success: false,
+        message: 'Access denied: only an administrator can enable/disable API keys'
+      };
     }
-    
+
+    // Get the actual API key string for cache invalidation
+    const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
+      .columns('key')
+      .where({ ID: keyId });
+
+    const result = await cds.run(SELECT);
+
+    if (result.length === 0) {
+      return {
+        success: false,
+        message: 'API key not found'
+      };
+    }
+
+    const actualApiKey: string | null = result[0].key;
+
     const UPDATE = cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys')
       .set({ isActive: false })
       .where({ ID: keyId });
@@ -471,33 +520,18 @@ class AdminService {
     const { keyId } = req.data;
     
     // Extract user information for authorization
-    const userEmail = this.getUserEmail(req);
     const userRoles = this.getUserRoles(req);
     const isAdmin = this.isAdmin(userRoles);
-    
-    // Authorization check: Non-admin users can only enable their own API keys
+
+    // Authorization check: only an administrator may change the active state, not even the owner
+    // (the action is @(requires: 'admin'), so CAP normally answers 403 before this handler runs).
     if (!isAdmin) {
-      const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
-        .columns('email')
-        .where({ ID: keyId });
-      
-      const result = await cds.run(SELECT);
-      
-      if (result.length === 0) {
-        return {
-          success: false,
-          message: 'API key not found'
-        };
-      }
-      
-      if (result[0].email !== userEmail) {
-        return {
-          success: false,
-          message: 'Access denied: You can only enable your own API keys'
-        };
-      }
+      return {
+        success: false,
+        message: 'Access denied: only an administrator can enable/disable API keys'
+      };
     }
-    
+
     const UPDATE = cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys')
       .set({ isActive: true })
       .where({ ID: keyId });
@@ -807,6 +841,18 @@ class AdminService {
       }
     }
 
+    // A refresh always moves the expiration forward, for the owner as well as an administrator.
+    // An owner is still refused on an inactive or already-expired key.
+    const rotation = rotationPolicy({
+      isAdmin,
+      stored: { isActive: apiKey.isActive, expiresAt: apiKey.expiresAt, neverExpires: apiKey.neverExpires }
+    });
+    if (!rotation.allowed) {
+      logger.warn('AdminService', `Rotation refused for ${rotation.reason} API key ${keyId} by ${userEmail}`);
+      await this.recordApiKeyAudit(req, userEmail, 'api_key.rotate', keyId, 'failure', `Rotation refused: key is ${rotation.reason}`, 'medium');
+      return { success: false, message: `Access denied: an ${rotation.reason} API key can only be rotated by an administrator` };
+    }
+
     // Generate new API key
     const newKey = 'sk-' + crypto.randomBytes(32).toString('hex');
     const newMaskedKey = maskApiKey(newKey);
@@ -829,7 +875,8 @@ class AdminService {
           key: newKey,
           maskedKey: newMaskedKey,
           modifiedAt: new Date(),
-          modifiedBy: req.user?.id || 'system'
+          modifiedBy: req.user?.id || 'system',
+          expiresAt: rotation.expiresAt
         });
       } else {
         // For active entities, update through service
@@ -837,7 +884,8 @@ class AdminService {
           key: newKey,
           maskedKey: newMaskedKey,
           modifiedAt: new Date(),
-          modifiedBy: req.user?.id || 'system'
+          modifiedBy: req.user?.id || 'system',
+          expiresAt: rotation.expiresAt
         });
       }
     } catch (error) {
@@ -948,16 +996,63 @@ class AdminService {
    * Enable API Key logic without authorization (used by UPDATE handler)
    */
   private async enableApiKeyLogic(keyId: string, req: any): Promise<void> {
+    // Get the actual API key string for cache invalidation
+    const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
+      .columns('key')
+      .where({ ID: keyId });
+
+    const result = await cds.run(SELECT);
+
+    if (result.length === 0) {
+      throw new Error('API key not found');
+    }
+
+    const actualApiKey = result[0].key;
+
     const UPDATE = cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys')
       .set({ isActive: true })
       .where({ ID: keyId });
-    
+
     const updateResult = await cds.run(UPDATE);
-    
+
     if (updateResult === 0) {
       throw new Error('API key not found or already enabled');
     }
-    
+
+    // Invalidate cache for the re-enabled API key so it is not served a stale negative for a TTL
+    try {
+      await cacheInvalidationService.invalidateApiKey(actualApiKey, 'manual', `enable-update-${Date.now()}`);
+      logger.info('AdminService', `Cache invalidated for enabled API key using actual key: ${actualApiKey.substring(0, 10)}...`);
+    } catch (error) {
+      logger.warn('AdminService', `Failed to invalidate cache for API key ${keyId}:`, error instanceof Error ? error.message : 'Unknown error');
+    }
+
+    // Also invalidate the local admin service validation cache for API key (same as the disable logic)
+    try {
+      // Access the validation service singleton instance directly
+      const validationServiceModule = require('./validation-service');
+      const validationService = validationServiceModule.instance;
+
+      if (!validationService || !validationService.cache) {
+        logger.warn('AdminService', 'Validation service instance not available for API key cache invalidation');
+      } else {
+        // The cache uses keys like "apikey:${key}" and "unified_apikey:${key}"
+        let localCacheCleared = 0;
+
+        for (const cacheKey of [`apikey:${actualApiKey}`, `unified_apikey:${actualApiKey}`]) {
+          if (validationService.cache.apiKeys && validationService.cache.apiKeys.has(cacheKey)) {
+            validationService.cache.apiKeys.delete(cacheKey);
+            localCacheCleared++;
+            logger.info('AdminService', `Cleared local cache key: ${cacheKey}`);
+          }
+        }
+
+        logger.info('AdminService', `Local validation cache invalidated for enabled API key: ${actualApiKey.substring(0, 10)}... (cleared ${localCacheCleared} entries)`);
+      }
+    } catch (error) {
+      logger.warn('AdminService', `Failed to invalidate local validation cache for enabled API key ${keyId}:`, error instanceof Error ? error.message : 'Unknown error');
+    }
+
     logger.info('AdminService', `API key ${keyId} enabled successfully via UPDATE operation`);
   }
   
@@ -1141,24 +1236,59 @@ class AdminService {
     
     // Check if user is admin
     const isAdmin = this.isAdmin(userRoles);
-    
-    if (!isAdmin) {
-      // Non-admin users can only update their own API keys
-      const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
-        .columns('email', 'isActive')
-        .where({ ID });
-      
-      const result = await cds.run(SELECT);
-      
-      if (result.length === 0) {
-        req.error(404, 'API key not found');
-        return;
-      }
-      
-      if (result[0].email !== userEmail) {
-        req.error(403, 'Access denied: You can only update your own API keys');
-        return;
-      }
+
+    // Load the stored row once: ownership check for non-admins, and the admin-only lifecycle
+    // guard for everyone (isActive / expiresAt may only be changed by an administrator).
+    const STORED = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys')
+      .columns('email', 'isActive', 'expiresAt', 'neverExpires')
+      .where({ ID });
+    const storedRows = await cds.run(STORED);
+    if (storedRows.length === 0) {
+      req.error(404, 'API key not found');
+      return;
+    }
+    const stored = storedRows[0];
+
+    if (!isAdmin && stored.email !== userEmail) {
+      req.error(403, 'Access denied: You can only update your own API keys');
+      return;
+    }
+
+    const lifecycleViolation = lifecycleChangeViolation({ isAdmin, data: req.data, stored });
+    if (lifecycleViolation) {
+      logger.warn('AdminService', `Lifecycle change refused for API key ${ID}: ${lifecycleViolation} (user: ${userEmail})`);
+      req.error(403, `Access denied: ${lifecycleViolation} of an API key`);
+      return;
+    }
+
+    // An expiration may only be moved forward in time. Draft activation resends the stored value,
+    // so only an actual change is checked - a row that is already past its date stays editable.
+    // A key being flagged as never-expiring has no date to validate.
+    const willNeverExpire = 'neverExpires' in req.data
+      ? req.data.neverExpires === true
+      : stored.neverExpires === true;
+    if (!willNeverExpire
+      && 'expiresAt' in req.data
+      && new Date(req.data.expiresAt ?? 0).getTime() !== new Date(stored.expiresAt ?? 0).getTime()
+      && expiresAtInPast(req.data.expiresAt)) {
+      req.error(400, 'Expires At must be in the future');
+      return;
+    }
+
+    // Keep the pair consistent whenever an administrator writes either half: a never-expiring key
+    // stores no date, and clearing the flag without supplying one falls back to the standard
+    // period. Gated on isAdmin because draft activation resends the whole row: without the gate
+    // this would fire on every owner rename and could hand a legacy row (neverExpires = false,
+    // expiresAt = null, missed by the backfill) an expiration its owner is not allowed to set.
+    // `?? stored` on the flag likewise matters - lifecycleChangeViolation treats an explicit
+    // undefined as "not a change", so normalizing it as "not flagged" would silently unflag a row.
+    if (isAdmin && ('neverExpires' in req.data || 'expiresAt' in req.data)) {
+      const lifecycle = normalizeLifecycle({
+        neverExpires: req.data.neverExpires ?? stored.neverExpires,
+        expiresAt: 'expiresAt' in req.data ? req.data.expiresAt : stored.expiresAt
+      });
+      req.data.neverExpires = lifecycle.neverExpires;
+      req.data.expiresAt = lifecycle.expiresAt;
     }
 
     // Role-based field guard: non-admins cannot change email
@@ -1264,6 +1394,48 @@ class AdminService {
   }
 
   /**
+   * Settle the neverExpires / expiresAt pair inside a draft, so the form shows the consequence of
+   * the toggle immediately instead of only after activation.
+   *
+   * This is what makes the "clearing the flag assigns the standard period" rule reachable from the
+   * apps at all. Expires At is Mandatory (FC 7) for administrators on AWS credentials, so a draft
+   * left at { neverExpires: false, expiresAt: null } cannot be activated — Fiori refuses until a
+   * date is typed, and the backend fallback never runs. Settling it here means unticking the box
+   * fills the date in the draft, and ticking it clears the date rather than leaving a stale one
+   * displayed beside a ticked flag.
+   *
+   * Administrators only: a non-admin's edits to either field have already been dropped by the
+   * caller, so there is nothing to settle. If the draft row cannot be read the write is left
+   * alone — the active-entity handler settles the pair again at activation regardless.
+   */
+  private async settleDraftLifecycle(req: any, draftEntity: string): Promise<void> {
+    if (!('neverExpires' in req.data || 'expiresAt' in req.data)) return;
+    const ID = req.params?.[0]?.ID ?? req.params?.[0] ?? req.data?.ID;
+    if (!ID) return;
+
+    let draft: any;
+    try {
+      const rows = await cds.transaction(req).read(draftEntity).where({ ID });
+      draft = Array.isArray(rows) ? rows[0] : rows;
+    } catch (error) {
+      logger.warn('AdminService', `Could not read ${draftEntity} to settle the lifecycle pair:`, error instanceof Error ? error.message : 'Unknown error');
+      return;
+    }
+    if (!draft) return;
+
+    const lifecycle = normalizeLifecycle({
+      neverExpires: req.data.neverExpires ?? draft.neverExpires,
+      expiresAt: 'expiresAt' in req.data ? req.data.expiresAt : draft.expiresAt
+    });
+    req.data.neverExpires = lifecycle.neverExpires;
+    req.data.expiresAt = lifecycle.expiresAt;
+    logger.info('AdminService', `Settled lifecycle pair in ${draftEntity} draft ${ID}`, {
+      neverExpires: lifecycle.neverExpires,
+      expiresAt: lifecycle.expiresAt
+    });
+  }
+
+  /**
    * Handler for UPDATE operations on draft ApiKeys entities (light validation only)
    */
   async beforeUpdateApiKeyDraft(req: any): Promise<void> {
@@ -1277,6 +1449,19 @@ class AdminService {
     if (!isAdmin && 'email' in req.data) {
       req.data.email = userEmail;  // Force to user's email instead of deleting
       logger.info('AdminService', 'Enforced email to user email for non-admin user');
+    }
+
+    // Only administrators change isActive / expiresAt / neverExpires; a non-admin's draft edit of
+    // them is dropped so activation carries the stored values and passes the active-entity guard.
+    if (!isAdmin) {
+      for (const field of ['isActive', 'expiresAt', 'neverExpires']) {
+        if (field in req.data) {
+          delete req.data[field];
+          logger.info('AdminService', `Removed ${field} from draft update - only administrators may change it`);
+        }
+      }
+    } else {
+      await this.settleDraftLifecycle(req, 'AdminService.ApiKeys.drafts');
     }
 
     // Block key updates except via rotate action - but don't delete, just log
@@ -1329,8 +1514,22 @@ class AdminService {
       const INCREMENT = cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys')
         .set('usageCount = usageCount + 1')
         .where({ ID });
-      
+
       await cds.run(INCREMENT);
+    }
+
+    // An expiration change must reach the gateway before its cached validation expires - the
+    // never-expires flag changes the same verdict, so it invalidates on the same terms.
+    if (req.data && ('expiresAt' in req.data || 'neverExpires' in req.data)) {
+      const keyId = req.params?.[0]?.ID ?? req.params?.[0] ?? results?.ID;
+      const rows = await cds.run(cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys').columns('key').where({ ID: keyId }));
+      if (rows.length > 0) {
+        try {
+          await cacheInvalidationService.invalidateApiKey(rows[0].key, 'manual', `expires-at-update-${Date.now()}`);
+        } catch (error) {
+          logger.warn('AdminService', `Failed to invalidate cache after expiresAt change for API key ${keyId}:`, error instanceof Error ? error.message : 'Unknown error');
+        }
+      }
     }
   }
 
@@ -1365,7 +1564,25 @@ class AdminService {
     const userEmail = this.getUserEmail(req);
     const userRoles = this.getUserRoles(req);
     const isAdmin = this.isAdmin(userRoles);
-    
+
+    // Expiration is admin-managed: owners get the configured default, admins may pre-set a date
+    // or flag the credential as never-expiring (which stores no date at all).
+    const wantsNeverExpires = isAdmin && req.data.neverExpires === true;
+    if (!wantsNeverExpires && expiresAtInPast(expiresAt)) {
+      req.error(400, 'Expires At must be in the future');
+      return {} as AwsCredentialsResponse;
+    }
+    const lifecycle = normalizeLifecycle({
+      neverExpires: wantsNeverExpires,
+      expiresAt: creationExpiresAt({
+        isAdmin,
+        requested: expiresAt,
+        fallback: defaultExpiresAt()
+      })
+    });
+    const storedExpiresAt: Date | null = lifecycle.expiresAt === null ? null : new Date(lifecycle.expiresAt);
+    expiresAt = storedExpiresAt ?? undefined;
+
     // Auto-populate userId with current user's email if not provided
     if (!userId) {
       userId = userEmail;
@@ -1447,7 +1664,8 @@ class AdminService {
       name,
       description,
       isActive: true,
-      expiresAt,
+      expiresAt: storedExpiresAt,
+      neverExpires: lifecycle.neverExpires,
       region: this.getAwsRegionFromSapAi(process.env.SAP_AI_REGION || 'us-east-1'),
       sapAiRegion: process.env.SAP_AI_REGION || 'us-east-1',
       usageCount: 0
@@ -1718,13 +1936,26 @@ class AdminService {
       }
     }
     
+    // Same refresh policy as rotateApiKey: the expiration always moves forward, and an owner is
+    // refused on an inactive or already-expired credential. (The lookup above already filters on
+    // isActive, so the inactive refusal is reached only if that filter ever loosens.)
+    const rotation = rotationPolicy({
+      isAdmin,
+      stored: { isActive: existing[0].isActive, expiresAt: existing[0].expiresAt, neverExpires: existing[0].neverExpires }
+    });
+    if (!rotation.allowed) {
+      logger.warn('AdminService', `Rotation refused for ${rotation.reason} AWS credentials ${credentialId} by ${userId}`);
+      await this.recordAwsCredentialAudit(req, userId, 'aws_credential.rotate', credentialId, 'failure', `Rotation refused: credentials are ${rotation.reason}`, 'medium');
+      return { success: false, message: `Access denied: ${rotation.reason} AWS credentials can only be rotated by an administrator` };
+    }
+
     logger.info('AdminService', `[RBAC] AWS credentials rotation authorized for ${existing[0].userId} by ${userId}`, {
       isOwnCredentials: existing[0].userId === userId,
       isAdmin,
       userRoles,
       endpoint: 'rotateAwsCredentials'
     });
-    
+
     // Generate new credentials
     const newAccessKeyId = 'AKIA' + crypto.randomBytes(8).toString('hex').toUpperCase();
     const newSecretAccessKey = crypto.randomBytes(20).toString('hex');
@@ -1740,7 +1971,8 @@ class AdminService {
         accessKeyId: newAccessKeyId,
         secretAccessKey: encryptedSecretAccessKey,
         secretHash,
-        salt
+        salt,
+        expiresAt: rotation.expiresAt
       })
       .where({ ID: credentialId });
     
@@ -2844,6 +3076,55 @@ class AdminService {
     }
   }
 
+  /**
+   * Invoice reconciliation + calibration back-out (Task 13). Sums the SAP-native fields
+   * already recorded on ApiKeyUsage over [from,to] and, given the operator-entered invoice
+   * figures for that same period, backs out the implied calibration factors. Read-only: the
+   * caller reviews the suggestion and sets sap_cache_*_token_billing_factor themselves - this
+   * handler never writes anything.
+   */
+  async reconcileInvoice(req: AdminRequest): Promise<{
+    capacityUnits: number;
+    sapCostByCurrency: Array<{ currency: string; amount: number }>;
+    capturedGenAiTokens: number;
+    capturedCacheReadInputTokens: number;
+    capturedCacheWriteInputTokens: number;
+    impliedCuFactor: number | null;
+    impliedCacheReadFactor: number | null;
+    impliedCacheWriteFactor: number | null;
+  }> {
+    const {
+      from, to,
+      invoiceGenAiTokens, invoiceCapacityUnits,
+      invoiceCacheReadInputTokens, invoiceCacheWriteInputTokens
+    } = req.data;
+
+    const toNumber = (v: number | string | undefined): number | undefined =>
+      v === undefined || v === null || v === '' ? undefined : Number(v);
+
+    const result = await reconcile({
+      from: new Date(from as any),
+      to: new Date(to as any),
+      invoice: {
+        genAiTokens: toNumber(invoiceGenAiTokens),
+        capacityUnits: toNumber(invoiceCapacityUnits),
+        cacheReadInputTokens: toNumber(invoiceCacheReadInputTokens),
+        cacheWriteInputTokens: toNumber(invoiceCacheWriteInputTokens)
+      }
+    });
+
+    return {
+      capacityUnits: result.capacityUnits,
+      sapCostByCurrency: Object.entries(result.sapCostByCurrency).map(([currency, amount]) => ({ currency, amount })),
+      capturedGenAiTokens: result.capturedGenAiTokens,
+      capturedCacheReadInputTokens: result.capturedCacheReadInputTokens,
+      capturedCacheWriteInputTokens: result.capturedCacheWriteInputTokens,
+      impliedCuFactor: result.impliedCuFactor,
+      impliedCacheReadFactor: result.impliedCacheReadFactor,
+      impliedCacheWriteFactor: result.impliedCacheWriteFactor
+    };
+  }
+
   async getSecurityEvents(req: AdminRequest): Promise<any[]> {
     const { startDate, endDate, severity } = req.data;
     
@@ -3013,10 +3294,11 @@ class AdminService {
   private isAdmin(roles: string[]): boolean {
     return roles.some(role => {
       if (typeof role !== 'string') return false;
+      // Exact match or an xsuaa scope suffix only - a substring match would let a scope such as
+      // 'non-admin' or 'admin-readonly' pass the admin-only lifecycle guards.
       return (
         role === 'admin' ||
         role === 'Admin' ||
-        role.includes('admin') ||
         role.endsWith('.admin')
       );
     });
@@ -3141,6 +3423,39 @@ class AdminService {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.warn('AdminService', `Failed to initialize cost recalculation: ${errorMsg}`);
       // Don't throw - cost recalculation is not critical for admin service functionality
+    }
+  }
+
+  /**
+   * Seed SapCapacityUnitPrice (CU -> currency, per usage type + temporal) on boot. Idempotent:
+   * seedSapCapacityUnitPrice skips rows that already exist for a given usageType+dateFrom.
+   */
+  private async initializeSapCapacityUnitPrice(): Promise<void> {
+    try {
+      logger.info('AdminService', 'Seeding SAP capacity unit price');
+      const db = await cds.connect.to('db');
+      const inserted = await seedSapCapacityUnitPrice(db);
+      logger.info('AdminService', `SapCapacityUnitPrice seeded ${inserted} rows`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to seed SAP capacity unit price: ${errorMsg}`);
+      // Don't throw - SAP capacity unit price seeding is not critical for admin service functionality
+    }
+  }
+
+  /**
+   * Flag credentials that predate the expiration feature (no expiresAt) as never-expiring, so the
+   * grandfathering is a stored, admin-visible property instead of an implicit null. Idempotent.
+   */
+  private async initializeNeverExpiresBackfill(): Promise<void> {
+    try {
+      const db = await cds.connect.to('db');
+      const updated = await backfillNeverExpires(db);
+      logger.info('AdminService', `neverExpires backfill flagged ${updated} legacy credential rows`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to backfill neverExpires: ${errorMsg}`);
+      // Don't throw - the backfill is a one-off migration, not critical for serving requests
     }
   }
 
@@ -3594,40 +3909,75 @@ class AdminService {
   }
 
   /**
-   * NEW handler for ApiKeys - sets defaults for create drafts
-   * Field control is now handled in afterReadApiKeys
+   * Prefill a NEW ApiKeys draft so the create form shows Expires At up front instead of an empty
+   * field. Only fills what the client did not send. Field control (isActiveFC/expiresAtFC/
+   * neverExpiresFC) comes from afterReadLifecycleFieldControl, which also runs on the draft row
+   * this POST returns.
    */
-  async newApiKey(req: any): Promise<any> {
+  async beforeNewApiKey(req: any): Promise<void> {
     const isAdmin = req.user?.is ? req.user.is('admin') : false;
     const userEmail = this.getUserEmail(req);
+    req.data = req.data || {};
 
-    // Return draft row with defaults and field control values
-    const row: any = {
-      // Defaults
-      isActive: true,
-      email: isAdmin ? null : userEmail,
-      
-      // Field Control values (0=Hidden, 1=ReadOnly, 3=Editable, 7=Mandatory)
-      emailFC: isAdmin ? 3 : 1,  // Admins can edit, users readonly
-      keyFC: 3,                  // Editable during create (will be generated)
-      isActiveFC: 3,             // Editable
-      
-      // Virtual display fields
-      maskedKey: null,
-      statusCriticality: 3       // Default to success state
-    };
+    // Safe to prefill with ??=: beforeCreateApiKey re-derives and hard-locks identity and
+    // expiresAt on activation, so a value the client sent here cannot smuggle anything through.
+    req.data.expiresAt ??= defaultExpiresAt().toISOString();
+    req.data.neverExpires ??= false;
+    req.data.isActive ??= true;
+    req.data.usageCount ??= 0;
+    // Non-admins only ever own their own keys, so the form starts on them.
+    if (!isAdmin) {
+      req.data.email ??= userEmail;
+    }
 
-    logger.debug('AdminService', `NEW ApiKey draft created for user ${userEmail}`, {
+    logger.debug('AdminService', `NEW ApiKey draft prefilled for user ${userEmail}`, {
       isAdmin,
-      defaultEmail: row.email,
-      fieldControl: {
-        emailFC: row.emailFC,
-        keyFC: row.keyFC,
-        isActiveFC: row.isActiveFC
-      }
+      defaultEmail: req.data.email,
+      defaultExpiresAt: req.data.expiresAt
     });
+  }
 
-    return row;
+  /**
+   * Guarantee afterReadLifecycleFieldControl sees row.neverExpires regardless of the client's
+   * $select. expiresAtFC is derived from row.neverExpires (see below), so a narrow $select that
+   * asks for an FC virtual but not neverExpires - such as the SideEffects re-read Fiori Elements
+   * issues after toggling Never Expires in a draft - would otherwise compute expiresAtFC from an
+   * undefined value and leave a never-expiring row's date field editable.
+   */
+  async beforeReadLifecycleFieldControl(req: any): Promise<void> {
+    const columns = req.query?.SELECT?.columns;
+    if (!Array.isArray(columns)) return; // no explicit column list (e.g. $select=*) - neverExpires already loads
+
+    const fcVirtuals = ['isActiveFC', 'expiresAtFC', 'neverExpiresFC'];
+    const columnNames = columns.map((col: any) => col?.ref?.[col.ref.length - 1]);
+    const selectsFC = fcVirtuals.some(name => columnNames.includes(name));
+    if (selectsFC && !columnNames.includes('neverExpires')) {
+      columns.push({ ref: ['neverExpires'] });
+    }
+  }
+
+  /**
+   * Lifecycle fields are admin-only: expose them editable to administrators and read-only to
+   * everyone else so the apps never provoke the before-UPDATE 403.
+   *
+   * Expires At is per-row rather than per-role, because a never-expiring credential stores no
+   * date: leaving the AWS field at 7 (Mandatory) would leave the object page demanding a value
+   * the flag is precisely there to suppress, so a flagged row shows the date read-only instead.
+   */
+  async afterReadLifecycleFieldControl(results: any, req: any): Promise<void> {
+    if (!results) return;
+    const isAdmin = this.isAdmin(this.getUserRoles(req));
+    const isAws = String(req.target?.name || '').includes('AwsCredentials');
+    const isActiveFC = isAdmin ? 3 : 1;
+    const editableExpiresAtFC = isAdmin ? (isAws ? 7 : 3) : 1; // AWS expiration stays mandatory for admins
+    const neverExpiresFC = isAdmin ? 3 : 1;
+    for (const row of Array.isArray(results) ? results : [results]) {
+      if (row && typeof row === 'object') {
+        row.isActiveFC = isActiveFC;
+        row.expiresAtFC = row.neverExpires === true ? 1 : editableExpiresAtFC;
+        row.neverExpiresFC = neverExpiresFC;
+      }
+    }
   }
 
   /**
@@ -3645,13 +3995,36 @@ class AdminService {
     // Set defaults
     req.data.isActive ??= true;
 
+    // Expiration is admin-managed: owners get the configured default, admins may pre-set a date
+    // or flag the key as never-expiring. Only an administrator may set the flag, so a non-admin's
+    // value is forced to false here rather than refused - the same shape as the email lock above.
+    const wantsNeverExpires = isAdmin && req.data.neverExpires === true;
+    // The past-date guard intentionally runs before the isAdmin branch in creationExpiresAt below:
+    // a non-admin's requested value is discarded there regardless, so checking it here first is
+    // just an early, clearer 400 rather than a reordering of who owns the decision. A key that
+    // will never expire carries no date, so there is nothing to validate.
+    if (!wantsNeverExpires && expiresAtInPast(req.data.expiresAt)) {
+      req.error(400, 'Expires At must be in the future');
+      return;
+    }
+    const lifecycle = normalizeLifecycle({
+      neverExpires: wantsNeverExpires,
+      expiresAt: creationExpiresAt({
+        isAdmin,
+        requested: req.data.expiresAt,
+        fallback: defaultExpiresAt()
+      })
+    });
+    req.data.neverExpires = lifecycle.neverExpires;
+    req.data.expiresAt = lifecycle.expiresAt === null ? null : new Date(lifecycle.expiresAt).toISOString();
+
     // Generate API key if not provided
     if (!req.data.key) {
       req.data.key = 'sk-' + crypto.randomBytes(32).toString('hex');
     }
 
     // Strip virtual fields before persistence (they shouldn't be saved to DB)
-    const virtualFields = ['maskedKey', 'statusCriticality', 'emailFC', 'keyFC', 'isActiveFC'];
+    const virtualFields = ['maskedKey', 'statusCriticality', 'emailFC', 'keyFC', 'isActiveFC', 'expiresAtFC', 'neverExpiresFC'];
     virtualFields.forEach(field => {
       if (field in req.data) {
         delete req.data[field];
@@ -3691,7 +4064,9 @@ class AdminService {
     delete (data as any).emailFC;
     delete (data as any).keyFC;
     delete (data as any).isActiveFC;
-    
+    delete (data as any).expiresAtFC;
+    delete (data as any).neverExpiresFC;
+
     // Ensure maskedKey is computed if we have a key
     if (data.key && !data.maskedKey) {
       data.maskedKey = maskApiKey(data.key);
@@ -3726,7 +4101,7 @@ class AdminService {
     // Strip non-updatable and virtual fields, but handle managed fields properly
     const drop = new Set([
       'key', 'createdAt', 'createdBy', // Never allow these to be updated
-      'maskedKey', 'statusCriticality', 'emailFC', 'keyFC', 'isActiveFC' // Virtual fields
+      'maskedKey', 'statusCriticality', 'emailFC', 'keyFC', 'isActiveFC', 'expiresAtFC', 'neverExpiresFC' // Virtual fields
     ]);
     
     for (const k of Object.keys(rest)) {
@@ -3750,9 +4125,248 @@ class AdminService {
     });
 
     await tx.run(UPDATE(dbName).set(rest).where({ ID }));
-    
+
     // Return the updated row via service read (maintains authorization)
     return tx.run(SELECT.one.from('AdminService.ApiKeys').where({ ID }));
+  }
+
+  /**
+   * Force CREATE/UPDATE/DELETE to the base table instead of the service view - same
+   * "cannot modify <entity> because it is a view" issue as ApiKeys/AwsCredentials above,
+   * hit here even though SapCapacityUnitPrice is a draft-enabled projection.
+   */
+  async onCreateSapCapacityUnitPrice(req: any): Promise<any> {
+    return this.onCreateViaBaseTable(req, 'sap.llm.gateway.admin.SapCapacityUnitPrice', 'AdminService.SapCapacityUnitPrice');
+  }
+
+  async onUpdateSapCapacityUnitPrice(req: any): Promise<any> {
+    return this.onUpdateViaBaseTable(req, 'sap.llm.gateway.admin.SapCapacityUnitPrice', 'AdminService.SapCapacityUnitPrice');
+  }
+
+  async onDeleteSapCapacityUnitPrice(req: any): Promise<any> {
+    const tx = cds.transaction(req);
+    const dbName = 'sap.llm.gateway.admin.SapCapacityUnitPrice';
+    const END_OF_TIME = '9999-12-31T23:59:59.999Z';
+    const ID = req.params?.[0]?.ID || req.data?.ID;
+
+    // Capture the row before it is deleted so the temporal chain can be healed.
+    const [deleted] = ID
+      ? await tx.run(SELECT.from(dbName).columns('usageType', 'dateFrom', 'dateTo').where({ ID }))
+      : [];
+
+    const result = await this.onDeleteViaBaseTable(req, dbName);
+
+    // Deleting the current (open) row would leave its usage type with no active price. Re-extend
+    // the immediately-preceding row back to the end of time so the chain stays open - the inverse
+    // of the create-time auto-delimit (beforeCreateSapCapacityUnitPrice). Only fires when the
+    // deleted row was the open one; deleting a historical row is left untouched.
+    if (deleted && deleted.usageType && deleted.dateFrom && String(deleted.dateTo).startsWith('9999-12-31')) {
+      const predecessors = await tx.run(
+        SELECT.from(dbName).columns('ID')
+          .where('usageType =', deleted.usageType, 'and dateTo <', deleted.dateFrom)
+          .orderBy('dateTo desc')
+      );
+      if (predecessors.length) {
+        await tx.run(UPDATE(dbName).set({ dateTo: END_OF_TIME }).where({ ID: predecessors[0].ID }));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Prefill a NEW SapCapacityUnitPrice draft's Valid To with the end of time so the create form
+   * shows it without manual entry. The CREATE auto-delimit (beforeCreateSapCapacityUnitPrice)
+   * forces this same value on activation regardless; this just surfaces it in the draft up front.
+   */
+  async beforeNewSapCapacityUnitPrice(req: any): Promise<void> {
+    const END_OF_TIME = '9999-12-31T23:59:59.999Z';
+    req.data = req.data || {};
+    if (!req.data.dateTo) {
+      req.data.dateTo = END_OF_TIME;
+    }
+  }
+
+  /**
+   * Auto-delimit on CREATE of a SapCapacityUnitPrice (temporal supersession): a new price row
+   * always extends to the end of time, and the currently-open row for the same usageType is
+   * closed just before the new row starts, so the temporal chain never overlaps and never has a
+   * gap. E.g. an open row valid to 9999-12-31 + a new row valid from today => the old row is
+   * delimited to (today - 1 instant) and the new row runs today -> 9999-12-31. A row that starts
+   * at or after the new row (a future/same-start record) can't be resolved by superseding and is
+   * rejected instead - close it manually first.
+   */
+  async beforeCreateSapCapacityUnitPrice(req: any): Promise<void> {
+    const tx = cds.transaction(req);
+    const dbName = 'sap.llm.gateway.admin.SapCapacityUnitPrice';
+    const END_OF_TIME = '9999-12-31T23:59:59.999Z';
+    const data = req.data || {};
+    const usageType = data.usageType;
+    const fromRaw = data.dateFrom;
+    if (!usageType || !fromRaw) {
+      return; // missing mandatory fields are CAP's not-null concern
+    }
+    const from = new Date(fromRaw).getTime();
+    if (isNaN(from)) {
+      return; // malformed timestamp is a separate validation concern
+    }
+
+    // A new price row always runs to the end of time; its predecessor is auto-delimited.
+    data.dateTo = END_OF_TIME;
+
+    const rows = await tx.run(
+      SELECT.from(dbName).columns('ID', 'dateFrom', 'dateTo').where('usageType =', usageType)
+    );
+    const delimitTo = new Date(from - 1).toISOString(); // the instant just before the new row starts
+    const now = new Date().toISOString();
+    const user = req.user?.id || 'system';
+
+    for (const row of rows || []) {
+      const eFrom = new Date(row.dateFrom).getTime();
+      if (eFrom >= from) {
+        req.error(409, `A price for usage type "${usageType}" already starts at or after ${fromRaw} (${row.dateFrom}); close or remove it before inserting an earlier record.`);
+        return;
+      }
+      if (new Date(row.dateTo).getTime() >= from) {
+        // The predecessor is still open at/after the new start - close it just before it.
+        await tx.run(UPDATE(dbName).set({ dateTo: delimitTo, modifiedAt: now, modifiedBy: user }).where({ ID: row.ID }));
+      }
+    }
+  }
+
+  /**
+   * Overlap guard for SapCapacityUnitPrice on UPDATE. Keyed on `usageType` to match _lookupPrice,
+   * which filters on usageType only (currency/servicePlan/region are not part of the
+   * lookup match, so they are not part of this uniqueness check either).
+   */
+  async beforeWriteSapCapacityUnitPrice(req: any): Promise<void> {
+    return this.checkNoValidityOverlap(req, 'sap.llm.gateway.admin.SapCapacityUnitPrice', 'usageType', 'price for usage type');
+  }
+
+  /**
+   * Shared validity-overlap validator for the two temporal SAP capacity entities.
+   *
+   * On CREATE req.data holds the full row; on UPDATE (including draft activation) it may
+   * hold only the changed fields, so the effective key/dateFrom/dateTo are resolved by
+   * overlaying req.data on the persisted row. Two windows overlap when
+   * `newFrom < existingTo AND existingFrom < newTo` (strict) - back-to-back periods that
+   * share a single boundary (the normal "close out the old row, add a new one"
+   * correction) are intentionally allowed. `keyField` is a fixed internal literal, not
+   * user input, so interpolating it into the where clause is safe.
+   */
+  private async checkNoValidityOverlap(req: any, dbName: string, keyField: string, label: string): Promise<void> {
+    const tx = cds.transaction(req);
+    const incoming = { ...(req.data || {}) };
+    const id = incoming.ID ?? req.params?.[0]?.ID;
+
+    // On UPDATE, fill unspecified fields from the persisted row.
+    let base: any = {};
+    if (id) {
+      base = (await tx.run(SELECT.one.from(dbName).where({ ID: id }))) || {};
+    }
+
+    const keyValue = incoming[keyField] ?? base[keyField];
+    const fromRaw = incoming.dateFrom ?? base.dateFrom;
+    const toRaw = incoming.dateTo ?? base.dateTo;
+
+    // Missing mandatory fields are CAP's not-null concern, not ours.
+    if (!keyValue || !fromRaw || !toRaw) {
+      return;
+    }
+
+    const from = new Date(fromRaw).getTime();
+    const to = new Date(toRaw).getTime();
+    if (isNaN(from) || isNaN(to)) {
+      return; // malformed timestamps are a separate validation concern
+    }
+    if (from >= to) {
+      req.error(400, `Valid-from must be before valid-to (got from ${fromRaw} to ${toRaw}).`);
+      return;
+    }
+
+    // Existing rows sharing the lookup key, excluding self on edit.
+    const rows = id
+      ? await tx.run(SELECT.from(dbName).columns('ID', 'dateFrom', 'dateTo').where(`${keyField} =`, keyValue, 'and ID <>', id))
+      : await tx.run(SELECT.from(dbName).columns('ID', 'dateFrom', 'dateTo').where(`${keyField} =`, keyValue));
+
+    for (const row of rows || []) {
+      const eFrom = new Date(row.dateFrom).getTime();
+      const eTo = new Date(row.dateTo).getTime();
+      if (from < eTo && eFrom < to) {
+        req.error(409, `A ${label} "${keyValue}" already exists for an overlapping validity period (${row.dateFrom} to ${row.dateTo}).`);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Shared CREATE-via-base-table implementation for the two SAP capacity entities above.
+   */
+  private async onCreateViaBaseTable(req: any, dbName: string, serviceEntity: string): Promise<any> {
+    const tx = cds.transaction(req);
+    const data = { ...req.data };
+
+    data.ID ??= cds.utils.uuid();
+
+    const now = new Date().toISOString();
+    const user = req.user?.id || 'system';
+    data.createdAt = now;
+    data.createdBy = user;
+    data.modifiedAt = now;
+    data.modifiedBy = user;
+
+    logger.info('AdminService', `Forcing CREATE to base table: ${dbName}`, { id: data.ID });
+
+    await tx.run(INSERT.into(dbName).entries(data));
+
+    // Return the created row via service read (maintains authorization)
+    return tx.run(SELECT.one.from(serviceEntity).where({ ID: data.ID }));
+  }
+
+  /**
+   * Shared UPDATE-via-base-table implementation for the two SAP capacity entities above.
+   */
+  private async onUpdateViaBaseTable(req: any, dbName: string, serviceEntity: string): Promise<any> {
+    const tx = cds.transaction(req);
+    const { ID, ...rest } = req.data || {};
+
+    if (!ID) {
+      req.error(400, 'ID is required for UPDATE');
+      return;
+    }
+
+    // createdAt/createdBy are never updatable; modifiedAt/modifiedBy are always ours.
+    delete (rest as any).createdAt;
+    delete (rest as any).createdBy;
+    rest.modifiedAt = new Date().toISOString();
+    rest.modifiedBy = req.user?.id || 'system';
+
+    logger.info('AdminService', `Forcing UPDATE to base table: ${dbName}`, {
+      id: ID,
+      fields: Object.keys(rest)
+    });
+
+    await tx.run(UPDATE(dbName).set(rest).where({ ID }));
+
+    // Return the updated row via service read (maintains authorization)
+    return tx.run(SELECT.one.from(serviceEntity).where({ ID }));
+  }
+
+  /**
+   * Shared DELETE-via-base-table implementation for the two SAP capacity entities above.
+   */
+  private async onDeleteViaBaseTable(req: any, dbName: string): Promise<any> {
+    const tx = cds.transaction(req);
+    const ID = req.params?.[0]?.ID || req.data?.ID;
+
+    if (!ID) {
+      req.error(400, 'ID is required for DELETE');
+      return;
+    }
+
+    logger.info('AdminService', `Forcing DELETE to base table: ${dbName}`, { id: ID });
+
+    await tx.run(DELETE.from(dbName).where({ ID }));
+    return {};
   }
 
   /**
@@ -3901,36 +4515,33 @@ class AdminService {
   // ========================================
 
   /**
-   * NEW handler for AwsCredentials - sets defaults for create drafts
+   * Prefill a NEW AwsCredentials draft, mirroring beforeNewApiKey: the create form opens with the
+   * standard expiration and the caller's own identity rather than empty fields.
    */
-  async newAwsCredentials(req: any): Promise<any> {
+  async beforeNewAwsCredentials(req: any): Promise<void> {
     const isAdmin = req.user?.is ? req.user.is('admin') : false;
     const userEmail = this.getUserEmail(req);
+    req.data = req.data || {};
 
-    // Calculate expiration date: today + 90 days
-    const expirationDate = new Date();
-    expirationDate.setDate(expirationDate.getDate() + 90);
+    // Safe to prefill with ??=: beforeCreateAwsCredentials re-derives and hard-locks identity
+    // and expiresAt on activation, so a value the client sent here cannot smuggle anything through.
+    req.data.expiresAt ??= defaultExpiresAt().toISOString();
+    req.data.neverExpires ??= false;
+    req.data.isActive ??= true;
+    req.data.usageCount ??= 0;
+    req.data.region ??= 'us-east-1';
+    req.data.sapAiRegion ??= process.env.SAP_AI_REGION || 'us-east-1';
+    if (!isAdmin) {
+      req.data.userId ??= userEmail;
+      req.data.email ??= userEmail;
+    }
 
-    // Return draft row with defaults
-    const row: any = {
-      // Defaults
-      isActive: true,
-      userId: isAdmin ? '' : userEmail, // Admin can set any user, non-admin gets their email
-      email: isAdmin ? '' : userEmail,  // Admin can set any email, non-admin gets their email
-      usageCount: 0,
-      region: 'us-east-1',
-      sapAiRegion: process.env.SAP_AI_REGION || 'us-east-1',
-      expiresAt: expirationDate
-    };
-
-    logger.debug('AdminService', `NEW AwsCredentials draft created for user ${userEmail}`, {
+    logger.debug('AdminService', `NEW AwsCredentials draft prefilled for user ${userEmail}`, {
       isAdmin,
-      defaultUserId: row.userId,
-      defaultEmail: row.email,
-      defaultExpiresAt: expirationDate.toISOString()
+      defaultUserId: req.data.userId,
+      defaultEmail: req.data.email,
+      defaultExpiresAt: req.data.expiresAt
     });
-
-    return row;
   }
 
   /**
@@ -3958,23 +4569,27 @@ class AdminService {
     req.data.region ??= 'us-east-1';
     req.data.sapAiRegion ??= process.env.SAP_AI_REGION || 'us-east-1';
     
-    // Set default expiration date if not provided: today + 90 days
-    if (!req.data.expiresAt) {
-      const expirationDate = new Date();
-      expirationDate.setDate(expirationDate.getDate() + 90);
-      req.data.expiresAt = expirationDate;
+    // Expiration is admin-managed: owners get the configured default, admins may pre-set a date
+    // or flag the credential as never-expiring (only an administrator, so a non-admin's value is
+    // forced to false). The past-date guard intentionally runs before the isAdmin branch in
+    // creationExpiresAt below: a non-admin's requested value is discarded there regardless, so
+    // checking it here first is just an early, clearer 400 rather than a reordering of who owns
+    // the decision. A credential that will never expire carries no date to validate.
+    const wantsNeverExpires = isAdmin && req.data.neverExpires === true;
+    if (!wantsNeverExpires && expiresAtInPast(req.data.expiresAt)) {
+      req.error(400, 'Expires At must be in the future');
+      return;
     }
-    
-    // Validate that expiresAt is in the future
-    if (req.data.expiresAt) {
-      const expirationDate = new Date(req.data.expiresAt);
-      const now = new Date();
-      
-      if (expirationDate <= now) {
-        req.error(400, 'Expiration date must be in the future');
-        return;
-      }
-    }
+    const lifecycle = normalizeLifecycle({
+      neverExpires: wantsNeverExpires,
+      expiresAt: creationExpiresAt({
+        isAdmin,
+        requested: req.data.expiresAt,
+        fallback: defaultExpiresAt()
+      })
+    });
+    req.data.neverExpires = lifecycle.neverExpires;
+    req.data.expiresAt = lifecycle.expiresAt === null ? null : new Date(lifecycle.expiresAt);
 
     // Generate AWS credentials if not provided
     if (!req.data.accessKeyId) {
@@ -4016,24 +4631,51 @@ class AdminService {
     const userEmail = this.getUserEmail(req);
     const userRoles = this.getUserRoles(req);
     const isAdmin = this.isAdmin(userRoles);
-    
-    if (!isAdmin) {
-      // Non-admin users can only update their own AWS credentials
-      const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials')
-        .columns('userId', 'isActive')
-        .where({ ID });
-      
-      const result = await cds.run(SELECT);
-      
-      if (result.length === 0) {
-        req.error(404, 'AWS credentials not found');
-        return;
-      }
-      
-      if (result[0].userId !== userEmail) {
-        req.error(403, 'Access denied: You can only update your own AWS credentials');
-        return;
-      }
+
+    const STORED = cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials')
+      .columns('userId', 'isActive', 'expiresAt', 'neverExpires')
+      .where({ ID });
+    const storedRows = await cds.run(STORED);
+    if (storedRows.length === 0) {
+      req.error(404, 'AWS credentials not found');
+      return;
+    }
+    const stored = storedRows[0];
+
+    if (!isAdmin && stored.userId !== userEmail) {
+      req.error(403, 'Access denied: You can only update your own AWS credentials');
+      return;
+    }
+
+    const lifecycleViolation = lifecycleChangeViolation({ isAdmin, data: req.data, stored });
+    if (lifecycleViolation) {
+      logger.warn('AdminService', `Lifecycle change refused for AWS credentials ${ID}: ${lifecycleViolation} (user: ${userEmail})`);
+      req.error(403, `Access denied: ${lifecycleViolation} of AWS credentials`);
+      return;
+    }
+
+    // An expiration may only be moved forward in time, and the never-expires pair is normalized
+    // whenever either half is written (see beforeUpdateApiKeyActive for both rules).
+    const willNeverExpire = 'neverExpires' in req.data
+      ? req.data.neverExpires === true
+      : stored.neverExpires === true;
+    if (!willNeverExpire
+      && 'expiresAt' in req.data
+      && new Date(req.data.expiresAt ?? 0).getTime() !== new Date(stored.expiresAt ?? 0).getTime()
+      && expiresAtInPast(req.data.expiresAt)) {
+      req.error(400, 'Expires At must be in the future');
+      return;
+    }
+
+    // Administrators only, and falling back to the stored values - see beforeUpdateApiKeyActive
+    // for why both matter on a path that receives the whole row on every draft activation.
+    if (isAdmin && ('neverExpires' in req.data || 'expiresAt' in req.data)) {
+      const lifecycle = normalizeLifecycle({
+        neverExpires: req.data.neverExpires ?? stored.neverExpires,
+        expiresAt: 'expiresAt' in req.data ? req.data.expiresAt : stored.expiresAt
+      });
+      req.data.neverExpires = lifecycle.neverExpires;
+      req.data.expiresAt = lifecycle.expiresAt;
     }
 
     // Role-based field guard: non-admins cannot change userId
@@ -4138,6 +4780,19 @@ class AdminService {
       logger.info('AdminService', 'Enforced userId to user email for non-admin user');
     }
 
+    // Only administrators change isActive / expiresAt / neverExpires; a non-admin's draft edit of
+    // them is dropped so activation carries the stored values and passes the active-entity guard.
+    if (!isAdmin) {
+      for (const field of ['isActive', 'expiresAt', 'neverExpires']) {
+        if (field in req.data) {
+          delete req.data[field];
+          logger.info('AdminService', `Removed ${field} from draft update - only administrators may change it`);
+        }
+      }
+    } else {
+      await this.settleDraftLifecycle(req, 'AdminService.AwsCredentials.drafts');
+    }
+
     // Block credential updates except via rotate action
     if ('accessKeyId' in req.data || 'secretAccessKey' in req.data) {
       delete req.data.accessKeyId;
@@ -4186,8 +4841,21 @@ class AdminService {
       const INCREMENT = cds.ql.UPDATE('sap.llm.gateway.admin.AwsCredentials')
         .set('usageCount = usageCount + 1')
         .where({ ID });
-      
+
       await cds.run(INCREMENT);
+    }
+
+    // Same as afterUpdateApiKeys: the never-expires flag changes the validation verdict too.
+    if (req.data && ('expiresAt' in req.data || 'neverExpires' in req.data)) {
+      const credentialId = req.params?.[0]?.ID ?? req.params?.[0] ?? results?.ID;
+      const rows = await cds.run(cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials').columns('accessKeyId').where({ ID: credentialId }));
+      if (rows.length > 0) {
+        try {
+          await cacheInvalidationService.invalidateAwsCredential(rows[0].accessKeyId, 'manual', `expires-at-update-${Date.now()}`);
+        } catch (error) {
+          logger.warn('AdminService', `Failed to invalidate cache after expiresAt change for AWS credentials ${credentialId}:`, error instanceof Error ? error.message : 'Unknown error');
+        }
+      }
     }
   }
 
@@ -4209,6 +4877,11 @@ class AdminService {
     data.createdBy = user;
     data.modifiedAt = now;
     data.modifiedBy = user;
+
+    // Strip virtual fields before persistence (they shouldn't be saved to DB)
+    delete (data as any).isActiveFC;
+    delete (data as any).expiresAtFC;
+    delete (data as any).neverExpiresFC;
 
     logger.info('AdminService', `Forcing CREATE to base table: ${dbName}`, {
       id: data.ID,
@@ -4235,9 +4908,10 @@ class AdminService {
       return;
     }
 
-    // Strip non-updatable fields
+    // Strip non-updatable and virtual fields
     const drop = new Set([
-      'accessKeyId', 'secretAccessKey', 'secretHash', 'salt', 'createdAt', 'createdBy'
+      'accessKeyId', 'secretAccessKey', 'secretHash', 'salt', 'createdAt', 'createdBy',
+      'isActiveFC', 'expiresAtFC', 'neverExpiresFC' // Virtual fields
     ]);
     
     for (const k of Object.keys(rest)) {

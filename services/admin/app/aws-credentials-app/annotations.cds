@@ -60,6 +60,12 @@ annotate AdminService.AwsCredentials with @(
             Value: expiresAt, 
             Label: 'Expires',
             ![@UI.Importance]: #Medium
+        },
+        { 
+            $Type: 'UI.DataField', 
+            Value: neverExpires, 
+            Label: 'Never Expires',
+            ![@UI.Importance]: #Medium
         }
     ],
     
@@ -183,6 +189,11 @@ annotate AdminService.AwsCredentials with @(
                 $Type: 'UI.DataField', 
                 Value: expiresAt,
                 Label: 'Expires At'
+            },
+            { 
+                $Type: 'UI.DataField', 
+                Value: neverExpires,
+                Label: 'Never Expires'
             }
         ]
     },
@@ -297,16 +308,24 @@ annotate AdminService.AwsCredentials with {
         UI.Hidden: true
     );
     
-    // Expiration - mandatory field
+    // Expiration - admin-only editable field
     expiresAt @(
         Common.Label: 'Expires At',
-        Common.FieldControl: #Mandatory
+        Common.FieldControl: expiresAtFC
     );
-    
+
+    // Never expires - administrators only (FieldControl 1 renders the checkbox read-only
+    // for everyone else). When set, the credential ignores Expires At entirely.
+    neverExpires @(
+        Common.Label: 'Never Expires',
+        Common.FieldControl: neverExpiresFC
+    );
+
     // Status - field control handled in TypeScript handlers
     isActive @(
         Common.Label: 'Active',
-        UI.TextArrangement: #TextOnly
+        UI.TextArrangement: #TextOnly,
+        Common.FieldControl: isActiveFC
     );
     
     // System Metadata - all read-only
@@ -348,8 +367,19 @@ annotate AdminService.AwsCredentials with {
 annotate AdminService.AwsCredentials with actions {
     rotateAwsCredentials @(
         Common.IsActionCritical: true,
-        Common.SideEffects: { 
-            TargetProperties: ['accessKeyId', 'secretAccessKey', 'modifiedAt', 'modifiedBy'] 
+        Common.SideEffects: {
+            TargetProperties: ['accessKeyId', 'secretAccessKey', 'modifiedAt', 'modifiedBy']
         }
     );
 };
+
+// ========================================
+// Side Effects Annotations
+// ========================================
+
+annotate AdminService.AwsCredentials with @(
+    Common.SideEffects #NeverExpiresToggle: {
+        SourceProperties: [neverExpires],
+        TargetProperties: ['expiresAt', 'expiresAtFC']
+    }
+);

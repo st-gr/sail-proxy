@@ -25,8 +25,15 @@ entity AwsCredentials : cuid, managed {
   isActive          : Boolean default true;
   lastUsed          : Timestamp;
   usageCount        : Integer default 0;
-  expiresAt         : Timestamp;                   // Optional expiration
-  
+  expiresAt         : Timestamp;                   // Optional expiration; null while neverExpires is set
+  neverExpires      : Boolean default false;       // Admin-only: the credential never expires; clears expiresAt
+
+  // Field control for the Fiori apps (1=ReadOnly, 3=Editable, 7=Mandatory), set per caller role
+  // in afterReadLifecycleFieldControl; never persisted.
+  virtual isActiveFC     : Integer;
+  virtual expiresAtFC    : Integer;
+  virtual neverExpiresFC : Integer;
+
   // AWS region configuration
   region            : String(20) default 'us-east-1';
   sapAiRegion       : String(50);                  // SAP AI Core region
@@ -123,12 +130,28 @@ entity AwsCredentialUsage : cuid, temporal {
   cacheReadInputCost  : Decimal(10,6);      // Cache read input cost in USD
   totalCost           : Decimal(10,6);      // Total cost (inputCost + outputCost + cacheCreationInputCost + cacheReadInputCost)
   billingRegion       : String(20);
-  
+
+  // SAP-native Capacity-Unit accounting (additive; nullable; beside the dollar estimate)
+  imageInputTokens    : Integer;            // billed image input tokens (captured or computed)
+  genAiTokens         : Decimal(14,4);      // Sum per-type: tokens * GenAi rate (cache scaled by calibration)
+  capacityUnits       : Decimal(14,6);      // genAiTokens * cuFactor
+  sapCost             : Decimal(12,6);      // capacityUnits * pricePerCu, in sapCostCurrency
+  sapCostCurrency     : String(3);          // ISO-4217 of the price row used (e.g. 'USD','EUR')
+
   // Error tracking
   errorCode           : String(50);
   errorMessage        : String(1000);
   errorType           : String(100);
+
+  // Idempotency: deterministic content signature (same field set as the intra-batch dedup in
+  // usageEventProcessor.ts), unique-indexed so the DB itself rejects a second insert of the
+  // same usage event arriving from a second admin subscriber replica. NOT requestId alone —
+  // AWS Bedrock usage all carries the fallback requestId 'unknown' (verified: 193 rows share
+  // it on Kyma), so a requestId-only unique index would reject legitimate distinct requests.
+  usageSignature      : String(200);
 }
+
+annotate AwsCredentialUsage with @assert.unique: { usageSignature: [ usageSignature ] };
 
 /**
  * Security events for AWS credentials (suspicious activity, etc.)
@@ -174,8 +197,10 @@ entity AwsCredentialRotations : cuid, managed {
 // Views for common queries
 view ActiveAwsCredentials as select from AwsCredentials where isActive = true;
 
-view ExpiredAwsCredentials as select from AwsCredentials 
-  where isActive = true and expiresAt < $now;
+// A credential an administrator flagged as never-expiring is never in this view, whatever stale
+// date it may still carry. $now must be followed by a space (see the note in api-keys.cds).
+view ExpiredAwsCredentials as select from AwsCredentials
+  where isActive = true and expiresAt < $now and (neverExpires is null or neverExpires = false);
 
 view AwsCredentialUsageStats as select from AwsCredentialUsage {
   key credential,

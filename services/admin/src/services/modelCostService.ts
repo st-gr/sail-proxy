@@ -47,6 +47,7 @@ class ModelCostService {
   private static isCreatingServiceKey: boolean = false; // Prevent concurrent key creation
   private hasModelData: boolean = false; // Track whether model data has been fetched successfully
   private useValkeyEvents: boolean = false; // Track whether to use Valkey events or timer-based fetching
+  private fallbackFetchDelay: number = 20000; // Valkey-events mode: wait this long for a model-list event before self-healing via a direct fetch
 
   constructor() {
     this.gatewayUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
@@ -336,14 +337,14 @@ class ModelCostService {
   /**
    * Refresh pricing data from gateway service (only used when Valkey events are not available)
    */
-  private async refreshPricingData(): Promise<void> {
-    if (this.useValkeyEvents) {
+  private async refreshPricingData(force = false): Promise<void> {
+    if (this.useValkeyEvents && !force) {
       logger.debug('ModelCostService', 'Skipping direct gateway fetch - using Valkey events');
       return;
     }
 
     const now = Date.now();
-    if (now - this.lastFetch < this.fetchCooldown) {
+    if (!force && now - this.lastFetch < this.fetchCooldown) {
       logger.debug('ModelCostService', 'Skipping pricing refresh due to cooldown');
       return;
     }
@@ -810,7 +811,10 @@ class ModelCostService {
   async initialize(): Promise<void> {
     if (this.useValkeyEvents) {
       logger.info('ModelCostService', 'Model cost service initialized - will use Valkey events for model data');
-      // No timer-based fetching when using Valkey events
+      // Valkey model-list events are fire-and-forget: an admin (re)started after the gateway
+      // last published never receives one, leaving ModelCosts empty and usage capture silently
+      // gated off. Schedule a one-time direct-fetch fallback that self-heals that case.
+      this.scheduleModelDataFallback();
     } else {
       logger.info('ModelCostService', 'Model cost service initialized - will use timer-based fetching (Valkey not available)');
       // Try to fetch initial model data in the background with retries (non-blocking)
@@ -848,6 +852,32 @@ class ModelCostService {
     
     // Start first attempt after 10 seconds to allow gateway to start
     setTimeout(tryFetch, 10000);
+  }
+
+  /**
+   * Self-heal for Valkey-events mode: the gateway's `model-list-updated` publish is
+   * fire-and-forget, so an admin (re)started after the gateway last published never receives it
+   * and ModelCosts stays empty - which silently gates usage capture off. If no model-list event
+   * has populated model data shortly after boot, fetch it once directly from the gateway.
+   */
+  private scheduleModelDataFallback(): void {
+    setTimeout(() => {
+      this.ensureModelDataFallback().catch(err =>
+        logger.error('ModelCostService', 'Fallback model-data fetch failed', err instanceof Error ? err : new Error(String(err)))
+      );
+    }, this.fallbackFetchDelay);
+  }
+
+  /**
+   * Fetch model data directly if a Valkey event has not already populated it. Broken out from the
+   * timer so the boot fallback is unit-testable without waiting on the delay.
+   */
+  async ensureModelDataFallback(): Promise<void> {
+    if (this.hasModelData) {
+      return; // a model-list event already populated model data
+    }
+    logger.warn('ModelCostService', 'No model-list event received after boot - fetching model data directly (self-heal)');
+    await this.refreshPricingData(true);
   }
 }
 

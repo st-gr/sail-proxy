@@ -19,6 +19,7 @@ import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import tokenCountService from '../services/tokenCountService';
 import { foldInclusiveUsage, foldExclusiveUsage, readCacheWriteTokens } from '../utils/usageFolding';
 import { resolveResponsesEligibility, deployedSiblingName, resolveResponsesRoute } from '../utils/responsesEligibility';
@@ -61,12 +62,19 @@ function badRequest(res: Response, message: string, code = 'model_not_supported'
  * (an adapted-but-unmeasured name) or nothing at all. `readCacheWriteTokens`
  * reads the real name first and falls back to the legacy one for an upstream
  * or a replayed history that still sends it.
+ *
+ * `image_tokens` (also under `input_tokens_details`) is SAP's own count of the
+ * request's image input tokens on this route — unlike the orchestration route
+ * (see `imageTokenCapture.ts`), nothing needs to be sniffed or computed here:
+ * the deployed model already did that work and reported it alongside the rest
+ * of `usage`, so this is a plain, synchronous read.
  */
 function applyResponsesUsage(usageMetrics: any, usage: any): void {
   if (!usage) return;
   const cachedInput = usage.input_tokens_details?.cached_tokens || 0;
   const cacheWriteInput = readCacheWriteTokens(usage.input_tokens_details);
-  foldInclusiveUsage(usageMetrics, usage.input_tokens || 0, usage.output_tokens || 0, cacheWriteInput, cachedInput);
+  const imageTokens = usage.input_tokens_details?.image_tokens ?? 0;
+  foldInclusiveUsage(usageMetrics, usage.input_tokens || 0, usage.output_tokens || 0, cacheWriteInput, cachedInput, imageTokens);
 }
 
 /**
@@ -607,7 +615,17 @@ async function dispatchOrchestration(ctx: {
     // stays 200 — SSE headers were flushed long before the failure was known — so this
     // is the only place the failure can be registered. usageMetrics is passed unchanged
     // because the tokens burned before the failure were still spent.
-    emitUsageEvent(req, usageMetrics, effectiveModel, translator.failureStatus() ?? 200);
+    //
+    // SAP orchestration never reports image tokens (unlike the native path's
+    // `applyResponsesUsage` above), so this route computes them itself, off the hot
+    // path — see imageTokenCapture.ts. `captureImageTokensAsync` only schedules the
+    // compute and returns immediately; `res.end()` below is NOT delayed by it. The
+    // event emission — already fire-and-forget, nothing here awaits it either way —
+    // is the one thing sequenced to wait for the fold, via `onComplete`, so it never
+    // races a same-tick emit that fires with `imageInputTokens` still 0.
+    const imageRefs = (req as any).__imageRefs;
+    const emitFinal = () => emitUsageEvent(req, usageMetrics, effectiveModel, translator.failureStatus() ?? 200);
+    if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
     if (!res.writableEnded) res.end();
     return;
   }
@@ -628,7 +646,10 @@ async function dispatchOrchestration(ctx: {
     updateTokenCounts(usageMetrics, extra.input_tokens || 0, extra.output_tokens || 0, extra.cache_creation_tokens || 0, extra.cache_read_tokens || 0);
   }
 
-  emitUsageEvent(req, usageMetrics, effectiveModel, 200);
+  // Same off-hot-path compute as the streaming branch above — see its comment.
+  const imageRefs = (req as any).__imageRefs;
+  const emitFinal = () => emitUsageEvent(req, usageMetrics, effectiveModel, 200);
+  if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
   res.status(200).json(finalBody);
 }
 

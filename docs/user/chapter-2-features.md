@@ -114,6 +114,22 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 - **Endpoints**: `/api/chat`, `/api/generate`, `/api/tags`, OpenAI compatible endpoints `/v1/chat/completions`, `/v1/models`
 - **Use case**: Local development with Ollama-compatible tools, e. g. GitHub Co-Pilot in VS Code has limited Ollama support.
 
+#### Open WebUI (self-hosted chat UI)
+[Open WebUI](https://github.com/open-webui/open-webui) is a self-hosted web chat interface for OpenAI-compatible backends. Point it at the gateway's **`/openai/v1`** base URL, which serves both the model list and chat completions under one path — exactly what Open WebUI's single "OpenAI API" connection expects.
+
+- **Base URL**: `<gateway>/openai/v1` • **API Key**: a gateway API key
+- **Configure in**: Open WebUI → *Settings → Connections → OpenAI API* (or *Admin Panel → Settings → Connections* for a connection shared across users). The model selector then populates from the gateway automatically.
+- **Local test** (Docker Desktop, gateway running on the host at `:3000`):
+  ```bash
+  docker run -d --name openwebui -p 3001:8080 \
+    -e ENABLE_OPENAI_API=true \
+    -e OPENAI_API_BASE_URL=http://host.docker.internal:3000/openai/v1 \
+    -e OPENAI_API_KEY=<gateway-key> \
+    ghcr.io/open-webui/open-webui:main
+  ```
+  Then open `http://localhost:3001` and pick a model. On macOS/Windows Docker Desktop, `host.docker.internal` reaches the gateway on the host; on Linux, use the host IP or `--add-host=host.docker.internal:host-gateway`.
+- **Kubernetes / Kyma**: deploy the official Open WebUI image and set its `OPENAI_API_BASE_URL` to the gateway's in-cluster address (e.g. `http://gateway.<namespace>.svc.cluster.local:8080/openai/v1`) — internal cluster DNS avoids external routing and IP allowlisting.
+
 ### Authentication & Security
 
 #### API Key Management

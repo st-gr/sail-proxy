@@ -48,7 +48,8 @@
     "watch-admin-ui": "cds watch --open app/admin-ui/webapp/index.html?sap-ui-xx-viewCache=false --livereload false",
     "watch-shell": "cds watch --open /shell/index.html?sap-ui-xx-viewCache=false",
     "watch-api-keys": "cds watch --open /api-keys/index.html?sap-ui-xx-viewCache=false",
-    "watch-aws-creds": "cds watch --open app/aws-creds-app/webapp/index.html?sap-ui-xx-viewCache=false"
+    "watch-aws-creds": "cds watch --open app/aws-creds-app/webapp/index.html?sap-ui-xx-viewCache=false",
+    "watch-sap-rates": "cds watch --open /sap-rates/index.html?sap-ui-xx-viewCache=false"
   },
   "dependencies": {
     "@cap-js/postgres": "^1.14.1",
@@ -285,6 +286,12 @@
           "configFile": "ui5.yaml",
           "mountPath": "/config",
           "versionOverride": "1.136.0"
+        },
+        "sap-rates-app": {
+          "path": "app/sap-rates-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/sap-rates",
+          "versionOverride": "1.136.0"
         }
       }
     }
@@ -295,6 +302,7 @@
     "app/aws-credentials-app",
     "app/usage-analytics-app",
     "app/security-notifications-app",
-    "app/config-app"
+    "app/config-app",
+    "app/sap-rates-app"
   ]
 }

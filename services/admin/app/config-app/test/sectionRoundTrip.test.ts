@@ -759,7 +759,10 @@ describe('providers.* - each provider is closed to the settings it does not read
     const common = Object.keys(defs.providerCommon.properties);
     const anthropicOnly = Object.keys(defs.anthropicCompatibleProvider.properties);
     const extras: Record<string, string[]> = {
-      anthropic: anthropicOnly,
+      // anthropic additionally carries the SAP cache-token billing calibration factors
+      // (an anthropic-only allOf branch, read by the admin CU accounting — not shared with
+      // aws-bedrock via anthropicCompatibleProvider), so they extend anthropic's enum only.
+      anthropic: [...anthropicOnly, 'sap_cache_read_token_billing_factor', 'sap_cache_write_token_billing_factor'],
       'aws-bedrock': anthropicOnly,
       openai: ['openai_deployment_api_version'],
       openrouter: ['default_pricing', 'model_mappings'],

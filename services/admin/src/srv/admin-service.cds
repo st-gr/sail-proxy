@@ -33,6 +33,11 @@ service AdminService {
     lastUsed,
     usageCount,
     deletedAt,
+    expiresAt,
+    neverExpires,
+    isActiveFC,
+    expiresAtFC,
+    neverExpiresFC,
     createdAt,
     createdBy,
     modifiedAt,
@@ -71,7 +76,16 @@ service AdminService {
     { grant: ['READ'], to: 'admin' }
   ])
   entity ApiKeyUsageStats as projection on admin.ApiKeyUsageStats;
-  
+
+  // Per-currency sapCost totals - see the doc comment on ApiKeyUsageSapCostStats in the schema
+  // for why this is a separate entity rather than folded into ApiKeyUsageStats above.
+  @readonly
+  @(restrict: [
+    { grant: ['READ'], to: 'user', where: 'apiKey.email = $user.id' },
+    { grant: ['READ'], to: 'admin' }
+  ])
+  entity ApiKeyUsageSapCostStats as projection on admin.ApiKeyUsageSapCostStats;
+
   entity ApiKeyBlacklist as projection on admin.ApiKeyBlacklist;
   
   // ========================================
@@ -86,12 +100,11 @@ service AdminService {
     // CRUD for admins
     { grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' },
     
-    // Bound action authorization
+    // Bound action authorization — rotate stays owner-or-admin; enable/disable are admin-only
+    // (lifecycle rule: only an administrator may change isActive, not even the owner)
     { grant: 'rotateAwsCredentials', to: 'user', where: 'email = $user.id' },
     { grant: 'rotateAwsCredentials', to: 'admin' },
-    { grant: 'enableAwsCredentials', to: 'user', where: 'email = $user.id' },
     { grant: 'enableAwsCredentials', to: 'admin' },
-    { grant: 'disableAwsCredentials', to: 'user', where: 'email = $user.id' },
     { grant: 'disableAwsCredentials', to: 'admin' },
     { grant: 'deleteAwsCredentials', to: 'user', where: 'email = $user.id' },
     { grant: 'deleteAwsCredentials', to: 'admin' }
@@ -477,7 +490,78 @@ service AdminService {
   ]
   @Fiori.UI.SelectionFields: [ createdBy, deployedBy ]
   entity ConfigurationHistory as projection on admin.ConfigurationHistory;
-  
+
+  // ========================================
+  // SAP Capacity-Unit Price Maintenance
+  // ========================================
+  //
+  // Hand-maintained master data: the CU->currency price is published only through the
+  // S-User-gated price list, never an API (price list: https://www.sap.com/products/
+  // technology-platform/price-list/list.btpea.US.html). The per-model GenAI conversion
+  // rates are NOT maintained here - they are sourced from ModelCosts (the /v2 discovery
+  // data; see sapCapacityService._lookupRate). The price table is temporal - a
+  // correction is made by INSERTing a new [dateFrom,dateTo] row - so CRUD is admin-only,
+  // the same admin-only shape applied to every other writable entity in this file.
+
+  @odata.draft.enabled: true
+  @cds.redirection.target: true
+  @(restrict: [
+    { grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }
+  ])
+  entity SapCapacityUnitPrice as projection on admin.SapCapacityUnitPrice;
+
+  annotate SapCapacityUnitPrice with @Capabilities.DeleteRestrictions.Deletable: true;
+
+  annotate SapCapacityUnitPrice with @Capabilities.UpdateRestrictions: {
+    Updatable: true,
+    NonUpdatableProperties: [
+      'createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'
+    ]
+  };
+
+  // Read-only fixed-values code lists backing the Usage Type / Service Plan dropdowns
+  // (SapCapacityUnitPrice @Common.ValueList targets). Admin-readable reference data.
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity SapUsageTypeCodes as projection on admin.SapUsageTypeCodes;
+
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity SapServicePlanCodes as projection on admin.SapServicePlanCodes;
+
+  // ========================================
+  // SAP Invoice Reconciliation (Task 13)
+  // ========================================
+  //
+  // Administrator-facing: sums the per-request SAP-native fields already recorded on
+  // ApiKeyUsage (capacityUnits, sapCost per sapCostCurrency, genAiTokens, cache tokens) over a
+  // billing period and, given the operator-entered SAP invoice line items for that same
+  // period, backs out the implied calibration factors (impliedCuFactor,
+  // impliedCacheReadFactor, impliedCacheWriteFactor). These are SUGGESTIONS only - read-only,
+  // it never writes anything back. The operator sets sap_cache_*_token_billing_factor in
+  // api_config.json themselves, after the SAP inquiry (spec Sec11.3). Hourly-provisioning line
+  // items (Baseline CU, Infer-S Node Hour, Grounding, Observability) are tenant overhead with
+  // no representation on ApiKeyUsage, so they never enter this comparison (spec Sec3.4).
+  @(requires: 'admin')
+  function reconcileInvoice(
+    from: Timestamp,
+    to: Timestamp,
+    invoiceGenAiTokens: Decimal(20,4),
+    invoiceCapacityUnits: Decimal(20,6),
+    invoiceCacheReadInputTokens: Decimal(20,4),
+    invoiceCacheWriteInputTokens: Decimal(20,4)
+  ) returns {
+    capacityUnits: Decimal(20,6);
+    sapCostByCurrency: array of {
+      currency: String(3);
+      amount: Decimal(20,6);
+    };
+    capturedGenAiTokens: Decimal(20,4);
+    capturedCacheReadInputTokens: Decimal(20,4);
+    capturedCacheWriteInputTokens: Decimal(20,4);
+    impliedCuFactor: Decimal(20,6);
+    impliedCacheReadFactor: Decimal(20,6);
+    impliedCacheWriteFactor: Decimal(20,6);
+  };
+
   // ========================================
   // Custom Types for Complex Returns
   // ========================================
@@ -539,11 +623,14 @@ service AdminService {
   };
   
   // Keep these actions for potential programmatic use, but remove from UI
+  // Only an administrator may change the active state of an API key.
+  @(requires: 'admin')
   action disableApiKey(keyId: UUID) returns {
     success: Boolean;
     message: String;
   };
-  
+
+  @(requires: 'admin')
   action enableApiKey(keyId: UUID) returns {
     success: Boolean;
     message: String;
@@ -584,6 +671,7 @@ service AdminService {
   // AWS Credentials Actions
   action createAwsCredentials(
     userId: String,
+    email: String,
     name: String,
     description: String,
     expiresAt: Timestamp,

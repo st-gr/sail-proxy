@@ -15,6 +15,7 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
 import { foldExclusiveUsage } from '../utils/usageFolding';
+import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import {
   isUnsupportedParam,
   stripUnsupportedParams,
@@ -23,6 +24,43 @@ import {
   OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS,
 } from '../utils/unsupportedParamFilter';
 import type { SapV2CompletionRequest } from '../services/sapOrchestrationTypes';
+import { validateChatRequest } from './openaiRequestValidation';
+import { randomBytes } from 'crypto';
+
+export type Completion = { id: string; model: string; created: number };
+
+export function newCompletion(model: string): Completion {
+  const id = 'chatcmpl-' + randomBytes(18).toString('base64url'); // 24 url-safe chars
+  return { id, model, created: Math.floor(Date.now() / 1000) };
+}
+
+export function inferFinishReason(opts: { upstream?: string | null; hasToolCalls: boolean }): 'tool_calls' | 'length' | 'stop' | null {
+  if (opts.upstream) return opts.upstream as 'tool_calls' | 'length' | 'stop';
+  if (opts.hasToolCalls) return 'tool_calls';
+  return null;   // no upstream reason and no tool_calls → not finished (intermediate chunk)
+}
+
+/**
+ * Every `image_url` reference across this request's messages, for imageTokenCapture.ts's
+ * deferred token compute (Task 9): SAP orchestration never reports image tokens on this
+ * route, unlike the native Responses path, so the gateway computes them itself off the hot
+ * path. Called AFTER `transformRequestToSAPFormat`, so an Anthropic-model image it already
+ * downloaded and inlined to a `data:` url is picked up here as one too — no second fetch
+ * needed later. A non-Anthropic model's `image_url` is whatever the client sent, verbatim.
+ */
+function collectChatImageRefs(messages: OpenAIMessage[] | undefined): string[] {
+  const refs: string[] = [];
+  if (!Array.isArray(messages)) return refs;
+  for (const message of messages) {
+    if (!message || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (!part || part.type !== 'image_url') continue;
+      const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
+      if (typeof url === 'string') refs.push(url);
+    }
+  }
+  return refs;
+}
 
 // Type definitions
 interface OpenAIRequest extends Request {
@@ -126,6 +164,20 @@ interface HookConfig {
  * Handle OpenAI chat completion requests
  */
 export const handleChatCompletion = async (req: OpenAIRequest, res: Response, next: NextFunction): Promise<void> => {
+  const validationError = validateChatRequest(req.body);
+  if (validationError) {
+    res.status(400).json(validationError);
+    return;
+  }
+
+  const completion = newCompletion(req.body.model);
+  // Client's opt-in for a final usage chunk on streaming responses (OpenAI's
+  // stream_options.include_usage contract). Kept separate from the SAP-side
+  // include_usage enablement in transformRequestToSAPFormat, which stays on
+  // unconditionally for supported providers so internal accounting always has
+  // usage to read, regardless of what the client asked for.
+  const clientWantsUsage = req.body?.stream_options?.include_usage === true;
+
   // Debug log
   logger.info('openaiController', `handleChatCompletion called with model=${req.body.model}, stream=${req.body.stream}`);
   const requestStartTime = Date.now();
@@ -137,6 +189,13 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
 
   // --- BEGIN DEPLOYED MODEL HANDLING ---
   if (originalModelFromRequest && originalModelFromRequest.endsWith('--deployed')) {
+    // This branch bypasses transformRequestToSAPFormat (and the ref collection that
+    // follows it, below, for the non-deployed path) entirely -- a SAP-hosted vision
+    // deployment (e.g. gpt-4o--deployed) still needs its image_url refs collected for
+    // imageTokenCapture.ts, so it's done here instead. Every path through this block
+    // returns before reaching the non-deployed section's own collectChatImageRefs call,
+    // so this never runs twice for the same request.
+    (req as any).__imageRefs = collectChatImageRefs(req.body.messages);
     try {
       logger.info('openaiController', `Handling request for deployed model: ${originalModelFromRequest}`);
       const modelDetails = await modelService.getModelDetails(originalModelFromRequest);
@@ -291,12 +350,20 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
         const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
         
-        // Emit usage event for successful deployed model request
-        emitUsageEvent(req, usageMetrics, modelName, deploymentResponse.status);
-        
+        // Emit usage event for successful deployed model request. This deployment is a
+        // real SAP-hosted vision-capable endpoint (e.g. gpt-4o--deployed) that never
+        // reports image tokens back any more than orchestration does, so the same
+        // off-hot-path compute applies here: captureImageTokensAsync only schedules the
+        // compute and returns immediately, so the client write below (res.json /
+        // emulateOpenAIStreamFromFullResponse) is never delayed by it -- only the
+        // already-fire-and-forget emit is sequenced to wait, via onComplete.
+        const imageRefs = (req as any).__imageRefs;
+        const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, deploymentResponse.status);
+        if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+
         if (clientRequestedStream && configService.shouldEmulateStreaming('openai', originalModelFromRequest)) {
           logger.warn('openaiController', `Client requested stream and emulation is configured for deployed model ${originalModelFromRequest}. Using full response-to-stream emulation.`);
-          emulateOpenAIStreamFromFullResponse(res, deploymentResponse.data, originalModelFromRequest);
+          emulateOpenAIStreamFromFullResponse(res, deploymentResponse.data, completion, undefined, clientWantsUsage);
         } else {
           res.json(deploymentResponse.data); // Send as is (non-streaming)
         }
@@ -376,6 +443,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     // Transform the incoming OpenAI API request to SAP AI Core orchestration format.
     // Note that this is now an async call
     const payload = await transformRequestToSAPFormat(req.body);
+    (req as any).__imageRefs = collectChatImageRefs(req.body.messages);
 
     // Determine subPath for hook config
     const subPath = req.body.stream === true ? 'invoke-with-response-stream' : 'invoke';
@@ -444,18 +512,13 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         });
         res.flushHeaders();
 
-        // Create a unique ID for this completion
-        const completionId = `chatcmpl-${Date.now()}`;
-        const model = req.body.model || 'gpt-5-mini';
-        const createdTimestamp = Math.floor(Date.now() / 1000);
-
         // Send initial message with role
         logger.debug('openaiController', 'Sending initial role message');
         const initialChunk = {
-          id: completionId,
+          id: completion.id,
           object: 'chat.completion.chunk',
-          created: createdTimestamp,
-          model: model,
+          created: completion.created,
+          model: completion.model,
           choices: [
             {
               index: 0,
@@ -517,7 +580,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         cacheReadInputTokens: 0,
         cacheCreationInputTokens: 0,
       }; // Track streaming token usage
-      
+      // Most complete usage object seen on the SAP source chunk, held for the
+      // spec-compliant final usage chunk emitted to opted-in clients (see
+      // clientWantsUsage below) right before [DONE].
+      let lastUsage: any = null;
+
       // For emulated streaming, we need to handle the Promise differently
       const streamingPromise = sapAIService.streamChatCompletion(payload, (chunk: StreamChunk) => {
         // Check if we received a non-streaming response with emulation flag
@@ -528,7 +595,6 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           emulatedStreamingData = {
             skipNormalProcessing: true,
             nonStreamingResponse: chunk.nonStreamingResponse,
-            modelName: req.body.model
           };
           return; // Return void
         }
@@ -562,34 +628,43 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         // Handle done marker
         if (chunk.done) {
           logger.debug('openaiController', 'Received [DONE] marker');
+          if (clientWantsUsage && lastUsage) {
+            sseWriter.writeChunk(res, JSON.stringify(usageChunk(completion, lastUsage)));
+          }
           sseWriter.writeDone(res);
           return;
         }
-        
+
         try {
           // Process normal chunk data
-          const transformedResponse = transformSAPResponseToOpenAI(chunk, true);
+          const transformedResponse = transformSAPResponseToOpenAI(chunk, true, completion);
           logger.trace('openaiController', 'Writing transformed data chunk to client:', { transformedResponse });
           sseWriter.writeChunk(res, JSON.stringify(transformedResponse));
-          
-          // Extract token usage from streaming chunks
-          if (transformedResponse && transformedResponse.usage) {
-            logger.debug('openaiController', 'Found usage data in transformed response:', transformedResponse.usage);
-            if (transformedResponse.usage.prompt_tokens) {
-              streamTokenCounts.inputTokens += transformedResponse.usage.prompt_tokens;
+
+          // Extract token usage for internal accounting from the SAP source chunk
+          // itself, NOT from transformedResponse — content/delta chunks no longer
+          // carry usage to the client (see transformSAPResponseToOpenAI), but SAP
+          // still returns it upstream (transformRequestToSAPFormat's include_usage
+          // is unconditional), so accounting reads it straight from the source.
+          const chunkUsage = chunk?.final_result?.usage;
+          if (chunkUsage) {
+            logger.debug('openaiController', 'Found usage data on SAP source chunk:', chunkUsage);
+            if (chunkUsage.prompt_tokens) {
+              streamTokenCounts.inputTokens += chunkUsage.prompt_tokens;
             }
-            if (transformedResponse.usage.completion_tokens) {
-              streamTokenCounts.outputTokens += transformedResponse.usage.completion_tokens;
+            if (chunkUsage.completion_tokens) {
+              streamTokenCounts.outputTokens += chunkUsage.completion_tokens;
             }
-            if (transformedResponse.usage.prompt_tokens_details?.cached_tokens) {
-              streamTokenCounts.cacheReadInputTokens += transformedResponse.usage.prompt_tokens_details.cached_tokens;
+            if (chunkUsage.prompt_tokens_details?.cached_tokens) {
+              streamTokenCounts.cacheReadInputTokens += chunkUsage.prompt_tokens_details.cached_tokens;
             }
-            if (transformedResponse.usage.prompt_tokens_details?.cache_creation_tokens) {
-              streamTokenCounts.cacheCreationInputTokens += transformedResponse.usage.prompt_tokens_details.cache_creation_tokens;
+            if (chunkUsage.prompt_tokens_details?.cache_creation_tokens) {
+              streamTokenCounts.cacheCreationInputTokens += chunkUsage.prompt_tokens_details.cache_creation_tokens;
             }
+            lastUsage = chunkUsage; // most complete usage seen, held for the final usage chunk
             logger.debug('openaiController', 'Updated streaming token counts:', streamTokenCounts);
           } else {
-            logger.debug('openaiController', 'No usage data in transformed response');
+            logger.debug('openaiController', 'No usage data on SAP source chunk');
           }
         } catch (error: any) {
           logger.error('openaiController', 'Error transforming chunk:', error);
@@ -613,10 +688,10 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
               // Now we can safely emulate the streaming response
               return new Promise(resolve => {
                 // Let the emulation complete before resolving
-                emulateOpenAIStreamFromFullResponse(res, emulatedStreamingData.nonStreamingResponse, emulatedStreamingData.modelName, () => {
+                emulateOpenAIStreamFromFullResponse(res, emulatedStreamingData.nonStreamingResponse, completion, () => {
                   logger.debug('openaiController', 'Emulation complete callback received');
                   resolve({ emulationHandled: true });
-                });
+                }, clientWantsUsage);
               });
             } catch (error: any) {
               logger.error('openaiController', 'Error in deferred emulation:', error);
@@ -649,13 +724,22 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
               logger.debug('openaiController', 'Updated usage metrics with emulated streaming tokens:', usage);
             }
             
-            // Emit usage event for successful emulated streaming request
-            emitUsageEvent(req, usageMetrics, modelName, 200);
+            // Emit usage event for successful emulated streaming request. SAP orchestration
+            // never reports image tokens, so they're computed off the hot path here — see
+            // imageTokenCapture.ts. `captureImageTokensAsync` only schedules the compute and
+            // returns immediately; the already-fire-and-forget emit is what's sequenced to
+            // wait for it (via `onComplete`), not this `return` or anything the client sees.
+            const imageRefs = (req as any).__imageRefs;
+            const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
+            if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
             return;
           }
           
           // Regular streaming completion
           if (!res.writableEnded) {
+            if (clientWantsUsage && lastUsage) {
+              sseWriter.writeChunk(res, JSON.stringify(usageChunk(completion, lastUsage)));
+            }
             logger.info('openaiController', 'Stream completed successfully, sending [DONE]');
             sseWriter.writeDone(res);
           }
@@ -684,9 +768,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
           const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
           
-          // Emit usage event for successful streaming request (regardless of response state)
+          // Emit usage event for successful streaming request (regardless of response state).
+          // Same off-hot-path image-token compute as the emulated-streaming branch above.
           logger.info('openaiController', `Emitting usage event for streaming request: provider=${providerName}, model=${modelName}`);
-          emitUsageEvent(req, usageMetrics, modelName, 200);
+          const imageRefs = (req as any).__imageRefs;
+          const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
+          if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
         })
         .catch(async (err: any) => {
           // Handle client cancellation errors differently
@@ -718,7 +805,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
                 try {
                   const responseData = await sapAIService.completeChat(payload);
                   logger.info('openaiController', 'Non-streaming response received, emulating stream to client');
-                  emulateOpenAIStreamFromFullResponse(res, responseData, req.body.model);
+                  emulateOpenAIStreamFromFullResponse(res, responseData, completion, undefined, clientWantsUsage);
                   return; // Already handled via emulation
                 } catch (retryError: any) {
                   if (!res.writableEnded) {
@@ -748,7 +835,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
                   const responseData = await sapAIService.completeChat(payload);
                   logger.info('openaiController', 'Non-streaming response received, sending via JSON');
                   if (!res.writableEnded) {
-                    const transformedResponse = transformSAPResponseToOpenAI(responseData, false);
+                    const transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
                     return res.json(transformedResponse);
                   }
                 } catch (retryError: any) {
@@ -818,7 +905,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       logger.info('openaiController', 'Handling non-streaming request');
       try {
         const responseData = await sapAIService.completeChat(payload, debugRequestId);
-        let transformedResponse = transformSAPResponseToOpenAI(responseData, false);
+        let transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
         
         // Track usage from transformed response
         if (transformedResponse && transformedResponse.usage) {
@@ -845,9 +932,15 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
         const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
         
-        // Emit usage event for successful non-streaming request
-        emitUsageEvent(req, usageMetrics, modelName, 200);
-        
+        // Emit usage event for successful non-streaming request. Same off-hot-path
+        // image-token compute as the streaming branches above: `captureImageTokensAsync`
+        // only schedules the compute and returns immediately, so `res.json` below is
+        // never delayed by it — only the (already fire-and-forget) emit is sequenced
+        // to wait, via `onComplete`.
+        const imageRefs = (req as any).__imageRefs;
+        const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
+        if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+
         res.json(transformedResponse);
       } catch (error: any) {
         // Determine provider name based on request source
@@ -950,13 +1043,20 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
     provider
   );
 
-  // Remove max_tokens, temperature, frequency_penalty, and presence_penalty for OpenAI gpt-5 models
+  // Remove temperature, frequency_penalty, and presence_penalty for OpenAI gpt-5 models.
+  // max_tokens is NOT dropped here: a live spike (2026-08-29) against the dev
+  // gateway confirmed SAP's orchestration endpoint honors it directly (200,
+  // completion capped, finish_reason "length"), matching applyParamRenames'
+  // doc-comment that orchestration normalizes this param itself. It is renamed
+  // to max_completion_tokens (mirroring the deployed path) rather than sent
+  // as-is, to match the OpenAI Chat Completions contract gpt-5 expects.
   if (provider === 'openai' && modelDetails?.id?.toLowerCase().startsWith('gpt-5')) {
     const removedParams = [];
-    
-    if (modelParams.max_tokens !== undefined) {
-      removedParams.push('max_tokens');
-      delete modelParams.max_tokens;
+
+    const renamedParams = applyParamRenames(modelParams, defaultParamRenames('openai', modelDetails?.id));
+    if (renamedParams.length > 0) {
+      logger.info('openaiController',
+        `Renamed param(s) for gpt-5 orchestration ${modelDetails?.id}: ${renamedParams.join(', ')}`);
     }
     if (modelParams.temperature !== undefined) {
       removedParams.push('temperature');
@@ -1216,7 +1316,7 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
  * @param {boolean} isStreaming - Whether this is a streaming response
  * @returns {Object} - OpenAI-compatible response
  */
-function transformSAPResponseToOpenAI(sapResponse: any, isStreaming: boolean): any {
+export function transformSAPResponseToOpenAI(sapResponse: any, isStreaming: boolean, completion: Completion): any {
   logger.debug('openaiController', 'Transforming SAP response to OpenAI format:', { responsePreview: sapResponse });
   
   let assistantContent = '';
@@ -1258,18 +1358,20 @@ function transformSAPResponseToOpenAI(sapResponse: any, isStreaming: boolean): a
     }
     
     return {
-      id: sapResponse.final_result.id || `chatcmpl-${Date.now()}`,
+      id: completion.id,
       object: 'chat.completion.chunk',
-      created: sapResponse.final_result.created || Math.floor(Date.now() / 1000),
-      model: sapResponse.final_result.model || 'gpt-4',
+      created: sapResponse.final_result.created || completion.created,
+      model: completion.model,
       choices: [
         {
           index: choice.index || 0,
           delta: deltaObject,
-          finish_reason: finishReason
+          finish_reason: choice.finish_reason ?? null
         }
-      ],
-      usage: usage
+      ]
+      // No `usage` here: per OpenAI's contract, content/delta chunks never carry
+      // usage. A spec-shaped final usage chunk (see usageChunk()) is emitted
+      // separately, only when the client opted in via stream_options.include_usage.
     };
   }
   
@@ -1362,15 +1464,15 @@ function transformSAPResponseToOpenAI(sapResponse: any, isStreaming: boolean): a
   }
   
   const openAIResponse = {
-    id: sapResponse.final_result?.id || `chatcmpl-${Date.now()}`,
+    id: completion.id,
     object: 'chat.completion',
-    created: sapResponse.final_result?.created || Math.floor(Date.now() / 1000),
-    model: sapResponse.final_result?.model || 'gpt-4',
+    created: sapResponse.final_result?.created || completion.created,
+    model: completion.model,
     choices: [
       {
         index: 0,
         message: messageObject,
-        finish_reason: finishReason || 'stop'
+        finish_reason: inferFinishReason({ upstream: finishReason, hasToolCalls: !!toolCalls }) ?? 'stop'
       }
     ],
     usage: usage || {
@@ -1383,9 +1485,24 @@ function transformSAPResponseToOpenAI(sapResponse: any, isStreaming: boolean): a
   return openAIResponse;
 }
 
+/**
+ * Build the spec-compliant final usage chunk for a streaming response
+ * (OpenAI's stream_options.include_usage contract): empty `choices`, usage only.
+ * Sent once, immediately before [DONE], only when the client opted in.
+ */
+export function usageChunk(completion: Completion, usage: any) {
+  return {
+    id: completion.id,
+    object: 'chat.completion.chunk',
+    created: completion.created,
+    model: completion.model,
+    choices: [],
+    usage,
+  };
+}
 
-function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, modelName: string, completionCallback?: () => void): void {
-  logger.info('openaiController', `Starting OpenAI stream emulation for model: ${modelName}`);
+function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, completion: Completion, completionCallback?: () => void, clientWantsUsage: boolean = false): void {
+  logger.info('openaiController', `Starting OpenAI stream emulation for model: ${completion.model}`);
   
   // Set SSE headers if not already set
   if (!res.headersSent) {
@@ -1462,16 +1579,12 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, m
     logger.warn('openaiController', `Using fallback content extraction for emulation: ${fullContent.substring(0, 100)}...`);
   }
 
-  // Generate response metadata
-  const completionId = `chatcmpl-${Date.now()}`;
-  const timestamp = Math.floor(Date.now() / 1000);
-
   // Send initial message_start chunk
   const initialChunk = {
-    id: completionId,
+    id: completion.id,
     object: 'chat.completion.chunk',
-    created: timestamp,
-    model: modelName,
+    created: completion.created,
+    model: completion.model,
     choices: [
       {
         index: 0,
@@ -1501,10 +1614,10 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, m
 
     if (chunkIndex < chunks.length) {
       const contentChunk = {
-        id: completionId,
+        id: completion.id,
         object: 'chat.completion.chunk',
-        created: timestamp,
-        model: modelName,
+        created: completion.created,
+        model: completion.model,
         choices: [
           {
             index: 0,
@@ -1522,12 +1635,14 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, m
       // Schedule next chunk
       setTimeout(sendNextChunk, 30);
     } else {
-      // Send final chunk with usage and finish_reason
+      // Send final chunk with finish_reason. Per OpenAI's contract, content/delta
+      // chunks (this one included) never carry usage — a spec-shaped final usage
+      // chunk (choices: []) follows separately, only when the client opted in.
       const finalChunk = {
-        id: completionId,
+        id: completion.id,
         object: 'chat.completion.chunk',
-        created: timestamp,
-        model: modelName,
+        created: completion.created,
+        model: completion.model,
         choices: [
           {
             index: 0,
@@ -1537,17 +1652,18 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, m
         ]
       };
 
-      // Add usage info if available
-      if (extractedUsage) {
-        (finalChunk as any).usage = extractedUsage;
+      sseWriter.writeChunk(res, JSON.stringify(finalChunk));
+
+      // Emit the spec-compliant final usage chunk only when the client opted in
+      // via stream_options.include_usage.
+      if (clientWantsUsage && extractedUsage) {
+        sseWriter.writeChunk(res, JSON.stringify(usageChunk(completion, extractedUsage)));
       }
 
-      sseWriter.writeChunk(res, JSON.stringify(finalChunk));
-      
       // Send [DONE] marker
       sseWriter.writeDone(res);
       
-      logger.info('openaiController', `Completed emulated streaming for model: ${modelName}`);
+      logger.info('openaiController', `Completed emulated streaming for model: ${completion.model}`);
       
       // Call completion callback if provided
       if (completionCallback) {
@@ -1560,7 +1676,7 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, m
   sendNextChunk();
 }
 
-function chunkText(text: string, averageChunkSize: number = 15): string[] {
+export function chunkText(text: string, averageChunkSize: number = 15): string[] {
   if (!text || text.length === 0) {
     return [''];
   }
@@ -1583,10 +1699,10 @@ function chunkText(text: string, averageChunkSize: number = 15): string[] {
     if (currentChunk.length >= averageChunkSize) {
       // Look for a good break point (space, punctuation)
       let breakPoint = currentChunk.length;
-      
+
       // Look backwards for a space or punctuation
       for (let j = currentChunk.length - 1; j >= Math.max(0, currentChunk.length - 5); j--) {
-        if (currentChunk[j] && /[\\s.,!?;:]/.test(currentChunk[j]!)) {
+        if (currentChunk[j] && /[\s.,!?;:]/.test(currentChunk[j]!)) {
           breakPoint = j + 1;
           break;
         }

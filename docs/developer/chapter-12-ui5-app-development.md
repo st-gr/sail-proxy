@@ -124,17 +124,32 @@ RUN --mount=type=cache,target=/root/.ui5/framework,sharing=locked \
     cd app/your-new-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist
 ```
 
-No additional Docker configuration is needed if your app follows standard UI5 build conventions.
+The UI5 **build** is automatic, but the build alone is not enough to *serve* the
+app in Docker. The app must also be registered for static file serving — see
+Step 4, item 4. Skipping it produces an app that works locally but 404s in Docker.
 
 #### Step 4: Integration with Shell (if applicable)
 
 If your app needs to be accessible from the admin shell:
 
-1. **Add navigation**: Update `app/shell/webapp/view/App.view.xml`
-2. **Add routing**: Update `app/shell/webapp/controller/App.controller.ts`
+1. **Add navigation**: Update `app/shell/webapp/view/App.view.xml` (and `fragments/SideNavPopover.fragment.xml`)
+2. **Add routing + app registration**: Update `app/shell/webapp/controller/App.controller.ts` — `appConfigurations`, `getComponentUrl` (both the `docker` and local path maps), and the `componentConfig` switch in `loadFioriElementsApp`
 3. **Add service annotations**: Update `app/services.cds`
+4. **Register static file serving (REQUIRED for Docker)**: Add the app to the `ui5Apps` array in `services/admin/src/index.ts`, mirroring the existing entries (`name`, `route`, `webappPath`, `distPath`)
 
-See the [Fiori Elements Integration Guide](../services/admin/app/FIORI-ELEMENTS-INTEGRATION-GUIDE.md) for detailed shell integration steps.
+> **Docker-only trap — "Content Not Available / not yet implemented".** In Docker,
+> nginx proxies `/admin/app/*` to the admin service, which serves an app's static
+> files **only if it is in `ui5Apps`** (`src/index.ts`). An app missing from that
+> list 404s on `manifest.json` / `Component-preload.js`; the shell's
+> `Component.create` then rejects and falls back to
+> `loadStaticContent("error")`, rendering *"Content Not Available / The selected
+> section is not yet implemented."* Local dev serves apps by a different mechanism,
+> so the section renders fine there — this gap is invisible until you verify in a
+> container. Every other integration point (nav, routing, `appConfigurations`,
+> nginx regexes in `docker/nginx/templates/nginx.conf.tmpl`, the Dockerfile UI5
+> build, `services.cds`) is easy to remember; `ui5Apps` is the one that gets
+> missed. (This is the authoritative shell-integration checklist; the
+> `FIORI-ELEMENTS-INTEGRATION-GUIDE.md` referenced below does not currently exist.)
 
 ## Build Process Deep Dive
 
@@ -211,9 +226,10 @@ Use this checklist when adding new UI5 applications:
 ### ✅ Shell Integration (if needed)
 
 - [ ] Navigation items added to shell
-- [ ] Routing configuration updated
+- [ ] Routing configuration updated (`appConfigurations`, `getComponentUrl`, `componentConfig` switch)
 - [ ] Service annotations registered
 - [ ] Breadcrumb handling implemented
+- [ ] **Registered in `ui5Apps` in `services/admin/src/index.ts`** (REQUIRED for Docker static serving — omitting it 404s the app in Docker while it works locally)
 
 ### ✅ Testing & Verification
 

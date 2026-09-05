@@ -49,7 +49,8 @@ export function createUsageMetrics(): UsageMetrics {
     inputTokens: 0,
     outputTokens: 0,
     cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0
+    cacheReadInputTokens: 0,
+    imageInputTokens: 0
   };
 }
 
@@ -61,33 +62,39 @@ export function updateTokenCounts(
   inputTokens: number, 
   outputTokens: number,
   cacheCreationInputTokens?: number,
-  cacheReadInputTokens?: number
+  cacheReadInputTokens?: number,
+  imageInputTokens?: number
 ): void {
   const safeInputTokens = inputTokens || 0;
   const safeOutputTokens = outputTokens || 0;
   const safeCacheCreationTokens = cacheCreationInputTokens || 0;
   const safeCacheReadTokens = cacheReadInputTokens || 0;
-  
+  const safeImageInputTokens = imageInputTokens || 0;
+
   metrics.inputTokens += safeInputTokens;
   metrics.outputTokens += safeOutputTokens;
   metrics.cacheCreationInputTokens = (metrics.cacheCreationInputTokens || 0) + safeCacheCreationTokens;
   metrics.cacheReadInputTokens = (metrics.cacheReadInputTokens || 0) + safeCacheReadTokens;
-  
+  metrics.imageInputTokens = (metrics.imageInputTokens || 0) + safeImageInputTokens;
+
   // Add instrumentation logging
   logger.info('UsageTrackingService', 'Token counts updated', {
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,
     cacheCreationInputTokens: metrics.cacheCreationInputTokens,
     cacheReadInputTokens: metrics.cacheReadInputTokens,
-    delta: { 
-      input: safeInputTokens, 
+    imageInputTokens: metrics.imageInputTokens,
+    delta: {
+      input: safeInputTokens,
       output: safeOutputTokens,
       cacheCreation: safeCacheCreationTokens,
       cacheRead: safeCacheReadTokens,
+      image: safeImageInputTokens,
       originalInput: inputTokens,
       originalOutput: outputTokens,
       originalCacheCreation: cacheCreationInputTokens,
-      originalCacheRead: cacheReadInputTokens
+      originalCacheRead: cacheReadInputTokens,
+      originalImage: imageInputTokens
     }
   });
 }
@@ -155,6 +162,7 @@ export async function emitUsageEvent(
       outputTokens: metrics.outputTokens,
       cacheCreationInputTokens: metrics.cacheCreationInputTokens,
       cacheReadInputTokens: metrics.cacheReadInputTokens,
+      imageInputTokens: metrics.imageInputTokens,
       responseTime,
       statusCode,
       endpoint,
@@ -171,6 +179,7 @@ export async function emitUsageEvent(
         output: event.outputTokens,
         cacheCreation: event.cacheCreationInputTokens,
         cacheRead: event.cacheReadInputTokens,
+        image: event.imageInputTokens,
         total: event.inputTokens + event.outputTokens + (event.cacheCreationInputTokens || 0) + (event.cacheReadInputTokens || 0)
       },
       authType: event.authType,

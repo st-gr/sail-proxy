@@ -548,6 +548,50 @@ describe('API Keys HTTP Endpoint', () => {
 });
 ```
 
+### UI Journeys (OPA5 in CI)
+
+Role-based UI5 control-level tests for the admin cockpit run on every `pnpm run ci` as
+**Phase 6.6** (after the CLI end-to-end phase, as the last consumer of the CI database),
+against the dev-mode admin the pipeline starts in Phase 5. They cover the
+shell (navigation entries and profile per role), the API-keys app and the AWS-credentials
+app (list visibility, object page, edit, create) as `admin@test.com` and `user@test.com`.
+
+**Where things live**
+
+| Path | Purpose |
+|---|---|
+| `ci/scripts/ui-journeys/roles.js` | the role matrix — what each role must and must not see or edit |
+| `ci/scripts/ui-journeys/fixtures.js` | fixture names (`UI Fixture — …`) and dev user emails |
+| `ci/scripts/ui-journeys/seed.js` | deletes every draft, API key and AWS credential, then creates the fixtures over OData (as the admin) |
+| `ci/scripts/ui-journeys/run.js` | runs `ui5-test-runner` per role × app, writes `ci/reports/ui-journeys/<app>-<role>/` (HTML report, `junit.xml`, screenshots) |
+| `services/admin/app/<app>/webapp/test/integration/` | the OPA5 pages and journeys of each app (`opaTests.qunit.html` is the entry) |
+
+`run.js` injects the selected role's expectations into the page URL (`?role=…&expect=<base64url JSON>`);
+journeys read them from `expectations.js` and never assert against literals. **To add a role
+expectation, edit `roles.js`** (for example a new entry in `shell.visibleNav`); to check something
+new, add one journey file and list it in the app's `opaTests.qunit.js`. The first test of every
+page calls `whoami` and fails immediately if the browser is not signed in as the expected role.
+
+**Running locally.** The journeys purge and seed the database they run against, so they only
+run when `ADMIN_SERVICE_URL` is set, the seed refuses any target that is not a dev-mode
+`admin@test.com` admin, and it refuses port 4004 outside the pipeline — pointing
+`ADMIN_SERVICE_URL` at your own dev admin would purge its API keys and AWS credentials.
+`pnpm run ci` handles this
+(it backs up `services/admin/db/admin.db` in Phase 1 and restores it in Phase 10). For a
+standalone run, start a throwaway admin on a scratch database first:
+
+```bash
+cd services/admin
+npx cds deploy --to sqlite:/tmp/ui-journeys.db
+CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"/tmp/ui-journeys.db"}}}}' PORT=4014 pnpm run dev:ts:mock
+# in another terminal, from the repository root
+ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys
+```
+
+The dev admin serves each app's `webapp/` live (cds-plugin-ui5), so no build is needed before a
+run. Docker and Kyma images strip `app/*/dist/test` and exclude the test-only UI5 libraries, so
+deployed images carry no test page (a locally built admin still serves them from `dist`).
+
 ### Performance Testing
 
 #### Load Testing with Artillery

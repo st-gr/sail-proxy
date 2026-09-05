@@ -29,9 +29,11 @@
     "cross-env": "^7.0.3",
     "nodemon": "^3.0.1",
     "npm-run-all": "^4.1.5",
+    "puppeteer": "24.43.1",
     "ts-node": "^10.9.1",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "ui5-test-runner": "5.14.0"
   },
   "scripts": {
     "postinstall": "node -e \"try { require('./scripts/setup-git-hooks.js') } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\"",
@@ -84,6 +86,7 @@
     "setup:dev": "node cli-tools/create-dev-env-config.js",
     "setup:dev:force": "node cli-tools/create-dev-env-config.js --force",
     "ci:pipeline": "node ci/preflight.js && node ci/ci-pipeline.js",
+    "ui:journeys": "node ci/scripts/ui-journeys/run.js",
     "security:check": "node ci/security-scanner.js",
     "security:quick": "node ci/security-scanner.js --quick",
     "refresh": "node cli-tools/refresh.js",
@@ -144,6 +147,7 @@
       "bcrypt",
       "better-sqlite3",
       "esbuild",
+      "puppeteer",
       "sqlite3"
     ]
   }

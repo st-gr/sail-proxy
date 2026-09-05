@@ -31,6 +31,7 @@ Keep your **SAP AI Core service** key secret 🔐, have users create their own A
 ## Highlights
 
 - 🔄 Leverage client apps that require OpenAI/Anthropic/Ollama/Bedrock/OpenRouter formats 
+- 🖥️ Drop-in for self-hosted chat UIs such as [Open WebUI](https://github.com/open-webui/open-webui) via the OpenAI-compatible `/openai/v1` endpoint (see [Features](docs/user/chapter-2-features.md#open-webui-self-hosted-chat-ui))
 - 🎯 Route all model calls through SAP AI Core Foundation Models with plugin support
 - 🧩 Exposes SAP AI Core deployed models for bare-metal API calls
 - 🔒 SAP privacy guarantees - No direct connections to external model providers
@@ -1200,7 +1201,7 @@ Reasoning items, tool calls and native SSE framing pass through unchanged, and P
 
 Codex's `multi_agent` sub-agent tools work as-is: the gateway rewrites the `namespace` tool wrapper SAP deployments reject and restores the routing namespace on the way back, so no `--disable multi_agent` flag is needed.
 
-See [Chapter 2 – Features](docs/user/chapter-2-features.md#using-codex-cli) for the model-eligibility rules, the sub-agent handling and notes on older Codex versions.
+See the [Codex chapter](docs/user/chapter-5-codex.md) for the full setup guide (and the [opencode chapter](docs/user/chapter-6-opencode.md) for opencode), or [Chapter 2 – Features](docs/user/chapter-2-features.md#using-codex-cli) for the model-eligibility rules, the sub-agent handling and notes on older Codex versions.
 
 ### VS Code with GitHub Copilot
 

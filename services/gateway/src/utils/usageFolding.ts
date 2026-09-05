@@ -44,6 +44,11 @@ export function readCacheWriteTokens(details: any): number {
  * live numbers. The lesson worth keeping here: which regime applies is a
  * property of the specific source, established by measurement at the call site
  * — never a default this function's existence implies.
+ *
+ * `imageInputTokens` passes straight through to `updateTokenCounts` with no
+ * arithmetic of its own: SAP's Responses `usage.input_tokens_details.image_tokens`
+ * (the only caller that supplies it, `applyResponsesUsage`) is its own separate
+ * figure, never folded into `input_tokens` the way cache tokens are.
  */
 export function foldInclusiveUsage(
   usageMetrics: any,
@@ -51,9 +56,10 @@ export function foldInclusiveUsage(
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
+  imageInputTokens?: number,
 ): void {
   const fullRateInput = Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens);
-  updateTokenCounts(usageMetrics, fullRateInput, outputTokens, cacheCreationTokens, cacheReadTokens);
+  updateTokenCounts(usageMetrics, fullRateInput, outputTokens, cacheCreationTokens, cacheReadTokens, imageInputTokens);
 }
 
 /**

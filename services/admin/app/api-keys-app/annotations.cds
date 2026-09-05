@@ -25,21 +25,33 @@ annotate AdminService.ApiKeys with @(
             Label: 'API Key',
             ![@UI.Importance]: #High
         },
-        { 
-            $Type: 'UI.DataField', 
-            Value: isActive, 
+        {
+            $Type: 'UI.DataField',
+            Value: isActive,
             Label: 'Active',
             ![@UI.Importance]: #High
         },
-        { 
-            $Type: 'UI.DataField', 
-            Value: lastUsed, 
+        {
+            $Type: 'UI.DataField',
+            Value: expiresAt,
+            Label: 'Expires At',
+            ![@UI.Importance]: #Medium
+        },
+        {
+            $Type: 'UI.DataField',
+            Value: neverExpires,
+            Label: 'Never Expires',
+            ![@UI.Importance]: #Medium
+        },
+        {
+            $Type: 'UI.DataField',
+            Value: lastUsed,
             Label: 'Last Used',
             ![@UI.Importance]: #Low
         },
-        { 
-            $Type: 'UI.DataField', 
-            Value: createdAt, 
+        {
+            $Type: 'UI.DataField',
+            Value: createdAt,
             Label: 'Created',
             ![@UI.Importance]: #Low
         }
@@ -114,12 +126,24 @@ annotate AdminService.ApiKeys with @(
                 Value: email,
                 Label: 'User Email'
             },
-            { 
-                $Type: 'UI.DataField', 
+            {
+                $Type: 'UI.DataField',
                 Value: isActive,
                 Label: 'Active'
             },
-            { 
+            {
+                $Type: 'UI.DataField',
+                Value: expiresAt,
+                Label: 'Expires At',
+                ![@UI.Importance]: #Medium
+            },
+            {
+                $Type: 'UI.DataField',
+                Value: neverExpires,
+                Label: 'Never Expires',
+                ![@UI.Importance]: #Medium
+            },
+            {
                 $Type: 'UI.DataField',
                 Value: key,
                 Label: 'API Key (Full)'
@@ -215,9 +239,22 @@ annotate AdminService.ApiKeys with {
     // Status - field control handled in TypeScript handlers
     isActive @(
         Common.Label: 'Active',
-        UI.TextArrangement: #TextOnly
+        UI.TextArrangement: #TextOnly,
+        Common.FieldControl: isActiveFC
     );
-    
+
+    expiresAt @(
+        Common.Label: 'Expires At',
+        Common.FieldControl: expiresAtFC
+    );
+
+    // Never expires - administrators only (FieldControl 1 renders the checkbox read-only
+    // for everyone else). When set, the key ignores Expires At entirely.
+    neverExpires @(
+        Common.Label: 'Never Expires',
+        Common.FieldControl: neverExpiresFC
+    );
+
     // System Metadata - all read-only
     createdAt @(
         Common.Label: 'Created At',
@@ -258,8 +295,19 @@ annotate AdminService.ApiKeys with {
 annotate AdminService.ApiKeys with actions {
     rotateApiKey @(
         Common.IsActionCritical: true,
-        Common.SideEffects: { 
-            TargetProperties: ['key', 'maskedKey', 'modifiedAt', 'modifiedBy'] 
+        Common.SideEffects: {
+            TargetProperties: ['key', 'maskedKey', 'modifiedAt', 'modifiedBy']
         }
     );
 };
+
+// ========================================
+// Side Effects Annotations
+// ========================================
+
+annotate AdminService.ApiKeys with @(
+    Common.SideEffects #NeverExpiresToggle: {
+        SourceProperties: [neverExpires],
+        TargetProperties: ['expiresAt', 'expiresAtFC']
+    }
+);

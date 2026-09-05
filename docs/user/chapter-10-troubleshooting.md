@@ -1,5 +1,5 @@
 ---
-title: SAIL-PROXY User Guide - Chapter 8
+title: SAIL-PROXY User Guide - Chapter 10
 author: st-gr
 date: 2025-01-28
 mainfont: Helvetica, Arial, sans-serif
@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-7-roles.md) | [Content Table](README.md) | [Next Chapter >>](chapter-9-faq.md)
+[<< Previous Chapter](chapter-9-roles.md) | [Content Table](README.md) | [Next Chapter >>](chapter-11-faq.md)
 
 ---
 
@@ -617,11 +617,11 @@ docker-compose logs --tail 200 >> diagnostic_info.txt
 
 #### Support Channels
 
-1. **Check Documentation**: Review [FAQ](chapter-9-faq.md) for common questions
+1. **Check Documentation**: Review [FAQ](chapter-11-faq.md) for common questions
 2. **GitHub Issues**: Report bugs or feature requests
 3. **Enterprise Support**: Contact your organization's SAIL-PROXY administrator
 4. **Community Forums**: Engage with other users and contributors
 
 ---
 
-*Next: Check the [FAQ](chapter-9-faq.md) for quick answers to common questions.*
+*Next: Check the [FAQ](chapter-11-faq.md) for quick answers to common questions.*

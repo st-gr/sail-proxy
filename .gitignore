@@ -57,6 +57,8 @@ ci-logs/
 # CI backup and temp files
 ci/.ci-backup-*
 ci/.ci-backup-location
+# UI journey reports (HTML, JUnit, screenshots, fixtures.json) written by ci/scripts/ui-journeys
+ci/reports/
 
 # Admin service Postgres database backups (local docker or Kyma —
 # dumps contain real API keys/credentials, never commit)

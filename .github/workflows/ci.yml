@@ -63,7 +63,9 @@ jobs:
     - name: Setup pnpm cache
       uses: actions/cache@v4
       with:
-        path: ${{ env.STORE_PATH }}
+        path: |
+          ${{ env.STORE_PATH }}
+          ~/.cache/puppeteer
         key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
         restore-keys: |
           ${{ runner.os }}-pnpm-store-
@@ -143,6 +145,7 @@ jobs:
         path: |
           services/*/coverage/
           services/*/test-results.xml
+          ci/reports/ui-journeys/
         retention-days: 7
         if-no-files-found: ignore
 
@@ -184,6 +187,8 @@ jobs:
         # Force SQLite for tests
         cds.requires.db.kind: sqlite
         cds.requires.db.impl: "@cap-js/sqlite"
+        # No browser runs in this job (static checks only) - skip the Chrome for Testing download
+        PUPPETEER_SKIP_DOWNLOAD: 'true'
 
     - name: Run TypeScript check
       run: |

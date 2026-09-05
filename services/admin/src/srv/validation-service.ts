@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { performance } from 'perf_hooks';
 import { getDefaultLogger } from '@libs/logger';
 import SecurityEventService from '../services/securityEventService';
+import { cacheInvalidationService } from '../services/cacheInvalidationService';
+import { credentialExpired } from '../services/credentialLifecycle';
 
 // Import file config service
 const FileConfigService = require('./file-config-service');
@@ -331,7 +333,7 @@ class ValidationService {
     
     // Database lookup
     const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.ApiKeys', (k: any) => {
-      k.ID, k.name, k.email, k.isActive, k.lastUsed,
+      k.ID, k.name, k.email, k.isActive, k.lastUsed, k.expiresAt, k.neverExpires,
       k.permissions((p: any) => p.permission),
       k.rateLimits((r: any) => {
         r.requestsPerMinute, r.requestsPerHour, r.requestsPerDay, r.burstLimit
@@ -344,6 +346,15 @@ class ValidationService {
     
     if (results.length > 0) {
       const keyRecord = results[0];
+
+      if (credentialExpired(keyRecord)) {
+        await this.autoLockApiKey(keyRecord.ID, key, keyRecord.expiresAt);
+        validationResult = this.invalidApiKeyResult(startTime);
+        this.logSecurityEvent('api_key_expired', { key: key.substring(0, 10) + '****', clientIp, userAgent });
+        this.cache.apiKeys.set(cacheKey, { result: validationResult, timestamp: Date.now() });
+        return validationResult;
+      }
+
       const permissions = keyRecord.permissions?.map((p: any) => p.permission) || [];
       const rateLimits = keyRecord.rateLimits || {};
       
@@ -373,26 +384,8 @@ class ValidationService {
       // Note: Validation requests should not count as usage - only actual model calls are tracked
       
     } else {
-      validationResult = {
-        valid: false,
-        keyId: null,
-        permissions: [],
-        rateLimits: {
-          requestsPerMinute: 0,
-          requestsPerHour: 0,
-          requestsPerDay: 0,
-          burstLimit: 0
-        },
-        usage: {
-          currentMinute: 0,
-          currentHour: 0,
-          currentDay: 0
-        },
-        metadata: {},
-        cacheHit: false,
-        validationTime: performance.now() - startTime
-      };
-      
+      validationResult = this.invalidApiKeyResult(startTime);
+
       // Log failed validation attempt
       this.logSecurityEvent('api_key_validation_failed', { 
         key: key.substring(0, 10) + '****', 
@@ -453,7 +446,7 @@ class ValidationService {
     // Database lookup
     const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials', (c: any) => {
       c.ID, c.userId, c.name, c.isActive, c.secretHash, c.salt, 
-      c.region, c.sapAiRegion, c.expiresAt, c.lastUsed,
+      c.region, c.sapAiRegion, c.expiresAt, c.neverExpires, c.lastUsed,
       c.permissions((p: any) => {
         p.service, p.action, p.resource, p.effect
       }),
@@ -469,8 +462,9 @@ class ValidationService {
     if (results.length > 0) {
       const credRecord = results[0];
       
-      // Check expiration
-      if (credRecord.expiresAt && new Date(credRecord.expiresAt) < new Date()) {
+      // Check expiration (the admin-only neverExpires flag wins over any stored date)
+      if (credentialExpired(credRecord)) {
+        await this.autoLockAwsCredential(credRecord.ID, accessKeyId, credRecord.expiresAt);
         validationResult = {
           valid: false,
           expired: true,
@@ -996,6 +990,61 @@ class ValidationService {
     return secretHash; // This is a placeholder
   }
 
+  /**
+   * Lock a credential found past its expiration: isActive=false (idempotent), drop the local
+   * validation cache entries, and tell the gateway to drop its cached validation too.
+   */
+  private async autoLockAwsCredential(credentialId: string, accessKeyId: string, expiresAt: unknown): Promise<void> {
+    try {
+      // Only the request that actually flips the row clears caches and broadcasts; an already
+      // locked row is a no-op, so a repeatedly presented expired credential does not re-broadcast.
+      const affected = await cds.run(cds.ql.UPDATE('sap.llm.gateway.admin.AwsCredentials')
+        .set({ isActive: false })
+        .where({ ID: credentialId, isActive: true }));
+      if (!affected) {
+        logger.debug('validation-service', 'AWS credential already locked: past expiration', { credentialId, accessKeyId, expiresAt });
+        return;
+      }
+      this.cache.awsCredentials.delete(`aws:${accessKeyId}`);
+      this.cache.awsCredentials.delete(`unified_aws:${accessKeyId}`);
+      await cacheInvalidationService.invalidateAwsCredential(accessKeyId, 'disabled', `auto-lock-expired-${Date.now()}`);
+      logger.warn('validation-service', 'AWS credential auto-locked: past expiration', { credentialId, accessKeyId, expiresAt });
+    } catch (error) {
+      logger.error('validation-service', 'Failed to auto-lock expired AWS credential', { credentialId, accessKeyId, error: error instanceof Error ? error.message : String(error) } as any);
+    }
+  }
+
+  private async autoLockApiKey(keyId: string, key: string, expiresAt: unknown): Promise<void> {
+    try {
+      // Only the request that actually flips the row clears caches and broadcasts; an already
+      // locked row is a no-op, so a repeatedly presented expired key does not re-broadcast.
+      const affected = await cds.run(cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys').set({ isActive: false }).where({ ID: keyId, isActive: true }));
+      if (!affected) {
+        logger.debug('validation-service', 'API key already locked: past expiration', { keyId, expiresAt });
+        return;
+      }
+      this.cache.apiKeys.delete(`apikey:${key}`);
+      this.cache.apiKeys.delete(`unified_apikey:${key}`);
+      await cacheInvalidationService.invalidateApiKey(key, 'disabled', `auto-lock-expired-${Date.now()}`);
+      logger.warn('validation-service', 'API key auto-locked: past expiration', { keyId, expiresAt });
+    } catch (error) {
+      logger.error('validation-service', 'Failed to auto-lock expired API key', { keyId, error: error instanceof Error ? error.message : String(error) } as any);
+    }
+  }
+
+  private invalidApiKeyResult(startTime: number): ApiKeyValidationResult {
+    return {
+      valid: false,
+      keyId: null,
+      permissions: [],
+      rateLimits: { requestsPerMinute: 0, requestsPerHour: 0, requestsPerDay: 0, burstLimit: 0 },
+      usage: { currentMinute: 0, currentHour: 0, currentDay: 0 },
+      metadata: {},
+      cacheHit: false,
+      validationTime: performance.now() - startTime
+    };
+  }
+
   private checkIpAllowed(restrictions: any[], clientIp?: string): boolean {
     if (!restrictions || restrictions.length === 0 || !clientIp) return true;
     
@@ -1263,7 +1312,21 @@ class ValidationService {
       }
       
       const credential = credentials[0];
-      
+
+      // Expiry is enforced on every validation path: reject and auto-lock, same as the unified
+      // path (validateAwsCredentialsByToken is the legacy action the gateway still calls).
+      if (credentialExpired(credential)) {
+        await this.autoLockAwsCredential(credential.ID, tokenData.accessKeyId, credential.expiresAt);
+        return {
+          valid: false,
+          error: {
+            code: 'CREDENTIAL_EXPIRED',
+            message: 'AWS credentials expired',
+            details: 'Credential is past its expiration date and has been locked'
+          }
+        };
+      }
+
       // Return validation result
       const result = {
         valid: true,
@@ -1618,6 +1681,18 @@ class ValidationService {
     }
     
     const keyData = keys[0];
+
+    if (credentialExpired(keyData)) {
+      await this.autoLockApiKey(keyData.ID, apiKey, keyData.expiresAt);
+      return {
+        valid: false,
+        authType: 'api_key',
+        data: {} as any,
+        auditInfo: { requestId: tokenData.requestId, validationTime: performance.now() - startTime, cacheHit: false },
+        error: { code: 'API_KEY_EXPIRED', message: 'API key expired', details: 'Key is past its expiration date and has been locked' }
+      };
+    }
+
     const validationData: ApiKeyValidationData = {
       keyId: keyData.ID,
       name: keyData.name,
@@ -1725,7 +1800,26 @@ class ValidationService {
     }
     
     const credential = credentials[0];
-    
+
+    if (credentialExpired(credential)) {
+      await this.autoLockAwsCredential(credential.ID, accessKeyId, credential.expiresAt);
+      return {
+        valid: false,
+        authType: 'aws_credential',
+        data: {} as any,
+        auditInfo: {
+          requestId: tokenData.requestId,
+          validationTime: performance.now() - startTime,
+          cacheHit: false
+        },
+        error: {
+          code: 'AWS_CREDENTIAL_EXPIRED',
+          message: 'AWS credential expired',
+          details: 'Credential is past its expiration date and has been locked'
+        }
+      };
+    }
+
     // For AWS credentials, we need to derive the secret key from stored hash
     const secretAccessKey = this.deriveSecretKey(credential.secretHash, credential.salt);
     

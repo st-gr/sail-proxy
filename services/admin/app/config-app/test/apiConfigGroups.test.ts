@@ -83,9 +83,9 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
         expect(groupSectionKeys(groupSchema)).toEqual(['pseudonymization', 'siem']);
     });
 
-    it('orders platform\'s four sections as the schema declares them, with no document to follow', () => {
+    it('orders platform\'s five sections as the schema declares them, with no document to follow', () => {
         const groupSchema = resolveGroupSchema(apiConfigSchema, 'platform');
-        expect(groupSectionKeys(groupSchema)).toEqual(['timeouts', 'logging', 'rate_limit_handling', 'security']);
+        expect(groupSectionKeys(groupSchema)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
     });
 
     it('orders capabilities\' six sections as the schema declares them, with no document to follow', () => {
@@ -109,22 +109,22 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
             const shipped = require('../../../../gateway/api_config.json').api_config.platform;
             expect(groupSectionKeys(platformSchema(), shipped)).toEqual(Object.keys(shipped));
             // The shipped document happens to carry its sections in the schema's own order.
-            expect(Object.keys(shipped)).toEqual(['timeouts', 'logging', 'rate_limit_handling', 'security']);
+            expect(Object.keys(shipped)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
         });
 
         it('keeps the schema\'s order for a document that reverses two keys, not the document\'s', () => {
             const reversed = { security: {}, timeouts: {} };
-            expect(groupSectionKeys(platformSchema(), reversed).slice(0, 2)).toEqual(['timeouts', 'logging']);
+            expect(groupSectionKeys(platformSchema(), reversed).slice(0, 2)).toEqual(['billing', 'timeouts']);
         });
 
         it('holds an absent section in its schema position rather than trailing it', () => {
             // A single carried section no longer leads the rest: the schema's order stands.
             expect(groupSectionKeys(platformSchema(), { security: {} }))
-                .toEqual(['timeouts', 'logging', 'rate_limit_handling', 'security']);
+                .toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
         });
 
         it('ignores a document key the group does not declare - that is not a section', () => {
-            expect(groupSectionKeys(platformSchema(), { not_a_section: {}, logging: {} })[0]).toBe('timeouts');
+            expect(groupSectionKeys(platformSchema(), { not_a_section: {}, logging: {} })[0]).toBe('billing');
             expect(groupSectionKeys(platformSchema(), { not_a_section: {} })).not.toContain('not_a_section');
         });
 
@@ -135,8 +135,8 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
 
         it('carries the same order through groupSections, which is what buildTab calls', () => {
             const sections = groupSections(apiConfigSchema, 'platform', { security: {}, logging: {} });
-            expect(sections.map(s => s.key)).toEqual(['timeouts', 'logging', 'rate_limit_handling', 'security']);
-            expect(sections.map(s => s.pointer)[0]).toBe('/api_config/platform/timeouts');
+            expect(sections.map(s => s.key)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
+            expect(sections.map(s => s.pointer)[0]).toBe('/api_config/platform/billing');
         });
     });
 
@@ -181,9 +181,10 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
             expect(sections.find(s => s.key === 'siem')!.schema).toBe(siemSchemaDef);
         });
 
-        it('pointers platform\'s four sections under /api_config/platform/<key>', () => {
+        it('pointers platform\'s five sections under /api_config/platform/<key>', () => {
             const sections = groupSections(apiConfigSchema, 'platform');
             expect(sections.map(s => s.pointer)).toEqual([
+                '/api_config/platform/billing',
                 '/api_config/platform/timeouts',
                 '/api_config/platform/logging',
                 '/api_config/platform/rate_limit_handling',

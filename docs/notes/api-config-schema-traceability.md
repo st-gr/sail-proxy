@@ -139,6 +139,7 @@ visible and documented as inert.
 | `platform.logging.payload_logging_enabled` | `src/utils/payloadLogger.ts` |
 | `platform.rate_limit_handling.*` | `RateLimitManager` / `getConfiguredDelay`, `src/services/rateLimitManager.ts` (fallbacks 30 s, ×1.5, 300 s) |
 | `platform.security.trust_forwarded_for` | `getClientIp`, `src/utils/clientIp.ts` |
+| `platform.security.credentialExpirationDays` | `credentialExpirationDays()`, `services/admin/src/services/credentialLifecycle.ts` (fallback 90 days; applies to API keys and AWS credentials, on creation and on every refresh) |
 
 ## observability
 

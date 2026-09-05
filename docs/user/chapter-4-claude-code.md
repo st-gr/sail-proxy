@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-3-installation.md) | [Content Table](README.md) | [Next Chapter >>](chapter-5-github-copilot.md)
+[<< Previous Chapter](chapter-3-installation.md) | [Content Table](README.md) | [Next Chapter >>](chapter-5-codex.md)
 
 ---
 
@@ -23,6 +23,17 @@ Claude Code is Anthropic's official CLI tool that provides AI assistance for sof
 - **SAIL-PROXY installed and running** (see [Installation](chapter-3-installation.md))
 - **Valid API key** created through SAIL-PROXY
 - **Claude Code installed**: Follow Anthropic's installation guide
+
+### Quick start: launch with the SAIL-PROXY CLI
+
+The standalone `sail-proxy` CLI can point Claude Code at the gateway and launch it for you — no manual environment setup:
+
+```bash
+sail-proxy endpoint set local          # or a remote gateway URL + --key-env
+sail-proxy claude                       # launches Claude Code against the gateway
+```
+
+`sail-proxy claude` sets the Anthropic base URL and auth token — and disables Claude Code's non-essential phone-home traffic — for the launched session only. To configure it yourself instead, use one of the methods below.
 
 ### Configuration Method 1: Environment Variables
 
@@ -345,4 +356,4 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 
 ---
 
-*Next: Learn how to [integrate with GitHub Copilot](chapter-5-github-copilot.md) for enhanced development workflows.*
+*Next: Learn how to [use Codex](chapter-5-codex.md) through the gateway.*

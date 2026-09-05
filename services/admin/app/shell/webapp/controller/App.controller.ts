@@ -54,6 +54,12 @@ export default class App extends BaseController {
 			title: "AWS Credentials Management",
 			route: "#aws-credentials"
 		},
+		"sapRates": {
+			componentName: "admin.saprates.Component",
+			manifest: true,
+			title: "SAP Capacity Unit Prices",
+			route: "#sap-rates"
+		},
 		"securityEvents": {
 			componentName: "admin.securitynotifications.Component",
 			manifest: true,
@@ -119,6 +125,7 @@ export default class App extends BaseController {
 			const appPathMap: { [key: string]: string } = {
 				'apiKeys': '/admin/app/api-keys-app/',
 				'awsCredentials': '/admin/app/aws-credentials-app/',
+				'sapRates': '/admin/app/sap-rates-app/',
 				'securityEvents': '/admin/app/security-notifications-app/',
 				'usage': '/admin/app/usage-analytics-app/',
 				'config': '/admin/app/config-app/'
@@ -129,6 +136,7 @@ export default class App extends BaseController {
 			const appPathMap: { [key: string]: string } = {
 				'apiKeys': '/api-keys/',
 				'awsCredentials': '/aws-credentials/',
+				'sapRates': '/sap-rates/',
 				'securityEvents': '/security-notifications/',
 				'usage': '/usage-analytics/',
 				'config': '/config/'
@@ -214,7 +222,8 @@ export default class App extends BaseController {
 			notificationsCount: 0, // Will be updated by Notifications controller
 			userInitials: "U", // Default, will be updated when user info is loaded
 			userEmail: "", // Will be updated when user info is loaded
-			userRole: "User" // Will be updated based on isAdmin flag
+			userRole: "User", // Will be updated based on isAdmin flag
+			isAdmin: false // Will be updated based on isAdmin flag; gates admin-only nav entries
 		});
 		this.getView().setModel(appViewModel, "appView");
 		
@@ -518,7 +527,7 @@ export default class App extends BaseController {
 		const navKey = key === "config" ? "settings" : key;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "usage", "securityEvents", "settings"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -595,6 +604,13 @@ export default class App extends BaseController {
 					manifest: true,
 					async: true
 				};
+			} else if (appKey === "sapRates") {
+				componentConfig = {
+					name: "admin.saprates",
+					url: componentUrl,
+					manifest: true,
+					async: true
+				};
 			} else if (appKey === "securityEvents") {
 				componentConfig = {
 					name: "admin.securitynotifications",
@@ -663,7 +679,7 @@ export default class App extends BaseController {
 				// Ensure side navigation is updated before navigation
 				const sideNav = this.getView().byId("sideNavigation") as SideNavigation;
 				const navKey = appKey === "config" ? "settings" : appKey;
-				if (["apiKeys", "awsCredentials", "usage", "securityEvents", "settings"].includes(navKey)) {
+				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
 					sideNav.setSelectedKey(navKey);
 				}
 				
@@ -673,6 +689,9 @@ export default class App extends BaseController {
 				} else if (appKey === "awsCredentials") {
 					router.navTo("AwsCredentialsList");
 					this.updateBreadcrumb("awsCredentials");
+				} else if (appKey === "sapRates") {
+					router.navTo("SapCapacityUnitPriceList");
+					this.updateBreadcrumb("sapRates");
 				} else if (appKey === "securityEvents") {
 					router.navTo("MySecurityNotificationsList");
 					this.updateBreadcrumb("securityEvents");
@@ -810,6 +829,9 @@ export default class App extends BaseController {
 			case "awsCredentials":
 				appUrl = "/aws-credentials/index.html";
 				break;
+			case "sapRates":
+				appUrl = "/sap-rates/index.html";
+				break;
 			default:
 				appUrl = "/";
 		}
@@ -879,6 +901,9 @@ export default class App extends BaseController {
 				} else if (this.currentAppKey === "awsCredentials") {
 					console.log("Navigating back to AwsCredentialsList");
 					this.feRouter.navTo("AwsCredentialsList");
+				} else if (this.currentAppKey === "sapRates") {
+					console.log("Navigating back to SapCapacityUnitPriceList");
+					this.feRouter.navTo("SapCapacityUnitPriceList");
 				} else if (this.currentAppKey === "securityEvents") {
 					console.log("Navigating back to MySecurityNotificationsList");
 					this.feRouter.navTo("MySecurityNotificationsList");
@@ -917,7 +942,7 @@ export default class App extends BaseController {
 		const navKey = appKey === "config" ? "settings" : appKey;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "usage", "securityEvents", "settings"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 		
@@ -926,6 +951,8 @@ export default class App extends BaseController {
 				this.feRouter.navTo("ApiKeysList");
 			} else if (appKey === "awsCredentials") {
 				this.feRouter.navTo("AwsCredentialsList");
+			} else if (appKey === "sapRates") {
+				this.feRouter.navTo("SapCapacityUnitPriceList");
 			} else if (appKey === "securityEvents") {
 				this.feRouter.navTo("MySecurityNotificationsList");
 			} else if (appKey === "usage") {
@@ -1009,6 +1036,13 @@ export default class App extends BaseController {
 				setTimeout(() => {
 					const objectTitle = this.getObjectPageTitle();
 					this.updateBreadcrumb("awsCredentials", objectTitle || "Details");
+				}, 100);
+			} else if (routeName === "SapCapacityUnitPriceList") {
+				this.updateBreadcrumb("sapRates");
+			} else if (routeName === "SapCapacityUnitPriceObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("sapRates", objectTitle || "Details");
 				}, 100);
 			} else if (routeName === "MySecurityNotificationsList") {
 				this.updateBreadcrumb("securityEvents");
@@ -1222,6 +1256,7 @@ export default class App extends BaseController {
 				appViewModel.setProperty("/userEmail", result.email);
 				// Set role based on isAdmin flag
 				appViewModel.setProperty("/userRole", result.isAdmin ? "Admin user" : "User");
+				appViewModel.setProperty("/isAdmin", !!result.isAdmin);
 			}
 			
 			if (result && typeof result.sidePanelCollapsed === 'boolean') {

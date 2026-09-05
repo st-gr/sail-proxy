@@ -2,6 +2,8 @@
   "api_config": {
     "providers": {
       "anthropic": {
+        "sap_cache_read_token_billing_factor": 1.0,
+        "sap_cache_write_token_billing_factor": 1.0,
         "anthropic_bedrock_version": "bedrock-2023-05-31",
         "excluded_beta_headers": [
           "prompt-caching-scope-2026-01-05",
@@ -1845,6 +1847,10 @@
       }
     },
     "platform": {
+      "billing": {
+        "productive": true,
+        "cuFactor": 1.90385
+      },
       "timeouts": {
         "default": 600000,
         "streaming": 600000
@@ -1891,7 +1897,8 @@
         }
       },
       "security": {
-        "trust_forwarded_for": false
+        "trust_forwarded_for": false,
+        "credentialExpirationDays": 90
       }
     },
     "observability": {

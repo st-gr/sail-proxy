@@ -87,4 +87,4 @@ For production deployments or team usage, consider the Docker setup with Admin C
 
 ---
 
-*Need help? Check the [FAQ](chapter-9-faq.md) or [Troubleshooting](chapter-8-troubleshooting.md) sections.*
+*Need help? Check the [FAQ](chapter-11-faq.md) or [Troubleshooting](chapter-10-troubleshooting.md) sections.*

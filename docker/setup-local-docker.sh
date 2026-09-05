@@ -24,24 +24,37 @@ if [ ! -f "setup-docker.js" ]; then
     exit 1
 fi
 
-echo "Running interactive setup..."
+# Guard: setup-docker.js --ci runs in unattended mode, which AUTO-DELETES any
+# existing docker_postgres_data / docker_valkey_data volumes (setup-docker.js
+# ~line 2431) — silent data loss on a re-run against a live local stack. A
+# config-only helper must never do that, so refuse when those volumes exist.
+# First-time setup (no volumes) proceeds normally.
+existing_volumes=$(docker volume ls -q 2>/dev/null | grep -E '^docker_(postgres|valkey)_data$' || true)
+if [ -n "$existing_volumes" ]; then
+    echo "⚠️  Existing local-stack volumes detected:"
+    echo "$existing_volumes" | sed 's/^/   - /'
+    echo ""
+    echo "Re-running --ci would DELETE these volumes and their data. This script"
+    echo "won't do that silently. Choose one:"
+    echo "  • Keep your data:   nothing to do — your existing .env config is still valid."
+    echo "  • Start clean:      docker compose down -v   (removes the volumes), then re-run this script."
+    exit 1
+fi
+
+echo "Running non-interactive setup (--ci: Local Development preset)..."
 echo ""
 
-# Run the interactive setup with local development preset
-export AUTO_SELECT_LOCAL=true
-export AUTO_USE_LOCALHOST=true
+# --ci is setup-docker.js's supported headless path: Local auth (hardcoded
+# users), generated secrets, localhost URLs — exactly the local-development
+# preset this wrapper is for, with no stdin prompts to feed.
+node setup-docker.js --ci
+setup_status=$?
 
-# Create a temporary input file for automated local setup
-cat > /tmp/setup-input << 'EOF'
-1
-Y
-EOF
-
-# Run setup-docker.js with automated input for local development
-node setup-docker.js < /tmp/setup-input
-
-# Clean up temporary file
-rm -f /tmp/setup-input
+if [ "$setup_status" -ne 0 ]; then
+    echo ""
+    echo "❌ Setup failed (setup-docker.js exited with $setup_status)."
+    exit "$setup_status"
+fi
 
 echo ""
 echo "🎉 Local Docker configuration completed!"

@@ -32,7 +32,11 @@
 			</tnt:NavigationList>
 			<tnt:fixedItem>
 				<tnt:NavigationList>
-					<tnt:NavigationListItem key="settings" text="Settings" icon="settings" />
+					<tnt:NavigationListItem key="settingsGroup" text="Settings" icon="settings" expanded="true"
+						selectable="false">
+						<tnt:NavigationListItem key="settings" text="Configuration Management" />
+						<tnt:NavigationListItem key="sapRates" text="SAP Capacity Unit Prices" visible="{appView>/isAdmin}" />
+					</tnt:NavigationListItem>
 				</tnt:NavigationList>
 			</tnt:fixedItem>
 		</tnt:SideNavigation>

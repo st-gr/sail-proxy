@@ -6,14 +6,66 @@ This project includes a comprehensive, industry-standard CI pipeline that ensure
 
 ## Pipeline Structure
 
-### Local Development
-```bash
-# Run the complete CI pipeline locally
-pnpm run ci
+### Running Locally (builds and runs containers)
 
-# Or run it directly
-node ci-pipeline.js
+`pnpm run ci` runs the same ten phases as GitHub Actions — including the Docker image
+build (Phase 7) and the container runtime validation (Phase 8, which `docker compose up`s
+postgres and the admin image). So it needs Docker running, a clean set of host ports, and
+a real SAP service key. Set that up first.
+
+**1. Free the ports the pipeline owns.** It starts the admin and gateway as HOST
+processes (Phase 5) and postgres + Valkey as containers (Phases 1 and 8), so these must be
+free before you start:
+
+| Port | Owned during a run by |
+|------|-----------------------|
+| 3000 | Gateway (host process) |
+| 4004 | Admin (host process) |
+| 5432 | postgres (Phase 8 `docker compose`) |
+| 6379 | Valkey (Phase 1 starts its own container, removes it, then compose reclaims 6379 in Phase 8) |
+
+In practice: **stop your local dev gateway and admin** (`pnpm run dev:gateway` /
+`pnpm run dev:admin`), and **bring down any local Valkey on 6379** — including an
+ssh-tunnelled one — because the pipeline runs its own. If a port is busy the pipeline
+waits (`waitForPortFree`) and then fails.
+
+```bash
+# after stopping the dev services, confirm the ports are free:
+for p in 3000 4004 5432 6379; do lsof -iTCP:$p -sTCP:LISTEN -nP || echo "$p free"; done
 ```
+
+**2. Provide the SAP AI Core service key.** Preflight and Phase 1 read
+`SAP_AI_CORE_SERVICE_KEY` from the process environment (the GitHub workflow injects it from
+a repository secret) and reject a missing, malformed, or sample key. The pipeline **cleans
+the services' own `.env` files** in Phase 1 (and restores them in Phase 10), so do NOT put
+the key in a service `.env` — export it into the shell you run `ci` from:
+
+```bash
+# from the full service-key JSON your SAP AI Core instance issued (single line, no newlines):
+export SAP_AI_CORE_SERVICE_KEY="$(cat ~/path/to/service-key.json)"
+
+# or keep it in a GITIGNORED top-level file and source it before the run:
+#   printf 'SAP_AI_CORE_SERVICE_KEY=%s\n' "$(tr -d '\n' < service-key.json)" > .env.ci   # add .env.ci to .gitignore
+#   set -a; . ./.env.ci; set +a
+```
+
+**3. Docker must be running** (Phases 7–8 build and run the admin image; a stopped Docker
+daemon fails those phases).
+
+Then run it:
+
+```bash
+pnpm run ci          # = node ci/preflight.js && node ci/ci-pipeline.js
+```
+
+The run backs up and restores your `.env` files, `admin.db`, and the postgres/valkey
+volumes (Phases 1 and 10), so it leaves your environment as it found it. Set
+`FORCE_DOCKER_BUILD=1` to force the image build when change-detection would otherwise skip it.
+
+Before backing up `admin.db`, the pipeline checkpoints its SQLite WAL (folding any
+committed writes sitting in `admin.db-wal` into the main file) and aborts the run rather
+than back up an incomplete database if it can't — so **stop your local dev admin service
+first** (see the port table below), or the checkpoint will fail with the DB held open.
 
 ### GitHub Actions
 The pipeline runs automatically on:

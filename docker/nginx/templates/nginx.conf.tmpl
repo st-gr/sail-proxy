@@ -415,7 +415,7 @@ http {
         }
 
         # Handle UI5 app resources directories specifically
-        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app)/(resources|webapp|images)/ {
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app)/(resources|webapp|images)/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -474,7 +474,7 @@ http {
         }
 
         # Handle UI5 resource paths that apps expect at root level
-        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app)/resources/ {
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app)/resources/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -501,16 +501,17 @@ http {
         }
 
         # Handle cross-app webapp references (e.g., usage-analytics from shell)
-        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications)/webapp/ {
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates)/webapp/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
-            
+
             # Map shortened names to full app names and proxy
             rewrite ^/usage-analytics/webapp/(.*)$ /app/usage-analytics-app/webapp/$1 break;
             rewrite ^/api-keys/webapp/(.*)$ /app/api-keys-app/webapp/$1 break;
             rewrite ^/aws-credentials/webapp/(.*)$ /app/aws-credentials-app/webapp/$1 break;
             rewrite ^/config/webapp/(.*)$ /app/config-app/webapp/$1 break;
             rewrite ^/security-notifications/webapp/(.*)$ /app/security-notifications-app/webapp/$1 break;
+            rewrite ^/sap-rates/webapp/(.*)$ /app/sap-rates-app/webapp/$1 break;
             
             proxy_pass http://admin_service;
             include proxy_params;

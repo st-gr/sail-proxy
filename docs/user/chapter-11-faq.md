@@ -1,5 +1,5 @@
 ---
-title: SAIL-PROXY User Guide - Chapter 9
+title: SAIL-PROXY User Guide - Chapter 11
 author: st-gr
 date: 2025-01-28
 mainfont: Helvetica, Arial, sans-serif
@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-8-troubleshooting.md) | [Content Table](README.md)
+[<< Previous Chapter](chapter-10-troubleshooting.md) | [Content Table](README.md)
 
 ---
 
@@ -349,4 +349,4 @@ LLM inference is a shared resource. At peek hours inference can get really slow 
 
 ---
 
-*For additional support, consult the [Troubleshooting guide](chapter-8-troubleshooting.md) or contact your system administrator.*
+*For additional support, consult the [Troubleshooting guide](chapter-10-troubleshooting.md) or contact your system administrator.*

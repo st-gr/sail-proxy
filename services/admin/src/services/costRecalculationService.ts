@@ -11,6 +11,7 @@
  */
 
 import { getDefaultLogger } from '../../../../libs/logger';
+import { getCacheBillingFactors, isProductive, cuFactor as getConfiguredCuFactor } from './sapCapacityService';
 const logger = getDefaultLogger();
 
 const cds = require('@sap/cds');
@@ -60,15 +61,20 @@ export class CostRecalculationService {
         process.env.CDS_ENV === 'pg' ||
         process.env.NODE_CONFIG_ENV === 'pg';
 
+      // Read the SAP-native cache factors and usage type once per run, not per row — the SQL
+      // below binds them as literal values into the generated statement.
+      const { read: fRead, write: fWrite } = getCacheBillingFactors('anthropic');
+      const productiveType = isProductive() ? 'productive' : 'non-productive';
+
       // Recalculate ApiKeyUsage
       const apiKeyResult = await db.run(
-        this.buildUpdateSQL('sap_llm_gateway_admin_ApiKeyUsage', 'u.model = mc.model', isPostgreSQL),
+        this.buildUpdateSQL('sap_llm_gateway_admin_ApiKeyUsage', 'u.model = mc.model', isPostgreSQL, fRead, fWrite, productiveType),
         [cutoffISO]
       );
 
       // Recalculate AwsCredentialUsage (uses modelId column)
       const awsResult = await db.run(
-        this.buildUpdateSQL('sap_llm_gateway_admin_AwsCredentialUsage', 'u.modelId = mc.model', isPostgreSQL),
+        this.buildUpdateSQL('sap_llm_gateway_admin_AwsCredentialUsage', 'u.modelId = mc.model', isPostgreSQL, fRead, fWrite, productiveType),
         [cutoffISO]
       );
 
@@ -91,10 +97,60 @@ export class CostRecalculationService {
   }
 
   /**
-   * Build the UPDATE SQL for a usage table
+   * Build the UPDATE SQL for a usage table.
+   *
+   * Row eligibility (which rows get touched at all) is governed entirely by the pre-existing
+   * ModelCosts join/drift gate below — unchanged by the SAP-native addition. The SAP-native
+   * columns (genAiTokens/capacityUnits/sapCost/sapCostCurrency) ride the same ModelCosts row:
+   * genAiTokens/capacityUnits fill in for every selected row (the GenAI rates come from
+   * ModelCosts too, /1000, with the constant CU factor), and sapCost/sapCostCurrency also
+   * require a matching SapCapacityUnitPrice row for the row's usage type and validFrom;
+   * otherwise the row's prior sapCost is left untouched (never forced to NULL). A consequence
+   * of riding on the unchanged ModelCosts drift gate: a row whose dollar pricing is already
+   * within the 5% tolerance is not selected by this UPDATE at all, so its SAP-native fields are
+   * not backfilled either — accepted rather than adding a second, independent row-selection gate.
+   *
+   * Both DB variants look up the SapCapacityUnitPrice via correlated scalar
+   * subqueries in the SET list (never a JOIN in the PostgreSQL FROM clause): PostgreSQL forbids
+   * referencing the UPDATE target alias ("u") from a JOIN...ON in UPDATE...FROM ("invalid
+   * reference to FROM-clause entry for table u"), and a plain comma-join there would turn into a
+   * row-dropping INNER join, regressing the dollar recompute for any model lacking a SAP rate.
+   * Scalar subqueries in the SET clause may reference "u" freely (same as the existing
+   * ModelCosts-driven drift expressions below already do) and keep the rate/price lookup fully
+   * independent of the mc join.
    */
-  private buildUpdateSQL(table: string, joinCondition: string, isPostgreSQL: boolean): string {
+  private buildUpdateSQL(
+    table: string,
+    joinCondition: string,
+    isPostgreSQL: boolean,
+    fRead = 1,
+    fWrite = 1,
+    productiveType = 'non-productive'
+  ): string {
     if (isPostgreSQL) {
+      const sapPriceWhere = `p.usageType = '${productiveType}' AND p.dateFrom <= u.validFrom AND p.dateTo >= u.validFrom`;
+
+      // GenAI conversion rates come from the already-joined ModelCosts row (mc) - the model
+      // discovery data the gateway syncs from /v2 (SAP Note 3437766: "GenAI tokens per 1,000
+      // model tokens"), so divide by 1000 for the per-model-token rate. The CU factor is the
+      // maintained constant. No hand-kept SapCapacityRates table is involved.
+      const inputRate = `(mc.inputCost::numeric / 1000)`;
+      const outputRate = `COALESCE(mc.outputCost::numeric / 1000, ${inputRate})`;
+      const cacheReadRate = `COALESCE(mc.cacheReadInputCost::numeric / 1000, ${inputRate})`;
+      const cacheWriteRate = `COALESCE(mc.cacheCreationInputCost::numeric / 1000, ${inputRate})`;
+      const imageRate = inputRate; // image GenAI rate is not published per model; fall back to input
+      const cuFactor = `${getConfiguredCuFactor()}::numeric`;
+      const pricePerCu = `(SELECT p.pricePerCu::numeric FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
+      const currency = `(SELECT p.currency FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
+
+      const genAiTokensExpr = `(
+              (u.inputTokens::numeric) * ${inputRate}
+              + (u.outputTokens::numeric) * ${outputRate}
+              + (COALESCE(u.cacheReadInputTokens, 0)::numeric * ${fRead}) * ${cacheReadRate}
+              + (COALESCE(u.cacheCreationInputTokens, 0)::numeric * ${fWrite}) * ${cacheWriteRate}
+              + COALESCE(u.imageInputTokens, 0)::numeric * ${imageRate}
+            )`;
+
       return `
         UPDATE ${table} u
         SET
@@ -107,7 +163,19 @@ export class CostRecalculationService {
             (u.outputTokens::numeric / 1000) * mc.outputCost::numeric +
             (COALESCE(u.cacheReadInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheReadInputCost, mc.inputCost)::numeric +
             (COALESCE(u.cacheCreationInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric
-          , 6)
+          , 6),
+          genAiTokens = CASE WHEN ${cuFactor} IS NOT NULL
+            THEN ROUND(${genAiTokensExpr}, 4)
+            ELSE u.genAiTokens END,
+          capacityUnits = CASE WHEN ${cuFactor} IS NOT NULL
+            THEN ROUND(${genAiTokensExpr} * ${cuFactor}, 6)
+            ELSE u.capacityUnits END,
+          sapCost = CASE WHEN ${cuFactor} IS NOT NULL AND ${pricePerCu} IS NOT NULL
+            THEN ROUND(${genAiTokensExpr} * ${cuFactor} * ${pricePerCu}, 6)
+            ELSE u.sapCost END,
+          sapCostCurrency = CASE WHEN ${cuFactor} IS NOT NULL AND ${pricePerCu} IS NOT NULL
+            THEN COALESCE(${currency}, u.sapCostCurrency)
+            ELSE u.sapCostCurrency END
         FROM sap_llm_gateway_admin_ModelCosts mc
         WHERE ${joinCondition}
           AND u.validFrom >= $1
@@ -137,7 +205,34 @@ export class CostRecalculationService {
       `;
     }
 
-    // SQLite variant
+    // SQLite variant — no UPDATE...FROM support, so every joined value is its own correlated
+    // scalar subquery (mirroring the existing per-column ModelCosts pattern above).
+    const sapPriceWhere = `p.usageType = '${productiveType}' AND p.dateFrom <= ${table}.validFrom AND p.dateTo >= ${table}.validFrom`;
+    const mcWhere = `${joinCondition.replace(/u\./g, `${table}.`)} AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom`;
+    // GenAI rates from the ModelCosts /v2 discovery data (per 1,000 model tokens), divided
+    // by 1000 for the per-model-token rate; the CU factor is the maintained constant.
+    const mcRate = (col: string) =>
+      `(SELECT mc.${col} / 1000.0 FROM sap_llm_gateway_admin_ModelCosts mc WHERE ${mcWhere} LIMIT 1)`;
+    const priceField = (col: string) =>
+      `(SELECT p.${col} FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} LIMIT 1)`;
+
+    const inputRate = mcRate('inputCost');
+    const outputRate = `COALESCE(${mcRate('outputCost')}, ${inputRate})`;
+    const cacheReadRate = `COALESCE(${mcRate('cacheReadInputCost')}, ${inputRate})`;
+    const cacheWriteRate = `COALESCE(${mcRate('cacheCreationInputCost')}, ${inputRate})`;
+    const imageRate = inputRate; // image GenAI rate not published per model; fall back to input
+    const cuFactor = `${getConfiguredCuFactor()}`;
+    const pricePerCu = priceField('pricePerCu');
+    const currency = priceField('currency');
+
+    const genAiTokensExpr = `(
+          CAST(${table}.inputTokens AS REAL) * ${inputRate}
+          + CAST(${table}.outputTokens AS REAL) * ${outputRate}
+          + (CAST(COALESCE(${table}.cacheReadInputTokens, 0) AS REAL) * ${fRead}) * ${cacheReadRate}
+          + (CAST(COALESCE(${table}.cacheCreationInputTokens, 0) AS REAL) * ${fWrite}) * ${cacheWriteRate}
+          + CAST(COALESCE(${table}.imageInputTokens, 0) AS REAL) * ${imageRate}
+        )`;
+
     return `
       UPDATE ${table}
       SET
@@ -189,7 +284,19 @@ export class CostRecalculationService {
             WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
               AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
             LIMIT 1
-          ), 6)
+          ), 6),
+        genAiTokens = CASE WHEN ${cuFactor} IS NOT NULL
+          THEN ROUND(${genAiTokensExpr}, 4)
+          ELSE ${table}.genAiTokens END,
+        capacityUnits = CASE WHEN ${cuFactor} IS NOT NULL
+          THEN ROUND(${genAiTokensExpr} * ${cuFactor}, 6)
+          ELSE ${table}.capacityUnits END,
+        sapCost = CASE WHEN ${cuFactor} IS NOT NULL AND ${pricePerCu} IS NOT NULL
+          THEN ROUND(${genAiTokensExpr} * ${cuFactor} * ${pricePerCu}, 6)
+          ELSE ${table}.sapCost END,
+        sapCostCurrency = CASE WHEN ${cuFactor} IS NOT NULL AND ${pricePerCu} IS NOT NULL
+          THEN COALESCE(${currency}, ${table}.sapCostCurrency)
+          ELSE ${table}.sapCostCurrency END
       WHERE validFrom >= ?
         AND (inputTokens > 1 OR COALESCE(cacheReadInputTokens, 0) > 0 OR COALESCE(cacheCreationInputTokens, 0) > 0)
         AND EXISTS (

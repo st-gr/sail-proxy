@@ -1,5 +1,5 @@
 ---
-title: SAIL-PROXY User Guide - Chapter 6
+title: SAIL-PROXY User Guide - Chapter 8
 author: st-gr
 date: 2025-01-28
 mainfont: Helvetica, Arial, sans-serif
@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-5-github-copilot.md) | [Content Table](README.md) | [Next Chapter >>](chapter-7-roles.md)
+[<< Previous Chapter](chapter-7-github-copilot.md) | [Content Table](README.md) | [Next Chapter >>](chapter-9-roles.md)
 
 ---
 
@@ -36,7 +36,7 @@ The Admin Cockpit is a web-based management interface available in Docker deploy
 
 3. **Access the shell**, which hosts the individual applications.
 
-Roles are supplied by your identity provider and evaluated as CDS `@restrict` rules on the service. The cockpit does not assign or edit roles itself — see [Chapter 7](chapter-7-roles.md).
+Roles are supplied by your identity provider and evaluated as CDS `@restrict` rules on the service. The cockpit does not assign or edit roles itself — see [Chapter 9](chapter-9-roles.md).
 
 ### The Applications
 
@@ -76,6 +76,7 @@ Name:        Development Key - John Doe
 Email:       john.doe@example.invalid
 Masked Key:  sk-1a2b...
 Status:      Active
+Expires At:  2025-02-14 09:30 UTC
 Last Used:   2025-01-28 14:22 UTC
 Usage Count: 47
 Created:     2025-01-15 09:30 UTC
@@ -84,9 +85,38 @@ Created:     2025-01-15 09:30 UTC
 **Key Operations**:
 - **Rotate**: generate a new key value while preserving the record and its configuration
 - **Update key value**: set a specific key value
-- **Disable / Enable**: deactivate or reactivate a key without deleting it
+- **Disable / Enable**: deactivate or reactivate a key without deleting it — administrators only
 - **Delete**: soft delete — the record is marked deleted rather than removed
 - **Disable by email**: deactivate every key belonging to one email address in a single action
+
+**Expiration**: the standard period is 90 days, unless an administrator has configured a different
+one. It applies to API keys and AWS credentials alike. When you start creating a key, Expires At is
+already filled in with that standard period, so you can accept it as it stands or — as an
+administrator — pick another date. A key past its expiration date is rejected the next time it is
+presented on any route, once any cached validation for it has lapsed (a few minutes at most); an
+administrator's changes to a key take effect immediately.
+
+An expiration date can only ever be set forward: a date in the past is rejected, on creation and
+when editing an existing key.
+
+**Never Expires**: an administrator can mark a key as never expiring. A key with the flag set
+ignores Expires At entirely — the date is cleared and shown read-only, the key is never rejected
+for age on any route, and refreshing it leaves it without a date. Turning the flag off gives the
+key the standard expiration period again: the date reappears in the form as soon as you clear the
+checkbox, counted from that moment, and you can overwrite it before saving. Only an administrator can set or clear the flag; key owners see
+it but cannot change it. Keys that predate this flag and carried no expiration date were migrated
+to it, so they keep working exactly as before, now visibly rather than implicitly.
+
+Refreshing a key — the Rotate operation — issues a new key value and moves the expiration date
+forward by the standard period, whether the owner or an administrator does it. A key that is
+already inactive or already past its expiration date cannot be refreshed by its owner; an
+administrator can still refresh it, which brings it back with a fresh expiration date. (This
+administrator override is specific to API keys: an inactive AWS credential cannot be rotated by
+anyone, administrators included — it must be re-enabled first. See AWS Credential Management below.)
+
+Only administrators change the Active state, the expiration date or the Never Expires flag of a
+key — key owners cannot, not even on their own keys. Owners may rename, refresh and delete their
+own keys.
 
 #### Rate Limiting
 
@@ -112,7 +142,10 @@ This section covers credentials for the **Bedrock-compatible route**, which acce
 
 #### Issuing Credentials
 
-Supply a name, description, optional expiry and permissions. The cockpit generates and returns:
+Supply a name, description, expiry and permissions. As with API keys, Expires At is preset to the
+standard period (90 days, unless an administrator has configured a different one); accept it as it
+stands or — as an administrator — pick another date. A date in the past is rejected, on creation and
+when editing an existing credential. The cockpit generates and returns:
 
 ```
 Access Key ID:     AKIA... (16 characters)
@@ -125,13 +158,25 @@ The secret is shown once at creation and once again after a rotation.
 
 #### Credential Operations
 
-- **Rotate**: issue a new access key ID and secret for the record
+- **Rotate**: issue a new access key ID and secret for the record, and move Expires At forward by
+  the standard period, whether the owner or an administrator does it. Rotate only works on an
+  active credential — an inactive one must be re-enabled first, by an administrator; this differs
+  from API keys, where an administrator can refresh an inactive key directly.
 - **Enable / Disable**: control whether the credential is accepted
 - **Delete**: remove the credential
 - **IP restrictions**: restrict a credential to given source addresses
 - **Permissions**: restrict what the credential may do
 
-Expired credentials are listed separately from active ones.
+A credential past its expiration date is rejected the next time it is presented on any route, once
+any cached validation for it has lapsed (a few minutes at most); an administrator's changes take
+effect immediately. Expired credentials are listed separately from active ones.
+
+**Never Expires**: as with API keys, an administrator can mark a credential as never expiring. The
+flag clears Expires At and shows it read-only, the credential is never rejected for age, a rotation
+leaves it without a date, and it never appears among the expired credentials. Turning the flag off
+gives the credential the standard expiration period again: the date reappears in the form as soon
+as you clear the checkbox, counted from that moment, and you can overwrite it before saving. Only
+an administrator can set or clear it; credential owners see it but cannot change it.
 
 #### Security Features
 
@@ -455,7 +500,7 @@ Security and audit events are captured and persisted. The audit event history is
 
 These are commonly expected but are **not** part of the cockpit today:
 
-- **User and role administration** — there is no user directory, role assignment, bulk user import or password management in the cockpit. Roles come from your identity provider; see [Chapter 7](chapter-7-roles.md).
+- **User and role administration** — there is no user directory, role assignment, bulk user import or password management in the cockpit. Roles come from your identity provider; see [Chapter 9](chapter-9-roles.md).
 - **Cost management** — no budget thresholds, cost allocation, forecasting or spend alerts. Usage Analytics reports cost per token only.
 - **Alerting** — no alert rules, thresholds, or notification routing for error rates, traffic anomalies or downtime.
 - **Automated incident response** — no automatic account lockout, automatic key suspension, or IP blocking.
@@ -464,4 +509,4 @@ These are commonly expected but are **not** part of the cockpit today:
 
 ---
 
-*Next: Understand [user roles and permissions](chapter-7-roles.md) in SAIL-PROXY.*
+*Next: Understand [user roles and permissions](chapter-9-roles.md) in SAIL-PROXY.*

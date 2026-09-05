@@ -447,6 +447,87 @@ export class AuthorizationService {
 }
 ```
 
+#### Credential Lifecycle
+
+API keys and AWS credentials share one set of lifecycle rules, held as pure functions in
+`services/admin/src/services/credentialLifecycle.ts` so they are unit-testable without a server.
+
+**Admin-only fields.** `isActive`, `expiresAt` and `neverExpires` may only be changed by an
+administrator — not by the credential's owner. `lifecycleChangeViolation()` compares the incoming
+payload against the stored row and is enforced in `beforeUpdateApiKeyActive` /
+`beforeUpdateAwsCredentialsActive`. Draft activation resends the whole row, so a value equal to the
+stored one is not treated as a change. The Fiori apps get matching field control (`isActiveFC` /
+`expiresAtFC` / `neverExpiresFC`) from the after-READ handler, so they never provoke the 403. A
+non-admin's draft edit of any of the three is dropped in the `.drafts` before-UPDATE handler, so
+activation carries the stored values through unchanged — which is the path the apps actually take,
+since lean draft answers a direct PATCH of an active row with 501 before any handler runs.
+
+**Preset on create.** `before('NEW', '<Entity>.drafts')` prefills a create draft with
+`expiresAt = now + the configured period`, plus `neverExpires = false`, `isActive`, `usageCount`
+and — for a non-admin — the caller's own identity. It must be registered on the *draft* entity with `before`: an
+`on('NEW', '<Entity>')` handler never fires under lean draft, which is why Expires At used to come
+back empty.
+
+**No past dates.** `expiresAtInPast()` guards every write path — both create handlers, the
+`createAwsCredentials` action, and both update handlers (after the admin-only guard, and only when
+the value actually differs from the stored one, so a row that is already past its date stays
+editable). Rejection is `400 Expires At must be in the future`. The guard is skipped when the write
+leaves the credential flagged `neverExpires`, since such a row stores no date at all.
+
+**A refresh extends.** `rotationPolicy()` returns a fresh `expiresAt` for every permitted rotation,
+owner or administrator alike — a refresh always moves the date forward, except on a credential
+flagged `neverExpires`, which is returned `expiresAt: null` so the refresh does not quietly
+reintroduce an expiration the flag exists to suppress. An owner is still refused
+on an inactive or already-expired credential (`{ allowed: false, reason: 'inactive' | 'expired' }`),
+so a refresh can extend a live credential but never resurrect a dead one. This resurrection differs
+by entity: an administrator can rotate an inactive or expired API key directly (`rotateApiKey` reads
+the row regardless of `isActive`, and `rotationPolicy()` then allows the admin case). AWS credentials
+go further — `rotateAwsCredentials` looks the row up filtered on `isActive = true`, so an inactive
+credential is refused before `rotationPolicy()` is even reached; an administrator must re-enable it
+first, then rotate it.
+
+**Enforcement.** `credentialExpired(row)` is checked on every validation path — `validateApiKey`, the unified
+`validateUnifiedAuthByToken` for both credential types, and the legacy
+`validateAwsCredentialsByToken` — each of which rejects the credential and auto-locks it
+(`isActive = false`) so a lapsed credential stops being presented rather than failing open. In
+practice this means an expired credential is rejected the next time it is presented on any of these
+routes once any cached validation result for it has lapsed (a few minutes at most); an
+administrator's `isActive`/`expiresAt` change takes effect immediately, since the handlers that make
+it (disable/enable/rotate) broadcast a cache invalidation of their own rather than waiting on a
+validation call to discover the new state. The auto-lock itself is idempotent: only the request that
+actually flips the row clears the caches and broadcasts the invalidation, so a repeatedly presented
+expired credential does not re-broadcast. Adding a validation path means adding this check to it.
+`expiresAt = null` still means "never expires", so a row that somehow has neither is not rejected.
+
+**The never-expires flag.** `neverExpires` is an admin-only Boolean on both entities that makes
+"this credential does not expire" an explicit, stored property instead of an implicit null date.
+`credentialExpired(row)` short-circuits to `false` when it is set, so a flagged row is valid on
+every validation path even if it still carries a stale date from before it was flagged, and it is
+excluded from the `ExpiredAwsCredentials` view and admitted by `ActiveApiKeys`. `normalizeLifecycle()`
+keeps the pair consistent on every write: setting the flag clears `expiresAt`, and clearing it
+without supplying a date assigns the standard period rather than leaving the credential dateless.
+`afterReadLifecycleFieldControl` reports `expiresAtFC = 1` (read-only) on a flagged row for every
+role — on AWS credentials the field is otherwise `7` (Mandatory) for administrators, which would
+leave the object page demanding a value the flag suppresses.
+
+Rows that predate the column are migrated once, at admin startup:
+`backfillNeverExpires()` (`src/db/data/never-expires-backfill.ts`, invoked from
+`initializeNeverExpiresBackfill` beside the SapCapacityUnitPrice seed) flags every API key and AWS
+credential with no `expiresAt`. It is idempotent — the `WHERE` clause matches nothing on a second
+run — so it is safe on every boot and on every target: Postgres gets the column itself from
+`schema_evolution: auto`, local SQLite dev databases need the column added by hand first.
+
+**Configuration.** One platform parameter, `platform.security.credentialExpirationDays`, governs
+both credential types on creation and on refresh. It defaults to 90 days and falls back to 90 when
+absent or not an integer >= 1. Note that `api_config.json` is byte-identical between
+`services/admin` and `services/gateway`; change both.
+
+**Admin detection.** `isAdmin()` matches a role exactly (`admin`, `Admin`) or as an xsuaa scope
+suffix (`.admin`). The substring match it used to do would let a scope such as `non-admin` or
+`admin-readonly` pass the admin-only lifecycle guards. On Kyma this means a scope must be named so
+that it ends in `.admin` to grant administrator rights — a bare custom scope name that merely
+contains "admin" no longer qualifies.
+
 ### Security Events and Monitoring (adapted from `/SECURITY_EVENTS.md`)
 
 #### Security Event Types

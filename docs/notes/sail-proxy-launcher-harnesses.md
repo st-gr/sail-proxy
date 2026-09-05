@@ -102,12 +102,14 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 1  # no telemetry/auto-update phone-h
 Not live-smoked in this run (env-only, and the flow mirrors codex's endpoint
 wiring); the adapter's env output is covered by unit tests.
 
-## opencode — works, via the Responses API (`@ai-sdk/openai`)
+## opencode — works (Responses API by default; chat/completions works too now)
 
 **It works.** `sail-proxy opencode` writes a **namespaced** `provider.sail-proxy`
 block into `~/.config/opencode/opencode.json` (leaving any other providers
 untouched) using **`@ai-sdk/openai`** — the Vercel provider that drives the
-**Responses API** — not `@ai-sdk/openai-compatible`:
+**Responses API**. As of 2026-08-30 the `chat/completions` path
+(`@ai-sdk/openai-compatible`) works too — see the update below — so either
+provider is viable; the launcher keeps `@ai-sdk/openai`.
 
 ```json
 { "provider": { "sail-proxy": {
@@ -122,31 +124,39 @@ Verified live: `sail-proxy opencode run -m sail-proxy/gpt-5.6-sol "…"` complet
 `03_responses_stream_from_deployment`) — i.e. the same deployed-model Responses
 route codex uses. Select the model with `-m sail-proxy/gpt-5.6-sol`.
 
-### Why not `@ai-sdk/openai-compatible`
+### chat/completions (`@ai-sdk/openai-compatible`) — failed originally, fixed at the gateway (2026-08-30)
 
 The first design used `@ai-sdk/openai-compatible`, which speaks only
-`chat/completions`. That **failed**: `sail-proxy opencode run` errored with
-`Error: {"message":"[object Object]"}` (debug: `stream error …
-error.error.message="[object Object]"`), and the gateway logged the request as
-**canceled client-side** (`ERR_CANCELED`, stage `96_sap_streaming_service_error`).
+`chat/completions`, and **at the time it failed**: `sail-proxy opencode run`
+errored with `Error: {"message":"[object Object]"}` (debug: `stream error …
+error.error.message="[object Object]"`) and the gateway logged the request as
+**canceled client-side** (`ERR_CANCELED`). The `[object Object]` was opencode's
+own opaque error object — its `@ai-sdk/openai-compatible` client aborted the
+stream. A bare stream was valid SSE (curl → `HTTP 200`, `data: [DONE]`), so
+switching to `@ai-sdk/openai` (Responses) was the quick unblock.
 
-The `[object Object]` is **opencode's own** error, not the gateway's — verified
-against the payload: the gateway's error record is simply `message: "canceled"`
-(a plain string), i.e. opencode aborted the connection and its
-`@ai-sdk/openai-compatible` client surfaced an opaque, non-string error object
-that renders as `[object Object]`. The gateway's chat stream itself is **valid**
-— curl to `/openai/v1/chat/completions` for `gpt-5.6-sol` returns `HTTP 200`
-both non-streaming and streaming (valid SSE, `data: [DONE]`). So the break is
-opencode's `chat/completions` client failing to consume the gateway's stream for
-a tool-rich agent turn; it is not a gateway fault. (The precise ai-sdk trigger
-on the chat SSE was not pinned down — the Responses path sidesteps it.)
+**The real cause, though, was the gateway's `/openai` chat-completions responses
+not being fully OpenAI-spec-compliant** — which opencode's strict ai-sdk parser
+rejected: token `usage` rode the streaming **delta** chunks, and the `id`/`model`
+**varied across chunks**. The `/openai` route spec-compliance work (commits on
+`claude`, 2026-08-30) fixed exactly those: `usage` is now client-opt-in and
+emitted only in a final empty-`choices` chunk (never on a delta chunk), the `id`
+is one stable value per completion, and the `model` echoes the request. So the
+earlier "not a gateway fault" reading was incomplete — the non-spec-compliant
+details were the gateway's, and they are now fixed.
 
-Switching to `@ai-sdk/openai` routes the identical agent request through
-`/responses` instead — where `gpt-5.6-sol` resolves to its deployed twin and
-serves tool-rich turns cleanly (exactly why codex works). That single provider
-change is the whole fix; no gateway change was needed for opencode to work.
-(Deeper multi-tool agent loops are worth exercising further, but a full turn
-now completes where it previously aborted.)
+**After those fixes, `@ai-sdk/openai-compatible` works too.** Verified live
+(2026-08-30): `sail-proxy opencode run -m sail-proxy/gpt-5-mini "…"` completes and
+answers via the `chat/completions` → orchestration path (was: total failure);
+and **Open WebUI** — a stricter chat/completions client — drives tool-rich
+streaming *and* non-streaming against `/openai/v1` (model `gpt-5.6-luna`) with
+zero errors, its responses carrying a stable id, the echoed model, correct
+`finish_reason`, and opt-in `usage`.
+
+So both providers now work: `@ai-sdk/openai` (Responses — the launcher's default,
+where `gpt-5.6-sol` resolves to its deployed twin like codex) and
+`@ai-sdk/openai-compatible` (chat/completions). The launcher keeps the Responses
+provider; openai-compatible is now an equally valid alternative.
 
 ## Endpoint & key notes
 

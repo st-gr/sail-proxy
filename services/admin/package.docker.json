@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "mkdir -p dist/db dist/srv dist/schemas dist/config dist/services/admin/src/polyfills && CDS_CONFIG=.cdsrc.docker.json cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"src/config/**\" dist/config/ && cpy \"src/polyfills/**\" dist/services/admin/src/polyfills/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/config/*.js\" dist/config/",
+    "build": "mkdir -p dist/db dist/srv dist/schemas dist/config dist/services/admin/src/polyfills && CDS_CONFIG=.cdsrc.docker.json cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"src/config/**\" dist/config/ && cpy \"src/polyfills/**\" dist/services/admin/src/polyfills/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/config/*.js\" dist/config/ && cpy \"dist/services/admin/src/db/**/*.js\" dist/db/",
     "start": "node dist/services/admin/src/index.js",
     "start:cds": "cds-serve",
     "watch": "cds watch --profile pg",

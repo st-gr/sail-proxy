@@ -34,7 +34,12 @@ jest.mock('iovalkey', () => jest.fn(() => mockValkeyClient));
 jest.mock('../../src/services/modelCostService', () => ({
   default: {
     initialize: jest.fn().mockResolvedValue(undefined),
-    hasValidModelData: jest.fn().mockReturnValue(true)
+    hasValidModelData: jest.fn().mockReturnValue(true),
+    calculateCosts: jest.fn().mockResolvedValue({
+      inputCost: 0.01, outputCost: 0.02, totalCost: 0.03, provider: 'anthropic',
+      cacheCreationInputCost: 0, cacheReadInputCost: 0
+    }),
+    getModelProvider: jest.fn().mockReturnValue('anthropic')
   },
   __esModule: true
 }));
@@ -379,6 +384,250 @@ describe('UsageEventProcessor', () => {
         queueSpy.mockRestore();
         await valkeyProcessor.shutdown();
       });
+    });
+  });
+
+  describe('intra-batch duplicate suppression', () => {
+    it('persists only one row when the same requestId appears twice in one batch', async () => {
+      // Exercise the REAL persistUsageEvents (the outer spy replaces it), and
+      // observe how many events reach the DB layer via persistApiKeyUsage.
+      persistSpy.mockRestore();
+      const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
+        .mockResolvedValue(undefined);
+
+      const event: UsageEvent = {
+        requestId: 'dup-req-1',
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'api_key',
+        credentialId: 'key-123',
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet',
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheCreationInputTokens: 50,
+        cacheReadInputTokens: 25,
+        responseTime: 1500,
+        statusCode: 200
+      };
+
+      // Two copies of the SAME request's usage arriving in one batch — the
+      // gateway can publish a request's usage more than once into one flush
+      // window. Only one ApiKeyUsage row must be written.
+      await (processor as any).persistUsageEvents([event, { ...event }]);
+
+      expect(apiKeySpy).toHaveBeenCalledTimes(1);
+      expect(apiKeySpy.mock.calls[0][1]).toHaveLength(1);
+
+      apiKeySpy.mockRestore();
+    });
+
+    it('keeps distinct requestIds in the same batch', async () => {
+      persistSpy.mockRestore();
+      const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
+        .mockResolvedValue(undefined);
+
+      const base = {
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'api_key' as const,
+        credentialId: 'key-123',
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet',
+        inputTokens: 100,
+        outputTokens: 200,
+        responseTime: 1500,
+        statusCode: 200
+      };
+
+      await (processor as any).persistUsageEvents([
+        { ...base, requestId: 'distinct-a' },
+        { ...base, requestId: 'distinct-b' }
+      ]);
+
+      expect(apiKeySpy).toHaveBeenCalledTimes(1);
+      expect(apiKeySpy.mock.calls[0][1]).toHaveLength(2);
+
+      apiKeySpy.mockRestore();
+    });
+
+    it('keeps distinct AWS events that share the fallback requestId "unknown"', async () => {
+      // AWS Bedrock usage events all carry requestId 'unknown' (verified on the
+      // Kyma DB). A requestId-only dedup would wrongly merge them; the content
+      // signature must keep events that differ in their billable fields.
+      persistSpy.mockRestore();
+      const awsSpy = jest.spyOn(processor as any, 'persistAwsCredentialUsage')
+        .mockResolvedValue(undefined);
+
+      const base = {
+        requestId: 'unknown',
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'aws_credential' as const,
+        credentialId: 'aws-key-1',
+        provider: 'aws-bedrock',
+        model: 'anthropic.claude-3-sonnet',
+        responseTime: 1500,
+        statusCode: 200
+      };
+
+      await (processor as any).persistUsageEvents([
+        { ...base, inputTokens: 100, outputTokens: 200 },
+        { ...base, inputTokens: 500, outputTokens: 600 }, // genuinely distinct
+        { ...base, inputTokens: 100, outputTokens: 200 }  // true duplicate of #1
+      ]);
+
+      // The two distinct AWS requests survive; only the exact duplicate collapses.
+      expect(awsSpy).toHaveBeenCalledTimes(1);
+      expect(awsSpy.mock.calls[0][1]).toHaveLength(2);
+
+      awsSpy.mockRestore();
+    });
+  });
+
+  describe('SAP-native fields', () => {
+    const sapCapacityService = require('../../src/services/sapCapacityService');
+
+    const baseEvent: UsageEvent = {
+      requestId: 'sap-test-1',
+      timestamp: Math.floor(Date.now() / 1000),
+      authType: 'api_key',
+      credentialId: 'key-123',
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet',
+      inputTokens: 100,
+      outputTokens: 200,
+      responseTime: 1500,
+      statusCode: 200
+    };
+
+    // persistApiKeyUsage/persistAwsCredentialUsage now issue the row insert as raw SQL
+    // (INSERT OR IGNORE, keyed on the unique usageSignature column — see
+    // insertIgnoringDuplicateSignature in usageEventProcessor.ts) rather than
+    // INSERT.into(...).entries(...), so the mock reconstructs the inserted record from the
+    // statement's column list and its bound values instead of intercepting a CQN INSERT.
+    function setupDbMocks() {
+      const cds = require('@sap/cds');
+      const { SELECT } = cds.ql;
+      SELECT.from.mockReturnValue({
+        columns: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis()
+      });
+      const capturedEntries: any[] = [];
+      const testDb = {
+        run: jest.fn((query: any, values?: any[]) => {
+          if (typeof query === 'string' && /^\s*INSERT/i.test(query)) {
+            const columns = (query.match(/\(([^)]+)\)\s*VALUES/i)?.[1] ?? '')
+              .split(',').map((c: string) => c.trim());
+            const record: Record<string, any> = {};
+            columns.forEach((col: string, i: number) => { record[col] = values?.[i]; });
+            capturedEntries.push(record);
+            return Promise.resolve({ changes: 1 });
+          }
+          return Promise.resolve([]); // SELECT (ApiKeys/AwsCredentials lookup)
+        })
+      };
+      return { testDb, getEntries: () => capturedEntries };
+    }
+
+    it('populates SAP-native fields from sapCapacityService', async () => {
+      persistSpy.mockRestore();
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative')
+        .mockResolvedValue({ genAiTokens: 131, capacityUnits: 249.4, sapCost: 299.3, sapCostCurrency: 'USD' });
+      const { testDb, getEntries } = setupDbMocks();
+
+      await (processor as any).persistApiKeyUsage(testDb, [
+        { ...baseEvent, imageInputTokens: 3 } as any
+      ]);
+
+      const entries = getEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        imageInputTokens: 3,
+        genAiTokens: 131,
+        capacityUnits: 249.4,
+        sapCost: 299.3,
+        sapCostCurrency: 'USD'
+      });
+
+      computeSpy.mockRestore();
+    });
+
+    it('leaves SAP-native fields null when computeSapNative finds no rate, without throwing', async () => {
+      persistSpy.mockRestore();
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative').mockResolvedValue(null);
+      const { testDb, getEntries } = setupDbMocks();
+
+      await expect(
+        (processor as any).persistApiKeyUsage(testDb, [baseEvent])
+      ).resolves.toBeUndefined();
+
+      const entries = getEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        genAiTokens: null,
+        capacityUnits: null,
+        sapCost: null,
+        sapCostCurrency: null
+      });
+
+      computeSpy.mockRestore();
+    });
+
+    const baseAwsEvent: UsageEvent = {
+      requestId: 'sap-aws-test-1',
+      timestamp: Math.floor(Date.now() / 1000),
+      authType: 'aws_credential',
+      credentialId: 'aws-key-456',
+      provider: 'anthropic',
+      model: 'anthropic.claude-3-sonnet',
+      inputTokens: 150,
+      outputTokens: 250,
+      responseTime: 900,
+      statusCode: 200
+    };
+
+    it('populates SAP-native fields from sapCapacityService on the AWS credential leg', async () => {
+      persistSpy.mockRestore();
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative')
+        .mockResolvedValue({ genAiTokens: 77, capacityUnits: 146.6, sapCost: 175.9, sapCostCurrency: 'USD' });
+      const { testDb, getEntries } = setupDbMocks();
+
+      await (processor as any).persistAwsCredentialUsage(testDb, [
+        { ...baseAwsEvent, imageInputTokens: 5 } as any
+      ]);
+
+      const entries = getEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        modelId: baseAwsEvent.model,
+        imageInputTokens: 5,
+        genAiTokens: 77,
+        capacityUnits: 146.6,
+        sapCost: 175.9,
+        sapCostCurrency: 'USD'
+      });
+
+      computeSpy.mockRestore();
+    });
+
+    it('leaves SAP-native fields null on the AWS credential leg when computeSapNative finds no rate, without throwing', async () => {
+      persistSpy.mockRestore();
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative').mockResolvedValue(null);
+      const { testDb, getEntries } = setupDbMocks();
+
+      await expect(
+        (processor as any).persistAwsCredentialUsage(testDb, [baseAwsEvent])
+      ).resolves.toBeUndefined();
+
+      const entries = getEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        modelId: baseAwsEvent.model,
+        genAiTokens: null,
+        capacityUnits: null,
+        sapCost: null,
+        sapCostCurrency: null
+      });
+
+      computeSpy.mockRestore();
     });
   });
 

@@ -18,6 +18,11 @@ const Database = require(
 
 const USAGE_TABLE = 'sap_llm_gateway_admin_ApiKeyUsage';
 const MODEL_COSTS_TABLE = 'sap_llm_gateway_admin_ModelCosts';
+// Referenced (but left empty) by the SAP-native columns' correlated subqueries added in
+// buildUpdateSQL — see cost-recalculation-sap-native.test.ts for the populated-fixture coverage
+// of the SAP-native formula; these tables just need to exist for the generated SQL to run here.
+const SAP_RATES_TABLE = 'sap_llm_gateway_admin_SapCapacityRates';
+const SAP_PRICE_TABLE = 'sap_llm_gateway_admin_SapCapacityUnitPrice';
 
 function makeDb() {
   const db = new Database(':memory:');
@@ -30,11 +35,16 @@ function makeDb() {
       outputTokens INTEGER,
       cacheReadInputTokens INTEGER,
       cacheCreationInputTokens INTEGER,
+      imageInputTokens INTEGER,
       inputCost REAL,
       outputCost REAL,
       cacheReadInputCost REAL,
       cacheCreationInputCost REAL,
-      totalCost REAL
+      totalCost REAL,
+      genAiTokens REAL,
+      capacityUnits REAL,
+      sapCost REAL,
+      sapCostCurrency TEXT
     );
     CREATE TABLE ${MODEL_COSTS_TABLE} (
       model TEXT,
@@ -44,6 +54,24 @@ function makeDb() {
       outputCost REAL,
       cacheReadInputCost REAL,
       cacheCreationInputCost REAL
+    );
+    CREATE TABLE ${SAP_RATES_TABLE} (
+      model TEXT,
+      dateFrom TEXT,
+      dateTo TEXT,
+      inputGenAiRate REAL,
+      outputGenAiRate REAL,
+      cacheReadGenAiRate REAL,
+      cacheWriteGenAiRate REAL,
+      imageGenAiRate REAL,
+      cuFactor REAL
+    );
+    CREATE TABLE ${SAP_PRICE_TABLE} (
+      usageType TEXT,
+      dateFrom TEXT,
+      dateTo TEXT,
+      pricePerCu REAL,
+      currency TEXT
     );
   `);
   return db;

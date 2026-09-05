@@ -9,6 +9,7 @@ export interface UsageEvent {
   outputTokens: number;
   cacheCreationInputTokens?: number; // Separate tracking for cache creation tokens
   cacheReadInputTokens?: number; // Separate tracking for cache read tokens
+  imageInputTokens?: number; // Separate tracking for image input tokens
   responseTime: number;
   statusCode: number;
   endpoint?: string; // Add endpoint information for better granularity
@@ -24,6 +25,7 @@ export interface UsageMetrics {
   outputTokens: number;
   cacheCreationInputTokens?: number; // Separate tracking for cache creation tokens
   cacheReadInputTokens?: number; // Separate tracking for cache read tokens
+  imageInputTokens?: number; // Separate tracking for image input tokens
   eventEmitted?: boolean; // Flag to prevent duplicate usage events
   // See UsageEvent.usageEstimated — carried on the metrics accumulator so the
   // controller can set it before emitUsageEvent copies it onto the event.

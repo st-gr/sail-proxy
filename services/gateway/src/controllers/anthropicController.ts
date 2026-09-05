@@ -16,6 +16,7 @@ import awsBedrockService from '../services/awsBedrockService';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 
 // Type definitions
 interface ExtendedRequest extends Request {
@@ -155,12 +156,41 @@ interface LogEvent {
 }
 
 /**
+ * Every image the request carries, as a ref imageTokenCapture.ts can size: an Anthropic image
+ * block is `{type:'image', source:{type:'base64', media_type, data}}` or `{...source:{type:'url',
+ * url}}`. The base64 shape is turned into a `data:` URL (the form imageTokenCapture already
+ * decodes); a url source passes through as a remote URL. Anthropic never reports image tokens in
+ * its usage, so - like /openai and /responses - the gateway computes them from the request here.
+ */
+export function collectAnthropicImageRefs(messages: any): string[] {
+  const refs: string[] = [];
+  if (!Array.isArray(messages)) return refs;
+  for (const message of messages) {
+    const content = message && message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || block.type !== 'image' || !block.source) continue;
+      const src = block.source;
+      if (src.type === 'base64' && typeof src.data === 'string') {
+        refs.push(`data:${src.media_type || 'image/png'};base64,${src.data}`);
+      } else if (src.type === 'url' && typeof src.url === 'string') {
+        refs.push(src.url);
+      }
+    }
+  }
+  return refs;
+}
+
+/**
  * Handle Anthropic Messages API
  */
 export const handleMessages = async (req: ExtendedRequest, res: Response, next: NextFunction): Promise<void> => {
   const originalModelFromClient = req.body.model;
   const clientRequestedStream = req.body.stream === true;
-  
+  // Collect image refs up front so every usage-emit path can fold image tokens (Anthropic does
+  // not report them). Off-hot-path: the compute runs in captureImageTokensAsync, not here.
+  (req as any).__imageRefs = collectAnthropicImageRefs(req.body?.messages);
+
   // Initialize usage tracking
   const usageMetrics = createUsageMetrics();
   
@@ -266,10 +296,14 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
             updateTokenCounts(usageMetrics, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
           }
           
-          // Emit usage event for successful deployed model request
+          // Emit usage event for successful deployed model request. Fold image tokens first
+          // (captureImageTokensAsync schedules off the hot path, so res.json below is not delayed;
+          // only the already-fire-and-forget emit waits, via emitFinal).
           const modelIdForUsageEvent = configService.getSubstitutedModel('anthropic', originalModelFromClient);
-          emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, 200);
-          
+          const imageRefs = (req as any).__imageRefs;
+          const emitFinal = () => emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, 200);
+          if (imageRefs && imageRefs.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+
           res.json(result);
           return;
         }
@@ -505,9 +539,11 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
       reqId: debugRequestId
     });
 
-    // Emit usage event (fire-and-forget)
+    // Emit usage event (fire-and-forget), folding image tokens first (off the hot path).
     const modelIdForUsageEvent = configService.getSubstitutedModel('anthropic', originalModelFromClient);
-    emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, 200);
+    const imageRefs = (req as any).__imageRefs;
+    const emitFinal = () => emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, 200);
+    if (imageRefs && imageRefs.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
 
     res.json(anthropicResponse);
   } catch (error: any) {
@@ -906,8 +942,10 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
       usageInfo.cache_creation_input_tokens,
       usageInfo.cache_read_input_tokens
     );
-    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
-    
+    const imageRefsEmu = (req as any).__imageRefs;
+    const emitFinalEmu = () => emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
+    if (imageRefsEmu && imageRefsEmu.length) captureImageTokensAsync(req, options.usageMetrics, imageRefsEmu, emitFinalEmu); else emitFinalEmu();
+
     // Clean up resources
     cleanup();
     
@@ -1199,8 +1237,10 @@ async function handleNativeStreaming(options: NativeStreamingOptions): Promise<v
         finalCacheCreationTokens,
         finalCacheReadTokens
       );
-      emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
-      
+      const imageRefsNative = (req as any).__imageRefs;
+      const emitFinalNative = () => emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
+      if (imageRefsNative && imageRefsNative.length) captureImageTokensAsync(req, options.usageMetrics, imageRefsNative, emitFinalNative); else emitFinalNative();
+
       // Log completion and metrics
       logger.info('AnthropicController', `Native streaming completed for ${modelForReportingInStream} → ${mappedModel}. Latency: ${latencyMsNative}ms. Stop: ${anthropicStopReason}, OutTokens: ${accumulatedOutputTokens}, InTokens: ${finalInputTokens}, CacheCreate: ${finalCacheCreationTokens}, CacheRead: ${finalCacheReadTokens}`);
       

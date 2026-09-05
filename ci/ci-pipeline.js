@@ -17,6 +17,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
+const { checkpointSqliteWal } = require('./scripts/sqlite-checkpoint');
 
 // Axios is loaded dynamically after dependencies are installed
 let axios;
@@ -536,21 +537,26 @@ async function backupCIState() {
   const mainDbPath = path.join(projectRoot, 'services/admin/db/admin.db');
   if (fsSync.existsSync(mainDbPath)) {
     logger.warning('SQLite database found. If admin service is running, please stop it before CI to avoid corruption.');
-    logger.info('Waiting 3 seconds for any pending writes to complete...');
-    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Backup strategy: Only backup the main .db file, ignore WAL/SHM files
-    // When restored, SQLite will recreate WAL/SHM files automatically
-    // This prevents backing up inconsistent WAL state that causes SQLITE_CORRUPT
+    // Backup strategy: checkpoint the WAL (PRAGMA wal_checkpoint(TRUNCATE))
+    // before copying the main .db file. In WAL mode, recent commits live in
+    // .db-wal until a checkpoint folds them into the main file; copying the
+    // main file alone without checkpointing first silently drops every
+    // write since the last checkpoint. A TRUNCATE checkpoint folds all of
+    // them in and truncates the WAL to 0 bytes, so once it succeeds the
+    // main .db file alone is a complete, consistent snapshot and it is
+    // safe to omit .db-wal/.db-shm from the backup (restore lets SQLite
+    // recreate them). If the checkpoint can't complete (e.g. the admin
+    // service still holds the DB open), checkpointSqliteWal throws rather
+    // than let us back up an incomplete database.
+    const { checkpointed, walSize } = await checkpointSqliteWal(mainDbPath, projectRoot);
+    logger.success(`✅ Checkpointed admin.db WAL (${checkpointed} frames, now ${walSize} bytes) before backup`);
+
     try {
       const backupDbPath = path.join(backupDir, 'services_admin_db_admin.db');
       await fs.copyFile(mainDbPath, backupDbPath);
       logger.success('✅ Backed up admin.db (main database file)');
-
-      // Note: We intentionally do NOT backup .db-shm and .db-wal files
-      // These contain transient state that can cause corruption if copied
-      // while SQLite is in use. SQLite will recreate them when needed.
-      logger.info('Skipping WAL/SHM files (will be recreated by SQLite on restore)');
+      logger.info('Skipping WAL/SHM files (already folded into admin.db by the checkpoint above)');
     } catch (error) {
       logger.error(`Failed to backup SQLite database: ${error.message}`);
       throw new Error('SQLite database backup failed. Ensure admin service is not running.');
@@ -844,8 +850,11 @@ async function restoreCIState(backupDir) {
       }
     }
 
-    // Now restore from backup if backup exists
-    // Only restore the main .db file - SQLite will recreate WAL/SHM automatically
+    // Now restore from backup if backup exists.
+    // Only the main .db file was backed up - it was checkpointed
+    // (PRAGMA wal_checkpoint(TRUNCATE)) before the backup copy was made, so
+    // it is a complete snapshot on its own. SQLite will recreate WAL/SHM
+    // automatically the next time it opens the file.
     const mainDbBackupPath = path.join(backupDir, 'services_admin_db_admin.db');
     const mainDbOriginalPath = path.join(projectRoot, 'services/admin/db/admin.db');
 
@@ -1734,6 +1743,22 @@ async function runCIPipeline() {
 
     await executeCommand('node cli-tools/test-sail-proxy-cli.js', {
       description: 'Running packaged sail-proxy E2E smoke (pack + install + run + inference + stop)...'
+    });
+
+    // Phase 6.6: UI journeys
+    // Role-based OPA5 journeys (shell, api-keys-app, aws-credentials-app) run by
+    // ui5-test-runner against the admin started in Phase 5. The pipeline owns the
+    // connection details: run.js never guesses a URL. Runs after the last phase
+    // that reads the CI database (6.5): the journeys purge every key, credential
+    // and draft and seed their own fixtures. The DB is the CI's own (db:reset in
+    // Phase 5); the maintainer's admin.db was backed up in Phase 1 and comes back
+    // in Phase 10. Phases 7-8 use container databases.
+    // UI_JOURNEYS_IN_PIPELINE lets seed.js accept port 4004, which it otherwise refuses (the maintainer's dev admin).
+    logger.phase('Phase 6.6: UI journeys');
+
+    await executeCommand('node ci/scripts/ui-journeys/run.js', {
+      description: 'Running role-based OPA5 UI journeys against the Phase 5 admin...',
+      env: { ...process.env, ADMIN_SERVICE_URL: 'http://localhost:4004', UI_JOURNEYS_IN_PIPELINE: '1' }
     });
 
     // Phase 7: Docker Build Validation

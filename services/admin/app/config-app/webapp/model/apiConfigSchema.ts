@@ -74,6 +74,23 @@ const apiConfigSchema: ApiConfigSchema =
             },
             {
               "$ref": "#/$defs/anthropicCompatibleProvider"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "sap_cache_read_token_billing_factor": {
+                  "description": "Calibration factor that scales the cache-READ input token COUNT the model API reports up to the count SAP AI Core meters on its invoice, for SAP-native Capacity-Unit cost accounting. Read by the admin app (not the gateway request path). Invoice reconciliation over Mar-Jun 2026 found SAP's 'Cache Read Input Tokens' line item is ~2x the cache_read_input_tokens the API returns and sail-proxy captures faithfully; the mechanism is undocumented and under inquiry with SAP. Note that Anthropic and AWS Bedrock multiply cache PRICE (read 0.1x, write 1.25x/2x by TTL), never token COUNTS, so this is a SAP-metering calibration, not the Anthropic price model. Default 1.0 applies no adjustment - set it (e.g. 2.0) only once the SAP inquiry confirms the ratio.",
+                  "type": "number",
+                  "minimum": 0,
+                  "default": 1.0
+                },
+                "sap_cache_write_token_billing_factor": {
+                  "description": "Calibration factor that scales the cache-WRITE (creation) input token COUNT the model API reports up to the count SAP AI Core meters on its invoice, for SAP-native Capacity-Unit cost accounting. Read by the admin app (not the gateway request path). The Mar-Jun 2026 reconciliation of SAP's 'Cache Write Input Tokens' line against the API-reported cache_creation_input_tokens was inconsistent month to month (likely a billing-period-boundary effect, since writes concentrate at session start), so unlike the read factor no single ratio is established. Default 1.0 applies no adjustment; leave it at 1.0 unless the SAP inquiry establishes a firm write ratio.",
+                  "type": "number",
+                  "minimum": 0,
+                  "default": 1.0
+                }
+              }
             }
           ],
           "propertyNames": {
@@ -86,7 +103,9 @@ const apiConfigSchema: ApiConfigSchema =
               "supports_prompt_caching",
               "anthropic_bedrock_version",
               "excluded_beta_headers",
-              "supported_beta_headers"
+              "supported_beta_headers",
+              "sap_cache_read_token_billing_factor",
+              "sap_cache_write_token_billing_factor"
             ]
           }
         },
@@ -944,6 +963,26 @@ const apiConfigSchema: ApiConfigSchema =
     "platformGroup": {
       "type": "object",
       "properties": {
+        "billing": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "SAP AI Core billing classification for this subaccount. Read only by the admin app's SAP-native Capacity-Unit cost accounting, never by the gateway request path.",
+          "properties": {
+            "productive": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether SAP classifies this subaccount/tenant as PRODUCTIVE for SAP AI Core billing. isProductive() in sapCapacityService reads it to pick the SapCapacityUnitPrice row - productive vs non-productive $/CU - used to price Capacity Units. SAP's classification does not always match the environment's name (a Sandbox subaccount can be classified productive), so set this to what your SAP invoice/subaccount actually is. Default false = non-productive."
+            },
+            "cuFactor": {
+              "type": "number",
+              "title": "CU Factor",
+              "multipleOf": 0.00001,
+              "minimum": 0,
+              "default": 1.90385,
+              "description": "SAP GenAI-token to Capacity-Unit conversion factor (SAP Note 3437766; uniform across bills, not published per model). cuFactor() in sapCapacityService reads it - capacityUnits = genAiTokens x this factor, applied to every usage event globally (not per usage type), for both live capture and the retroactive recalc. Change only if SAP republishes the CU conversion. Default 1.90385."
+            }
+          }
+        },
         "timeouts": {
           "type": "object",
           "description": "Per-request timeout ceilings the gateway applies to outbound LLM calls.",
@@ -1078,6 +1117,13 @@ const apiConfigSchema: ApiConfigSchema =
             "trust_forwarded_for": {
               "type": "boolean",
               "description": "Trust client-supplied X-Forwarded-For and X-Real-IP headers - and the client IP the web framework derives from them - when recording the client IP on security events, instead of using the raw socket peer address. Enable it only behind a proxy that overwrites those headers rather than passing through whatever the client sent; otherwise a client can spoof its own recorded IP."
+            },
+            "credentialExpirationDays": {
+              "type": "integer",
+              "title": "Credential Expiration (days)",
+              "minimum": 1,
+              "default": 90,
+              "description": "Days a credential stays valid: an API key or AWS credential is created with expiresAt = now + this many days, and every refresh (rotation) moves expiresAt to now + this many days again. Absent or invalid values fall back to 90. Credentials created before expiration existed have no date and never expire until an administrator sets one."
             }
           },
           "additionalProperties": false

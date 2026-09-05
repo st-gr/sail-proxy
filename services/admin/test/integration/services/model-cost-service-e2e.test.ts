@@ -989,4 +989,56 @@ describe('ModelCostService End-to-End Tests', () => {
       expect(result.totalCost).toBe(0.37709);
     });
   });
+
+  describe('self-heal fallback (Valkey-events mode)', () => {
+    const modelList = {
+      data: {
+        data: [
+          {
+            id: 'anthropic--claude-4.5-sonnet--deployed',
+            owned_by: 'anthropic',
+            provider: 'anthropic',
+            versions: [
+              { name: 'v1', isLatest: true, cost: [{ inputCost: '0.003', outputCost: '0.015' }] }
+            ]
+          }
+        ]
+      }
+    };
+
+    afterEach(() => {
+      // Don't leak the forced Valkey/model-data flags into other tests.
+      (modelCostService as any).useValkeyEvents = false;
+      (modelCostService as any).hasModelData = false;
+      (modelCostService as any).serviceApiKey = null;
+    });
+
+    it('fetches model data directly when no model-list event has populated it', async () => {
+      (modelCostService as any).useValkeyEvents = true;   // Valkey mode: normally skips the fetch
+      (modelCostService as any).hasModelData = false;      // ...and no event arrived
+      (modelCostService as any).serviceApiKey = 'test-service-key'; // bypass key provisioning
+      (modelCostService as any).lastFetch = 0;
+      mockedAxios.get.mockResolvedValue(modelList);
+      mockCdsRun.mockResolvedValue([]);                    // no existing ModelCosts rows
+
+      await modelCostService.ensureModelDataFallback();
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.any(Object)
+      );
+      expect((modelCostService as any).hasModelData).toBe(true);
+      expect(modelCostService.hasValidModelData()).toBe(true); // gate is now open
+    });
+
+    it('does not fetch when a model-list event already populated model data', async () => {
+      (modelCostService as any).useValkeyEvents = true;
+      (modelCostService as any).hasModelData = true;       // event already populated it
+      mockedAxios.get.mockResolvedValue(modelList);
+
+      await modelCostService.ensureModelDataFallback();
+
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+    });
+  });
 });

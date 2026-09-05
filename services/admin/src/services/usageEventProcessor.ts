@@ -5,12 +5,44 @@ try {
 } catch (error) {
   // Valkey not available, will use fallback mode only
 }
+import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import modelCostService from './modelCostService';
+import { computeSapNative, isProductive } from './sapCapacityService';
 
 const logger = getDefaultLogger();
 const cds = require('@sap/cds');
-const { INSERT, SELECT } = cds.ql;
+const { SELECT } = cds.ql;
+
+/**
+ * Deterministic content signature for a usage event — the same field set used by the shipped
+ * intra-batch dedup below. Used AS-IS (no length limit) for that in-memory dedup; NEVER written
+ * to the DB directly — see `hashUsageSignature` for the fixed-length form that is. NOT
+ * requestId alone: AWS Bedrock usage events all carry the fallback requestId 'unknown'
+ * (verified on the Kyma DB — 193 AwsCredentialUsage rows share it), so a requestId-only key
+ * would wrongly merge genuinely distinct AWS requests.
+ */
+function computeUsageSignature(e: UsageEvent): string {
+  return [
+    e.requestId, e.authType, e.credentialId, e.model, e.statusCode,
+    e.inputTokens, e.outputTokens, e.cacheCreationInputTokens ?? '',
+    e.cacheReadInputTokens ?? '', e.responseTime, e.timestamp
+  ].join('|');
+}
+
+/**
+ * Fixed-length (64 hex chars) form of `computeUsageSignature`, used for the persisted
+ * `usageSignature` column and the DB conflict key. The raw signature is unbounded — a long AWS
+ * Bedrock inference-profile ARN in `modelId` (itself `String(200)`) alone can push it well past
+ * the column's `String(200)` limit, which SQLite silently ignores but PostgreSQL enforces
+ * (INSERT fails outright), permanently stalling that event's batch. Hashing sidesteps the limit
+ * entirely while keeping the same collision behavior: two events collapse to one row iff their
+ * raw signatures are identical.
+ */
+function hashUsageSignature(e: UsageEvent): string {
+  return createHash('sha256').update(computeUsageSignature(e)).digest('hex');
+}
 
 export interface UsageEvent {
   requestId: string;
@@ -225,11 +257,40 @@ class UsageEventProcessor {
    */
   private async persistUsageEvents(events: UsageEvent[]): Promise<void> {
     const db = await cds.connect.to('db');
-    
+
+    // Intra-batch de-duplication. The callers' `processedRequestIds` guard only
+    // rejects a requestId already persisted by an EARLIER batch; it is marked
+    // after persist, so two copies of the same request's usage within ONE batch
+    // (the gateway can publish a request's usage more than once into a single
+    // flush window) both pass that guard and would each be inserted, producing
+    // duplicate usage rows. Both ingestion paths (processBatch and
+    // processMemoryQueue) funnel through here, so collapse duplicates at this
+    // single chokepoint before persisting.
+    //
+    // Keyed on a full content signature, NOT requestId alone: AWS Bedrock usage
+    // events all carry the fallback requestId `'unknown'` (verified on the Kyma
+    // DB — 193 AwsCredentialUsage rows share it), so a requestId-only key would
+    // wrongly merge genuinely distinct AWS requests that happen to land in the
+    // same batch. A content signature only collapses byte-identical events,
+    // which is exactly the observed defect (same requestId AND same tokens,
+    // metrics, and timing) while preserving every distinct event.
+    //
+    // This is defense-in-depth ON TOP OF the DB-level unique `usageSignature` index
+    // (same field set, computed again per-record in persistApiKeyUsage/
+    // persistAwsCredentialUsage): collapsing here first reduces how often the
+    // conflict-tolerant insert below has to actually eat a rejected row.
+    const seen = new Set<string>();
+    const dedupedEvents = events.filter(event => {
+      const key = computeUsageSignature(event);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     try {
       // Group events by auth type for efficient processing
-      const apiKeyEvents = events.filter(e => e.authType === 'api_key');
-      const awsCredentialEvents = events.filter(e => e.authType === 'aws_credential');
+      const apiKeyEvents = dedupedEvents.filter(e => e.authType === 'api_key');
+      const awsCredentialEvents = dedupedEvents.filter(e => e.authType === 'aws_credential');
 
       // Process API key usage events
       if (apiKeyEvents.length > 0) {
@@ -270,6 +331,9 @@ class UsageEventProcessor {
     
     const keyDetailsMap = new Map(keyDetails.map((key: any) => [key.ID, key]));
 
+    // Read the productive flag once per batch, not per row.
+    const productive = isProductive();
+
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const keyDetail = keyDetailsMap.get(event.credentialId) as any;
       
@@ -288,7 +352,24 @@ class UsageEventProcessor {
       // Resolve provider from model data instead of using event.provider (which is now 'unknown')
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
       
+      const imageInputTokens = (event as any).imageInputTokens || 0;
+      const sap = await computeSapNative({
+        model: event.model,
+        provider: resolvedProvider,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadInputTokens: event.cacheReadInputTokens || 0,
+        cacheCreationInputTokens: event.cacheCreationInputTokens || 0,
+        imageInputTokens,
+        at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
+        productive
+      });
+      if (!sap) {
+        logger.info('UsageEventProcessor', 'No ModelCosts rate for model — SAP-native fields left null', { model: event.model });
+      }
+
       return {
+        ID: uuidv4(),
         apiKey_ID: event.credentialId,
         endpoint: event.endpoint || `/${resolvedProvider.toLowerCase()}/api/v1/chat/completions`, // Use resolved provider
         method: 'POST',
@@ -311,16 +392,28 @@ class UsageEventProcessor {
         requestId: event.requestId,
         validFrom: new Date(event.timestamp * 1000),
         validTo: new Date('9999-12-31T23:59:59.999Z'),
-        usageEstimated: event.usageEstimated ?? null
+        usageEstimated: event.usageEstimated ?? null,
+        imageInputTokens,
+        genAiTokens: sap?.genAiTokens ?? null,
+        capacityUnits: sap?.capacityUnits ?? null,
+        sapCost: sap?.sapCost ?? null,
+        sapCostCurrency: sap?.sapCostCurrency ?? null,
+        usageSignature: hashUsageSignature(event)
       };
     }));
 
-    await db.run(
-      INSERT.into('sap.llm.gateway.admin.ApiKeyUsage').entries(usageRecords)
+    // Conflict-tolerant insert: the DB-level idempotency guard (see class doc). A row whose
+    // usageSignature already exists (e.g. a second admin subscriber replica persisting the
+    // same broadcast usage event) is silently dropped rather than duplicated.
+    const inserted = await this.insertIgnoringDuplicateSignature(
+      db, 'sap_llm_gateway_admin_ApiKeyUsage', usageRecords
     );
 
-    // Batch increment usageCount for API keys
-    const keyUsageCounts = validEvents.reduce((acc, event) => {
+    // Batch increment usageCount for API keys — ONLY for events whose row actually landed.
+    // Counting every validEvent here (as before conflict-tolerance) would double the usageCount
+    // stat on a duplicate persist even though the ApiKeyUsage row itself was correctly deduped.
+    const insertedEvents = validEvents.filter((_, i) => inserted[i]);
+    const keyUsageCounts = insertedEvents.reduce((acc, event) => {
       acc[event.credentialId] = (acc[event.credentialId] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
@@ -341,7 +434,7 @@ class UsageEventProcessor {
       `);
     }
 
-    logger.debug('UsageEventProcessor', `Persisted ${usageRecords.length} API key usage records (filtered from ${events.length} events)`);
+    logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} API key usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
   }
 
   /**
@@ -366,6 +459,9 @@ class UsageEventProcessor {
     
     const credentialDetailsMap = new Map(credentialDetails.map((cred: any) => [cred.ID, cred]));
 
+    // Read the productive flag once per batch, not per row.
+    const productive = isProductive();
+
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const credentialDetail = credentialDetailsMap.get(event.credentialId) as any;
       
@@ -384,7 +480,24 @@ class UsageEventProcessor {
       // Resolve provider from model data instead of using event.provider (which is now 'unknown')
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
       
+      const imageInputTokens = (event as any).imageInputTokens || 0;
+      const sap = await computeSapNative({
+        model: event.model,
+        provider: resolvedProvider,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadInputTokens: event.cacheReadInputTokens || 0,
+        cacheCreationInputTokens: event.cacheCreationInputTokens || 0,
+        imageInputTokens,
+        at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
+        productive
+      });
+      if (!sap) {
+        logger.info('UsageEventProcessor', 'No ModelCosts rate for model — SAP-native fields left null', { model: event.model });
+      }
+
       return {
+        ID: uuidv4(),
         credential_ID: event.credentialId,
         requestId: event.requestId,
         method: 'POST',
@@ -408,16 +521,27 @@ class UsageEventProcessor {
         totalCost: costs.totalCost,
         validFrom: new Date(event.timestamp * 1000),
         validTo: new Date('9999-12-31T23:59:59.999Z'),
-        usageEstimated: event.usageEstimated ?? null
+        usageEstimated: event.usageEstimated ?? null,
+        imageInputTokens,
+        genAiTokens: sap?.genAiTokens ?? null,
+        capacityUnits: sap?.capacityUnits ?? null,
+        sapCost: sap?.sapCost ?? null,
+        sapCostCurrency: sap?.sapCostCurrency ?? null,
+        usageSignature: hashUsageSignature(event)
       };
     }));
 
-    await db.run(
-      INSERT.into('sap.llm.gateway.admin.AwsCredentialUsage').entries(usageRecords)
+    // Conflict-tolerant insert: the DB-level idempotency guard (see class doc). A row whose
+    // usageSignature already exists (e.g. a second admin subscriber replica persisting the
+    // same broadcast usage event) is silently dropped rather than duplicated.
+    const inserted = await this.insertIgnoringDuplicateSignature(
+      db, 'sap_llm_gateway_admin_AwsCredentialUsage', usageRecords
     );
 
-    // Batch increment usageCount for AWS credentials
-    const credentialUsageCounts = validEvents.reduce((acc, event) => {
+    // Batch increment usageCount for AWS credentials — ONLY for events whose row actually
+    // landed (see the matching comment in persistApiKeyUsage for why).
+    const insertedEvents = validEvents.filter((_, i) => inserted[i]);
+    const credentialUsageCounts = insertedEvents.reduce((acc, event) => {
       acc[event.credentialId] = (acc[event.credentialId] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
@@ -438,7 +562,66 @@ class UsageEventProcessor {
       `);
     }
 
-    logger.debug('UsageEventProcessor', `Persisted ${usageRecords.length} AWS credential usage records (filtered from ${events.length} events)`);
+    logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} AWS credential usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
+  }
+
+  /**
+   * Insert `records` into `table`, silently dropping any row whose `usageSignature` collides
+   * with one already persisted — the DB-level guard against the multi-subscriber double-insert
+   * (see the class doc on `persistUsageEvents`). CAP's `INSERT.into(...).entries(...)` does not
+   * emit a conflict clause, so this issues the dialect-specific statement as raw SQL via
+   * `db.run`, dialect-detected the same way `costRecalculationService` does. Returns, per
+   * record (same order as `records`), whether that row was actually inserted — callers use this
+   * to avoid double-incrementing usageCount for a row the DB silently ignored.
+   */
+  private async insertIgnoringDuplicateSignature(
+    db: any,
+    table: string,
+    records: Record<string, any>[]
+  ): Promise<boolean[]> {
+    if (records.length === 0) return [];
+
+    const isPostgreSQL = db.options?.credentials?.kind === 'postgres' ||
+      process.env.CDS_ENV === 'pg' ||
+      process.env.NODE_CONFIG_ENV === 'pg';
+
+    // Every record is built from the same object-literal shape (see the two callers), so the
+    // key set/order is stable across all of them — safe to derive columns from the first row.
+    const columns = Object.keys(records[0]);
+    const placeholders = isPostgreSQL
+      ? columns.map((_, i) => `$${i + 1}`).join(', ')
+      : columns.map(() => '?').join(', ');
+    const sql = isPostgreSQL
+      ? `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (usageSignature) DO NOTHING`
+      : `INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
+
+    const inserted: boolean[] = [];
+    for (const record of records) {
+      const values = columns.map(col => this.toDbParam(record[col], isPostgreSQL));
+      // One row per round trip, not one multi-row VALUES: keeps per-row placeholder numbering
+      // (Postgres $1..$n) trivial and lets us read back changes/rowCount per row below.
+      const result = await db.run(sql, values);
+      const changes = result?.changes ?? result?.rowCount ?? 0;
+      inserted.push(changes > 0);
+    }
+    return inserted;
+  }
+
+  /**
+   * Convert a JS record value into something the raw SQL driver can actually bind. Raw
+   * `db.run(sql, params)` bypasses CAP's CQN-to-SQL layer (which normally does this type-aware
+   * conversion for `INSERT.entries()`), so it must be done by hand here:
+   *  - `better-sqlite3` (the SQLite driver) rejects Boolean and Date params outright — only
+   *    number/string/bigint/buffer/null are bindable.
+   *  - `node-postgres` binds JS `boolean` correctly against a `boolean` column, but an
+   *    integer 0/1 would not implicitly cast to one.
+   * ISO date strings, in contrast, bind correctly against a timestamp column on both drivers.
+   */
+  private toDbParam(value: any, isPostgreSQL: boolean): any {
+    if (value === undefined || value === null) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'boolean') return isPostgreSQL ? value : (value ? 1 : 0);
+    return value;
   }
 
 

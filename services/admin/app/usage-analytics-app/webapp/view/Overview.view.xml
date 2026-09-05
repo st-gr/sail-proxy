@@ -94,15 +94,23 @@
                                 <GenericTile header="Total Requests" subheader="Count" class="sapUiTinyMargin" width="300px">
                                     <tileContent>
                                         <TileContent>
-                                            <NumericContent value="{path: 'viewModel>/kpis/totalRequests', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
+                                            <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/totalRequests', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
                                         </TileContent>
                                     </tileContent>
                                 </GenericTile>
 
-                                <GenericTile header="Total Cost" subheader="USD" class="sapUiTinyMargin" width="300px">
+                                <GenericTile header="Total Token Cost" subheader="USD (provider estimate)" class="sapUiTinyMargin" width="300px">
                                     <tileContent>
                                         <TileContent>
-                                            <NumericContent value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                            <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                        </TileContent>
+                                    </tileContent>
+                                </GenericTile>
+
+                                <GenericTile header="SAP Cost" subheader="{= (${viewModel>/charts/sapBillingTotals/sapCostCurrency} || 'USD') + ' (Capacity-Unit billing)'}" class="sapUiTinyMargin" width="300px" press=".onSapCostTileInfo">
+                                    <tileContent>
+                                        <TileContent>
+                                            <NumericContent truncateValueTo="16" value="{parts: [{path: 'viewModel>/charts/sapBillingTotals/totalSapCost'}, {path: 'viewModel>/charts/sapBillingTotals/sapCostCurrency'}], formatter: '.formatSapCost'}" indicator="Up" valueColor="Critical" />
                                         </TileContent>
                                     </tileContent>
                                 </GenericTile>
@@ -110,7 +118,7 @@
                                 <GenericTile header="Response Time" subheader="ms" class="sapUiTinyMargin" width="300px">
                                     <tileContent>
                                         <TileContent>
-                                            <NumericContent value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
+                                            <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
                                         </TileContent>
                                     </tileContent>
                                 </GenericTile>
@@ -198,10 +206,24 @@
                             <VBox class="sapUiSmallMargin">
                                 <!-- Cost KPIs -->
                                 <HBox wrap="Wrap" class="sapUiSmallMargin">
-                                    <GenericTile header="Total Cost" subheader="USD" class="sapUiTinyMargin" width="250px">
+                                    <GenericTile header="Total Requests" subheader="Count" class="sapUiTinyMargin" width="250px">
                                         <tileContent>
                                             <TileContent>
-                                                <NumericContent value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                                <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/totalRequests', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                    <GenericTile header="Total Token Cost" subheader="USD (provider estimate)" class="sapUiTinyMargin" width="250px">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/totalCost', formatter: '.formatSmartCurrency'}" indicator="Up" valueColor="Critical" />
+                                            </TileContent>
+                                        </tileContent>
+                                    </GenericTile>
+                                    <GenericTile header="SAP Cost" subheader="{= (${viewModel>/charts/sapBillingTotals/sapCostCurrency} || 'USD') + ' (Capacity-Unit billing)'}" class="sapUiTinyMargin" width="250px" press=".onSapCostTileInfo">
+                                        <tileContent>
+                                            <TileContent>
+                                                <NumericContent truncateValueTo="16" value="{parts: [{path: 'viewModel>/charts/sapBillingTotals/totalSapCost'}, {path: 'viewModel>/charts/sapBillingTotals/sapCostCurrency'}], formatter: '.formatSapCost'}" indicator="Up" valueColor="Critical" />
                                             </TileContent>
                                         </tileContent>
                                     </GenericTile>
@@ -243,16 +265,16 @@
                                         </Toolbar>
                                     </headerToolbar>
                                     <columns>
-                                        <Column><Text text="Model" /></Column>
-                                        <Column hAlign="End"><Text text="Input Tokens" /></Column>
-                                        <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
-                                        <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
-                                        <Column hAlign="End"><Text text="Output Tokens" /></Column>
-                                        <Column hAlign="End"><Text text="Input Cost" /></Column>
-                                        <Column hAlign="End"><Text text="Cache Create Cost" /></Column>
-                                        <Column hAlign="End"><Text text="Cache Read Cost" /></Column>
-                                        <Column hAlign="End"><Text text="Output Cost" /></Column>
-                                        <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                        <Column><Text text="Model" /><footer><Text text="Total" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Input Tokens" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/inputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Cache Create Tokens" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/cacheCreationInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Cache Read Tokens" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/cacheReadInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Output Tokens" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/outputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Input Cost" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/inputCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Cache Create Cost" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/cacheCreationCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Cache Read Cost" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/cacheReadCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Output Cost" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/outputCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                        <Column hAlign="End"><Text text="Total Cost" /><footer><Text text="{path: 'viewModel>/charts/modelCostTotals/totalCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
                                     </columns>
                                     <items>
                                         <ColumnListItem>
@@ -269,7 +291,64 @@
                                         </ColumnListItem>
                                     </items>
                                 </Table>
-                                
+
+                                <!-- SAP-native CU / cost analytics (Task 11) - beside the dollar-estimate tables above.
+                                     capacityUnits/genAiTokens/imageInputTokens are currency-neutral (summed per apiKey);
+                                     sapCost is priced per sapCostCurrency, so it is shown with its currency and never
+                                     summed across currencies - see ApiKeyUsageSapCostStats in the CDS schema. -->
+                                <Panel headerText="SAP billing (CU / cost, invoice-reconcilable)" class="sapUiMediumMarginTop" expandable="true" expanded="true">
+                                    <content>
+                                        <VBox class="sapUiSmallMargin">
+                                            <Table items="{viewModel>/charts/sapBillingCapacityStats}">
+                                                <headerToolbar>
+                                                    <Toolbar>
+                                                        <Title text="SAP Billing by API Key" level="H4"/>
+                                                    </Toolbar>
+                                                </headerToolbar>
+                                                <columns>
+                                                    <Column>
+                                                        <Text text="API Key" />
+                                                        <footer><Text text="Total" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="Image Input Tokens" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalImageInputTokens', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="GenAI Tokens" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalGenAiTokens', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="Capacity Units" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalCapacityUnits', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="Price per CU" />
+                                                        <footer><Text text="{parts: [{path: 'viewModel>/charts/sapBillingTotals/pricePerCu'}, {path: 'viewModel>/charts/sapBillingTotals/sapCostCurrency'}], formatter: '.formatSapCost'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="SAP Cost" />
+                                                        <footer><Text text="{parts: [{path: 'viewModel>/charts/sapBillingTotals/totalSapCost'}, {path: 'viewModel>/charts/sapBillingTotals/sapCostCurrency'}], formatter: '.formatSapCost'}" /></footer>
+                                                    </Column>
+                                                </columns>
+                                                <items>
+                                                    <ColumnListItem>
+                                                        <VBox>
+                                                            <Text text="{= ${viewModel>apiKeyName} ? ${viewModel>apiKeyName} : ${viewModel>apiKey_ID}}" />
+                                                            <Text text="{viewModel>apiKeyEmail}" visible="{= !!${viewModel>apiKeyEmail}}" class="sapUiContentLabelColor" />
+                                                        </VBox>
+                                                        <Text text="{path: 'viewModel>totalImageInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{path: 'viewModel>totalGenAiTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{path: 'viewModel>totalCapacityUnits', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{parts: [{path: 'viewModel>pricePerCu'}, {path: 'viewModel>sapCostCurrency'}], formatter: '.formatSapCost'}" textAlign="End" />
+                                                        <Text text="{parts: [{path: 'viewModel>sapCost'}, {path: 'viewModel>sapCostCurrency'}], formatter: '.formatSapCost'}" textAlign="End" />
+                                                    </ColumnListItem>
+                                                </items>
+                                            </Table>
+                                        </VBox>
+                                    </content>
+                                </Panel>
+
                                 <!-- Global Top K Selector -->
                                 <Panel headerText="Top Credentials Analysis" class="sapUiMediumMarginTop" expandable="true" expanded="true">
                                     <headerToolbar>
@@ -298,15 +377,15 @@
                                                 </Toolbar>
                                             </headerToolbar>
                                             <columns>
-                                                <Column><Text text="Email" /></Column>
-                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
-                                                <Column hAlign="End"><Text text="Requests" /></Column>
-                                                <Column hAlign="End"><Text text="API Keys Used" /></Column>
-                                                <Column hAlign="End"><Text text="AWS Credentials Used" /></Column>
+                                                <Column><Text text="Email" /><footer><Text text="Total" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/inputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/cacheCreationInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/cacheReadInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/outputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/totalCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Requests" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/totalRequests', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="API Keys Used" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/uniqueApiKeysUsed', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="AWS Credentials Used" /><footer><Text text="{path: 'viewModel>/charts/topEmailsTotals/uniqueAwsCredentialsUsed', formatter: '.formatNumber'}" /></footer></Column>
                                                 <Column hAlign="End"><Text text="Last Activity" /></Column>
                                             </columns>
                                             <items>
@@ -337,18 +416,21 @@
                                                 </Toolbar>
                                             </headerToolbar>
                                             <columns>
-                                                <Column><Text text="API Key Name" /></Column>
-                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
-                                                <Column hAlign="End"><Text text="Requests" /></Column>
+                                                <Column><Text text="API Key Name" /><footer><Text text="Total" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/inputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/cacheCreationInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/cacheReadInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/outputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/totalCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Requests" /><footer><Text text="{path: 'viewModel>/charts/topApiKeysTotals/totalRequests', formatter: '.formatNumber'}" /></footer></Column>
                                                 <Column hAlign="End"><Text text="Last Used" /></Column>
                                             </columns>
                                             <items>
                                                 <ColumnListItem>
-                                                    <Text text="{viewModel>keyName}" />
+                                                    <VBox>
+                                                        <Text text="{viewModel>keyName}" />
+                                                        <Text text="{viewModel>email}" visible="{= !!${viewModel>email}}" class="sapUiContentLabelColor" />
+                                                    </VBox>
                                                     <Text text="{path: 'viewModel>inputTokens', formatter: '.formatNumber'}" textAlign="End" />
                                                     <Text text="{path: 'viewModel>cacheCreationInputTokens', formatter: '.formatNumber'}" textAlign="End" />
                                                     <Text text="{path: 'viewModel>cacheReadInputTokens', formatter: '.formatNumber'}" textAlign="End" />
@@ -372,13 +454,13 @@
                                                 </Toolbar>
                                             </headerToolbar>
                                             <columns>
-                                                <Column><Text text="Credential Name" /></Column>
-                                                <Column hAlign="End"><Text text="Input Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Create Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Cache Read Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Output Tokens" /></Column>
-                                                <Column hAlign="End"><Text text="Total Cost" /></Column>
-                                                <Column hAlign="End"><Text text="Requests" /></Column>
+                                                <Column><Text text="Credential Name" /><footer><Text text="Total" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Input Tokens" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/inputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Create Tokens" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/cacheCreationInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Cache Read Tokens" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/cacheReadInputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Output Tokens" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/outputTokens', formatter: '.formatNumber'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Total Cost" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/totalCost', formatter: '.formatSmartCurrency'}" /></footer></Column>
+                                                <Column hAlign="End"><Text text="Requests" /><footer><Text text="{path: 'viewModel>/charts/topAwsCredentialsTotals/totalRequests', formatter: '.formatNumber'}" /></footer></Column>
                                                 <Column hAlign="End"><Text text="Last Used" /></Column>
                                             </columns>
                                             <items>
@@ -414,14 +496,14 @@
                                     <GenericTile header="Avg Response Time" subheader="ms" class="sapUiTinyMargin" width="250px">
                                         <tileContent>
                                             <TileContent>
-                                                <NumericContent value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
+                                                <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/avgResponseTime', formatter: '.formatDuration'}" indicator="Down" valueColor="Good" />
                                             </TileContent>
                                         </tileContent>
                                     </GenericTile>
                                     <GenericTile header="Error Rate" subheader="%" class="sapUiTinyMargin" width="250px">
                                         <tileContent>
                                             <TileContent>
-                                                <NumericContent value="{path: 'viewModel>/kpis/errorRate', formatter: '.formatPercent'}" indicator="Down" valueColor="Good" />
+                                                <NumericContent truncateValueTo="16" value="{path: 'viewModel>/kpis/errorRate', formatter: '.formatPercent'}" indicator="Down" valueColor="Good" />
                                             </TileContent>
                                         </tileContent>
                                     </GenericTile>
@@ -478,7 +560,7 @@
                                     <GenericTile header="Total Models" subheader="Count" class="sapUiTinyMargin" width="250px">
                                         <tileContent>
                                             <TileContent>
-                                                <NumericContent value="{path: 'viewModel>/charts/modelUsage/length', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
+                                                <NumericContent truncateValueTo="16" value="{path: 'viewModel>/charts/modelUsage/length', formatter: '.formatNumber'}" indicator="Up" valueColor="Good" />
                                             </TileContent>
                                         </tileContent>
                                     </GenericTile>

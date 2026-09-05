@@ -1,5 +1,5 @@
 ---
-title: SAIL-PROXY User Guide - Chapter 5
+title: SAIL-PROXY User Guide - Chapter 7
 author: st-gr
 date: 2025-01-28
 mainfont: Helvetica, Arial, sans-serif
@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-4-claude-code.md) | [Content Table](README.md) | [Next Chapter >>](chapter-6-admin-cockpit.md)
+[<< Previous Chapter](chapter-6-opencode.md) | [Content Table](README.md) | [Next Chapter >>](chapter-8-admin-cockpit.md)
 
 ---
 
@@ -339,4 +339,4 @@ cp ~/.vscode/extensions/github.copilot-chat-*/dist/extension.js.bak \
 
 ---
 
-*Next: Learn about [managing access and monitoring usage](chapter-6-admin-cockpit.md) with the Admin Cockpit.*
+*Next: Learn about [managing access and monitoring usage](chapter-8-admin-cockpit.md) with the Admin Cockpit.*

@@ -24,11 +24,13 @@ Whether you're using Claude Code, GitHub Copilot, or building custom AI applicat
 2. [Features](chapter-2-features.md)
 3. [Installation](chapter-3-installation.md)
 4. [Using with Claude Code](chapter-4-claude-code.md)
-5. [Using with GitHub Copilot](chapter-5-github-copilot.md)
-6. [Manage Access & Monitor Usage with Admin Cockpit](chapter-6-admin-cockpit.md)
-7. [Roles Overview](chapter-7-roles.md)
-8. [Troubleshooting](chapter-8-troubleshooting.md)
-9. [FAQ](chapter-9-faq.md)
+5. [Using with Codex](chapter-5-codex.md)
+6. [Using with opencode](chapter-6-opencode.md)
+7. [Using with GitHub Copilot](chapter-7-github-copilot.md)
+8. [Manage Access & Monitor Usage with Admin Cockpit](chapter-8-admin-cockpit.md)
+9. [Roles Overview](chapter-9-roles.md)
+10. [Troubleshooting](chapter-10-troubleshooting.md)
+11. [FAQ](chapter-11-faq.md)
 
 ---
 

@@ -317,7 +317,8 @@ describeLive('Analytics and Reporting HTTP Integration Tests', () => {
         const event = response.data.value[0];
         expect(event).toHaveProperty('eventType');
         expect(event).toHaveProperty('severity');
-        expect(event).toHaveProperty('eventData');
+        expect(event).toHaveProperty('description');
+        expect(event).toHaveProperty('credential_ID');
       }
     });
 
@@ -331,9 +332,10 @@ describeLive('Analytics and Reporting HTTP Integration Tests', () => {
       // Validate structure if data exists
       if (response.data.value.length > 0) {
         const summary = response.data.value[0];
-        expect(summary).toHaveProperty('credential');
+        expect(summary).toHaveProperty('credential_ID');
         expect(summary).toHaveProperty('eventType');
         expect(summary).toHaveProperty('severity');
+        expect(summary).toHaveProperty('eventCount');
       }
     });
 

@@ -1,5 +1,5 @@
 ---
-title: SAIL-PROXY User Guide - Chapter 7
+title: SAIL-PROXY User Guide - Chapter 9
 author: st-gr
 date: 2025-01-28
 mainfont: Helvetica, Arial, sans-serif
@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-6-admin-cockpit.md) | [Content Table](README.md) | [Next Chapter >>](chapter-8-troubleshooting.md)
+[<< Previous Chapter](chapter-8-admin-cockpit.md) | [Content Table](README.md) | [Next Chapter >>](chapter-10-troubleshooting.md)
 
 ---
 
@@ -87,7 +87,7 @@ Administrator
 **Standard AI Access**: Standard access level for most users of the system.
 
 **Permissions**:
-- **Personal API Key Management**: Create and manage personal API keys (limited number)
+- **Personal API Key Management**: Create, rename, rotate and delete own API keys (limited number); activation and expiration of a key are set by administrators only
 - **AI Model Access**: Use assigned AI models through standard API endpoints
 - **Personal Usage Tracking**: View own usage statistics and history
 - **Basic Features**: Access to standard API features within rate limits
@@ -304,4 +304,4 @@ curl -H "Authorization: Bearer api-key" \
 
 ---
 
-*Next: Learn how to [troubleshoot common issues](chapter-8-troubleshooting.md) with SAIL-PROXY.*
+*Next: Learn how to [troubleshoot common issues](chapter-10-troubleshooting.md) with SAIL-PROXY.*

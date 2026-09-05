@@ -36,7 +36,7 @@ describeLive('AWS Credentials HTTP Integration Tests', () => {
         userId: `tenant-${uuidv4()}`,
         name: 'Test AWS Credentials',
         description: 'Integration test credentials for LLM access',
-        expiresAt: '2024-12-31T23:59:59Z',
+        expiresAt: '2030-12-31T23:59:59Z',
         permissions: ['bedrock:InvokeModel']
       };
 
@@ -62,7 +62,7 @@ describeLive('AWS Credentials HTTP Integration Tests', () => {
         userId: `production-tenant-${uuidv4()}`,
         name: 'Production LLM Gateway Credentials',
         description: 'AWS credentials for Claude, GPT, and Bedrock access',
-        expiresAt: '2025-06-30T23:59:59Z',
+        expiresAt: '2030-12-31T23:59:59Z',
         permissions: [
           'bedrock:InvokeModel',
           'bedrock:InvokeModelWithResponseStream',
@@ -107,7 +107,7 @@ describeLive('AWS Credentials HTTP Integration Tests', () => {
         userId: `test-${uuidv4()}`,
         name: 'Management Test Credential',
         description: 'Credential for testing management operations',
-        expiresAt: '2024-12-31T23:59:59Z',
+        expiresAt: '2030-12-31T23:59:59Z',
         permissions: ['bedrock:InvokeModel']
       };
 
@@ -259,7 +259,7 @@ describeLive('AWS Credentials HTTP Integration Tests', () => {
         userId: `perf-test-${uuidv4()}`,
         name: 'Performance Test Credential',
         description: 'Testing credential creation performance',
-        expiresAt: '2024-12-31T23:59:59Z',
+        expiresAt: '2030-12-31T23:59:59Z',
         permissions: ['bedrock:InvokeModel']
       };
 
@@ -281,7 +281,7 @@ describeLive('AWS Credentials HTTP Integration Tests', () => {
           userId: `concurrent-${i}-${uuidv4()}`,
           name: `Concurrent Test Credential ${i}`,
           description: `Testing concurrent creation ${i}`,
-          expiresAt: '2024-12-31T23:59:59Z',
+          expiresAt: '2030-12-31T23:59:59Z',
           permissions: ['bedrock:InvokeModel']
         })
       );
