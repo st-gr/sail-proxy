@@ -1622,9 +1622,13 @@ async function runCIPipeline() {
       description: 'Running Gateway pseudonymization precision/recall harness...'
     });
 
-    await executeCommand('pnpm run test:unit', {
+    // --no-cache: ts-jest reuses cached per-file output and then skips its
+    // type diagnostics, so cross-file errors (e.g. two script-style test files
+    // declaring the same top-level const, TS2451) only surface on a cold cache —
+    // which is what the GitHub runner always has. Compile cold here too.
+    await executeCommand('pnpm run test:unit -- --no-cache', {
       cwd: 'services/admin',
-      description: 'Running Admin unit tests...'
+      description: 'Running Admin unit tests (cold ts-jest cache)...'
     });
 
     await executeCommand('pnpm run test', {
