@@ -370,7 +370,7 @@ that gap and nothing else.
 
 **Design.** No gateway code changes, no source under `services/gateway/src`
 touched. Codex is launched from a scratch working directory,
-`/private/tmp/claude-501/-Users-grundmanns-Documents-repos-project/313bd96e-3918-4dc1-b643-dc8a7b70c67b/scratchpad/approval-probe`,
+`/tmp/scratch/approval-probe`,
 deliberately absent from `$CODEX_HOME/config.toml`'s trusted-projects list
 (that list currently trusts only `.../repos/acode/mac-codex` and
 `.../repos/project`), so the approval prompt actually fires. If codex offers

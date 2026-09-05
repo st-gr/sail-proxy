@@ -11,9 +11,9 @@
 						<VBox class="sapUiMediumMargin">
 							<FlexBox direction="Column" alignItems="Center" justifyContent="SpaceBetween"
 								gap="0.625rem">
-								<Avatar size="L" displayShape="Circle" initials="AC" />
+								<Avatar size="L" displayShape="Circle" initials="JD" />
 								<FlexBox direction="Column" alignItems="Center" justifyContent="SpaceBetween">
-									<Title text="Alain Chevalier" />
+									<Title text="Jane Doe" />
 									<Label text="CZ0303" />
 									<Label text="Delivery Manager" />
 								</FlexBox>
@@ -29,12 +29,12 @@
 
 							<FlexBox direction="Column" class="sapUiSmallMargin">
 								<Label text="Full name:" />
-								<Text text="Alain Chevalier" />
+								<Text text="Jane Doe" />
 							</FlexBox>
 
 							<FlexBox direction="Column" class="sapUiSmallMargin">
 								<Label text="Email:" />
-								<Text text="alain.chevalier@sap.com" />
+								<Text text="jane.doe@example.com" />
 							</FlexBox>
 						</VBox>
 					</IconTabFilter>

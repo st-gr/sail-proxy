@@ -305,7 +305,7 @@
       "type": "custom_tool_call",
       "status": "completed",
       "call_id": "call_5FWpoCPQHuiWg1GU3UG7Bi63",
-      "input": "const r = await tools.exec_command({\"cmd\":\"sed -n '1,160p' greet.py && git diff -- greet.py\",\"workdir\":\"/private/tmp/claude-501/-Users-grundmanns-Documents-repos-project/313bd96e-3918-4dc1-b643-dc8a7b70c67b/scratchpad/patch-capture\",\"yield_time_ms\":10000,\"max_output_tokens\":2000}); text(r.output);\n",
+      "input": "const r = await tools.exec_command({\"cmd\":\"sed -n '1,160p' greet.py && git diff -- greet.py\",\"workdir\":\"/tmp/scratch/patch-capture\",\"yield_time_ms\":10000,\"max_output_tokens\":2000}); text(r.output);\n",
       "internal_chat_message_metadata_passthrough": {
         "create_time": 1786432317.003702,
         "turn_id": "019fefa9-e4a2-7271-9079-4d85744732b7"
@@ -328,7 +328,7 @@
   },
   "server_input_done": {
     "type": "response.custom_tool_call_input.done",
-    "input": "const r = await tools.exec_command({\"cmd\":\"sed -n '1,160p' greet.py && git diff -- greet.py\",\"workdir\":\"/private/tmp/claude-501/-Users-grundmanns-Documents-repos-project/313bd96e-3918-4dc1-b643-dc8a7b70c67b/scratchpad/patch-capture\",\"yield_time_ms\":10000,\"max_output_tokens\":2000}); text(r.output);\n",
+    "input": "const r = await tools.exec_command({\"cmd\":\"sed -n '1,160p' greet.py && git diff -- greet.py\",\"workdir\":\"/tmp/scratch/patch-capture\",\"yield_time_ms\":10000,\"max_output_tokens\":2000}); text(r.output);\n",
     "item_id": "ctc_0d0e7f18523c9246016a7acb3e00588198ae3d320c0cf3611d",
     "output_index": 1,
     "sequence_number": 126
