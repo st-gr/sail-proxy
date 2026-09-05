@@ -119,16 +119,11 @@ docker/docker-compose.override.yml.backup.*
 # Subagent-driven-development scratch: ledgers, briefs, review packages.
 .superpowers/
 
-# Superpowers plans/specs: written to be executed on a specific machine, so they
-# accumulate local paths, hosts and DSNs. Kept on disk, out of the repo.
-# Everything under here EXCEPT the README. The `/*` form matters: `!docs/superpowers/`
-# would re-include the directory and with it every plan and spec, which is what a
-# first attempt at this did.
-docs/superpowers/*
-!docs/superpowers/README.md
+# Superpowers plans, specs and working notes: written to be executed or read on a
+# specific machine (absolute paths, private hostnames, local DSNs), and internal by
+# nature. Never tracked; the public repo carries none of them.
+docs/superpowers/
 
-# Competitive analysis and positioning notes. Fully ignored, README included:
-# this repo is public, so even a tracked stub naming the analysis would disclose
-# internal strategy. Nothing tracked references it, so nothing breaks by its
-# absence — unlike docs/superpowers/, which keeps a README for that reason.
+# Competitive analysis and positioning notes. Fully ignored: this repo is public,
+# so even a tracked stub naming the analysis would disclose internal strategy.
 docs/competitive/

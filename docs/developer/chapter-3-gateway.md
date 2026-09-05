@@ -612,8 +612,8 @@ knowing when editing it:
 today: `anthropic`, `aws-bedrock`, `openai`, `openrouter`, and `perplexity`. Any **other** provider
 key is still accepted and schema-validated against the shared `providerCommon` shape, so no schema
 change is needed to stage a new provider — but its settings stay **inert** until the gateway itself
-learns to route that provider. (Traceability of every key to its read site is kept in
-`docs/notes/api-config-schema-traceability.md`.)
+learns to route that provider. (Traceability of every key to its read site is kept in the maintainer's local notes,
+outside the repository.)
 
 **Each named provider has a closed key set.** The five named providers each carry exactly the
 settings their own request path reads, enforced by a `propertyNames` enum per provider:

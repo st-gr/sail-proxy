@@ -337,7 +337,7 @@ function formatResultsText(r: ToolExecResult): string {
 export const fileSearchDescriptor: HostedToolDescriptor = {
   type: 'file_search',
   // Captured from a real OpenAI file_search turn, 2026-08-06 — see
-  // docs/notes/openai-parity-capture-2026-08-06.md for the exact sequence.
+  // docs/superpowers/notes/openai-parity-capture-2026-08-06.md for the exact sequence.
   emitsCallLifecycleFrames: true,
   functionName: 'file_search',
 

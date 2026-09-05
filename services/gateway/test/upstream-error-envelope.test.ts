@@ -4,7 +4,7 @@
  *
  * The bodies here are captured, not invented — the SAP shape came off a live
  * deployment rejecting codex-cli's tool list (2026-08-06), and the OpenAI shape
- * off the parity capture in docs/notes/openai-parity-capture-2026-08-06.md.
+ * off the parity capture in docs/superpowers/notes/openai-parity-capture-2026-08-06.md.
  */
 import { describe, it, expect } from '@jest/globals';
 import { normalizeUpstreamError, errorTypeForStatus } from '../src/utils/upstreamErrorEnvelope';

@@ -681,7 +681,7 @@ describe('the raw-results include gate', () => {
 
 /**
  * The file_search_call lifecycle frames, pinned against a REAL OpenAI stream
- * captured 2026-08-06 (docs/notes/openai-parity-capture-2026-08-06.md):
+ * captured 2026-08-06 (docs/superpowers/notes/openai-parity-capture-2026-08-06.md):
  *
  *   seq 2  output_index 0  response.output_item.added        item.type=file_search_call
  *   seq 3  output_index 0  response.file_search_call.in_progress

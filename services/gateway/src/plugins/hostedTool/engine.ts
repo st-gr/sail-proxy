@@ -906,7 +906,7 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
    * the correct lifecycle and terminal state; it just sees the transitions arrive
    * together. Emitting them at the true moments would mean writing frames before the
    * continuation's outcome is known, which the engine's one-continuation design does not
-   * allow. Recorded in docs/notes/openai-parity-capture-2026-08-06.md.
+   * allow. Recorded in docs/superpowers/notes/openai-parity-capture-2026-08-06.md.
    */
   const callItemBlocks = (index: number, callItem: any, descriptor: HostedToolDescriptor): string[] => [
     sseBlock({ type: 'response.output_item.added', output_index: index, item: callItem }),

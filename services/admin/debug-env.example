@@ -7,7 +7,7 @@
 # DATABASE_URL. None of those nine is read anywhere in admin's source — they
 # described an intended configuration surface that was never built, which is
 # worse than no documentation: someone setting one gets no effect and no error.
-# See docs/notes/auth-header-flow-by-runtime.md.
+# See docs/superpowers/notes/auth-header-flow-by-runtime.md.
 
 # ========================================
 # Deployment Configuration
@@ -82,7 +82,7 @@ cds.requires.db.credentials.database=sap_llm_gateway
 # WHICH of them arrive differs by deployment, and that is a real difference:
 #   Docker forwards user, email, groups, preferred-username
 #   Kyma   forwards user, groups only
-# See docs/notes/auth-header-flow-by-runtime.md for why Kyma still works.
+# See docs/superpowers/notes/auth-header-flow-by-runtime.md for why Kyma still works.
 #
 # Example nginx configuration:
 # proxy_set_header X-Auth-Request-User   $user;
