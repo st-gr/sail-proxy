@@ -2,6 +2,10 @@
 # Note: Uses package.docker.json to exclude SQLite dependencies that require Python/build tools
 # Docker deployment uses PostgreSQL only, SQLite is for local development
 FROM node:20-alpine AS base
+# No browser ever runs inside an image: keep puppeteer (a root devDependency
+# used only by the CI UI journeys) from downloading Chrome for Testing into
+# this build stage's layers.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.12.4 --activate
@@ -22,6 +26,10 @@ RUN echo "node-linker=hoisted" >> .npmrc && pnpm install --no-frozen-lockfile
 
 # Build stage
 FROM node:20-alpine AS build
+# No browser ever runs inside an image: keep puppeteer (a root devDependency
+# used only by the CI UI journeys) from downloading Chrome for Testing into
+# this build stage's layers.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.12.4 --activate

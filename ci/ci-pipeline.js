@@ -1813,11 +1813,25 @@ async function runCIPipeline() {
       // services in parallel, and one with no build section can only pull, so
       // deleting either block makes `docker compose up` fail on a clean machine
       // with no local image and no registry access. Measured both ways round.
-      await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache gateway admin ollama nginx`, {
-        description: 'Testing Docker build process (this may take 10-15 minutes)...',
-        cwd: projectRoot,
-        env: ciEnv
-      });
+      //
+      // One image per compose call, and on the disk-limited hosted runner
+      // (CI=true) the BuildKit cache is dropped between them: a --no-cache build
+      // never reuses it, and four cold builds' layers alone can exhaust the
+      // ~14 GB ubuntu-latest guarantees. Locally the cache — including the SAPUI5
+      // framework cache mount the admin build relies on — is left alone.
+      for (const service of ['gateway', 'admin', 'ollama', 'nginx']) {
+        await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache ${service}`, {
+          description: `Testing Docker build process: ${service} (this may take several minutes)...`,
+          cwd: projectRoot,
+          env: ciEnv
+        });
+        if (process.env.CI === 'true') {
+          await executeCommand('docker builder prune -af', {
+            description: `Pruning the BuildKit cache after the ${service} build (hosted-runner disk)...`,
+            cwd: projectRoot
+          });
+        }
+      }
 
       const dockerDuration = Math.round((Date.now() - dockerStartTime) / 1000);
       logger.success(`Docker build completed in ${dockerDuration} seconds`);

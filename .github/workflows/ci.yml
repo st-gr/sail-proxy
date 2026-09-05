@@ -121,6 +121,19 @@ jobs:
     - name: Make CI pipeline executable
       run: chmod +x ci/ci-pipeline.js
 
+    - name: Free runner disk space
+      # ubuntu-latest guarantees only ~14 GB free; the pipeline builds four images
+      # with --no-cache and runs the browser-based UI journeys, and a run died with
+      # the runner's own "No space left on device". Drop preinstalled toolchains this
+      # project never uses and unused Docker images (the pgvector service container's
+      # image is in use and survives). Node under /opt/hostedtoolcache is kept.
+      run: |
+        echo "before:"; df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+          /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/julia* || true
+        docker image prune -af >/dev/null 2>&1 || true
+        echo "after:"; df -h / | tail -1
+
     - name: Run CI Pipeline
       run: pnpm run ci
       env:
