@@ -1,3 +1,6 @@
+// Module scope: a plain script would share top-level names with other test files under ts-jest.
+export {};
+
 /**
  * credentialLifecycle holds the admin-only lifecycle rules for API keys and AWS credentials.
  * api_config.json is mocked per case (module isolation) exactly like sap-cu-factor.test.ts so

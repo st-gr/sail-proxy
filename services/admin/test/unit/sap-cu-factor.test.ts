@@ -1,3 +1,6 @@
+// Module scope: a plain script would share top-level names with other test files under ts-jest.
+export {};
+
 /**
  * cuFactor() reads the configurable SAP GenAI-token -> Capacity-Unit factor from
  * platform.billing.cuFactor in api_config.json, falling back to the SAP_CU_FACTOR default.

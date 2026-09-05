@@ -1,3 +1,6 @@
+// Module scope: a plain script would share top-level names with other test files under ts-jest.
+export {};
+
 const cds = require('@sap/cds');
 
 describe('SAP-native usage fields', () => {
