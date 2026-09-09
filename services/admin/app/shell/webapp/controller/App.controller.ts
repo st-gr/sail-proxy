@@ -5,6 +5,7 @@ import Device from "sap/ui/Device";
 import XMLView from "sap/ui/core/mvc/XMLView";
 import Fragment from "sap/ui/core/Fragment";
 import JSONModel from "sap/ui/model/json/JSONModel";
+import NumberFormat from "sap/ui/core/format/NumberFormat";
 import Log from "sap/base/Log";
 import Text from "sap/m/Text";
 import Title from "sap/m/Title";
@@ -20,6 +21,8 @@ import Breadcrumbs from "sap/m/Breadcrumbs";
 import Link from "sap/m/Link";
 import Button from "sap/m/Button";
 import HBox from "sap/m/HBox";
+import { toQuotaView } from "../model/quotaDisplay";
+import { toHomeView } from "../model/homeTiles";
 
 // UI5 Web Components - Now using SAPUI5 wrapper types
 import ShellBar, { ShellBar$NotificationsClickEvent } from "sap/ui/webc/fiori/ShellBar";
@@ -39,6 +42,8 @@ export default class App extends BaseController {
 	private sseConnection?: EventSource;
 	private sseReconnectAttempts: number = 0;
 	private maxReconnectAttempts: number = 5;
+	// The "My quota" card load in flight, so a second Home render waits for it (loadStaticContent)
+	private _myQuotaCardLoad: Promise<void> | null = null;
 	
 	// Configuration for the single admin app
 	private appConfigurations = {
@@ -77,6 +82,24 @@ export default class App extends BaseController {
 			manifest: true,
 			title: "Configuration Management",
 			route: "#config"
+		},
+		"modelLibrary": {
+			componentName: "admin.modellibrary.Component",
+			manifest: true,
+			title: "Model Library",
+			route: "#model-library"
+		},
+		"catalogs": {
+			componentName: "admin.modellibrary.Component",
+			manifest: true,
+			title: "Entitlements & Quotas",
+			route: "#catalogs"
+		},
+		"users": {
+			componentName: "admin.users.Component",
+			manifest: true,
+			title: "Users & Quotas",
+			route: "#users"
 		}
 	};
 
@@ -128,7 +151,10 @@ export default class App extends BaseController {
 				'sapRates': '/admin/app/sap-rates-app/',
 				'securityEvents': '/admin/app/security-notifications-app/',
 				'usage': '/admin/app/usage-analytics-app/',
-				'config': '/admin/app/config-app/'
+				'config': '/admin/app/config-app/',
+				'modelLibrary': '/admin/app/model-library-app/',
+				'catalogs': '/admin/app/model-library-app/',
+				'users': '/admin/app/users-app/'
 			};
 			return appPathMap[appKey] || '/admin/app/api-keys-app/';
 		} else {
@@ -139,7 +165,10 @@ export default class App extends BaseController {
 				'sapRates': '/sap-rates/',
 				'securityEvents': '/security-notifications/',
 				'usage': '/usage-analytics/',
-				'config': '/config/'
+				'config': '/config/',
+				'modelLibrary': '/model-library/',
+				'catalogs': '/model-library/',
+				'users': '/users/'
 			};
 			return appPathMap[appKey] || '/api-keys/';
 		}
@@ -233,6 +262,11 @@ export default class App extends BaseController {
 			sideExpanded: true // Default to expanded, will be overridden by user preferences
 		});
 		this.getView().setModel(uiModel, "ui");
+
+		// Initialize the "My quota" view model with the "unavailable" state until _loadMyQuota resolves
+		this.getView().setModel(new JSONModel(toQuotaView(null, this.money)), "quota");
+		// The home tiles likewise start "unavailable" until _loadHomeSummary resolves
+		this.getView().setModel(new JSONModel(toHomeView(null)), "home");
 	}
 
 	/**
@@ -341,6 +375,8 @@ export default class App extends BaseController {
 	 * Called when the user clicks on the profile button.
 	 */
 	async onProfileClick(event: any): Promise<void> {
+		void this._loadMyQuota();
+
 		const popoverCtl = this.getView().byId("userProfilePopover") as any;
 		const popEl = popoverCtl?.getDomRef?.() as any;
 		
@@ -527,7 +563,7 @@ export default class App extends BaseController {
 		const navKey = key === "config" ? "settings" : key;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -632,6 +668,20 @@ export default class App extends BaseController {
 					manifest: true,
 					async: true
 				};
+			} else if (appKey === "modelLibrary" || appKey === "catalogs") {
+				componentConfig = {
+					name: "admin.modellibrary",
+					url: componentUrl,
+					manifest: true,
+					async: true
+				};
+			} else if (appKey === "users") {
+				componentConfig = {
+					name: "admin.users",
+					url: componentUrl,
+					manifest: true,
+					async: true
+				};
 			} else {
 				// Default to API Keys for other cases
 				const defaultUrl = this.getComponentUrl('apiKeys');
@@ -679,7 +729,7 @@ export default class App extends BaseController {
 				// Ensure side navigation is updated before navigation
 				const sideNav = this.getView().byId("sideNavigation") as SideNavigation;
 				const navKey = appKey === "config" ? "settings" : appKey;
-				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
+				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
 					sideNav.setSelectedKey(navKey);
 				}
 				
@@ -701,6 +751,15 @@ export default class App extends BaseController {
 				} else if (appKey === "config") {
 					router.navTo("main");
 					this.updateBreadcrumb("config");
+				} else if (appKey === "modelLibrary") {
+					router.navTo("library");
+					this.updateBreadcrumb("modelLibrary");
+				} else if (appKey === "catalogs") {
+					router.navTo("catalogs");
+					this.updateBreadcrumb("catalogs");
+				} else if (appKey === "users") {
+					router.navTo("UsersList");
+					this.updateBreadcrumb("users");
 				}
 				
 				// Apply the simple height fix for floating footer positioning
@@ -832,6 +891,13 @@ export default class App extends BaseController {
 			case "sapRates":
 				appUrl = "/sap-rates/index.html";
 				break;
+			case "modelLibrary":
+			case "catalogs":
+				appUrl = "/model-library/index.html";
+				break;
+			case "users":
+				appUrl = "/users/index.html";
+				break;
 			default:
 				appUrl = "/";
 		}
@@ -852,8 +918,7 @@ export default class App extends BaseController {
 
 		switch (key) {
 			case "home":
-				contentText = "Welcome to the SAIL-PROXY Admin Cockpit";
-				descriptionText = "This administration interface allows you to:\n\n• Configure and manage API access credentials\n• Set up and rotate AWS credentials for secure access\n• Monitor usage patterns and track API consumption\n• Analyze security events and access logs\n• Manage LLM gateway settings and configurations\n\nUse the navigation menu on the left to access the different administrative functions.";
+				// Home carries no text: this month's key-metric tiles and the "My quota" card (below)
 				break;
 			case "usage":
 				contentText = "Usage Analytics";
@@ -872,17 +937,47 @@ export default class App extends BaseController {
 				descriptionText = "The selected section is not yet implemented.";
 		}
 
-		// Create new content
-		const welcomeText = new Text({
-			text: contentText
-		}).addStyleClass("sapUiMediumMarginBottom");
+		if (key !== "home") {
+			// Create new content
+			const welcomeText = new Text({
+				text: contentText
+			}).addStyleClass("sapUiMediumMarginBottom");
 
-		const descText = new Text({
-			text: descriptionText
-		}).addStyleClass("sapUiSmallMarginTop");
+			const descText = new Text({
+				text: descriptionText
+			}).addStyleClass("sapUiSmallMarginTop");
 
-		contentContainer.addItem(welcomeText);
-		contentContainer.addItem(descText);
+			contentContainer.addItem(welcomeText);
+			contentContainer.addItem(descText);
+			return;
+		}
+
+		// Every return to Home shows this month's figures as they stand now, not as they were at sign-in
+		void this._loadHomeSummary();
+		// A fast Home -> away -> Home used to issue a second Fragment.load while the first was
+		// still in flight: the second destroy() found no card yet, both loads then resolved and
+		// the second was rejected on the duplicate id into the .catch below, leaving Home with
+		// no card at all. Chain on the load already in flight instead, so the previous fragments
+		// are destroyed only once their own load has settled, and clear the field when this one does.
+		const load = (this._myQuotaCardLoad ?? Promise.resolve())
+			.then(() => {
+				this.getView().byId("homeTiles")?.destroy();
+				this.getView().byId("myQuotaCard")?.destroy();
+				return Fragment.load({ id: this.getView().getId(), name: "admin.shell.fragments.HomeTiles", type: "XML", controller: this });
+			})
+			.then((tiles) => {
+				this.getView().addDependent(tiles as any); contentContainer.addItem(tiles);
+				return Fragment.load({ id: this.getView().getId(), name: "admin.shell.fragments.MyQuota", type: "XML", controller: this });
+			})
+			.then((card) => { this.getView().addDependent(card as any); contentContainer.addItem(card); })
+			.catch((e: any) => Log.warning(`Home content failed: ${e?.message ?? e}`, "", "App.controller"))
+			.finally(() => { if (this._myQuotaCardLoad === load) { this._myQuotaCardLoad = null; } });
+		this._myQuotaCardLoad = load;
+	}
+
+	/** A home tile opens Usage Analytics, where the same figures are broken down. */
+	public onHomeTilePress(): void {
+		void this.updateContent("usage");
 	}
 
 	/**
@@ -893,7 +988,7 @@ export default class App extends BaseController {
 		console.log("onBackPress: currentAppKey =", this.currentAppKey);
 		
 		// If we're on an Object Page, go back to the List Report
-		if (this.currentRouteName && this.currentRouteName.includes("ObjectPage")) {
+		if (this.currentRouteName && (this.currentRouteName.includes("ObjectPage") || this.currentRouteName === "detail")) {
 			if (this.feRouter) {
 				if (this.currentAppKey === "apiKeys") {
 					console.log("Navigating back to ApiKeysList");
@@ -913,6 +1008,15 @@ export default class App extends BaseController {
 				} else if (this.currentAppKey === "config") {
 					console.log("Navigating back to config main");
 					this.feRouter.navTo("main");
+				} else if (this.currentAppKey === "modelLibrary") {
+					console.log("Navigating back to library");
+					this.feRouter.navTo("library");
+				} else if (this.currentAppKey === "catalogs") {
+					console.log("Navigating back to catalogs");
+					this.feRouter.navTo("catalogs");
+				} else if (this.currentAppKey === "users") {
+					console.log("Navigating back to UsersList");
+					this.feRouter.navTo("UsersList");
 				}
 				return;
 			}
@@ -942,10 +1046,10 @@ export default class App extends BaseController {
 		const navKey = appKey === "config" ? "settings" : appKey;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
-		
+
 		if (this.feRouter) {
 			if (appKey === "apiKeys") {
 				this.feRouter.navTo("ApiKeysList");
@@ -959,6 +1063,14 @@ export default class App extends BaseController {
 				this.feRouter.navTo("overview");
 			} else if (appKey === "config") {
 				this.feRouter.navTo("main");
+			} else if (appKey === "modelLibrary") {
+				this.feRouter.navTo("library");
+				this.updateBreadcrumb("modelLibrary");
+			} else if (appKey === "catalogs") {
+				this.feRouter.navTo("catalogs");
+				this.updateBreadcrumb("catalogs");
+			} else if (appKey === "users") {
+				this.feRouter.navTo("UsersList");
 			}
 		}
 	}
@@ -1044,6 +1156,13 @@ export default class App extends BaseController {
 					const objectTitle = this.getObjectPageTitle();
 					this.updateBreadcrumb("sapRates", objectTitle || "Details");
 				}, 100);
+			} else if (routeName === "UsersList") {
+				this.updateBreadcrumb("users");
+			} else if (routeName === "UsersObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("users", objectTitle || "Details");
+				}, 100);
 			} else if (routeName === "MySecurityNotificationsList") {
 				this.updateBreadcrumb("securityEvents");
 			} else if (routeName === "MySecurityNotificationsObjectPage") {
@@ -1059,6 +1178,16 @@ export default class App extends BaseController {
 				this.updateBreadcrumb("usage", "Performance Analysis");
 			} else if (routeName === "models") {
 				this.updateBreadcrumb("usage", "Model Analysis");
+			} else if (routeName === "detail") {
+				this.updateBreadcrumb(this.currentAppKey, decodeURIComponent(event.getParameter("arguments").modelId));
+			} else if (routeName === "library") {
+				// The two list routes of the model-library app. Without them the crumb kept the
+				// model it was showing when the back button or the breadcrumb itself navigated to
+				// the list: nothing else clears the object-page crumb, since it is only ever added
+				// by the "detail" branch above.
+				this.updateBreadcrumb("modelLibrary");
+			} else if (routeName === "catalogs") {
+				this.updateBreadcrumb("catalogs");
 			}
 		});
 	}
@@ -1223,6 +1352,42 @@ export default class App extends BaseController {
 		}
 	}
 
+	/** myQuotaStatus() for the signed-in user (spec §5) — called on user load and whenever the profile opens. */
+	private async _loadMyQuota(): Promise<void> {
+		try {
+			const response = await fetch('/odata/v4/admin/myQuotaStatus()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
+			const status = response.ok ? await response.json() : null;
+			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(status, this.money));
+		} catch (error) {
+			Log.warning(`myQuotaStatus failed: ${(error as Error).message}`, "", "App.controller");
+			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(null, this.money));
+		}
+	}
+
+	/** myUsageSummary() — this month's figures for the home tiles: the caller's own, or every user's for an administrator. */
+	private async _loadHomeSummary(): Promise<void> {
+		const model = this.getView().getModel("home") as JSONModel;
+		try {
+			const response = await fetch('/odata/v4/admin/myUsageSummary()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
+			const summary = response.ok ? await response.json() : null;
+			model.setData(toHomeView(summary, {
+				int: (n) => NumberFormat.getIntegerInstance({ groupingEnabled: true }).format(n),
+				money: (n, c) => NumberFormat.getCurrencyInstance({ currencyCode: true }).format(n, c)
+			}));
+		} catch (error) {
+			Log.warning(`myUsageSummary failed: ${(error as Error).message}`, "", "App.controller");
+			model.setData(toHomeView(null));
+		}
+	}
+
+	/**
+	 * Money for the quota card and the profile block: UI5's currency formatter with the currency code
+	 * after the figure ("0.26 USD"), so the decimals follow the currency (two for USD and EUR, none for
+	 * JPY) and the grouping follows the user's locale.
+	 */
+	private readonly money = (amount: number, currency: string): string =>
+		NumberFormat.getCurrencyInstance({ currencyCode: true }).format(amount, currency);
+
 	/**
 	 * Load user preferences and apply sidepanel state via model binding
 	 */
@@ -1258,7 +1423,9 @@ export default class App extends BaseController {
 				appViewModel.setProperty("/userRole", result.isAdmin ? "Admin user" : "User");
 				appViewModel.setProperty("/isAdmin", !!result.isAdmin);
 			}
-			
+
+			void this._loadMyQuota();
+
 			if (result && typeof result.sidePanelCollapsed === 'boolean') {
 				const sideExpanded = !result.sidePanelCollapsed; // invert because sidePanelCollapsed = !sideExpanded
 				

@@ -9,26 +9,39 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 // Mock CDS for database operations
 const mockCdsRun = jest.fn();
 
-jest.mock('@sap/cds', () => ({
-  connect: {
-    to: jest.fn(() => ({
-      run: mockCdsRun
-    }))
-  },
-  ql: {
-    SELECT: {
-      from: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis()
+jest.mock('@sap/cds', () => {
+  // UPDATE(table) is called directly (not as obj.method()), so mockReturnThis() would resolve
+  // `this` to undefined under strict mode - build an explicit chainable object instead so
+  // .set(...).where(...) works the same as the real cds.ql.UPDATE builder.
+  const updateChain: any = {};
+  updateChain.set = jest.fn(() => updateChain);
+  updateChain.where = jest.fn(() => updateChain);
+  return {
+    connect: {
+      to: jest.fn(() => ({
+        run: mockCdsRun
+      }))
     },
-    INSERT: {
-      into: jest.fn().mockReturnThis(),
-      entries: jest.fn().mockReturnThis()
-    },
-    UPDATE: jest.fn().mockReturnThis()
-  }
-}));
+    tx: (fn: any) => fn({ run: mockCdsRun }),
+    ql: {
+      SELECT: {
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis()
+      },
+      INSERT: {
+        into: jest.fn().mockReturnThis(),
+        entries: jest.fn().mockReturnThis()
+      },
+      UPSERT: {
+        into: jest.fn().mockReturnThis(),
+        entries: jest.fn().mockReturnThis()
+      },
+      UPDATE: jest.fn(() => updateChain)
+    }
+  };
+});
 
 // Mock logger
 jest.mock('../../../../../libs/logger', () => ({
@@ -127,7 +140,7 @@ describe('ModelCostService End-to-End Tests', () => {
 
       // Verify API call was made with correct authentication
       expect(mockedAxios.get).toHaveBeenCalledWith(
-        `${getGatewayUrl()}/v1/models`,
+        `${getGatewayUrl()}/v1/models?include=unroutable`,
         expect.objectContaining({
           timeout: 30000,
           headers: expect.objectContaining({
@@ -403,6 +416,8 @@ describe('ModelCostService End-to-End Tests', () => {
         .mockResolvedValueOnce([]) // No existing pricing in cache (first getModelPricing call)
         .mockResolvedValueOnce([]) // No existing records to update (during refresh)
         .mockResolvedValueOnce(1)  // Successful INSERT (during refresh)
+        .mockResolvedValueOnce(1)  // Library snapshot UPSERT write (upsertLibrarySnapshot, before pricing update)
+        .mockResolvedValueOnce(0)  // Library snapshot absence UPDATE (upsertLibrarySnapshot)
         .mockResolvedValueOnce([   // Return cached pricing for calculation (second getModelPricing call)
           {
             inputCost: '0.03',
@@ -428,7 +443,7 @@ describe('ModelCostService End-to-End Tests', () => {
 
       // Verify gateway was called with authentication
       expect(mockedAxios.get).toHaveBeenCalledWith(
-        `${getGatewayUrl()}/v1/models`,
+        `${getGatewayUrl()}/v1/models?include=unroutable`,
         expect.objectContaining({
           headers: expect.objectContaining({
             'X-API-Key': expect.any(String),
@@ -448,8 +463,9 @@ describe('ModelCostService End-to-End Tests', () => {
         provider: 'OpenAI'
       });
 
-      // Verify database operations occurred
-      expect(mockCdsRun).toHaveBeenCalledTimes(11);
+      // Verify database operations occurred (2 more than before Task 3: upsertLibrarySnapshot's
+      // UPSERT write and absence UPDATE now run during the refresh, ahead of pricing update)
+      expect(mockCdsRun).toHaveBeenCalledTimes(13);
     });
 
     it('should handle service initialization correctly', async () => {

@@ -5,6 +5,9 @@ import { getDefaultLogger } from '@libs/logger';
 import SecurityEventService from '../services/securityEventService';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
 import { credentialExpired } from '../services/credentialLifecycle';
+import { entitlementBlockFor, EntitlementBlock } from '../services/modelEntitlementService';
+import { credentialRateLimits } from '../services/rateLimitsService';
+import { wireBlock, UserBlock } from '../services/usersService';
 
 // Import file config service
 const FileConfigService = require('./file-config-service');
@@ -23,9 +26,9 @@ interface ApiKeyValidationResult {
   keyId: string | null;
   permissions: string[];
   rateLimits: {
-    requestsPerMinute: number;
-    requestsPerHour: number;
-    requestsPerDay: number;
+    requestsPerMinute: number | null;
+    requestsPerHour: number | null;
+    requestsPerDay: number | null;
     burstLimit: number;
   };
   usage: {
@@ -37,6 +40,8 @@ interface ApiKeyValidationResult {
     name?: string;
     email?: string;
     lastUsed?: Date;
+    entitlement?: EntitlementBlock;
+    user?: UserBlock;
   };
   cacheHit: boolean;
   validationTime: number;
@@ -128,14 +133,18 @@ interface ApiKeyValidationData {
   email: string;
   permissions: string[];
   rateLimits: {
-    requestsPerMinute: number;
-    requestsPerHour: number;
-    requestsPerDay: number;
+    requestsPerMinute: number | null;
+    requestsPerHour: number | null;
+    requestsPerDay: number | null;
   };
   metadata: {
     lastUsed?: Date;
     isActive: boolean;
   };
+  /** The caller's model entitlement; absent when the lookup failed - the gateway reads absence as unrestricted. */
+  entitlement?: EntitlementBlock;
+  /** The owner's status, roles and effective quota limits; absent when the lookup failed. */
+  user?: UserBlock;
 }
 
 interface AwsCredentialValidationData {
@@ -151,15 +160,19 @@ interface AwsCredentialValidationData {
   sapAiRegion: string;
   userId: string;
   rateLimits: {
-    requestsPerMinute: number;
-    requestsPerHour: number;
-    requestsPerDay: number;
+    requestsPerMinute: number | null;
+    requestsPerHour: number | null;
+    requestsPerDay: number | null;
   };
   metadata: {
     lastUsed?: Date;
     isActive: boolean;
     expiresAt?: Date;
   };
+  /** The caller's model entitlement; absent when the lookup failed - the gateway reads absence as unrestricted. */
+  entitlement?: EntitlementBlock;
+  /** The owner's status, roles and effective quota limits; absent when the lookup failed. */
+  user?: UserBlock;
 }
 
 interface ValidationRequest {
@@ -356,26 +369,28 @@ class ValidationService {
       }
 
       const permissions = keyRecord.permissions?.map((p: any) => p.permission) || [];
-      const rateLimits = keyRecord.rateLimits || {};
-      
+      const rateLimits = await credentialRateLimits(cds.db, { apiKeyId: keyRecord.ID });
+
       // Get current usage for rate limiting
       const usage = await this.getCurrentUsage(keyRecord.ID);
-      
+
       validationResult = {
         valid: true,
         keyId: keyRecord.ID,
         permissions,
         rateLimits: {
-          requestsPerMinute: rateLimits.requestsPerMinute || 60,
-          requestsPerHour: rateLimits.requestsPerHour || 1000,
-          requestsPerDay: rateLimits.requestsPerDay || 10000,
-          burstLimit: rateLimits.burstLimit || 10
+          requestsPerMinute: rateLimits.requestsPerMinute,
+          requestsPerHour: rateLimits.requestsPerHour,
+          requestsPerDay: rateLimits.requestsPerDay,
+          burstLimit: 10
         },
         usage,
         metadata: {
           name: keyRecord.name,
           email: keyRecord.email,
-          lastUsed: keyRecord.lastUsed
+          lastUsed: keyRecord.lastUsed,
+          entitlement: await this.entitlementBlock(keyRecord.email),
+          user: await this.userBlock(keyRecord.email)
         },
         cacheHit: false,
         validationTime: performance.now() - startTime
@@ -1081,6 +1096,32 @@ class ValidationService {
     };
   }
 
+  /**
+   * The caller's model entitlement for a validation response. Fails open: a lookup error is
+   * logged and leaves the block absent, which the gateway reads as unrestricted - entitlement
+   * must never be the reason a valid credential is rejected.
+   */
+  private async entitlementBlock(email?: string): Promise<EntitlementBlock | undefined> {
+    if (!email) return undefined;
+    try {
+      return await entitlementBlockFor(cds.db, email);
+    } catch (error) {
+      logger.warn('validation-service', `entitlement lookup failed for ${email}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /** The owner's `user` block (status, roles, effective limits). Fails open like entitlementBlock. */
+  private async userBlock(email?: string): Promise<UserBlock | undefined> {
+    if (!email) return undefined;
+    try {
+      return await wireBlock(cds.db, email);
+    } catch (error) {
+      logger.warn('validation-service', `user block lookup failed for ${email}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
   private updateLastUsed(entity: string, id: string): void {
     // Asynchronous update to avoid blocking validation
     setTimeout(async () => {
@@ -1327,6 +1368,10 @@ class ValidationService {
         };
       }
 
+      // The SigV4 gateway path reads credentialMetadata, not the unified data block
+      const entitlement = await this.entitlementBlock(credential.email || credential.userId);
+      const user = await this.userBlock(credential.email || credential.userId);
+
       // Return validation result
       const result = {
         valid: true,
@@ -1336,11 +1381,9 @@ class ValidationService {
           region: credential.region,
           sapAiRegion: credential.sapAiRegion,
           userId: credential.userId,
-          rateLimits: {
-            requestsPerMinute: 100,
-            requestsPerHour: 1000,
-            requestsPerDay: 10000
-          }
+          entitlement,
+          user,
+          rateLimits: await credentialRateLimits(cds.db, { awsCredentialId: credential.ID })
         },
         validationToken: token,
         auditInfo: {
@@ -1698,15 +1741,15 @@ class ValidationService {
       name: keyData.name,
       email: keyData.email,
       permissions: keyData.permissions || [],
-      rateLimits: {
-        requestsPerMinute: 100, // Default values
-        requestsPerHour: 1000,
-        requestsPerDay: 10000
-      },
+      rateLimits: await credentialRateLimits(cds.db, { apiKeyId: keyData.ID }),
       metadata: {
         lastUsed: keyData.lastUsed,
         isActive: keyData.isActive
-      }
+      },
+      // Cached with the rest of the data, so the cache-hit response carries it too; the gateway's
+      // cache invalidation on a catalog change is what keeps it fresh.
+      entitlement: await this.entitlementBlock(keyData.email),
+      user: await this.userBlock(keyData.email)
     };
     
     // Cache the result
@@ -1830,16 +1873,14 @@ class ValidationService {
       region: credential.region,
       sapAiRegion: credential.sapAiRegion,
       userId: credential.userId,
-      rateLimits: {
-        requestsPerMinute: 100, // Default values
-        requestsPerHour: 1000,
-        requestsPerDay: 10000
-      },
+      rateLimits: await credentialRateLimits(cds.db, { awsCredentialId: credential.ID }),
       metadata: {
         lastUsed: credential.lastUsed,
         isActive: credential.isActive,
         expiresAt: credential.expiresAt
-      }
+      },
+      entitlement: await this.entitlementBlock(credential.email || credential.userId),
+      user: await this.userBlock(credential.email || credential.userId)
     };
     
     // Cache the result (without the secret for security)

@@ -156,6 +156,7 @@ Administrator
 | Create/Edit Users | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Assign Roles | ✅ | Limited¹ | ❌ | ❌ | ❌ | ❌ |
 | View User List | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Manage Users & Quotas | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **API Key Management** |
 | Create Own Keys | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Manage Others' Keys | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -166,6 +167,7 @@ Administrator
 | Security Policies | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Usage & Analytics** |
 | Own Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| See Own Quota | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Team Usage | ✅ | ✅ | ✅ | ❌ | Limited³ | ✅ |
 | Global Analytics | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | **AI Model Access** |

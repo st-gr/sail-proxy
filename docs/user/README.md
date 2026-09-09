@@ -31,6 +31,8 @@ Whether you're using Claude Code, GitHub Copilot, or building custom AI applicat
 9. [Roles Overview](chapter-9-roles.md)
 10. [Troubleshooting](chapter-10-troubleshooting.md)
 11. [FAQ](chapter-11-faq.md)
+12. [Using with Gemini CLI and the Gemini SDK](chapter-12-google-gemini.md)
+13. [Using with pi](chapter-13-pi.md)
 
 ---
 

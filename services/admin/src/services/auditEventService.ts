@@ -6,7 +6,7 @@ const logger = getDefaultLogger();
 
 export interface AuditEventInput {
   actorId: string;
-  actorType: 'admin_user' | 'system' | 'api_key';
+  actorType: 'admin_user' | 'user' | 'system' | 'api_key';
   action: string;          // dotted verb, e.g. 'api_key.rotate', 'config.update'
   resourceType: string;    // 'ApiKey' | 'AwsCredential' | 'ApiConfiguration'
   resourceId: string;
@@ -24,7 +24,7 @@ export interface AuditEventInput {
  * An audit-write failure must never break the operation being audited, so failures here are
  * logged and swallowed rather than thrown.
  */
-export async function recordAuditEvent(event: AuditEventInput): Promise<void> {
+export async function recordAuditEvent(event: AuditEventInput): Promise<string | null> {
   try {
     const auditEvent = {
       ID: uuidv4(),
@@ -55,6 +55,7 @@ export async function recordAuditEvent(event: AuditEventInput): Promise<void> {
       severity: event.severity
     });
 
+    return auditEvent.ID;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('AuditEventService', `Failed to record audit event: ${errorMessage}`, error as Error, {
@@ -64,5 +65,6 @@ export async function recordAuditEvent(event: AuditEventInput): Promise<void> {
       outcome: event.outcome
     });
     // Don't throw - audit-write failures must never break the operation being audited
+    return null;
   }
 }

@@ -25,6 +25,14 @@ describe('applyDescriptor is anchored at the root', () => {
     const doc = { api_config: { observability: { siem: { sinks: [{ name: 'a' }] } } } };
     expect((applyDescriptor(doc, '/api_config/observability/siem/sinks/0/name', 'b') as any).api_config.observability.siem.sinks[0].name).toBe('b');
   });
+  // What a cleared nullable field writes: the key stays and holds `null` - the value the schema
+  // gives "unlimited"/"no fixed time" to - rather than being dropped or written as 0 or "".
+  it('writes null as a value, so a cleared quota reads as unlimited and not as missing', () => {
+    const doc = { api_config: { platform: { quotas: { tokensPerDay: 1000 } } } };
+    const out = applyDescriptor(doc, '/api_config/platform/quotas/tokensPerDay', null) as any;
+    expect(out.api_config.platform.quotas).toEqual({ tokensPerDay: null });
+    expect(JSON.stringify(out)).toContain('"tokensPerDay":null');
+  });
 });
 
 describe('removeAt', () => {

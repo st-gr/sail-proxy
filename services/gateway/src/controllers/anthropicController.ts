@@ -8,7 +8,7 @@ import sapAIService from '../services/sapAIService';
 import configService from '../services/configService';
 import * as sseWriter from '../utils/sseWriter';
 import anthropicService from '../services/anthropicService';
-import anthropicResponseService from '../services/anthropicResponseService';
+import anthropicResponseService, { mapSapFinishReasonToAnthropic } from '../services/anthropicResponseService';
 import modelService from '../services/modelService';
 import * as payloadLogger from '../utils/payloadLogger';
 import { executeBeforePlugins } from '../services/pluginExecutor';
@@ -17,6 +17,7 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
+import { enforceEntitlement } from '../utils/modelEntitlement';
 
 // Type definitions
 interface ExtendedRequest extends Request {
@@ -214,6 +215,11 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
   try {
     substitutedModelName = configService.getSubstitutedModel('anthropic', originalModelFromClient);
     logger.info('AnthropicController', `Model: ${originalModelFromClient}${substitutedModelName !== originalModelFromClient ? ` → ${substitutedModelName} (substituted)` : ''}`);
+
+    // Ahead of the before-plugins chain on purpose: a refused request must not have its payload
+    // run through the pseudonymization NER, which would write the caller's entities to the
+    // shared Valkey cache for a request we are about to 403.
+    if (!enforceEntitlement(req, res, substitutedModelName)) return;
 
     // Determine subPath for hook config
     const subPath = clientRequestedStream ? 'invoke-with-response-stream' : 'invoke';
@@ -909,12 +915,7 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
     }));
     
     // Map SAP stop reason to Anthropic format
-    let anthropicStopReason = "end_turn";
-    if (sapStopReason === "length") anthropicStopReason = "max_tokens";
-    else if (sapStopReason === "stop_sequences") anthropicStopReason = "stop_sequence";
-    else if (sapStopReason === "tool_calls" || sapStopReason === "tool_use") anthropicStopReason = "tool_use";
-    else if (sapStopReason === "stop") anthropicStopReason = "end_turn";
-    else anthropicStopReason = sapStopReason;
+    const anthropicStopReason = mapSapFinishReasonToAnthropic(sapStopReason);
 
     // Send message delta with stop reason and usage info
     sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
@@ -1159,8 +1160,8 @@ async function handleNativeStreaming(options: NativeStreamingOptions): Promise<v
         }
       }
       
-      // Use the tracked stop reason, default to end_turn
-      const anthropicStopReason = finalStopReason || "end_turn";
+      // Use the tracked stop reason, mapped to Anthropic's vocabulary (tool_calls → tool_use), default to end_turn
+      const anthropicStopReason = mapSapFinishReasonToAnthropic(finalStopReason);
 
       // Send message delta with final metadata
       const messageDeltaEvent = {

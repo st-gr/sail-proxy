@@ -114,6 +114,11 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 - **Endpoints**: `/api/chat`, `/api/generate`, `/api/tags`, OpenAI compatible endpoints `/v1/chat/completions`, `/v1/models`
 - **Use case**: Local development with Ollama-compatible tools, e. g. GitHub Co-Pilot in VS Code has limited Ollama support.
 
+#### Google Gemini API Format
+- **Endpoints**: `/google/v1beta/models/{model}:{method}`, `/google/v1/models/{model}:{method}` (`generateContent`, `streamGenerateContent`, `embedContent`)
+- **Compatible with**: Gemini CLI, the `@google/genai` SDK, anything that takes a Gemini base URL
+- **Coverage**: every model in the Model Library — a deployed Gemini model runs natively, everything else (including undeployed Gemini models) through the platform — see [Using with Gemini CLI and the Gemini SDK](chapter-12-google-gemini.md)
+
 #### Open WebUI (self-hosted chat UI)
 [Open WebUI](https://github.com/open-webui/open-webui) is a self-hosted web chat interface for OpenAI-compatible backends. Point it at the gateway's **`/openai/v1`** base URL, which serves both the model list and chat completions under one path — exactly what Open WebUI's single "OpenAI API" connection expects.
 
@@ -143,6 +148,19 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 - **Credential Management**: Secure storage of AWS access keys
 - **Region Support**: Multi-region AWS compatibility
 - **IAM Integration**: Works with existing AWS IAM policies
+
+#### Quotas and Account Status
+
+An administrator can constrain each user: requests per minute, spend per day, week and month, and
+tokens per day, week and month. Platform-wide defaults apply to everyone; a user's own constraint
+overrides them. Every API key and AWS credential keeps its own rate limit as well, and a request has
+to pass both. When a limit is reached the gateway answers `429` with a body that names the scope
+(`user` or `key`), the dimension (`requests`, `tokens` or `spend`), the window, the limit, the usage
+and when the window resets, plus `Retry-After` and `X-RateLimit-*` headers. Spend is the SAP cost of
+the request. An administrator can also deactivate an account: all of its credentials stop working at
+once, no new credentials can be created for it, and reactivation restores exactly the credentials that
+were locked. Each user sees their own consumption on the Admin Cockpit's home page and in the
+profile menu.
 
 #### PII Masking (Pseudonymization)
 - **Detection and masking**: Personal data in an outgoing request is replaced with placeholder tokens and restored in the response; per-category toggles decide what is looked for

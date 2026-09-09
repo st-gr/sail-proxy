@@ -343,8 +343,10 @@ function validateObject(schema: SchemaNode, data: Record<string, unknown>, point
     }
 
     // `propertyNames` validates each KEY of the object, as a string, against its own schema. It is
-    // how draft-07 closes a node whose properties arrive through `allOf` branches, which is what the
-    // five named providers are: `additionalProperties` is scoped to the schema object that declares
+    // how draft-07 closes a node whose properties arrive through `allOf` branches, which is what five
+    // of the six named providers are (`google` is the exception - it declares its one honoured field
+    // through a targeted `$ref` and is closed with a plain `additionalProperties: false`):
+    // `additionalProperties` is scoped to the schema object that declares
     // it and cannot see a branch's `properties`, so putting `additionalProperties: false` on
     // `providers.openai` would reject the very fields `$defs/providerCommon` contributes. An `enum`
     // of the names that provider's own code reads rejects the ones it does not - an

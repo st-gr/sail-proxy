@@ -19,8 +19,8 @@ export const SERVICE_KEYS: ServiceKeyRegistry = {
     EMAIL: 'admin2gateway.service.key',
     NAME: 'Admin Service to Gateway',
     DESCRIPTION: 'Service-to-service API key for admin service to access gateway endpoints',
-    ENDPOINTS: ['/v1/models', '/api/admin/api-config/*'] as const,
-    PERMISSIONS: ['models:read', 'config:write', 'config:read'] as const,
+    ENDPOINTS: ['/v1/models', '/api/admin/api-config/*', '/api/admin/deployments', '/api/admin/deployments/*'] as const,
+    PERMISSIONS: ['models:read', 'config:write', 'config:read', 'deployments:read', 'deployments:write'] as const,
   },
 } as const;
 
@@ -40,6 +40,16 @@ export const ENDPOINT_AUTH_RULES: Record<string, EndpointAuthRule> = {
     mode: 'STANDALONE_OR_SERVICE_KEY',
     serviceKey: 'ADMIN_TO_GATEWAY',
     permissions: ['config:write', 'config:read'],
+  },
+  '/api/admin/deployments': {
+    mode: 'STANDALONE_OR_SERVICE_KEY',
+    serviceKey: 'ADMIN_TO_GATEWAY',
+    permissions: ['deployments:read', 'deployments:write'],
+  },
+  '/api/admin/deployments/*': {
+    mode: 'STANDALONE_OR_SERVICE_KEY',
+    serviceKey: 'ADMIN_TO_GATEWAY',
+    permissions: ['deployments:read', 'deployments:write'],
   },
 } as const;
 

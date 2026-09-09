@@ -64,7 +64,7 @@ const apiConfigSchema: ApiConfigSchema =
   "$defs": {
     "providersGroup": {
       "type": "object",
-      "description": "Settings for each upstream provider, keyed by its wire name in the route (so `aws-bedrock` keeps its hyphen). Only anthropic, aws-bedrock, openai, openrouter and perplexity are read today; any other key is accepted and validated but stays inert until the gateway learns it. Each named provider carries exactly the settings its own request path reads, and a setting under a provider whose code never reads it is rejected here. Per-provider keys: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-3-gateway.md#provider-configuration-keys",
+      "description": "Settings for each upstream provider, keyed by its wire name in the route (so `aws-bedrock` keeps its hyphen). Six providers are read today - anthropic, aws-bedrock, google, openai, openrouter and perplexity; any other key is accepted and validated but stays inert until the gateway learns it. Each named provider carries exactly the settings its own request path reads, and a setting under a provider whose code never reads it is rejected here - google is the narrowest of the six, carrying only substitute_models, read by the /google route; every other common provider setting is rejected under it rather than merely inert. Per-provider keys: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-3-gateway.md#provider-configuration-keys",
       "properties": {
         "anthropic": {
           "description": "The anthropic provider, served by the gateway's Anthropic request path: the settings every provider carries, plus that path's wire version and its two beta-flag filters.",
@@ -132,6 +132,16 @@ const apiConfigSchema: ApiConfigSchema =
               "supported_beta_headers"
             ]
           }
+        },
+        "google": {
+          "description": "The google provider, served by the gateway's Gemini request path. Only substitute_models is honoured today; the other common provider settings are not yet wired for this provider, so - unlike every other named provider here - they are rejected rather than merely inert.",
+          "type": "object",
+          "properties": {
+            "substitute_models": {
+              "$ref": "#/$defs/providerCommon/properties/substitute_models"
+            }
+          },
+          "additionalProperties": false
         },
         "openai": {
           "description": "The openai provider: the settings every provider carries, plus the Azure api-version appended to a deployed OpenAI model's URL.",
@@ -939,7 +949,7 @@ const apiConfigSchema: ApiConfigSchema =
           "additionalProperties": false
         },
         "defaults": {
-          "description": "Per-endpoint default hooks, keyed by the endpoint identifier the route uses - 'anthropic', 'openai' and 'aws-bedrock' today. Consulted only when the requested model has no models.overrides.<model>.hooks entry for the subpath: a per-model entry REPLACES the endpoint default for that subpath rather than merging with it.",
+          "description": "Per-endpoint default hooks, keyed by the endpoint identifier the route uses - 'anthropic', 'openai' and 'aws-bedrock' today, and 'google' (subpaths generateContent, streamGenerateContent, embedContent). Consulted only when the requested model has no models.overrides.<model>.hooks entry for the subpath: a per-model entry REPLACES the endpoint default for that subpath rather than merging with it.",
           "type": "object",
           "additionalProperties": {
             "description": "One endpoint's defaults: the optional pseudonymization force-activation block, plus one hook list per request subpath (invoke, invoke-with-response-stream, responses, responses-stream). Unknown keys are rejected, because every other key here is read as a subpath and no route asks for a subpath this endpoint does not serve - so an unrecognised key is a typo that would never run rather than a setting. The subpath pattern deliberately excludes 'pseudonymization', so that key is not also required to be a hook list.",
@@ -1127,6 +1137,35 @@ const apiConfigSchema: ApiConfigSchema =
             }
           },
           "additionalProperties": false
+        },
+        "quotas": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Platform-wide default quotas per user, enforced by the gateway on every LLM request. A user's own constraint (Users & Quotas app) overrides each field; null = unlimited. Windows are UTC calendar day, ISO week (Monday 00:00 UTC) and calendar month; spend is the SAP cost in the currency of the SAP capacity unit price.",
+          "properties": {
+            "requestsPerMinute": { "type": ["integer", "null"], "title": "Requests per Minute", "minimum": 0, "default": null, "description": "Requests per user per sliding minute. Per-credential limits (RateLimits) apply as well; a request must pass both." },
+            "spendPerDay": { "type": ["number", "null"], "title": "Spend per Day", "minimum": 0, "default": null, "description": "SAP cost per user per UTC day." },
+            "spendPerWeek": { "type": ["number", "null"], "title": "Spend per Week", "minimum": 0, "default": null, "description": "SAP cost per user per ISO week." },
+            "spendPerMonth": { "type": ["number", "null"], "title": "Spend per Month", "minimum": 0, "default": null, "description": "SAP cost per user per calendar month." },
+            "tokensPerDay": { "type": ["integer", "null"], "title": "Tokens per Day", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per UTC day; cache reads are not counted." },
+            "tokensPerWeek": { "type": ["integer", "null"], "title": "Tokens per Week", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per ISO week; cache reads are not counted." },
+            "tokensPerMonth": { "type": ["integer", "null"], "title": "Tokens per Month", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per calendar month; cache reads are not counted." }
+          }
+        },
+        "maintenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "title": "Maintenance",
+          "description": "When the admin service runs its daily maintenance: the cost recalculation, the usage-bucket rebuild and the republish of every user's quota document.",
+          "properties": {
+            "dailyRunAtUtc": {
+              "type": ["string", "null"],
+              "title": "Daily Run At (UTC)",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+              "default": null,
+              "description": "Time of day, in UTC, as HH:MM (24-hour), at which the daily maintenance run starts. Unset: the run starts 5 minutes after the admin service starts and every 24 hours from then, so a midday redeploy pins it to midday. Set: the first run still starts 5 minutes after startup; every later run starts at this time each day. Example: to run at midnight Pacific Time enter 08:00 while Pacific Standard Time is in effect (UTC-8) or 07:00 during Pacific Daylight Time (UTC-7) - the value is not adjusted for daylight saving."
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -1234,7 +1273,7 @@ const apiConfigSchema: ApiConfigSchema =
     },
     "providerCommon": {
       "type": "object",
-      "description": "The provider settings every provider's request path can reach, so all five named providers carry them. Every field is optional, and an absent field means the gateway's built-in behaviour. This shape on its own is also what a provider key the gateway does not read is validated against: there an unknown key is still accepted rather than rejected, and sits in the file without effect. The five named providers add their own settings on top of these and accept nothing else.",
+      "description": "The provider settings every provider's request path can reach, so five of the six named providers - every one but google - carry the whole shape. Every field is optional, and an absent field means the gateway's built-in behaviour. This shape on its own is also what a provider key the gateway does not read is validated against: there an unknown key is still accepted rather than rejected, and sits in the file without effect. Those five named providers add their own settings on top of these and accept nothing else; google, the sixth, references only this shape's substitute_models field and accepts nothing beyond it - the /google route reads no other provider setting yet.",
       "properties": {
         "emulate_streaming_for_models": {
           "description": "Models whose answer the gateway collects in full and then replays as a stream, because the deployment cannot stream it itself. Matched against the model name sent upstream, either exactly or with the 'provider--' prefix removed. Used today for the anthropic and openai providers only; an entry under any other provider has no effect.",

@@ -1,0 +1,176 @@
+<mvc:View controllerName="admin.modellibrary.controller.Catalogs" xmlns:mvc="sap.ui.core.mvc" xmlns="sap.m" xmlns:f="sap.f" xmlns:core="sap.ui.core" xmlns:form="sap.ui.layout.form" displayBlock="true"
+  core:require="{ formatMessage: 'sap/base/strings/formatMessage' }">
+  <f:FlexibleColumnLayout id="fcl" layout="{viewModel>/catalogs/layout}" backgroundDesign="Translucent">
+    <f:beginColumnPages>
+      <Page id="listPage" title="{i18n>catalogsTitle}" showNavButton="true" navButtonPress=".onNavBack">
+        <headerContent><Button id="newCatalogButton" text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>newProfile} : ${i18n>newCatalog} }" icon="sap-icon://add" press=".onNew"/></headerContent>
+        <!-- One view, two objects: entitlement catalogs and the quota profiles that carry the seven
+             limits. Both are a list on the left and one explicitly saved detail on the right, so the
+             switch changes what is listed and bound, not the screen. Quota profiles are admin-only
+             (the route is guarded the same way in the controller). -->
+        <SegmentedButton id="modeSwitch" selectedKey="{viewModel>/catalogs/mode}" selectionChange=".onModeChange" visible="{viewModel>/isAdmin}" class="sapUiSmallMargin">
+          <items>
+            <SegmentedButtonItem key="catalogs" text="{i18n>modeCatalogs}"/>
+            <SegmentedButtonItem key="profiles" text="{i18n>modeProfiles}"/>
+          </items>
+        </SegmentedButton>
+        <List id="catalogList" mode="SingleSelectMaster" selectionChange=".onSelectCatalog" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' }"
+          items="{path: '/ModelCatalogs', sorter: [{path: 'isDefault', descending: true}, {path: 'name'}]}">
+          <!-- A catalog's own description is what the second line is for; the role phrase is the
+               fallback for a catalog that has none, not a replacement for what the owner wrote. -->
+          <StandardListItem title="{name}" description="{= ${description} ? ${description} : (${path:'isDefault',targetType:'any'} ? 'Default — everything minus exclusions' : (${ownerEmail} ? 'Owner: ' + ${ownerEmail} : 'Admin catalog'))}" icon="{= ${path:'isDefault',targetType:'any'} ? 'sap-icon://globe' : (${ownerEmail} ? 'sap-icon://person-placeholder' : 'sap-icon://folder-blank')}" type="Navigation"/>
+        </List>
+        <!-- suspended: QuotaProfiles is admin-only, and an aggregation binding requests its rows as
+             soon as the control is instantiated - invisible or not. The controller resumes this one
+             when an administrator actually enters the profiles mode, so a user's session never asks
+             for a set it may not read. -->
+        <List id="profileList" mode="SingleSelectMaster" selectionChange=".onSelectProfile" visible="{= ${viewModel>/catalogs/mode} === 'profiles' }"
+          items="{path: '/QuotaProfiles', suspended: true, sorter: {path: 'name'}}">
+          <StandardListItem title="{name}" description="{= ${description} || '' }" info="{parts: ['i18n>usersCount', 'assignedUsers'], formatter: 'formatMessage'}" icon="sap-icon://measuring-point" type="Navigation"/>
+        </List>
+      </Page>
+    </f:beginColumnPages>
+    <f:midColumnPages>
+      <!-- The element binding sits on the mode's own container, not on this Page: a catalog and a
+           profile are different entity types, and a Page-wide context would resolve the other
+           mode's fields against the wrong one (auto-$expand/$select errors, empty fields). The
+           Page therefore reads the selection from the view model, and everything below that is
+           bound to an entity lives inside one of the two containers. -->
+      <Page id="detailPage" title="{viewModel>/catalogs/selectedName}" showNavButton="{device>/system/phone}" navButtonPress=".onCloseDetail">
+        <headerContent>
+          <Button id="deleteCatalogButton" text="{i18n>deleteCatalog}" icon="sap-icon://delete" type="Reject" press=".onDeleteCatalog" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' &amp;&amp; !${viewModel>/catalogs/selectedIsDefault} &amp;&amp; ${viewModel>/catalogs/canEdit}}"/>
+          <Button id="deleteProfileButton" text="{i18n>deleteProfile}" icon="sap-icon://delete" type="Reject" press=".onDeleteProfile" visible="{= ${viewModel>/catalogs/mode} === 'profiles' &amp;&amp; ${viewModel>/catalogs/canEdit}}"/>
+        </headerContent>
+        <content>
+          <form:SimpleForm id="catalogDetail" layout="ColumnLayout" columnsM="2" editable="true" class="sapUiSmallMarginTop" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' }">
+            <!-- I: the header is saved explicitly. The detail element binding uses a deferred
+                 update group, so neither `change` nor anything else sends these edits; the footer's
+                 Save does. `liveChange` only keeps the footer's buttons in step while typing. -->
+            <Label text="Name"/><Input id="catalogName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            <Label text="Description"/><Input id="catalogDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            <Label text="{i18n>owner}"/><Text text="{= ${ownerEmail} || 'admin'}"/>
+            <Label text="{i18n>parent}"/><Text text="{viewModel>/catalogs/parentName}"/>
+          </form:SimpleForm>
+          <VBox id="profileDetail" visible="{= ${viewModel>/catalogs/mode} === 'profiles' }">
+            <form:SimpleForm layout="ColumnLayout" columnsM="2" editable="true" class="sapUiSmallMarginTop">
+              <Label text="Name"/><Input id="profileName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="Description"/><Input id="profileDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            </form:SimpleForm>
+            <!-- The seven limits, saved with the header through the same deferred group. Each Input
+                 names its OData type as $metadata has it, so an empty field parses to null (the
+                 platform default applies again) and a typed value is validated before Save; grouping
+                 is off because type="Number" renders an <input type="number">, which drops a value
+                 with a thousands separator on the floor. The ids are the property names -
+                 model/profileRows.ts PROFILE_LIMIT_FIELDS holds this form and the bundles together. -->
+            <form:SimpleForm id="profileLimitsForm" layout="ColumnLayout" columnsM="2" editable="true" title="{i18n>limits}">
+              <core:Title text="Requests"/>
+              <Label text="{i18n>requestsPerMinute}"/><Input id="requestsPerMinute" type="Number" value="{path: 'requestsPerMinute', type: 'sap.ui.model.odata.type.Int32', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <core:Title text="Tokens"/>
+              <Label text="{i18n>tokensPerDay}"/><Input id="tokensPerDay" type="Number" value="{path: 'tokensPerDay', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>tokensPerWeek}"/><Input id="tokensPerWeek" type="Number" value="{path: 'tokensPerWeek', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>tokensPerMonth}"/><Input id="tokensPerMonth" type="Number" value="{path: 'tokensPerMonth', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <core:Title text="Spend"/>
+              <Label text="{i18n>spendPerDay}"/><Input id="spendPerDay" type="Number" value="{path: 'spendPerDay', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>spendPerWeek}"/><Input id="spendPerWeek" type="Number" value="{path: 'spendPerWeek', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>spendPerMonth}"/><Input id="spendPerMonth" type="Number" value="{path: 'spendPerMonth', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            </form:SimpleForm>
+          </VBox>
+          <IconTabBar id="catalogTabs" expandable="false" select=".onTabSelect">
+            <items>
+              <IconTabFilter id="membersTab" key="members" text="{i18n>members}" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' &amp;&amp; !${viewModel>/catalogs/selectedIsDefault}}">
+                <Table id="membersTable" mode="MultiSelect" items="{viewModel>/catalogs/members}" inset="false" noDataText="No models in this catalog yet.">
+                  <!-- NeverOverflow: canEdit hides both buttons on the Default catalog, and an
+                       OverflowToolbar re-measures its content on every visibility change of a
+                       child. Measured with the buttons hidden, the Title fills the whole toolbar
+                       (833px -> 1260px in the journey's frame) and that width is cached: back on
+                       an editable catalog the cached total exceeds the toolbar, so both buttons
+                       are moved into the overflow popover and leave the DOM. They are two actions
+                       beside a title and a spacer - they never need to overflow. -->
+                  <headerToolbar><OverflowToolbar>
+                    <Title text="{i18n>members}"/><ToolbarSpacer/>
+                    <Button id="addMembersButton" text="{i18n>addModels}" icon="sap-icon://add" press=".onAddMembers" visible="{viewModel>/catalogs/canEdit}">
+                      <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+                    </Button>
+                    <Button id="removeMembersButton" text="{i18n>removeFromCatalog}" icon="sap-icon://less" press=".onRemoveMembers" visible="{viewModel>/catalogs/canEdit}">
+                      <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+                    </Button>
+                  </OverflowToolbar></headerToolbar>
+                  <columns><Column><Text text="Model"/></Column><Column><Text text="Id"/></Column><Column><Text text="Availability"/></Column></columns>
+                  <!-- L: a row added or removed since the last Save says so until Save writes it (or Discard drops it) -->
+                  <items><ColumnListItem highlight="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }">
+                    <Text text="{viewModel>displayName}"/><Text text="{viewModel>modelId}"/>
+                    <ObjectStatus text="{= ${viewModel>pending} === 'add' ? ${i18n>pendingAdd} : ${viewModel>pending} === 'remove' ? ${i18n>pendingRemove} : (${viewModel>absent} ? 'No longer available' : 'Available') }"
+                      state="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' || ${viewModel>absent} ? 'Warning' : 'Success' }"/>
+                  </ColumnListItem></items>
+                </Table>
+              </IconTabFilter>
+              <IconTabFilter id="exclusionsTab" key="exclusions" text="{i18n>exclusions}" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' &amp;&amp; ${viewModel>/catalogs/selectedIsDefault} &amp;&amp; ${viewModel>/isAdmin}}">
+                <Table id="exclusionsTable" mode="MultiSelect" items="{viewModel>/catalogs/exclusions}" inset="false" noDataText="Nothing excluded — every model is entitled by default.">
+                  <headerToolbar><OverflowToolbar>
+                    <Title text="{i18n>exclusions}"/><ToolbarSpacer/>
+                    <Button id="excludeButton" text="Exclude models" icon="sap-icon://add" press=".onExclude"/>
+                    <Button id="includeButton" text="Include again" icon="sap-icon://less" press=".onInclude"/>
+                  </OverflowToolbar></headerToolbar>
+                  <columns><Column><Text text="Model"/></Column><Column><Text text="Reason"/></Column><Column><Text text="Status"/></Column></columns>
+                  <items><ColumnListItem highlight="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }">
+                    <Text text="{viewModel>modelId}"/><Text text="{viewModel>reason}"/>
+                    <ObjectStatus text="{= ${viewModel>pending} === 'add' ? ${i18n>pendingExclude} : ${viewModel>pending} === 'remove' ? ${i18n>pendingInclude} : '' }"
+                      state="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }"/>
+                  </ColumnListItem></items>
+                </Table>
+              </IconTabFilter>
+              <!-- Shared by both modes: a quota profile is assigned to a user exactly as a catalog is
+                   (staged here, written by Save through assignQuotaProfile). A selected profile has
+                   no owner, so in that mode the tab is simply the administrator's. -->
+              <IconTabFilter id="assignmentsTab" key="assignments" text="{i18n>assignments}" visible="{= ${viewModel>/isAdmin} &amp;&amp; !${viewModel>/catalogs/selectedOwnerEmail}}">
+                <!-- J: assigning a catalog one row at a time does not scale past a handful of
+                     users, so the table selects rows and the toolbar acts on the selection. The
+                     per-row buttons stay for the single-user case.
+                     L: nothing is assigned until Save; the strip says so, and a row with a staged
+                     assignment shows its target as unsaved. -->
+                <MessageStrip id="assignHint" text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignHintProfile} : ${i18n>assignHint} }" type="Information" showIcon="true" class="sapUiSmallMarginTopBottom"/>
+                <Table id="assignmentsTable" mode="MultiSelect" selectionChange=".onUserSelectionChange" items="{viewModel>/catalogs/users}" inset="false" noDataText="{i18n>noUsersMatch}">
+                  <headerToolbar><OverflowToolbar>
+                    <Title text="Users"/>
+                    <SearchField id="userSearch" width="14rem" placeholder="{i18n>searchUsers}" liveChange=".onUserSearch" search=".onUserSearch">
+                      <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+                    </SearchField>
+                    <ToolbarSpacer/>
+                    <Button id="assignSelectedButton" text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignSelectedProfile} : ${i18n>assignSelected} }" icon="sap-icon://add" press=".onAssignSelected" enabled="{= ${viewModel>/catalogs/selectedUserCount} &gt; 0 &amp;&amp; !${viewModel>/catalogs/selectedIsDefault}}"/>
+                    <Button id="unassignSelectedButton" text="{i18n>unassignSelected}" icon="sap-icon://less" press=".onUnassignSelected" enabled="{= ${viewModel>/catalogs/selectedAssignedCount} &gt; 0}"/>
+                    <Button icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefreshUsers"/>
+                  </OverflowToolbar></headerToolbar>
+                  <columns><Column><Text text="User"/></Column><Column><Text text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignedProfile} : 'Assigned catalog' }"/></Column><Column width="14rem"><Text text=""/></Column></columns>
+                  <items><ColumnListItem highlight="{= ${viewModel>pending} ? 'Information' : 'None' }">
+                    <Text text="{viewModel>email}"/>
+                    <!-- Nothing assigned means the default catalog in one mode and the platform's
+                         own limits in the other, where there is no profile to name: the app writes
+                         that absence as an em dash (as the parent of a root catalog is). -->
+                    <Text text="{= (${viewModel>effectiveCatalogName} || (${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>noProfile} : ${i18n>default})) + (${viewModel>pending} ? ' ' + ${i18n>pendingAssign} : '') }"/>
+                    <HBox>
+                      <Button id="assignButton" text="{i18n>assign}" type="Transparent" press=".onAssign" visible="{= ${viewModel>effectiveCatalogId} !== ${viewModel>/catalogs/selectedId}}"/>
+                      <Button text="{i18n>unassign}" type="Transparent" press=".onUnassign" visible="{= !!${viewModel>effectiveCatalogId}}"/>
+                    </HBox>
+                  </ColumnListItem></items>
+                </Table>
+              </IconTabFilter>
+            </items>
+          </IconTabBar>
+        </content>
+        <footer>
+          <!-- I + L: one Save and one Discard for everything about the catalog - the header's
+               edits and the staged members, exclusions and assignments. Visible to an admin on
+               every catalog (the Default catalog's exclusions and assignments are staged too).
+               In profiles mode the same pair saves the profile's header, its seven limits and the
+               staged assignments. -->
+          <OverflowToolbar id="catalogFooter" visible="{= ${viewModel>/catalogs/canEdit} || ${viewModel>/isAdmin} }">
+            <Text id="pendingSummary" text="{viewModel>/catalogs/pendingText}"/>
+            <ToolbarSpacer/>
+            <Button id="saveButton" text="{i18n>save}" type="Emphasized" enabled="{viewModel>/catalogs/dirty}" press=".onSave"/>
+            <Button id="discardButton" text="{i18n>discard}" enabled="{viewModel>/catalogs/dirty}" press=".onDiscard"/>
+          </OverflowToolbar>
+        </footer>
+      </Page>
+    </f:midColumnPages>
+  </f:FlexibleColumnLayout>
+</mvc:View>

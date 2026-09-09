@@ -53,15 +53,21 @@ annotate AdminService.MySecurityNotifications with @(
             Label: 'Severity',
             ![@UI.Importance]: #High
         },
-        { 
-            $Type: 'UI.DataField', 
-            Value: eventType, 
+        {
+            $Type: 'UI.DataField',
+            Value: eventType,
             Label: 'Event Type',
             ![@UI.Importance]: #High
         },
-        { 
-            $Type: 'UI.DataField', 
-            Value: eventDate, 
+        {
+            $Type: 'UI.DataField',
+            Value: clientIP,
+            Label: 'Client IP',
+            ![@UI.Importance]: #High
+        },
+        {
+            $Type: 'UI.DataField',
+            Value: eventDate,
             Label: 'Event Date',
             ![@UI.Importance]: #High
         },
@@ -107,6 +113,7 @@ annotate AdminService.MySecurityNotifications with @(
     UI.SelectionFields: [
         severity,
         eventType,
+        clientIP,
         eventDate,
         seenAt,
         dismissedAt,
@@ -246,10 +253,30 @@ annotate AdminService.MySecurityNotifications with @(
                 Value: eventDate,
                 Label: 'Event Date'
             },
-            { 
-                $Type: 'UI.DataField', 
+            {
+                $Type: 'UI.DataField',
                 Value: ownerEmail,
                 Label: 'Owner Email'
+            },
+            {
+                $Type: 'UI.DataField',
+                Value: clientIP,
+                Label: 'Client IP'
+            },
+            {
+                $Type: 'UI.DataField',
+                Value: userAgent,
+                Label: 'User Agent'
+            },
+            {
+                $Type: 'UI.DataField',
+                Value: endpoint,
+                Label: 'Endpoint'
+            },
+            {
+                $Type: 'UI.DataField',
+                Value: requestId,
+                Label: 'Request ID'
             }
         ]
     },
@@ -359,7 +386,25 @@ annotate AdminService.MySecurityNotifications with {
         UI.MultiLineText: false,
         Communication.IsEmailAddress: true
     );
-    
+
+    clientIP @(
+        Common.Label: 'Client IP',
+        Common.QuickInfo: 'Address the gateway recorded for the request. With platform.security.trust_forwarded_for off (the default) this is the proxy in front of the gateway; switch it on behind nginx or the Istio ingress to record the caller. Empty for rotation notifications.',
+        Common.FieldControl: #ReadOnly
+    );
+    userAgent @(
+        Common.Label: 'User Agent',
+        Common.FieldControl: #ReadOnly
+    );
+    endpoint @(
+        Common.Label: 'Endpoint',
+        Common.FieldControl: #ReadOnly
+    );
+    requestId @(
+        Common.Label: 'Request ID',
+        Common.FieldControl: #ReadOnly
+    );
+
     type @(
         Common.Label: 'Type',
         Common.FieldControl: #ReadOnly,

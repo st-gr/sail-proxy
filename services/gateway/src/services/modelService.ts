@@ -13,7 +13,14 @@ interface TokenCache {
 }
 
 interface ModelsCache {
+  /** The routable list — what /v1/models has always served. */
   data: { object: string; data: ModelInfo[] } | null;
+  /**
+   * The same list plus the foundation models this gateway cannot route (no orchestration
+   * scenario). Only the admin's Model Library asks for these, via include=unroutable; both
+   * variants come out of the one fetch and share its expiry, so the caching is unchanged.
+   */
+  all: { object: string; data: ModelInfo[] } | null;
   expiresAt: number;
 }
 
@@ -59,6 +66,7 @@ let tokenCache: TokenCache = {
 
 let modelsCache: ModelsCache = {
   data: null,
+  all: null,
   expiresAt: 0
 };
 
@@ -209,19 +217,36 @@ export function modelSupportsStreaming(modelId: string): boolean {
   return false;
 }
 
+/** Options for {@link getModels}. */
+export interface GetModelsOptions {
+  /**
+   * Also return the foundation models SAP AI Core publishes that this gateway cannot route -
+   * those without an `orchestration` scenario, such as the GPT realtime models. They come back
+   * marked `routable: false`; everything else is `routable: true`. Only the admin's Model Library
+   * asks for these, so it can show what SAP AI Core offers; clients must never see them, because
+   * a request for one cannot be served.
+   */
+  includeUnroutable?: boolean;
+}
+
 /**
  * Get all available models
  * @param forceRefresh - Whether to bypass cache
+ * @param options - See {@link GetModelsOptions}
  * @returns List of models in OpenAI format
  */
-export async function getModels(forceRefresh: boolean = false): Promise<{ object: string; data: ModelInfo[] }> {
+export async function getModels(
+  forceRefresh: boolean = false,
+  options: GetModelsOptions = {}
+): Promise<{ object: string; data: ModelInfo[] }> {
+  const wanted = () => (options.includeUnroutable ? modelsCache.all! : modelsCache.data!);
   try {
     const now = Date.now();
-    const cacheValid = !forceRefresh && modelsCache.data && modelsCache.expiresAt > now;
+    const cacheValid = !forceRefresh && modelsCache.data && modelsCache.all && modelsCache.expiresAt > now;
 
     if (cacheValid) {
       logger.debug('ModelService', 'Using cached models response');
-      return modelsCache.data!;
+      return wanted();
     }
 
     const token = await getAuthToken();
@@ -264,13 +289,13 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
 
     // Process and filter foundation models
     rawFoundationModels.forEach(fm => {
-      const supportsOrchestration = fm.allowedScenarios &&
-        fm.allowedScenarios.some((scenario: any) => scenario.scenarioId === "orchestration");
+      const supportsOrchestration = !!(fm.allowedScenarios &&
+        fm.allowedScenarios.some((scenario: any) => scenario.scenarioId === "orchestration"));
 
-      if (!supportsOrchestration) {
-        return; // Skip if not supporting orchestration
-      }
-
+      // A model without the orchestration scenario cannot be routed through this gateway. It is
+      // no longer dropped here: it is kept and marked routable:false, so the admin's Model
+      // Library can list what SAP AI Core offers. The routable list served to clients is the
+      // filtered one built below - nothing reaches /v1/models that a request could not use.
 
       const isTopLevelDeprecated = fm.deprecated === true;
       const areAllVersionsDeprecated = fm.versions &&
@@ -291,12 +316,14 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
         internal_provider: fm.provider,
         internal_createdAt: fm.createdAt,
         accessType: "foundation",
+        routable: supportsOrchestration,
         streamingSupported: initialStreamingSupport,
         subpaths_native: [], // Initialize if not present
         subpaths_emulated: [],  // Initialize if not present
       });
     });
-    logger.info('ModelService', `Initial foundation models: ${rawFoundationModels.length}. After filtering for orchestration & deprecation: ${processedModels.length} models remaining.`);
+    const unroutableCount = processedModels.filter(m => m.routable === false).length;
+    logger.info('ModelService', `Initial foundation models: ${rawFoundationModels.length}. After dropping deprecated ones: ${processedModels.length} remaining, of which ${unroutableCount} are not routable (no orchestration scenario).`);
 
     // Now fetch and process deployed models
     const deployments = await _fetchDeployments(token);
@@ -347,6 +374,7 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
           internal_provider: baseModel.provider || 'unknown',
           internal_createdAt: baseModel.createdAt,
           accessType: "deployment",
+          routable: true,
           streamingSupported: false,
           details: cleanedDetails,
           scenarioId: dep.scenarioId,
@@ -370,6 +398,7 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
           internal_provider: "unknown",
           internal_createdAt: new Date(defaultTimestamp * 1000).toISOString(),
           accessType: "deployment",
+          routable: true,
           streamingSupported: false,
           details: cleanedDetails,
           scenarioId: dep.scenarioId,
@@ -482,13 +511,19 @@ export async function getModels(forceRefresh: boolean = false): Promise<{ object
     });
     // --- End of applying models.overrides ---
 
-    const transformedData = transformModelsToOpenAIFormat(processedModels);
+    // Split before the transform, not after: `routable` only survives into the OpenAI item when
+    // extended attributes are on, so filtering the transformed list would leak unroutable models
+    // to clients whenever SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES is off.
+    const routableModels = processedModels.filter(m => m.routable !== false);
+    const transformedData = transformModelsToOpenAIFormat(routableModels);
 
     modelsCache.data = transformedData;
+    modelsCache.all = transformModelsToOpenAIFormat(processedModels);
     modelsCache.expiresAt = now + (modelCacheDurationSeconds * 1000);
 
-    logger.info('ModelService', `Retrieved ${transformedData.data.length} total models (${processedModels.length - deploymentDerivedModels.length} foundation + ${deploymentDerivedModels.length} deployed)`);
-    return transformedData;
+    const routableFoundation = routableModels.length - deploymentDerivedModels.length;
+    logger.info('ModelService', `Retrieved ${transformedData.data.length} routable models (${routableFoundation} foundation + ${deploymentDerivedModels.length} deployed); ${unroutableCount} further foundation model(s) are listed only for the library`);
+    return wanted();
   } catch (error: any) {
     logger.error('ModelService', `Error fetching or processing models from SAP AI Core: ${error.message}`);
     const enhancedError = new Error(error.message) as any;
@@ -589,6 +624,7 @@ export async function getModelDetails(modelId: string, forceRefresh: boolean = f
  */
 export function clearModelsCache(): void {
   modelsCache.data = null;
+  modelsCache.all = null;
   modelsCache.expiresAt = 0;
   logger.info('ModelService', 'Models cache cleared');
 }
@@ -600,6 +636,7 @@ export function clearModelsCache(): void {
 export function clearAllCaches(): void {
   // Clear models cache
   modelsCache.data = null;
+  modelsCache.all = null;
   modelsCache.expiresAt = 0;
   
   // Clear token cache
@@ -639,6 +676,9 @@ function transformModelsToOpenAIFormat(processedModelsList: any[]): any {
       }
       // Ensure these specific attributes are correctly set from the processed model
       if (model.accessType !== undefined) openAIModel.accessType = model.accessType;
+      // Whether a request for this model can be routed through the gateway. Only the library
+      // consumer reads it, but it is set on every item so "false" is a statement, not an absence.
+      if (model.routable !== undefined) openAIModel.routable = model.routable;
       if (model.streamingSupported !== undefined) openAIModel.streamingSupported = model.streamingSupported;
       if (model.subpaths_native !== undefined) openAIModel.subpaths_native = model.subpaths_native;
       if (model.subpaths_emulated !== undefined) openAIModel.subpaths_emulated = model.subpaths_emulated;
@@ -654,8 +694,8 @@ function transformModelsToOpenAIFormat(processedModelsList: any[]): any {
 }
 
 class ModelService {
-  async getModels(forceRefresh?: boolean): Promise<{ object: string; data: ModelInfo[] }> {
-    return getModels(forceRefresh);
+  async getModels(forceRefresh?: boolean, options?: GetModelsOptions): Promise<{ object: string; data: ModelInfo[] }> {
+    return getModels(forceRefresh, options);
   }
 
   async getModelById(modelId: string, forceRefresh?: boolean): Promise<ModelInfo | null> {

@@ -20,7 +20,7 @@ export interface SecurityEvent {
   authType: 'api_key' | 'aws_credential';
   
   // Event classification
-  eventType: 'failed_auth' | 'rate_limit_exceeded' | 'credential_rotation';
+  eventType: 'failed_auth' | 'credential_rotation' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
   severity: 'low' | 'medium' | 'high' | 'critical';
   
   // Event details
@@ -170,11 +170,13 @@ export interface FailedAuthEventData extends SecurityEventContext {
   attempts?: number;
 }
 
-export interface RateLimitEventData extends SecurityEventContext {
-  limitType: string;
-  currentCount: number;
-  maxAllowed: number;
-  windowSize: string;
+export interface QuotaExceededEventData extends SecurityEventContext {
+  ownerEmail?: string;
+  scope: 'user' | 'key';
+  dimension: 'requests' | 'tokens' | 'spend';
+  window: 'minute' | 'hour' | 'day' | 'week' | 'month';
+  limit: number;
+  used: number;
 }
 
 // Event severity calculation
@@ -188,8 +190,11 @@ export enum SecurityEventSeverity {
 // Common event types
 export enum SecurityEventType {
   FAILED_AUTH = 'failed_auth',
-  RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded',
-  CREDENTIAL_ROTATION = 'credential_rotation'
+  CREDENTIAL_ROTATION = 'credential_rotation',
+  MODEL_NOT_ENTITLED = 'model_not_entitled',
+  DEPLOYMENT_CREATED = 'deployment_created',
+  QUOTA_EXCEEDED = 'quota_exceeded',
+  QUOTA_UNENFORCED = 'quota_unenforced'
 }
 
 // Event actions

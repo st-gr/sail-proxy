@@ -1,7 +1,7 @@
 import express from 'express';
 import * as awsBedrockController from '../controllers/awsBedrockController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
-import rateLimiter from '../middlewares/rateLimiter';
+import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 
@@ -21,7 +21,6 @@ const bedrockAuth = createUnifiedTokenAuth();
 
 // Service-specific middleware for Bedrock
 const bedrockServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.bedrock);
-const bedrockRateLimit = unifiedAuthProxyService.createUnifiedRateLimitMiddleware(serviceConfigurations.bedrock);
 
 // Conditional authentication middleware - use unified auth only if not AWS authenticated
 const conditionalUnifiedAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -33,8 +32,8 @@ const conditionalUnifiedAuth = (req: express.Request, res: express.Response, nex
   return bedrockAuth(req, res, next);
 };
 
-// Apply conditional authentication and rate limiting middleware to all routes
-router.use(conditionalUnifiedAuth, bedrockServiceAuth, bedrockRateLimit, rateLimiter);
+// Apply conditional authentication and quota enforcement to all routes
+router.use(conditionalUnifiedAuth, bedrockServiceAuth, quotaEnforcement);
 
 /**
  * AWS Bedrock API routes

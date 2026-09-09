@@ -306,7 +306,7 @@ function extractAwsCredentials(req: Request): {
  */
 function extractApiKey(req: Request): string | null {
   // Check standard API key headers
-  let apiKey = req.headers['x-api-key'] || req.headers['x-stainless-key'] || req.query.api_key;
+  let apiKey = req.headers['x-api-key'] || req.headers['x-stainless-key'] || req.headers['x-goog-api-key'] || req.query.api_key || req.query.key;
   
   // Handle array values
   if (Array.isArray(apiKey)) {
@@ -344,9 +344,10 @@ function sanitizeHeaders(headers: any): Record<string, string> {
   for (const [key, value] of Object.entries(headers)) {
     const lowerKey = key.toLowerCase();
     
-    if (lowerKey.includes('authorization') || 
-        lowerKey.includes('api-key') || 
-        lowerKey.includes('x-api-key')) {
+    if (lowerKey.includes('authorization') ||
+        lowerKey.includes('api-key') ||
+        lowerKey.includes('x-api-key') ||
+        lowerKey.includes('x-goog-api-key')) {
       sanitized[key] = '[REDACTED]';
     } else if (Array.isArray(value)) {
       sanitized[key] = value.join(', ');

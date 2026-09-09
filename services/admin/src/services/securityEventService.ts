@@ -6,7 +6,7 @@ const logger = getDefaultLogger();
 
 export interface SecurityEventData {
   credentialId: string;
-  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'credential_rotation' | 'ip_blocked' | 'brute_force_detected';
+  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'credential_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
   clientIP?: string;
@@ -19,7 +19,7 @@ export interface SecurityEventData {
 
 export interface ApiKeySecurityEventData {
   keyId: string;
-  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'key_rotation' | 'ip_blocked' | 'brute_force_detected';
+  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'key_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
   clientIP?: string;
@@ -390,6 +390,10 @@ export class SecurityEventService {
           actionable: true, // Unknown credentials are always actionable
           actionText: 'Investigate',
           actionUrl: `/app/security-events`, // Link to security events page
+          clientIP: securityEvent.clientIP ?? null,
+          userAgent: securityEvent.userAgent ?? null,
+          endpoint: securityEvent.endpoint ?? null,
+          requestId: securityEvent.requestId ?? null,
           createdAt: new Date(),
           createdBy: 'system'
         };
@@ -423,6 +427,10 @@ export class SecurityEventService {
         actionable: this.isEventActionable(securityEvent.eventType),
         actionText: this.getActionText(securityEvent.eventType),
         actionUrl: `/app/aws-credentials/${credential.ID}`,
+        clientIP: securityEvent.clientIP ?? null,
+        userAgent: securityEvent.userAgent ?? null,
+        endpoint: securityEvent.endpoint ?? null,
+        requestId: securityEvent.requestId ?? null,
         createdAt: new Date(),
         createdBy: 'system'
       };
@@ -541,6 +549,10 @@ export class SecurityEventService {
           actionable: true, // Unknown keys are always actionable
           actionText: 'Investigate',
           actionUrl: `/app/security-events`, // Link to security events page
+          clientIP: securityEvent.clientIP ?? null,
+          userAgent: securityEvent.userAgent ?? null,
+          endpoint: securityEvent.endpoint ?? null,
+          requestId: securityEvent.requestId ?? null,
           createdAt: new Date(),
           createdBy: 'system'
         };
@@ -574,6 +586,10 @@ export class SecurityEventService {
         actionable: this.isEventActionable(securityEvent.eventType),
         actionText: this.getActionText(securityEvent.eventType),
         actionUrl: `/app/api-keys/${apiKey.ID}`,
+        clientIP: securityEvent.clientIP ?? null,
+        userAgent: securityEvent.userAgent ?? null,
+        endpoint: securityEvent.endpoint ?? null,
+        requestId: securityEvent.requestId ?? null,
         createdAt: new Date(),
         createdBy: 'system'
       };
@@ -602,9 +618,13 @@ export class SecurityEventService {
       'suspicious_activity': `Suspicious activity detected for ${credentialName}`,
       'rate_limit_exceeded': `Rate limit exceeded for ${credentialName}`,
       'unauthorized_access': `Unauthorized access attempt on ${credentialName}`,
-      'invalid_signature': `Invalid signature detected for ${credentialName}`
+      'invalid_signature': `Invalid signature detected for ${credentialName}`,
+      'model_not_entitled': `Model request refused for AWS credential ${credentialName}: not in entitlement`,
+      'deployment_created': `Deployment created via AWS credential ${credentialName}`,
+      'quota_exceeded': `Quota exceeded for AWS credential ${credentialName}`,
+      'quota_unenforced': 'Quota enforcement degraded on the gateway'
     };
-    
+
     return titles[eventType] || `Security event for ${credentialName}`;
   }
 
@@ -614,9 +634,13 @@ export class SecurityEventService {
       'suspicious_activity': `Suspicious activity detected for API key ${keyName}`,
       'rate_limit_exceeded': `Rate limit exceeded for API key ${keyName}`,
       'unauthorized_access': `Unauthorized access attempt on API key ${keyName}`,
-      'key_rotation': `API key ${keyName} was rotated`
+      'key_rotation': `API key ${keyName} was rotated`,
+      'model_not_entitled': `Model request refused for API key ${keyName}: not in entitlement`,
+      'deployment_created': `Deployment created via API key ${keyName}`,
+      'quota_exceeded': `Quota exceeded for API key ${keyName}`,
+      'quota_unenforced': 'Quota enforcement degraded on the gateway'
     };
-    
+
     return titles[eventType] || `Security event for API key ${keyName}`;
   }
 
@@ -627,19 +651,25 @@ export class SecurityEventService {
       'rate_limit_exceeded': 'sap-icon://measuring-point',
       'unauthorized_access': 'sap-icon://locked',
       'invalid_signature': 'sap-icon://signature',
-      'key_rotation': 'sap-icon://key'
+      'key_rotation': 'sap-icon://key',
+      'model_not_entitled': 'sap-icon://locked',
+      'deployment_created': 'sap-icon://cloud',
+      'quota_exceeded': 'sap-icon://measuring-point',
+      'quota_unenforced': 'sap-icon://disconnected'
     };
-    
+
     return icons[eventType] || 'sap-icon://information';
   }
 
   private static isEventActionable(eventType: string): boolean {
     const actionableEvents = [
       'failed_auth',
-      'suspicious_activity', 
-      'unauthorized_access'
+      'suspicious_activity',
+      'unauthorized_access',
+      'model_not_entitled',
+      'quota_unenforced'
     ];
-    
+
     return actionableEvents.includes(eventType);
   }
 
@@ -647,9 +677,11 @@ export class SecurityEventService {
     const actionTexts: { [key: string]: string } = {
       'failed_auth': 'View Details',
       'suspicious_activity': 'Investigate',
-      'unauthorized_access': 'Secure Account'
+      'unauthorized_access': 'Secure Account',
+      'model_not_entitled': 'Review entitlement',
+      'quota_unenforced': 'Check Valkey'
     };
-    
+
     return actionTexts[eventType] || null;
   }
 }

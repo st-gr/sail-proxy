@@ -516,22 +516,34 @@ describe('capabilities.* (web_search, hosted_tools, namespace_tools, custom_tool
   );
 });
 
-// All five, not just the two the schema used to name: `providers` accepts any key through a
-// schema-valued `additionalProperties`, but only the five in `PROVIDER_KEYS` (configService.ts) are
-// read, so those five are declared and each is a section of its own. All five reach their common
-// fields through an `allOf` on `$defs/providerCommon` rather than declaring them, and before that
+// All six, not just the two the schema used to name: `providers` accepts any key through a
+// schema-valued `additionalProperties`, but only the six in `PROVIDER_KEYS` (configService.ts) are
+// read, so those six are declared and each is a section of its own. Five of them reach their common
+// fields through an `allOf` on `$defs/providerCommon` rather than declaring them - `google` is the
+// exception, declaring the one field it honours through a targeted `$ref` - and before that
 // composition was folded in, a provider written that way rendered as a single `raw` JSON blob for
 // the whole provider - which is exactly what the raw-free half of this gate refuses.
+//
+// `google` belongs in this list precisely BECAUSE its schema is shaped differently from the other
+// five: it composes nothing, declares its one honoured field through a targeted `$ref`, and is
+// closed with `additionalProperties: false` rather than `propertyNames`. Every mechanism this gate
+// exercises - `$ref` resolution, `allOf` folding, the raw-free check - meets a different branch on
+// it, so it is the entry most likely to round trip differently and the least useful one to omit.
+// (The schema-derived `renders without inventing settings` sweep near the bottom of this file
+// already reached it through `everySection`; what was missing, and what this case adds, is the
+// byte-identical round trip of the SHIPPED document at `providers.google`.)
+// Providers are listed in the order the schema declares them.
 describe('providers section round trips', () => {
   roundTrips('providers', 'anthropic');
   roundTrips('providers', 'aws-bedrock');
+  roundTrips('providers', 'google');
   roundTrips('providers', 'openai');
   roundTrips('providers', 'openrouter');
   roundTrips('providers', 'perplexity');
 });
 
-// The defect this split fixes, held as a test: `$defs/providerConfig` was one shape shared by all
-// five providers, so the Openai, Openrouter and Perplexity panels each offered an Anthropic Bedrock
+// The defect this split fixes, held as a test: `$defs/providerConfig` was one shape shared by every
+// provider, so the Openai, Openrouter and Perplexity panels each offered an Anthropic Bedrock
 // Version, Excluded Beta Headers and Supported Beta Headers field - three settings no request on
 // those routes ever reads (getAnthropicBedrockVersion / getExcludedBetaHeaders /
 // getSupportedBetaHeaders in gateway configService.ts read providers.anthropic and nothing else).
@@ -699,9 +711,10 @@ describe('providers.openai/openrouter - the allOf extension fields are typed, no
   });
 });
 
-// Each of the five providers is CLOSED to the settings its own code path does not read, and closed
-// with `propertyNames` rather than `additionalProperties: false`. The distinction is not stylistic:
-// every provider composes `$defs/providerCommon` through an `allOf`, and a draft-07
+// Each of the six providers is CLOSED to the settings its own code path does not read, and the five
+// that compose their fields are closed with `propertyNames` rather than `additionalProperties: false`
+// (`google` composes nothing, so the plain form works there). The distinction is not stylistic:
+// those five compose `$defs/providerCommon` through an `allOf`, and a draft-07
 // `additionalProperties` only sees the properties of the schema object that declares it - never a
 // sibling branch's - so `additionalProperties: false` on providers.openai would reject the shipped
 // configuration itself, starting with the common `substitute_models` it carries. `propertyNames`

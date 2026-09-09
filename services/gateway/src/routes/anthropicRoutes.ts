@@ -5,7 +5,7 @@ import express from 'express';
 import * as anthropicController from '../controllers/anthropicController';
 import * as countTokensController from '../controllers/countTokensController';
 import unifiedTokenAuth, { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
-import rateLimiter from '../middlewares/rateLimiter';
+import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 
@@ -16,7 +16,6 @@ const anthropicAuth = createUnifiedTokenAuth();
 
 // Service-specific middleware for Anthropic
 const anthropicServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.anthropic);
-const anthropicRateLimit = unifiedAuthProxyService.createUnifiedRateLimitMiddleware(serviceConfigurations.anthropic);
 
 // Token counting endpoint (must be defined BEFORE /messages to avoid prefix matching)
 // Uses lighter auth - no rate limiting for this read-only endpoint
@@ -29,8 +28,7 @@ router.post('/messages/count_tokens',
 router.post('/messages',
   anthropicAuth,
   anthropicServiceAuth,
-  anthropicRateLimit,
-  rateLimiter,
+  quotaEnforcement,
   anthropicController.handleMessages
 );
 
@@ -38,8 +36,7 @@ router.post('/messages',
 router.post('/complete',
   anthropicAuth,
   anthropicServiceAuth,
-  anthropicRateLimit,
-  rateLimiter,
+  quotaEnforcement,
   anthropicController.handleMessages
 );
 
@@ -47,8 +44,7 @@ router.post('/complete',
 router.post('/messages-beta',
   anthropicAuth,
   anthropicServiceAuth,
-  anthropicRateLimit,
-  rateLimiter,
+  quotaEnforcement,
   anthropicController.handleMessages
 );
 

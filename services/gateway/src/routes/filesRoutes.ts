@@ -5,7 +5,7 @@
 import * as express from 'express';
 import * as filesController from '../controllers/filesController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
-import rateLimiter from '../middlewares/rateLimiter';
+import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import { registerFileRoutes } from './fileRouteTable';
@@ -19,9 +19,8 @@ router.param('id', nulByteParamGuard);
 
 const filesAuth = createUnifiedTokenAuth();
 const filesServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.openai);
-const filesRateLimit = unifiedAuthProxyService.createUnifiedRateLimitMiddleware(serviceConfigurations.openai);
 
-const guard = [filesAuth, filesServiceAuth, filesRateLimit, rateLimiter];
+const guard = [filesAuth, filesServiceAuth, quotaEnforcement];
 
 // Declared in src/routes/fileRouteTable.ts and registered from there, because
 // openRouterRoutes.ts must expose the identical set under its own prefix and

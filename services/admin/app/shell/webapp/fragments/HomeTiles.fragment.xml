@@ -1,0 +1,13 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+    <!-- The home screen's key metrics for this month (myUsageSummary): an administrator sees every
+         user's figures, everyone else their own. Each tile opens Usage Analytics. -->
+    <HBox id="homeTiles" wrap="Wrap" visible="{home>/available}" items="{home>/tiles}">
+        <GenericTile header="{home>header}" subheader="{home>subheader}" class="sapUiTinyMargin" width="18rem" press=".onHomeTilePress">
+            <tileContent>
+                <TileContent footer="{home>footer}">
+                    <NumericContent truncateValueTo="16" value="{home>value}" valueColor="{home>state}" withMargin="false"/>
+                </TileContent>
+            </tileContent>
+        </GenericTile>
+    </HBox>
+</core:FragmentDefinition>

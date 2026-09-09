@@ -23,6 +23,13 @@ entity SecurityNotifications : cuid, managed {
   actionable    : Boolean default false;  // Whether user can take action
   actionText    : String(100);    // Text for action button
   actionUrl     : String(500);    // URL for action (optional)
+
+  // Request context of the source event, copied by both writers (securityEventService,
+  // notificationPopulationService) and backfilled once on startup — the app shows it (spec §2).
+  clientIP      : String(45);
+  userAgent     : String(500);
+  endpoint      : String(200);
+  requestId     : String(100);
 }
 
 /**

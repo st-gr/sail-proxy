@@ -45,6 +45,26 @@ export interface ValidationResponse {
       ipRange?: string;
       isAllowed: boolean;
     }>;
+    // Structurally matches EntitlementBlock (services/gateway/src/clients/adminServiceClient.ts).
+    // Duplicated here rather than imported to keep this shared lib free of a service dependency.
+    entitlement?: {
+      catalogId: string;
+      catalogName: string;
+      mode: 'all' | 'list';
+      exclude?: string[];
+      include?: string[];
+    };
+    // Structurally matches UserBlock (services/gateway/src/clients/adminServiceClient.ts).
+    // Duplicated here rather than imported to keep this shared lib free of a service dependency.
+    user?: {
+      email: string;
+      status: 'active' | 'deactivated';
+      roles: string[];
+      limits: {
+        requestsPerMinute: number | null; spendPerDay: number | null; spendPerWeek: number | null; spendPerMonth: number | null;
+        tokensPerDay: number | null; tokensPerWeek: number | null; tokensPerMonth: number | null;
+      };
+    };
   };
   validationToken: string;
   auditInfo: {

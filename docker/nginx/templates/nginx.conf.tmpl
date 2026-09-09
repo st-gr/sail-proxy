@@ -415,7 +415,7 @@ http {
         }
 
         # Handle UI5 app resources directories specifically
-        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app)/(resources|webapp|images)/ {
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app)/(resources|webapp|images)/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -474,7 +474,7 @@ http {
         }
 
         # Handle UI5 resource paths that apps expect at root level
-        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app)/resources/ {
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app)/resources/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -501,7 +501,7 @@ http {
         }
 
         # Handle cross-app webapp references (e.g., usage-analytics from shell)
-        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates)/webapp/ {
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users)/webapp/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
 
@@ -512,6 +512,8 @@ http {
             rewrite ^/config/webapp/(.*)$ /app/config-app/webapp/$1 break;
             rewrite ^/security-notifications/webapp/(.*)$ /app/security-notifications-app/webapp/$1 break;
             rewrite ^/sap-rates/webapp/(.*)$ /app/sap-rates-app/webapp/$1 break;
+            rewrite ^/model-library/webapp/(.*)$ /app/model-library-app/webapp/$1 break;
+            rewrite ^/users/webapp/(.*)$ /app/users-app/webapp/$1 break;
             
             proxy_pass http://admin_service;
             include proxy_params;

@@ -2,7 +2,7 @@
 sap.ui.define(["admin/app/test/integration/expectations"], function (expectations) {
 	"use strict";
 
-	// One of three verbatim copies (shell, api-keys-app, aws-credentials-app): keep them identical.
+	// One of six verbatim copies (shell, api-keys-app, aws-credentials-app, model-library-app, users-app, security-notifications-app): keep them identical.
 	// Fails first and explicitly when the browser is not signed in as the expected role
 	// (wrong credentials, wrong target, admin fallback) - before any OPA journey runs.
 	return {

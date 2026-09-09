@@ -1,0 +1,12 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.ui.layout.form">
+  <Dialog id="priceDialog" title="{i18n>editPrice}" contentWidth="28rem">
+    <f:SimpleForm layout="ResponsiveGridLayout" editable="true">
+      <Label text="Input cost per 1K tokens" required="true"/><Input id="priceInput" value="{viewModel>/detail/priceEdit/inputCost}" type="Number"/>
+      <Label text="Output cost per 1K tokens" required="true"/><Input id="priceOutput" value="{viewModel>/detail/priceEdit/outputCost}" type="Number"/>
+      <Label text="Cache read cost per 1K"/><Input id="priceCacheRead" value="{viewModel>/detail/priceEdit/cacheReadInputCost}" type="Number"/>
+      <Label text="Cache creation cost per 1K"/><Input id="priceCacheCreation" value="{viewModel>/detail/priceEdit/cacheCreationInputCost}" type="Number"/>
+    </f:SimpleForm>
+    <beginButton><Button id="priceSave" text="Save" type="Emphasized" press=".onSavePrice"/></beginButton>
+    <endButton><Button text="Cancel" press=".onCancelPrice"/></endButton>
+  </Dialog>
+</core:FragmentDefinition>

@@ -67,6 +67,29 @@ function stripStrings(src: string): string {
   return src.replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, '');
 }
 
+// Clean each file BEFORE joining them, for any corpus the call detector runs over.
+//
+// stripStrings' backtick branch is deliberately unbounded (template literals legitimately span
+// lines), so a file left holding an odd backtick swallows everything up to the next backtick —
+// in a *later file entirely* if the files are joined first. That is not hypothetical: `maskUrl`
+// in src/config/unifiedAuthConfig.ts contains `${parsed.protocol}//***:***@...`, whose `//`
+// stripComments removes as a line comment (its guard only spares `://`), taking the literal's
+// closing backtick with it. Every backtick downstream then pairs one position off, so the *gaps
+// between* template literals get eaten instead of the literals — silently hiding real call sites
+// in unrelated files. Cleaning per file caps that at the file that actually has the imbalance,
+// which is the same blast-radius reasoning the single/double-quote branches already apply per
+// line.
+//
+// The trailing `replace` then drops whatever quote characters the per-file clean left behind: a
+// quote surviving a clean is by definition an unterminated literal (the maskUrl case), and
+// carrying it into the join would let findOrphanedHelpers' own second cleaning pass re-pair it
+// with a stray from a different file — re-creating the very cross-file swallow this containment
+// exists to stop, one pass later. Measured against this codebase, the four leftover backticks
+// cost 24,917 characters on that second pass before this line was added.
+function cleanedCorpus(sources: string[]): string {
+  return sources.map((src) => stripStrings(stripComments(src)).replace(/[`'"]/g, '')).join('\n');
+}
+
 // The strict detector, factored out so it can be driven directly against a hand-built corpus
 // (see the regression test below) rather than only through the filesystem walk. A helper counts
 // as called only if the cleaned (comment-stripped) corpus contains a call-shaped, receiver-
@@ -89,13 +112,29 @@ function findOrphanedHelpers(corpus: string, helperNames: string[]): string[] {
 
 const emitterSrc = fs.readFileSync(EMITTER_PATH, 'utf8');
 
+// Emitter helpers that are declared ahead of the code that calls them, each with the task that
+// wires it up. This is NOT a general escape hatch: an entry is only legitimate while the caller
+// is genuinely still to come, and the "no stale entry" test below deletes the exception for you
+// by failing the moment the call site lands. Anything not listed here is still a hard orphan.
+//
+// The set is empty: emitDeploymentCreated's caller landed with Task 11's
+// controllers/deploymentController.ts, so its entry was deleted as designed.
+const PENDING_CALLERS = new Set<string>([]);
+
 // Gateway source that could plausibly *call* an emitter helper: everything except the
 // emitter itself (which would trivially "call" its own helpers via definition) and the
 // type declarations file (which restates event-type strings without emitting anything).
 const gatewayCallerFiles = sourceFiles(GATEWAY_SRC).filter(
   (f) => f !== EMITTER_PATH && f !== TYPES_PATH,
 );
-const gatewayCallerCorpus = gatewayCallerFiles.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+const gatewayCallerSources = gatewayCallerFiles.map((f) => fs.readFileSync(f, 'utf8'));
+// Raw join — used only by the cross-service `eventType: '...'` search below, which needs the
+// string literals intact.
+const gatewayCallerCorpus = gatewayCallerSources.join('\n');
+// Cleaned per file, THEN joined, for the orphan detector — see cleanedCorpus() above for why
+// the order matters. The raw join above stays raw because the cross-service search needs the
+// string literals intact.
+const gatewayCallerCleanedCorpus = cleanedCorpus(gatewayCallerSources);
 
 // CREDENTIAL_ROTATION is emitted by the admin service (SecurityEventService.createAwsSecurityEvent
 // in admin-service.ts), not by the gateway's securityEventEmitter. "Is this type emitted anywhere"
@@ -127,8 +166,83 @@ describe('every declared security event type is actually emitted', () => {
     const helperNames = [...emitterSrc.matchAll(/public\s+(?:async\s+)?(emit\w+)\s*\(/g)].map(
       (m) => m[1],
     );
-    const orphans = findOrphanedHelpers(gatewayCallerCorpus, helperNames);
-    expect(orphans).toEqual([]);
+    const orphans = findOrphanedHelpers(gatewayCallerCleanedCorpus, helperNames);
+    expect(orphans.filter((h) => !PENDING_CALLERS.has(h))).toEqual([]);
+  });
+
+  // The pending-caller allowance is only honest if it expires by itself. Once the named task
+  // lands its call site the helper stops being an orphan, and this test fails until the entry is
+  // deleted — so the exception cannot quietly outlive the reason for it.
+  it('has no stale entry in PENDING_CALLERS', () => {
+    const helperNames = [...emitterSrc.matchAll(/public\s+(?:async\s+)?(emit\w+)\s*\(/g)].map(
+      (m) => m[1],
+    );
+    const orphans = new Set(findOrphanedHelpers(gatewayCallerCleanedCorpus, helperNames));
+    const stale = [...PENDING_CALLERS].filter((h) => !orphans.has(h));
+    expect(stale).toEqual([]);
+  });
+
+  // Regression guard for cleanedCorpus()'s per-file cleaning, reproducing the exact failure this
+  // plan hit. File A is maskUrl in src/config/unifiedAuthConfig.ts in miniature: an unguarded
+  // `//` inside a template literal, which stripComments deletes along with the literal's closing
+  // backtick, leaving that file one backtick short. File B is deploymentController.ts in
+  // miniature: a real call site sandwiched between two log lines that each use a template
+  // literal.
+  //
+  // Joined before cleaning, file A's stray backtick pairs with file B's first *opening* backtick;
+  // that literal's *closing* backtick is then read as an opening one and swallows everything up
+  // to the next backtick — which is file B's second log line, with the call in between. Both of
+  // file B's literals are load-bearing: a stray with no later backtick to pair with, or with only
+  // one, leaves the call untouched, so a shorter fixture passes even with the containment
+  // reverted and pins nothing.
+  it('per-file cleaning stops an unbalanced backtick from swallowing a later file', () => {
+    const fileA = 'const u = `${p}//***`;';
+    const fileB = [
+      "logger.error('Ctl', `boom: ${e}`);",
+      'await securityEventEmitter.emitDeploymentCreated({});',
+      "logger.warn('Ctl', `done: ${id}`);",
+    ].join('\n');
+
+    // Cleaned per file, file B's call survives the join and reads as a real caller.
+    expect(findOrphanedHelpers(cleanedCorpus([fileA, fileB]), ['emitDeploymentCreated'])).toEqual(
+      [],
+    );
+
+    // Joined raw first — what the detector used to do — file A's imbalance eats file B's call and
+    // the helper is falsely reported as an orphan. This is the assertion that pins the fix.
+    expect(findOrphanedHelpers([fileA, fileB].join('\n'), ['emitDeploymentCreated'])).toEqual([
+      'emitDeploymentCreated',
+    ]);
+
+    // ...and the detector is not merely permissive: drop file B and it is a genuine orphan.
+    expect(findOrphanedHelpers(cleanedCorpus([fileA]), ['emitDeploymentCreated'])).toEqual([
+      'emitDeploymentCreated',
+    ]);
+  });
+
+  // Second half of the containment, pinned separately: cleanedCorpus() also drops the quote
+  // characters a per-file clean leaves behind. findOrphanedHelpers runs its own cleaning pass over
+  // whatever corpus it is handed, so two files that each end up one backtick short would re-pair
+  // with each other on that second pass and swallow everything between them — the same cross-file
+  // bug, one pass later. Against the real gateway tree the four surviving backticks cost 24,917
+  // characters on the second pass; here the swallowed span is the call site itself.
+  it('drops leftover unbalanced quotes so the detector cannot re-pair them across files', () => {
+    const strayA = 'const u = `${p}//***`;';
+    const caller = 'await securityEventEmitter.emitDeploymentCreated({});';
+    const strayC = 'const v = `${q}//###`;';
+
+    expect(
+      findOrphanedHelpers(cleanedCorpus([strayA, caller, strayC]), ['emitDeploymentCreated']),
+    ).toEqual([]);
+
+    // Without the drop — per-file cleaning alone — strayA and strayC pair up on the detector's own
+    // cleaning pass and eat the caller between them.
+    const withoutDrop = [strayA, caller, strayC]
+      .map((src) => stripStrings(stripComments(src)))
+      .join('\n');
+    expect(findOrphanedHelpers(withoutDrop, ['emitDeploymentCreated'])).toEqual([
+      'emitDeploymentCreated',
+    ]);
   });
 
   // Regression guard: a helper mentioned only in a comment (e.g. a "TODO: call emitFoo() here")

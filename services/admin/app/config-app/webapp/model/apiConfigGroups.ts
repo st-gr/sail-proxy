@@ -95,7 +95,7 @@ export function resolveGroupSchema(schema: Record<string, unknown>, group: ApiCo
  * Only `properties` counts. A group may also accept keys its schema does not name, through a
  * schema-valued `additionalProperties` (`providers` keeps one so a new provider needs no schema
  * change), and those are not sections: nothing declares them, so nothing can title a panel for one
- * that the document does not already carry. `providers` therefore lists the five provider keys the
+ * that the document does not already carry. `providers` therefore lists the six provider keys the
  * gateway itself reads, which the schema names for exactly this reason; the dynamic keys *within* a
  * section (`models.overrides`' per-model entries) are `buildDescriptors`'s to surface, not this
  * function's concern.

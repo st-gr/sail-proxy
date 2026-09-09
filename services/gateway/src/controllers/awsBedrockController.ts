@@ -11,6 +11,7 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { isPayloadLoggingEnabled } from '../utils/payloadLogger';
+import { enforceEntitlement } from '../utils/modelEntitlement';
 
 interface BedrockRequest extends Request {
   params: {
@@ -70,6 +71,8 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
     // Get substituted model name
     const substitutedModelName = configService.getSubstitutedModel('aws-bedrock', originalModelFromClient);
     logger.info('AwsBedrockController', `Model: ${originalModelFromClient}${substitutedModelName !== originalModelFromClient ? ` → ${substitutedModelName} (substituted)` : ''}`);
+
+    if (!enforceEntitlement(req, res, substitutedModelName)) return;
 
     // Get model details and validate it's an AWS Bedrock model
     const modelDetails: ModelDetails | null = await modelService.getModelDetails(substitutedModelName);

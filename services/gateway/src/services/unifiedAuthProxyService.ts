@@ -111,47 +111,6 @@ export class UnifiedAuthProxyService {
   }
 
   /**
-   * Create rate limiting middleware using unified auth data
-   */
-  createUnifiedRateLimitMiddleware(options: ProxyServiceOptions) {
-    return async (req: UnifiedProxyRequest, res: Response, next: NextFunction): Promise<void> => {
-      if (!options.rateLimiting) {
-        return next();
-      }
-
-      try {
-        const rateLimits = this.extractRateLimits(req);
-        if (!rateLimits) {
-          // No rate limits found, use service defaults
-          return next();
-        }
-
-        // Apply rate limiting based on auth data
-        const allowed = await this.checkRateLimit(req, rateLimits, options);
-        if (!allowed) {
-          res.status(429).json({
-            error: {
-              message: 'Rate limit exceeded',
-              type: 'rate_limit_error',
-              service: options.serviceName,
-              limits: rateLimits
-            }
-          });
-          return;
-        }
-
-        return next();
-
-      } catch (error) {
-        logger.error('UnifiedAuthProxyService', 'Rate limiting error', undefined, {});
-        
-        // Continue on rate limiting error to avoid blocking valid requests
-        return next();
-      }
-    };
-  }
-
-  /**
    * Create proxy target configuration based on auth data
    */
   createProxyTargetMiddleware(options: ProxyServiceOptions) {
@@ -248,42 +207,6 @@ export class UnifiedAuthProxyService {
     // Set legacy AWS auth headers
     req.headers['x-legacy-auth-type'] = 'aws_credential';
     req.headers['x-aws-auth-valid'] = 'true';
-  }
-
-  /**
-   * Extract rate limits from auth data
-   */
-  private extractRateLimits(req: UnifiedProxyRequest): any {
-    if (req.unifiedAuth?.data) {
-      const data = req.unifiedAuth.data as any;
-      if (data.rateLimits) {
-        return data.rateLimits;
-      }
-    }
-
-    // No rate limits found in auth data
-    return null;
-  }
-
-  /**
-   * Check rate limit (placeholder implementation)
-   */
-  private async checkRateLimit(
-    req: UnifiedProxyRequest, 
-    rateLimits: any, 
-    options: ProxyServiceOptions
-  ): Promise<boolean> {
-    // Placeholder implementation - in production, implement actual rate limiting
-    // Could use Redis-based rate limiting, token bucket, etc.
-    
-    logger.trace('UnifiedAuthProxyService', 'Rate limit check', {
-      service: options.serviceName,
-      limits: rateLimits,
-      authType: req.unifiedAuth?.authType
-    });
-
-    // For now, always allow (rate limiting implementation would go here)
-    return true;
   }
 
   /**
@@ -416,6 +339,17 @@ export const serviceConfigurations = {
   openai: {
     serviceName: 'openai',
     baseUrl: 'https://api.openai.com',
+    requireAuth: true,
+    enableUnifiedAuth: true,
+    fallbackToLegacy: true,
+    rateLimiting: {
+      requestsPerMinute: 60,
+      requestsPerHour: 1000
+    }
+  },
+  google: {
+    serviceName: 'google',
+    baseUrl: 'https://generativelanguage.googleapis.com',
     requireAuth: true,
     enableUnifiedAuth: true,
     fallbackToLegacy: true,

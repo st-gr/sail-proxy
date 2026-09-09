@@ -1,0 +1,23 @@
+# Normalize every text file to LF in the repository and in the working tree.
+* text=auto eol=lf
+
+# Windows batch files are read by cmd.exe and keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.gz binary
+*.tgz binary
+*.zip binary
+*.db binary
+*.sqlite binary

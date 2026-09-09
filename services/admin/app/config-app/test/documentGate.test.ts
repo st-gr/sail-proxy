@@ -376,8 +376,8 @@ describe('the "default": "INFO" annotation on platform.logging.components', () =
 });
 
 /**
- * The provider split closed each of the five named providers to the settings its own code path
- * reads, and closed them with `propertyNames` - a keyword `validateSection` did not implement
+ * The provider split closed each of the six named providers to the settings its own code path
+ * reads, and closed the five composing ones with `propertyNames` - a keyword `validateSection` did not implement
  * before this round, and an unimplemented keyword there fails OPEN while the backend's Ajv still
  * enforces it on save. That is exactly the browser/backend disagreement the gate exists to
  * prevent, so the agreement is measured here rather than asserted: the same document, through this

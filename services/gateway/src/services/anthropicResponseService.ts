@@ -192,6 +192,28 @@ async function determineActualModelAndProvider(
  * @param latencyMs - Optional: The latency of the SAP AI Core call, for converse format
  * @returns Response in Anthropic API format
  */
+/**
+ * SAP orchestration `finish_reason` → Anthropic `stop_reason`. One mapping for the
+ * non-streaming response, the emulated stream and the native stream alike: the native
+ * stream used to forward `tool_calls` unmapped, which the Anthropic SDK (pi, 0.73)
+ * rejects as "Unhandled stop reason: tool_calls" — measured live 2026-09-08 on
+ * anthropic--claude-4.5-sonnet via /anthropic/v1/messages with stream:true.
+ */
+export function mapSapFinishReasonToAnthropic(finishReason: string | null | undefined): string {
+  switch (finishReason) {
+    case 'length': return 'max_tokens';
+    case 'stop_sequences': return 'stop_sequence';
+    case 'tool_calls':
+    case 'tool_use': return 'tool_use';
+    case 'stop':
+    case 'end_turn':
+    case null:
+    case undefined:
+    case '': return 'end_turn';
+    default: return finishReason;   // an unknown reason is passed through, not hidden
+  }
+}
+
 export async function transformSAPResponseToAnthropic(
   sapResponse: SAPResponse, 
   isStreaming: boolean, 
@@ -245,21 +267,7 @@ export async function transformSAPResponseToAnthropic(
     responseText = `Error: ${sapResponse.error.message}`;
   }
 
-  let stopReason = "end_turn"; // Default Anthropic stop_reason
-  if (choice && choice.finish_reason) {
-    const sapFinishReason = choice.finish_reason;
-    if (sapFinishReason === "length") {
-      stopReason = "max_tokens"; // Map SAP 'length' to Anthropic 'max_tokens'
-    } else if (sapFinishReason === "stop_sequences") {
-      stopReason = "stop_sequence";
-    } else if (sapFinishReason === "tool_calls" || sapFinishReason === "tool_use") {
-      stopReason = "tool_use";
-    } else if (sapFinishReason === "end_turn" || sapFinishReason === "stop") { // SAP might use 'stop'
-        stopReason = "end_turn";
-    } else {
-        stopReason = sapFinishReason; // Use as is if not specifically mapped
-    }
-  }
+  const stopReason = mapSapFinishReasonToAnthropic(choice?.finish_reason);
 
   const content: (AnthropicContentBlock | AnthropicToolUse)[] = [];
   

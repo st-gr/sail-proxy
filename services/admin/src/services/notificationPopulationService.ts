@@ -105,7 +105,11 @@ export class NotificationPopulationService {
           icon: this.getIconForEventType(event.eventType),
           actionable: this.isEventActionable(event.eventType),
           actionText: this.getActionText(event.eventType),
-          actionUrl: `/app/aws-credentials/${credential.ID}`
+          actionUrl: `/app/aws-credentials/${credential.ID}`,
+          clientIP: event.clientIP ?? null,
+          userAgent: event.userAgent ?? null,
+          endpoint: event.endpoint ?? null,
+          requestId: event.requestId ?? null
         });
         
       } catch (error) {
@@ -150,7 +154,11 @@ export class NotificationPopulationService {
           icon: this.getIconForEventType(event.eventType),
           actionable: this.isEventActionable(event.eventType),
           actionText: this.getActionText(event.eventType),
-          actionUrl: `/app/api-keys/${apiKey.ID}`
+          actionUrl: `/app/api-keys/${apiKey.ID}`,
+          clientIP: event.clientIP ?? null,
+          userAgent: event.userAgent ?? null,
+          endpoint: event.endpoint ?? null,
+          requestId: event.requestId ?? null
         });
         
       } catch (error) {
@@ -223,12 +231,16 @@ export class NotificationPopulationService {
       'suspicious_activity': `Suspicious activity detected for ${credentialName}`,
       'rate_limit_exceeded': `Rate limit exceeded for ${credentialName}`,
       'unauthorized_access': `Unauthorized access attempt on ${credentialName}`,
-      'invalid_signature': `Invalid signature detected for ${credentialName}`
+      'invalid_signature': `Invalid signature detected for ${credentialName}`,
+      'model_not_entitled': `Model request refused for AWS credential ${credentialName}: not in entitlement`,
+      'deployment_created': `Deployment created via AWS credential ${credentialName}`,
+      'quota_exceeded': `Quota exceeded for AWS credential ${credentialName}`,
+      'quota_unenforced': 'Quota enforcement degraded on the gateway'
     };
-    
+
     return titles[eventType] || `Security event for ${credentialName}`;
   }
-  
+
   /**
    * Generate user-friendly title for API key security events
    */
@@ -237,9 +249,13 @@ export class NotificationPopulationService {
       'failed_auth': `Authentication failed for API key ${keyName}`,
       'suspicious_activity': `Suspicious activity detected for API key ${keyName}`,
       'rate_limit_exceeded': `Rate limit exceeded for API key ${keyName}`,
-      'unauthorized_access': `Unauthorized access attempt on API key ${keyName}`
+      'unauthorized_access': `Unauthorized access attempt on API key ${keyName}`,
+      'model_not_entitled': `Model request refused for API key ${keyName}: not in entitlement`,
+      'deployment_created': `Deployment created via API key ${keyName}`,
+      'quota_exceeded': `Quota exceeded for API key ${keyName}`,
+      'quota_unenforced': 'Quota enforcement degraded on the gateway'
     };
-    
+
     return titles[eventType] || `Security event for API key ${keyName}`;
   }
   
@@ -277,26 +293,32 @@ export class NotificationPopulationService {
       'unauthorized_access': 'sap-icon://locked',
       'invalid_signature': 'sap-icon://signature',
       'credential_rotated': 'sap-icon://key',
-      'rotation_failed': 'sap-icon://error'
+      'rotation_failed': 'sap-icon://error',
+      'model_not_entitled': 'sap-icon://locked',
+      'deployment_created': 'sap-icon://cloud',
+      'quota_exceeded': 'sap-icon://measuring-point',
+      'quota_unenforced': 'sap-icon://disconnected'
     };
-    
+
     return icons[eventType] || 'sap-icon://information';
   }
-  
+
   /**
    * Determine if event type requires user action
    */
   private isEventActionable(eventType: string): boolean {
     const actionableEvents = [
       'failed_auth',
-      'suspicious_activity', 
+      'suspicious_activity',
       'unauthorized_access',
-      'rotation_failed'
+      'rotation_failed',
+      'model_not_entitled',
+      'quota_unenforced'
     ];
-    
+
     return actionableEvents.includes(eventType);
   }
-  
+
   /**
    * Get action text for actionable events
    */
@@ -305,9 +327,11 @@ export class NotificationPopulationService {
       'failed_auth': 'View Details',
       'suspicious_activity': 'Investigate',
       'unauthorized_access': 'Secure Account',
-      'rotation_failed': 'Retry Rotation'
+      'rotation_failed': 'Retry Rotation',
+      'model_not_entitled': 'Review entitlement',
+      'quota_unenforced': 'Check Valkey'
     };
-    
+
     return actionTexts[eventType] || null;
   }
 }

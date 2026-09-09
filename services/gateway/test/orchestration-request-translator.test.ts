@@ -10,7 +10,7 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   buildOrchestrationPayload, responsesInputToMessages, UnsupportedInputItemError,
-} from '../src/responses/orchestrationBridge/requestTranslator';
+ literalPlaceholderValues } from '../src/responses/orchestrationBridge/requestTranslator';
 
 describe('responsesInputToMessages', () => {
   it('turns a plain string input into one user message with block content', () => {
@@ -23,6 +23,17 @@ describe('responsesInputToMessages', () => {
     const msgs = responsesInputToMessages('hi', 'be brief');
     expect(msgs[0]).toEqual({ role: 'system', content: [{ type: 'text', text: 'be brief' }] });
     expect(msgs[1].role).toBe('user');
+  });
+
+  it("maps OpenAI's developer role onto system (orchestration knows no developer role)", () => {
+    const msgs = responsesInputToMessages([
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'be brief' }] },
+      { type: 'message', role: 'user', content: 'q' },
+    ]);
+    expect(msgs).toEqual([
+      { role: 'system', content: [{ type: 'text', text: 'be brief' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+    ]);
   });
 
   it('translates message items, mapping input_text and output_text to text blocks', () => {
@@ -461,6 +472,63 @@ describe('buildOrchestrationPayload', () => {
       tool_calls: [{ id: 'c1', type: 'function', function: { name: 'ls', arguments: '{}' } }],
     });
     expect(toolResult).toEqual({ role: 'tool', tool_call_id: 'c1', content: 'file.txt' });
+  });
+
+  describe('Mistral tool turns (SAP appends the template after the history; Mistral refuses system-after-tool)', () => {
+    const toolTurn = {
+      instructions: 'be brief',
+      input: [
+        { type: 'message', role: 'user', content: 'ls please' },
+        { type: 'function_call', call_id: 'c1', name: 'ls', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'c1', output: 'a {{?foo}} b {{ ?bar-1 }} c {{?foo}}' },
+      ],
+    };
+
+    it('puts the tool result in the template, the system message first in messages_history, and each placeholder name back as its own literal', () => {
+      const p: any = buildOrchestrationPayload(toolTurn, { modelName: 'mistralai--mistral-medium', stream: false });
+      expect(p.config.modules.prompt_templating.prompt.template).toEqual([
+        { role: 'tool', tool_call_id: 'c1', content: 'a {{?foo}} b {{ ?bar-1 }} c {{?foo}}' },
+      ]);
+      expect(p.messages_history.map((m: any) => m.role)).toEqual(['system', 'user', 'assistant']);
+      expect(p.messages_history[0].content).toEqual([{ type: 'text', text: 'be brief' }]);
+      expect(p.placeholder_values).toEqual({ foo: '{{?foo}}', 'bar-1': '{{ ?bar-1 }}' });
+    });
+
+    it('with no system message the history is just the earlier turns', () => {
+      const p: any = buildOrchestrationPayload({ input: toolTurn.input }, { modelName: 'mistralai--mistral-small', stream: false });
+      expect(p.config.modules.prompt_templating.prompt.template.map((m: any) => m.role)).toEqual(['tool']);
+      expect(p.messages_history.map((m: any) => m.role)).toEqual(['user', 'assistant']);
+    });
+
+    it('a Mistral USER turn keeps the system-only template (user→system is accepted upstream)', () => {
+      const p: any = buildOrchestrationPayload(base, { modelName: 'mistralai--mistral-medium', stream: false });
+      expect(p.config.modules.prompt_templating.prompt.template.map((m: any) => m.role)).toEqual(['system']);
+      expect(p.messages_history.map((m: any) => m.role)).toEqual(['user']);
+      expect(p.placeholder_values).toEqual({});
+    });
+
+    it('a tool turn on any other model keeps the system-only template — its newest message never meets the placeholder parser', () => {
+      for (const modelName of ['gpt-5-mini', 'anthropic--claude-4.8-opus', 'gemini-2.5-pro']) {
+        const p: any = buildOrchestrationPayload(toolTurn, { modelName, stream: false });
+        expect(p.config.modules.prompt_templating.prompt.template.map((m: any) => m.role)).toEqual(['system']);
+        expect(p.messages_history.map((m: any) => m.role)).toEqual(['user', 'assistant', 'tool']);
+        expect(p.placeholder_values).toEqual({});
+      }
+    });
+  });
+
+  describe('literalPlaceholderValues', () => {
+    it("matches SAP's grammar only: letter first, letter or digit last, single _ or - inside, optional space before the ?", () => {
+      const values = literalPlaceholderValues({ role: 'tool', tool_call_id: 'x',
+        content: '{{?a}} {{?a_b-c1}} {{ ?d }} {{? e }} {{?foo.bar}} {{?9x}} {{?foo-}} {{?a--b}} {{bar}} {{ x }} {{#if a}}{{/if}} {{?}}' });
+      expect(values).toEqual({ a: '{{?a}}', 'a_b-c1': '{{?a_b-c1}}', d: '{{ ?d }}' });
+    });
+    it('reads text blocks and ignores everything else', () => {
+      expect(literalPlaceholderValues({ role: 'user', content: [{ type: 'text', text: 'see {{?p}}' }, { type: 'image_url', image_url: { url: 'data:' } }] }))
+        .toEqual({ p: '{{?p}}' });
+      expect(literalPlaceholderValues({ role: 'user', content: [] })).toEqual({});
+      expect(literalPlaceholderValues({ role: 'tool', tool_call_id: 'x', content: 'plain' })).toEqual({});
+    });
   });
 
   it('moves tools onto prompt.tools and tool_choice onto model.params', () => {

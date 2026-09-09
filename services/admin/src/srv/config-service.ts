@@ -8,6 +8,10 @@ import { modelCostService } from '../services/modelCostService';
 import * as configSchema from '../schemas/api-config-schema.json';
 import { MINIMAL_DEFAULT_CONFIG } from './minimal-default-config';
 import { formatSchemaError } from './schemaErrors';
+import { invalidateQuotaDefaults } from '../services/quotaLimits';
+import { costRecalculationService } from '../services/costRecalculationService';
+import { republishAll } from '../services/userQuotaService';
+import { invalidateForEmails } from '../services/credentialInvalidation';
 
 const logger = getDefaultLogger();
 
@@ -433,6 +437,16 @@ class ConfigurationService {
         // Don't fail the activation if event publishing fails
       }
 
+      // platform.quotas may have changed: every state document carries the effective limits.
+      invalidateQuotaDefaults();
+      // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
+      costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
+      republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
+      // The gateway (and this admin's own local cache) may hold validation responses that still
+      // carry the old platform.quotas limits for up to an hour; a config activation must not wait
+      // that out.
+      invalidateForEmails(cds, 'everyone', 'platform_quotas').catch((e: any) => logger.warn('ConfigService', `platform quota cache invalidation failed: ${e?.message ?? e}`));
+
       logger.info('ConfigService', 'Activated configuration', {
         configId,
         version: config.version,
@@ -517,6 +531,16 @@ class ConfigurationService {
         checksum: previousConfig.checksum,
         timestamp: new Date().toISOString()
       });
+
+      // platform.quotas may have changed: every state document carries the effective limits.
+      invalidateQuotaDefaults();
+      // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
+      costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
+      republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
+      // The gateway (and this admin's own local cache) may hold validation responses that still
+      // carry the old platform.quotas limits for up to an hour; a config activation must not wait
+      // that out.
+      invalidateForEmails(cds, 'everyone', 'platform_quotas').catch((e: any) => logger.warn('ConfigService', `platform quota cache invalidation failed: ${e?.message ?? e}`));
 
       logger.info('ConfigService', 'Rolled back configuration', {
         from: currentConfig.version,

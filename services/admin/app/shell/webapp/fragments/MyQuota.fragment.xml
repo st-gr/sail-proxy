@@ -1,0 +1,25 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.f">
+    <f:Card id="myQuotaCard" width="28rem" class="sapUiMediumMarginTop" visible="{quota>/available}">
+        <f:header>
+            <card:Header xmlns:card="sap.f.cards" title="My quota" subtitle="Consumption against your limits (UTC calendar windows)" iconSrc="sap-icon://measuring-point"/>
+        </f:header>
+        <f:content>
+            <!-- The card content is a flex row, so a VBox without a width shrinks to its longest row. -->
+            <VBox width="100%" class="sapUiSmallMargin">
+                <MessageStrip id="myQuotaDeactivated" text="{quota>/statusText}" type="Error" showIcon="true" visible="{quota>/deactivated}" class="sapUiSmallMarginBottom"/>
+                <VBox id="myQuotaRows" items="{quota>/rows}">
+                    <VBox class="sapUiTinyMarginBottom">
+                        <!-- K: without a width the box shrinks to its content, so SpaceBetween has
+                             nothing to space and the value ends up against the label
+                             ("Requests this minute0 / unlimited"). -->
+                        <HBox width="100%" justifyContent="SpaceBetween">
+                            <Label text="{quota>label}"/>
+                            <Text text="{quota>used} / {quota>limit}"/>
+                        </HBox>
+                        <ProgressIndicator percentValue="{quota>percent}" state="{quota>state}" showValue="false" visible="{= !${quota>unlimited} }" height="0.75rem"/>
+                    </VBox>
+                </VBox>
+            </VBox>
+        </f:content>
+    </f:Card>
+</core:FragmentDefinition>

@@ -1,0 +1,6 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+  <SelectDialog id="catalogPicker" title="{i18n>addToCatalog}" noDataText="You have no catalog you may edit. Create one under Entitlements &amp; Quotas." multiSelect="false"
+    items="{path: '/ModelCatalogs', parameters: {$filter: 'isDefault eq false'}, sorter: {path: 'name'}}" confirm=".onCatalogPicked" cancel=".onCatalogPickCancel" search=".onCatalogPickSearch">
+    <StandardListItem title="{name}" description="{= ${ownerEmail} || 'admin catalog'}" type="Active"/>
+  </SelectDialog>
+</core:FragmentDefinition>

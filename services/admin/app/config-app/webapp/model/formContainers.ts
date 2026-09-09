@@ -591,10 +591,10 @@ export function containerAffordances(options: {
 /**
  * The keys a map container carries that no declared section already shows, in document order.
  *
- * Only `providers` has both: its schema names the five providers the gateway itself reads as real
+ * Only `providers` has both: its schema names the six providers the gateway itself reads as real
  * `properties` (so each renders as its own titled panel with its own descriptions) and accepts any
  * other key through `additionalProperties`. Before this, such a key rendered nowhere at all - the
- * tab shell enumerates a group's declared sections - so a sixth provider in the document was
+ * tab shell enumerates a group's declared sections - so an UNDECLARED provider in the document was
  * invisible in the form while sitting in the JSON editor. It is also what a newly added provider is,
  * one second after the [+] dialog closes, which is why the two cases are one function.
  */
@@ -646,7 +646,7 @@ export interface MapSectionEntry {
  * Every entry a map section shows, in the order it shows them: the schema's own declared keys first,
  * in their declared order, then whatever else the document carries.
  *
- * Only `providers` has both kinds. Its schema names the five providers the gateway itself reads as
+ * Only `providers` has both kinds. Its schema names the six providers the gateway itself reads as
  * real `properties` - so each renders as its own titled panel with its own descriptions, built from
  * its own schema rather than from the generic entry schema - and accepts any other key through
  * `additionalProperties`.

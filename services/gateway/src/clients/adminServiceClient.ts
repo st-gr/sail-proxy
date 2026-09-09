@@ -59,20 +59,42 @@ export interface UnifiedValidationResponse {
   };
 }
 
+/** Caller's model entitlement, computed by the admin from the owner's catalog assignment. */
+export interface EntitlementBlock {
+  catalogId: string;
+  catalogName: string;
+  mode: 'all' | 'list';
+  exclude?: string[];
+  include?: string[];
+}
+
+/** The owner's status, roles and effective quota limits, computed by the admin (spec §2). null = unlimited. */
+export interface UserBlock {
+  email: string;
+  status: 'active' | 'deactivated';
+  roles: string[];
+  limits: {
+    requestsPerMinute: number | null; spendPerDay: number | null; spendPerWeek: number | null; spendPerMonth: number | null;
+    tokensPerDay: number | null; tokensPerWeek: number | null; tokensPerMonth: number | null;
+  };
+}
+
 export interface ApiKeyValidationData {
   keyId: string;
   name: string;
   email: string;
   permissions: string[];
   rateLimits: {
-    requestsPerMinute: number;
-    requestsPerHour: number;
-    requestsPerDay: number;
+    requestsPerMinute: number | null;
+    requestsPerHour: number | null;
+    requestsPerDay: number | null;
   };
   metadata: {
     isActive: boolean;
     lastUsed: string;
   };
+  entitlement?: EntitlementBlock;
+  user?: UserBlock;
 }
 
 export interface AwsCredentialValidationData {
@@ -83,15 +105,17 @@ export interface AwsCredentialValidationData {
   userId: string;
   permissions: string[];
   rateLimits: {
-    requestsPerMinute: number;
-    requestsPerHour: number;
-    requestsPerDay: number;
+    requestsPerMinute: number | null;
+    requestsPerHour: number | null;
+    requestsPerDay: number | null;
   };
   metadata: {
     isActive: boolean;
     lastUsed: string;
     expiresAt?: string;
   };
+  entitlement?: EntitlementBlock;
+  user?: UserBlock;
 }
 
 export interface AdminServiceHealthResponse {

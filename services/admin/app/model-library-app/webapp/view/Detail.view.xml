@@ -1,0 +1,217 @@
+<mvc:View controllerName="admin.modellibrary.controller.Detail"
+  xmlns:mvc="sap.ui.core.mvc" xmlns="sap.m" xmlns:uxap="sap.uxap" xmlns:l="sap.ui.layout" xmlns:core="sap.ui.core"
+  displayBlock="true" core:require="{ formatter: 'admin/modellibrary/model/formatter' }">
+  <uxap:ObjectPageLayout id="objectPage" showTitleInHeaderContent="true" upperCaseAnchorBar="false" busy="{viewModel>/busy}">
+    <uxap:headerTitle>
+      <uxap:ObjectPageDynamicHeaderTitle>
+        <uxap:breadcrumbs>
+          <Breadcrumbs><Link text="{i18n>appTitle}" press=".onNavBack"/></Breadcrumbs>
+        </uxap:breadcrumbs>
+        <uxap:expandedHeading>
+          <HBox alignItems="Center">
+            <Avatar src="{path: 'provider', formatter: 'formatter.providerSrc'}" initials="{path: 'provider', formatter: 'formatter.providerInitials'}" displaySize="XS" displayShape="Square" class="sapUiTinyMarginEnd"/>
+            <Title text="{displayName}" level="H1"/>
+          </HBox>
+        </uxap:expandedHeading>
+        <uxap:snappedHeading>
+          <HBox alignItems="Center">
+            <Avatar src="{path: 'provider', formatter: 'formatter.providerSrc'}" initials="{path: 'provider', formatter: 'formatter.providerInitials'}" displaySize="XS" displayShape="Square" class="sapUiTinyMarginEnd"/>
+            <Title text="{displayName}"/>
+          </HBox>
+        </uxap:snappedHeading>
+        <uxap:expandedContent><Text text="({modelId})"/></uxap:expandedContent>
+        <uxap:actions>
+          <ObjectStatus id="deployedStatus" text="{i18n>deployed}" state="Success" icon="sap-icon://cloud" class="sapUiSmallMarginEnd" visible="{viewModel>/detail/deployed}"/>
+          <Button id="deployButton" text="{i18n>deploy}" type="Emphasized" icon="sap-icon://cloud" press=".onDeploy" enabled="{= !${viewModel>/detail/deploying} }" visible="{viewModel>/detail/canDeploy}"/>
+          <Button id="refreshDetail" icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefreshDetail" visible="{viewModel>/isAdmin}"/>
+        </uxap:actions>
+      </uxap:ObjectPageDynamicHeaderTitle>
+    </uxap:headerTitle>
+    <uxap:headerContent>
+      <HBox alignItems="Center" wrap="Wrap">
+        <Label text="{i18n>version}:" class="sapUiTinyMarginEnd"/>
+        <Text id="versionText" text="{latestVersion}" class="sapUiSmallMarginEnd"/>
+        <Label text="{i18n>modelDeployments}:" class="sapUiTinyMarginEnd"/>
+        <Link id="deploymentsLink" text="{= ${viewModel>/detail/deploymentsFetched} ? ${viewModel>/detail/deployments}.length : ${i18n>fetchDeployments} }" press=".onDeploymentsLinkPress">
+          <dependents>
+            <ResponsivePopover id="deploymentsPopover" title="{parts: ['i18n>modelDeploymentsPopoverTitle', 'viewModel>/detail/deployments'], formatter: '.formatDeploymentsTitle'}" placement="Bottom" contentWidth="22rem">
+              <content>
+                <List items="{viewModel>/detail/deployments}" noDataText="{i18n>noDeploymentsYet}">
+                  <items>
+                    <CustomListItem>
+                      <HBox alignItems="Center" justifyContent="SpaceBetween" class="sapUiTinyMargin">
+                        <HBox alignItems="Center">
+                          <Text text="{viewModel>id}" class="sapUiTinyMarginEnd"/>
+                          <Button icon="sap-icon://copy" type="Transparent" tooltip="{i18n>copyDeploymentId}" press=".onCopyDeploymentId"/>
+                        </HBox>
+                        <ObjectStatus text="{viewModel>status}" state="{= ${viewModel>status} === 'RUNNING' ? 'Success' : (${viewModel>status} === 'DEAD' || ${viewModel>status} === 'STOPPED' ? 'Error' : 'Warning')}"/>
+                      </HBox>
+                    </CustomListItem>
+                  </items>
+                </List>
+              </content>
+            </ResponsivePopover>
+          </dependents>
+        </Link>
+        <Button icon="sap-icon://refresh" type="Transparent" tooltip="{i18n>refresh}" press=".onFetchDeployments" class="sapUiTinyMarginBegin"/>
+        <Text id="deploymentIdText" text="{viewModel>/detail/deploymentId}" visible="{= !!${viewModel>/detail/deploymentId} }" class="sapUiSmallMarginBegin"/>
+      </HBox>
+    </uxap:headerContent>
+    <uxap:sections>
+      <uxap:ObjectPageSection id="secMetrics" title="{i18n>sectionMetrics}" titleUppercase="false" showTitle="false">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionMetrics}" expandable="false">
+          <VBox>
+            <Title text="Safety" level="H4" class="sapUiTinyMarginBottom"/>
+            <!-- A bound aggregation takes one template, so each metric is a VBox of label + value (SAP shows them the same way). -->
+            <HBox id="safetyForm" wrap="Wrap" items="{viewModel>/detail/metrics/safety}">
+              <VBox class="sapUiLargeMarginEnd sapUiTinyMarginBottom"><Label text="{viewModel>label}"/><Text text="{viewModel>value}"/></VBox>
+            </HBox>
+            <Title text="Quality" level="H4" class="sapUiSmallMarginTop sapUiTinyMarginBottom"/>
+            <HBox id="qualityForm" wrap="Wrap" items="{viewModel>/detail/metrics/quality}">
+              <VBox class="sapUiLargeMarginEnd sapUiTinyMarginBottom"><Label text="{viewModel>label}"/><Text text="{viewModel>value}"/></VBox>
+            </HBox>
+            <Text text="No benchmark scores published for this model." visible="{= ${viewModel>/detail/metrics/safety}.length === 0 &amp;&amp; ${viewModel>/detail/metrics/quality}.length === 0}"/>
+          </VBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+      <uxap:ObjectPageSection id="secCost" title="{i18n>sectionCost}" titleUppercase="false" showTitle="false">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionCost}" expandable="false">
+          <VBox>
+            <MessageStrip id="cuFactorStrip" text="{i18n>cuFactorDefault}" type="Warning" showIcon="true" visible="{= ${viewModel>/detail/cuFactorSource} === 'default'}" class="sapUiSmallMarginBottom"/>
+            <HBox class="sapUiTinyMarginBottom" visible="{viewModel>/isAdmin}">
+              <Button id="editPriceButton" text="{i18n>editPrice}" icon="sap-icon://edit" press=".onEditPrice" class="sapUiTinyMarginEnd"/>
+              <Button id="revertPriceButton" text="{i18n>revertPrice}" icon="sap-icon://undo" press=".onRevertPrice" visible="{viewModel>/detail/hasManualPrice}"/>
+            </HBox>
+            <Table id="costTable" items="{viewModel>/detail/costRows}" inset="false">
+              <columns>
+                <Column><Text text="Direction"/></Column>
+                <Column><Text text="{= ${viewModel>/detail/hasManualPrice} ? ${i18n>yourPrice} : 'Capacity Units'}"/></Column>
+                <Column><Text text="{i18n>costFactorHeader}"/></Column>
+              </columns>
+              <items>
+                <ColumnListItem>
+                  <Text text="{viewModel>label}"/>
+                  <VBox>
+                    <ObjectNumber number="{viewModel>value}" unit="CU" emphasized="true"/>
+                    <Text text="{viewModel>bracket}" class="mlOperands"/>
+                  </VBox>
+                  <ObjectNumber number="{viewModel>factor}" visible="{= !!${viewModel>factor}}"/>
+                </ColumnListItem>
+              </items>
+            </Table>
+            <Text text="{i18n>noPrice}" visible="{= ${viewModel>/detail/costRows}.length === 0}"/>
+            <Title text="{i18n>priceHistory}" level="H4" class="sapUiSmallMarginTop sapUiTinyMarginBottom"/>
+            <Table id="priceHistory" items="{viewModel>/detail/prices}" inset="false" growing="true" growingThreshold="10">
+              <columns>
+                <Column><Text text="Valid from"/></Column><Column><Text text="Valid to"/></Column>
+                <Column><Text text="Input / 1K"/></Column><Column><Text text="Output / 1K"/></Column><Column><Text text="Source"/></Column>
+              </columns>
+              <items><ColumnListItem>
+                <Text text="{path: 'viewModel>dateFrom', type: 'sap.ui.model.type.DateTime', formatOptions: {style: 'medium'}}"/>
+                <Text text="{= ${viewModel>dateTo}.indexOf('9999') === 0 ? 'current' : ${path: 'viewModel>dateTo', type: 'sap.ui.model.type.DateTime', formatOptions: {style: 'medium'}}}"/>
+                <Text text="{viewModel>inputCost}"/><Text text="{viewModel>outputCost}"/>
+                <ObjectStatus text="{viewModel>source}" state="{= ${viewModel>source} === 'manual' ? 'Warning' : 'None'}"/>
+              </ColumnListItem></items>
+            </Table>
+          </VBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+      <uxap:ObjectPageSection id="secProperties" title="{i18n>sectionProperties}" titleUppercase="false" showTitle="false">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionProperties}" expandable="false">
+          <!-- Three columns like the reference: capabilities/streaming, modalities/context window, orchestration/llm access/provisioning. -->
+          <HBox wrap="Wrap">
+            <VBox class="sapUiLargeMarginEnd">
+              <Label text="Capabilities"/>
+              <HBox wrap="Wrap" items="{viewModel>/detail/capabilities}" class="sapUiTinyMarginBottom"><ObjectStatus text="{viewModel>}" inverted="true" state="Information" class="sapUiTinyMarginEnd sapUiTinyMarginTop"/></HBox>
+              <Label text="Streaming Support" class="sapUiTinyMarginTop"/>
+              <ObjectStatus text="{path: 'streamingSupported', targetType: 'any', formatter: 'formatter.yesNo'}" state="{= ${path:'streamingSupported',targetType:'any'} ? 'Success' : 'None'}" icon="{= ${path:'streamingSupported',targetType:'any'} ? 'sap-icon://accept' : ''}"/>
+            </VBox>
+            <VBox class="sapUiLargeMarginEnd">
+              <Label text="Supported Modalities"/>
+              <HBox wrap="Wrap" items="{viewModel>/detail/inputTypes}" class="sapUiTinyMarginBottom"><ObjectStatus text="{viewModel>}" inverted="true" state="None" class="sapUiTinyMarginEnd sapUiTinyMarginTop"/></HBox>
+              <Label text="Context Window" class="sapUiTinyMarginTop"/>
+              <Text text="{path: 'contextLength', targetType: 'any', formatter: 'formatter.contextWindow'}"/>
+            </VBox>
+            <VBox>
+              <Label text="Orchestration Enabled"/>
+              <ObjectStatus text="{path: 'orchestration', targetType: 'any', formatter: 'formatter.yesNo'}" state="{= ${path:'orchestration',targetType:'any'} ? 'Success' : 'None'}" icon="{= ${path:'orchestration',targetType:'any'} ? 'sap-icon://accept' : ''}" class="sapUiTinyMarginBottom"/>
+              <Label text="LLM Access Enabled" class="sapUiTinyMarginTop"/>
+              <ObjectStatus text="{path: 'llmAccess', targetType: 'any', formatter: 'formatter.yesNo'}" state="{= ${path:'llmAccess',targetType:'any'} ? 'Success' : 'None'}" icon="{= ${path:'llmAccess',targetType:'any'} ? 'sap-icon://accept' : ''}" class="sapUiTinyMarginBottom"/>
+              <Label text="Model Provisioning" class="sapUiTinyMarginTop"/>
+              <Text text="{provisioning}"/>
+              <Label text="Executable" class="sapUiTinyMarginTop"/>
+              <Text text="{executableId}"/>
+              <Label text="Retirement date" class="sapUiTinyMarginTop"/>
+              <Text text="{retirementDate}"/>
+            </VBox>
+          </HBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+      <uxap:ObjectPageSection id="secConfiguration" title="{i18n>sectionConfiguration}" titleUppercase="false" showTitle="false">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionConfiguration}" expandable="false">
+          <VBox>
+            <HBox justifyContent="End"><SegmentedButton selectedKey="{viewModel>/detail/configView}"><items><SegmentedButtonItem key="rows" text="Fields"/><SegmentedButtonItem key="json" text="JSON"/></items></SegmentedButton></HBox>
+            <Title text="Model override (models.overrides)" level="H4" class="sapUiTinyMarginBottom"/>
+            <Table id="overrideTable" items="{viewModel>/detail/config/overrideRows}" visible="{= ${viewModel>/detail/configView} === 'rows'}" inset="false">
+              <columns><Column><Text text="Key"/></Column><Column><Text text="Value"/></Column></columns>
+              <items><ColumnListItem><Text text="{viewModel>key}"/><Text text="{viewModel>value}"/></ColumnListItem></items>
+            </Table>
+            <FormattedText htmlText="{viewModel>/detail/config/overrideJson}" visible="{= ${viewModel>/detail/configView} === 'json'}"/>
+            <Text text="No model-specific override in the active configuration." visible="{= ${viewModel>/detail/config/overrideRows}.length === 0}"/>
+            <Title text="Provider settings (providers.{viewModel>/detail/config/providerKey})" level="H4" class="sapUiSmallMarginTop sapUiTinyMarginBottom"/>
+            <Table id="providerTable" items="{viewModel>/detail/config/providerRows}" visible="{= ${viewModel>/detail/configView} === 'rows'}" inset="false">
+              <columns><Column><Text text="Key"/></Column><Column><Text text="Value"/></Column></columns>
+              <items><ColumnListItem><Text text="{viewModel>key}"/><Text text="{viewModel>value}"/></ColumnListItem></items>
+            </Table>
+            <FormattedText htmlText="{viewModel>/detail/config/providerJson}" visible="{= ${viewModel>/detail/configView} === 'json'}"/>
+            <Text text="No provider block for this provider in the active configuration." visible="{= ${viewModel>/detail/config/providerRows}.length === 0}"/>
+          </VBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+      <uxap:ObjectPageSection id="secDeployments" title="{i18n>sectionDeployments}" titleUppercase="false" showTitle="false" visible="{viewModel>/isAdmin}">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionDeployments}" expandable="false">
+          <VBox id="deploymentsBox">
+            <HBox class="sapUiTinyMarginBottom">
+              <Button id="fetchDeploymentsButton" text="{i18n>fetchDeployments}" icon="sap-icon://synchronize" press=".onFetchDeployments"/>
+            </HBox>
+            <MessageStrip id="deployStrip" text="{viewModel>/detail/deployStatus}" type="Information" visible="{= !!${viewModel>/detail/deployStatus}}" class="sapUiTinyMarginBottom"/>
+            <Table id="deploymentsTable" items="{viewModel>/detail/deployments}" inset="false" noDataText="No deployments fetched yet.">
+              <columns><Column><Text text="Deployment"/></Column><Column><Text text="Status"/></Column><Column><Text text="Configuration"/></Column><Column><Text text="Created"/></Column></columns>
+              <items><ColumnListItem>
+                <Text text="{viewModel>id}"/>
+                <ObjectStatus text="{viewModel>status}" state="{= ${viewModel>status} === 'RUNNING' ? 'Success' : (${viewModel>status} === 'DEAD' || ${viewModel>status} === 'STOPPED' ? 'Error' : 'Warning')}"/>
+                <Text text="{viewModel>configurationName}"/><Text text="{viewModel>createdAt}"/>
+              </ColumnListItem></items>
+            </Table>
+          </VBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+      <uxap:ObjectPageSection id="secCatalogs" title="{i18n>sectionCatalogs}" titleUppercase="false" showTitle="false">
+        <uxap:subSections><uxap:ObjectPageSubSection>
+          <Panel headerText="{i18n>sectionCatalogs}" expandable="false">
+          <VBox id="catalogsBox">
+            <HBox class="sapUiTinyMarginBottom"><Button id="addToCatalogButton" text="{i18n>addToCatalog}" icon="sap-icon://add-folder" press=".onAddToCatalog"/></HBox>
+            <Table id="modelCatalogsTable" items="{viewModel>/detail/catalogs}" inset="false" noDataText="This model is in none of your catalogs.">
+              <columns><Column><Text text="Catalog"/></Column><Column><Text text="Owner"/></Column><Column width="8rem"><Text text=""/></Column></columns>
+              <items><ColumnListItem>
+                <Text text="{viewModel>name}"/><Text text="{= ${viewModel>ownerEmail} || 'admin'}"/>
+                <Button text="{i18n>removeFromCatalog}" type="Transparent" icon="sap-icon://decline" press=".onRemoveFromCatalog" visible="{viewModel>canEdit}"/>
+              </ColumnListItem></items>
+            </Table>
+          </VBox>
+          </Panel>
+        </uxap:ObjectPageSubSection></uxap:subSections>
+      </uxap:ObjectPageSection>
+    </uxap:sections>
+  </uxap:ObjectPageLayout>
+</mvc:View>

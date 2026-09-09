@@ -728,22 +728,23 @@ describe('the editability matrix, applied to a container', () => {
             .toBe(false);
     });
 
-    it('keeps a top-level map section\'s filter whatever the entry count, and Providers has five', () => {
-        // Spec 2 promised and shipped the filter on Providers, which has five declared entries; the
-        // threshold is a rule for a map INSIDE a section, not for a whole tab or a whole section
-        // whose filter row would otherwise appear and vanish as entries are added.
+    it('keeps a top-level map section\'s filter whatever the entry count, and Providers has six', () => {
+        // Spec 2 promised and shipped the filter on Providers, which now has six declared entries
+        // (google joined the original five); the threshold is a rule for a map INSIDE a section,
+        // not for a whole tab or a whole section whose filter row would otherwise appear and vanish
+        // as entries are added.
         const filterOn = (pointer: string, entryCount: number): boolean =>
             containerAffordances({ editable: true, kind: 'map', pointer, entryCount, ...handlers }).filter;
 
-        expect(Object.keys(fixture().api_config.providers)).toHaveLength(6);
-        expect(groupSections(apiConfigSchema, 'providers')).toHaveLength(5);
-        expect(filterOn(PROVIDERS_POINTER, 5)).toBe(true);
+        expect(Object.keys(fixture().api_config.providers)).toHaveLength(7);
+        expect(groupSections(apiConfigSchema, 'providers')).toHaveLength(6);
+        expect(filterOn(PROVIDERS_POINTER, 6)).toBe(true);
         for (const pointer of [MODEL_OVERRIDES_POINTER, '/api_config/hooks/definitions', '/api_config/hooks/defaults']) {
             expect(filterOn(pointer, 0)).toBe(true);
             expect(isTopLevelContainer(pointer)).toBe(true);
         }
-        // ... and a nested map with the same five entries has none.
-        expect(filterOn(NESTED, 5)).toBe(false);
+        // ... and a nested map with the same six entries has none.
+        expect(filterOn(NESTED, 6)).toBe(false);
         expect(isTopLevelContainer(NESTED)).toBe(false);
     });
 
@@ -782,7 +783,7 @@ describe('the editability matrix, applied to a container', () => {
 });
 
 describe('the entries one map section shows', () => {
-    it('shows the schema\'s five declared providers first, then whatever else the document carries', () => {
+    it('shows the schema\'s six declared providers first, then whatever else the document carries', () => {
         const declared = groupSections(apiConfigSchema, 'providers');
         const entries = mapSectionEntries({
             spec: providers(),

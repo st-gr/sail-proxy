@@ -1,4 +1,4 @@
-import { applyDescriptor, buildDescriptors, documentOrderedKeys, mapEntriesOf, mapNodesOf } from '../webapp/model/schemaForm';
+import { applyDescriptor, buildDescriptors, documentOrderedKeys, mapEntriesOf, mapNodesOf, narrowType } from '../webapp/model/schemaForm';
 import { registerPlugin, clearPlugins, pluginFor } from '../webapp/model/formPlugins';
 import apiConfigSchema, { siemSchemaDef } from '../webapp/model/apiConfigSchema';
 import { groupSections, resolveGroupSchema } from '../webapp/model/apiConfigGroups';
@@ -1064,5 +1064,95 @@ describe('the order the form shows an object\'s keys in', () => {
     );
     expect(JSON.stringify(write(descriptors.slice().reverse()))).toBe(JSON.stringify(write(descriptors)));
     expect(write(descriptors)).toEqual(wrapAt('/api_config/observability/siem', siemData));
+  });
+});
+
+/**
+ * A leaf whose schema `type` is a union with `"null"` in it - every `platform.quotas.*` field
+ * (null = unlimited) and `platform.maintenance.dailyRunAtUtc` (null = no fixed time).
+ *
+ * These rendered as JSON blobs: `narrowType` picked the union member the DATA matched, and for
+ * data that is `null` that member is `"null"` - a type no rule below it renders, so Rule 6
+ * degraded the whole leaf to `raw` ("Unsupported schema shape (type: \"null\")"). The union's
+ * `"null"` says the field may be EMPTY, not that it has a type of its own, so it is dropped from
+ * the candidates whenever another member is left and carried on the descriptor as `nullable`
+ * instead - which is what lets the control offer an empty state and write `null` back.
+ */
+describe('schemaForm - a nullable scalar (a type union with "null")', () => {
+  beforeEach(() => clearPlugins());
+
+  const quotasSection = () => groupSections(apiConfigSchema, 'platform').find(s => s.key === 'quotas')!;
+  const maintenanceSection = () => groupSections(apiConfigSchema, 'platform').find(s => s.key === 'maintenance')!;
+
+  it('renders every platform.quotas field as a nullable number, not as JSON', () => {
+    const section = quotasSection();
+    const data = {
+      requestsPerMinute: null, spendPerDay: null, spendPerWeek: null, spendPerMonth: null,
+      tokensPerDay: null, tokensPerWeek: null, tokensPerMonth: null
+    };
+    const descriptors = buildDescriptors(section.schema as object, data, section.pointer, pluginFor) as
+      Array<{ kind: string; pointer: string; value: unknown; integer?: boolean; nullable?: boolean; minimum?: number }>;
+
+    expect(descriptors.length).toBe(7);
+    expect(descriptors.filter(d => d.kind !== 'number')).toEqual([]);
+    expect(descriptors.every(d => d.nullable === true)).toBe(true);
+    expect(descriptors.every(d => d.value === null)).toBe(true);
+    // `integer` stays the type the schema DECLARED: a token or request count is a whole number,
+    // a spend is not.
+    expect(descriptors.filter(d => d.integer).map(d => d.pointer)).toEqual([
+      '/api_config/platform/quotas/requestsPerMinute',
+      '/api_config/platform/quotas/tokensPerDay',
+      '/api_config/platform/quotas/tokensPerWeek',
+      '/api_config/platform/quotas/tokensPerMonth'
+    ]);
+    expect(descriptors.every(d => d.minimum === 0)).toBe(true);
+  });
+
+  it('keeps a set quota a plain number field', () => {
+    const section = quotasSection();
+    const descriptors = buildDescriptors(section.schema as object, { tokensPerDay: 1000 }, section.pointer, pluginFor);
+
+    expect(descriptors.find(d => d.pointer === '/api_config/platform/quotas/tokensPerDay')).toMatchObject({
+      kind: 'number', value: 1000, integer: true, nullable: true
+    });
+  });
+
+  it('renders the unset maintenance time as an empty nullable text field, pattern kept', () => {
+    const section = maintenanceSection();
+    const descriptors = buildDescriptors(section.schema as object, { dailyRunAtUtc: null }, section.pointer, pluginFor);
+
+    expect(descriptors.length).toBe(1);
+    expect(descriptors[0]).toMatchObject({
+      kind: 'text',
+      pointer: '/api_config/platform/maintenance/dailyRunAtUtc',
+      label: 'Daily Run At (UTC)',
+      // The control's value is a string, so an empty field is the empty string; `nullable` is what
+      // sends `null` - not "" - back into the document when it is cleared.
+      value: '',
+      nullable: true,
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    });
+    expect(Object.keys(descriptors[0]).sort()).toEqual(
+      ['description', 'kind', 'label', 'nullable', 'pattern', 'pointer', 'value'].sort()
+    );
+  });
+
+  it('leaves a non-nullable leaf without the marker', () => {
+    const schema = { type: 'object', properties: { retries: { type: 'integer' }, name: { type: 'string' } } };
+    const descriptors = buildDescriptors(schema, { retries: 2, name: 'x' }, '/root', pluginFor);
+
+    for (const descriptor of descriptors) {
+      expect(Object.prototype.hasOwnProperty.call(descriptor, 'nullable')).toBe(false);
+    }
+  });
+
+  it('narrows a union to the member that is not "null"', () => {
+    expect(narrowType(['integer', 'null'], null)).toBe('integer');
+    expect(narrowType(['string', 'null'], 'x')).toBe('string');
+    // Nothing else is left to render it as, so a type that is ONLY null still reads as null.
+    expect(narrowType(['null'], null)).toBe('null');
+    // A union with no null member narrows by the data, exactly as it did.
+    expect(narrowType(['string', 'number'], 512)).toBe('number');
+    expect(narrowType(['string', 'number'], undefined)).toBe('string');
   });
 });

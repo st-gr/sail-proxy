@@ -1,4 +1,5 @@
 using { cuid, managed, temporal } from '@sap/cds/common';
+using { sap.llm.gateway.admin.AwsCredentials as AwsCredentials } from './aws-credentials';
 
 namespace sap.llm.gateway.admin;
 
@@ -23,12 +24,19 @@ entity ApiKeys : cuid, managed {
   deletedAt   : Timestamp;            // Soft delete timestamp
   expiresAt   : Timestamp;            // Admin-managed expiration; null while neverExpires is set
   neverExpires : Boolean default false; // Admin-only: the key never expires; clears expiresAt
+  lockedByUserDeactivation : Boolean default false; // set by user deactivation; only these rows are restored on reactivation
 
   // Field control for the Fiori apps (1=ReadOnly, 3=Editable, 7=Mandatory), set per caller role
   // in afterReadLifecycleFieldControl; never persisted.
   virtual isActiveFC     : Integer;
   virtual expiresAtFC    : Integer;
   virtual neverExpiresFC : Integer;
+
+  // Per-credential rate limits (RateLimits row by apiKey_ID / awsCredential_ID), shown read-only in the
+  // apps and changed only through setRateLimits; filled in afterReadRateLimits. Never persisted here.
+  virtual requestsPerMinute : Integer;
+  virtual requestsPerHour   : Integer;
+  virtual requestsPerDay    : Integer;
 
   // Rate limiting configuration
   rateLimits  : Composition of one RateLimits;
@@ -48,6 +56,7 @@ entity ApiKeys : cuid, managed {
  */
 entity RateLimits : cuid {
   apiKey              : Association to ApiKeys;
+  awsCredential       : Association to AwsCredentials;   // per-credential limits for the SigV4 route (setRateLimits)
   requestsPerMinute   : Integer default 60;
   requestsPerHour     : Integer default 1000;
   requestsPerDay      : Integer default 10000;
@@ -290,6 +299,7 @@ entity ModelCosts : cuid, managed {
   provider      : String(50);              // Model provider (Anthropic, OpenAI, etc.)
   version       : String(50);              // Model version/name
   complexCost   : LargeString;             // JSON cost structure for tiered pricing (null for simple cost models)
+  source        : String(8) default 'sap';      // sap | manual — manual rows are never closed by the gateway refresh
 
   // Audit fields provided by managed aspect
 };

@@ -129,27 +129,52 @@ sail-proxy apikey create --name "replacement-key"
 
 #### Rate Limiting Issues
 
-**Rate Limit Exceeded**:
+**Rate limit exceeded** (`429`), refused before the request reaches the model — a key's own limit
+or a user's requests-per-minute limit:
 ```json
 {
   "error": {
-    "message": "Rate limit exceeded. Try again in 1 hour.",
-    "type": "rate_limit_error",
-    "code": "rate_limit_exceeded"
+    "type": "rate_limit_exceeded",
+    "scope": "key",
+    "dimension": "requests",
+    "window": "minute",
+    "limit": 60,
+    "used": 61,
+    "resets_at": "2025-01-28T14:23:00.000Z"
+  }
+}
+```
+`scope` is `key` (that credential's own minute/hour/day limit) or `user` (the requests-per-minute
+limit on the account, on top of any key limit). `resets_at` is when the window this limit tracks
+starts over; the response also carries a `Retry-After` header with the same information in seconds.
+
+**Quota exceeded** (`429`) — a user's spend or token limit for the day, week or month:
+```json
+{
+  "error": {
+    "type": "quota_exceeded",
+    "scope": "user",
+    "dimension": "spend",
+    "window": "month",
+    "limit": 50,
+    "used": 50,
+    "resets_at": "2025-02-01T00:00:00.000Z"
   }
 }
 ```
 
-**Solutions**:
-```bash
-# Check current rate limits (CLI)
-sail-proxy apikey list
-
-# Monitor usage in real-time
-sail-proxy logs --follow | grep "rate_limit"
-
-# Request rate limit increase from Administrator
+**Account deactivated** (`401`) — an administrator has deactivated the account:
+```json
+{
+  "error": {
+    "type": "user_deactivated",
+    "message": "This user account is deactivated"
+  }
+}
 ```
+
+**Where to look**: administrators see every user's constraints and current usage in the Admin
+Cockpit under Users & Quotas; a user sees their own consumption on the home page.
 
 #### OAuth2 Authentication Issues (Docker)
 

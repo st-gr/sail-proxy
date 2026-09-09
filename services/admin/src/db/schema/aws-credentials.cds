@@ -27,12 +27,19 @@ entity AwsCredentials : cuid, managed {
   usageCount        : Integer default 0;
   expiresAt         : Timestamp;                   // Optional expiration; null while neverExpires is set
   neverExpires      : Boolean default false;       // Admin-only: the credential never expires; clears expiresAt
+  lockedByUserDeactivation : Boolean default false; // set by user deactivation; only these rows are restored on reactivation
 
   // Field control for the Fiori apps (1=ReadOnly, 3=Editable, 7=Mandatory), set per caller role
   // in afterReadLifecycleFieldControl; never persisted.
   virtual isActiveFC     : Integer;
   virtual expiresAtFC    : Integer;
   virtual neverExpiresFC : Integer;
+
+  // Per-credential rate limits (RateLimits row by apiKey_ID / awsCredential_ID), shown read-only in the
+  // apps and changed only through setRateLimits; filled in afterReadRateLimits. Never persisted here.
+  virtual requestsPerMinute : Integer;
+  virtual requestsPerHour   : Integer;
+  virtual requestsPerDay    : Integer;
 
   // AWS region configuration
   region            : String(20) default 'us-east-1';

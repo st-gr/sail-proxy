@@ -129,9 +129,9 @@ export function buildTabs(opts: BuildTabsOptions): IconTabBar {
  * test can actually call is the same one this function calls.
  *
  * A group that is itself a dynamically-keyed map takes the map path instead. `providers` is the
- * only one: its schema names five providers as real `properties` *and* accepts any other key
+ * only one: its schema names six providers as real `properties` *and* accepts any other key
  * through `additionalProperties`, so its panel list is a map's entry list that happens to have
- * five entries the schema can title and describe. Whether a group or a section IS a map is asked of
+ * six entries the schema can title and describe. Whether a group or a section IS a map is asked of
  * the schema (`mapEntriesOf`), never of a registry of pointers - which is what lets every other map
  * in the document have the same affordances these two have always had.
  */

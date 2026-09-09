@@ -7,12 +7,12 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { 
-  SecurityEvent, 
-  SecurityEventBatch, 
+import {
+  SecurityEvent,
+  SecurityEventBatch,
   SecurityEventEmitterConfig,
   FailedAuthEventData,
-  RateLimitEventData,
+  QuotaExceededEventData,
   SecurityEventType,
   SecurityEventSeverity,
   SecurityEventAction,
@@ -252,38 +252,78 @@ class SecurityEventEmitter {
     await this.emit(event);
   }
 
-  /**
-   * Create and emit a rate limit exceeded event
-   */
-  public async emitRateLimitExceeded(data: RateLimitEventData): Promise<void> {
-    const event: SecurityEvent = {
+  /** Inference refused because the model is outside the caller's entitlement catalog (spec section 5). */
+  public async emitModelNotEntitled(data: {
+    credentialId: string; authType: 'api_key' | 'aws_credential'; model: string; catalog: string; catalogId?: string;
+    clientIP?: string; userAgent?: string; endpoint?: string; method?: string; requestId?: string;
+  }): Promise<void> {
+    await this.emit({
       eventId: uuidv4(),
       credentialId: data.credentialId,
-      credentialHint: data.credentialHint,
-      credentialMaterial: data.credentialMaterial,
       authType: data.authType,
-      eventType: SecurityEventType.RATE_LIMIT_EXCEEDED,
-      severity: SecurityEventSeverity.HIGH,
-      description: `Rate limit exceeded: ${data.limitType} (${data.currentCount}/${data.maxAllowed} in ${data.windowSize})`,
+      eventType: SecurityEventType.MODEL_NOT_ENTITLED,
+      severity: SecurityEventSeverity.MEDIUM,
+      description: `Model ${data.model} refused: not in entitlement catalog "${data.catalog}"`,
       timestamp: new Date().toISOString(),
       clientIP: data.clientIP,
       userAgent: data.userAgent,
       endpoint: data.endpoint,
       method: data.method,
       requestId: data.requestId,
-      statusCode: data.statusCode || 429,
-      actionTaken: SecurityEventAction.THROTTLED,
-      autoBlocked: true,
+      statusCode: 403,
+      actionTaken: SecurityEventAction.BLOCKED,
       source: 'gateway',
-      metadata: {
-        limitType: data.limitType,
-        currentCount: data.currentCount,
-        maxAllowed: data.maxAllowed,
-        windowSize: data.windowSize
-      }
-    };
+      metadata: { model: data.model, catalog: data.catalog, catalogId: data.catalogId }
+    });
+  }
 
-    await this.emit(event);
+  /** A deployment was created through the gateway's admin endpoint (Task 11). */
+  public async emitDeploymentCreated(data: {
+    credentialId: string; model: string; deploymentId: string; configurationId: string; reusedConfiguration: boolean;
+    clientIP?: string; userAgent?: string; endpoint?: string; requestId?: string;
+  }): Promise<void> {
+    await this.emit({
+      eventId: uuidv4(),
+      credentialId: data.credentialId,
+      authType: 'api_key',
+      eventType: SecurityEventType.DEPLOYMENT_CREATED,
+      severity: SecurityEventSeverity.MEDIUM,
+      description: `Deployment ${data.deploymentId} created for ${data.model}`,
+      timestamp: new Date().toISOString(),
+      clientIP: data.clientIP,
+      userAgent: data.userAgent,
+      endpoint: data.endpoint,
+      method: 'POST',
+      requestId: data.requestId,
+      statusCode: 201,
+      actionTaken: SecurityEventAction.LOGGED,
+      source: 'gateway',
+      metadata: { model: data.model, deploymentId: data.deploymentId, configurationId: data.configurationId, reusedConfiguration: data.reusedConfiguration }
+    });
+  }
+
+  /** A request refused by quotaEnforcement (spec §2): user- or key-scoped requests, tokens or spend. */
+  public async emitQuotaExceeded(data: QuotaExceededEventData): Promise<void> {
+    await this.emit({
+      eventId: uuidv4(), credentialId: data.credentialId, authType: data.authType,
+      eventType: SecurityEventType.QUOTA_EXCEEDED, severity: SecurityEventSeverity.HIGH,
+      description: `Quota exceeded: ${data.scope} ${data.dimension} per ${data.window} (${data.used}/${data.limit})`,
+      timestamp: new Date().toISOString(),
+      clientIP: data.clientIP, userAgent: data.userAgent, endpoint: data.endpoint, method: data.method, requestId: data.requestId,
+      statusCode: 429, actionTaken: SecurityEventAction.THROTTLED, autoBlocked: true, source: 'gateway',
+      metadata: { ownerEmail: data.ownerEmail, scope: data.scope, dimension: data.dimension, window: data.window, limit: data.limit, used: data.used }
+    });
+  }
+
+  /** Quota decisions could not be made (store unreachable) and the gateway failed open — one per pod per five minutes. */
+  public async emitQuotaUnenforced(data: { reason: string; clientIP?: string; endpoint?: string; requestId?: string }): Promise<void> {
+    await this.emit({
+      eventId: uuidv4(), credentialId: 'gateway', authType: 'api_key',
+      eventType: SecurityEventType.QUOTA_UNENFORCED, severity: SecurityEventSeverity.MEDIUM,
+      description: `Quota enforcement degraded: ${data.reason}`, timestamp: new Date().toISOString(),
+      clientIP: data.clientIP, endpoint: data.endpoint, requestId: data.requestId,
+      statusCode: 200, actionTaken: SecurityEventAction.MONITORED, source: 'gateway', metadata: { reason: data.reason }
+    });
   }
 }
 

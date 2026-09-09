@@ -40,7 +40,7 @@ Roles are supplied by your identity provider and evaluated as CDS `@restrict` ru
 
 ### The Applications
 
-The cockpit shell hosts five applications:
+The cockpit shell hosts eight applications:
 
 | Application | Purpose |
 |---|---|
@@ -48,7 +48,15 @@ The cockpit shell hosts five applications:
 | AWS Credentials | Issue and manage SigV4 credentials for the Bedrock-compatible route |
 | Usage Analytics | Request, token and latency statistics by provider and model |
 | Security Notifications | Review, snooze, pin and dismiss security notifications |
+| Model Library | Browse the models available through the gateway, their specifications, benchmarks and token prices; administrators maintain prices and create deployments |
+| Entitlements & Quotas | Define which models a user may use (catalogs) and how much they may use (quota profiles): a default catalog for everyone, administrator catalogs and quota profiles assigned per user, and personal catalogs within the assigned one |
+| Users & Quotas | Administrators constrain, deactivate and reactivate users and reset their quotas; usage per day, week and month next to the limit |
 | Configuration | Versioned gateway configuration with activation and rollback |
+
+The home page shows this month's key metrics as tiles — requests, tokens and SAP cost in the billing
+currency, for your own usage or, as an administrator, for every user (plus the number of users with
+usage) — each opening Usage Analytics, and a "My quota" card with the signed-in user's own
+consumption against their limits.
 
 ### API Key Management
 
@@ -120,15 +128,11 @@ own keys.
 
 #### Rate Limiting
 
-Each key has an associated rate limit record:
-
-- Requests per minute (default 60)
-- Requests per hour (default 1000)
-- Requests per day (default 10000)
-- Requests per month (default 100000)
-- Burst limit (default 10)
-
-Additional named time windows can be defined per key, each with its own duration and request limit — for example a `startup_burst` window.
+Each key (and each AWS credential) carries its own requests-per-minute, -hour and -day limit,
+enforced by the gateway. The owner or an administrator sets these with "Set Rate Limits" on the
+key or credential; clearing a value removes that limit. A user-level requests-per-minute limit
+applies in addition — see [Users & Quotas](#users--quotas) — so a request has to pass both the
+key's limit and the user's.
 
 #### Permissions
 
@@ -163,7 +167,8 @@ The secret is shown once at creation and once again after a rotation.
   active credential — an inactive one must be re-enabled first, by an administrator; this differs
   from API keys, where an administrator can refresh an inactive key directly.
 - **Enable / Disable**: control whether the credential is accepted
-- **Delete**: remove the credential
+- **Delete**: remove the credential; the usage it produced stays on record and keeps counting
+  against the owner's quota
 - **IP restrictions**: restrict a credential to given source addresses
 - **Permissions**: restrict what the credential may do
 
@@ -212,6 +217,141 @@ The Security Notifications application presents security notifications raised by
 - Bulk mark-seen and bulk delete across selected notifications
 
 Each user sees their own notification state.
+
+Each notification shows the client IP, user agent, endpoint and request ID of the event it reports.
+Whether the IP is the caller's or the proxy's depends on the `trust_forwarded_for` platform setting
+(Configuration Management → Platform → Security).
+
+### Model Library and Entitlements & Quotas
+
+**Model Library** (Models → Model Library) shows the models the gateway currently offers, as SAP AI
+Core publishes them. Every user sees the models in their entitlement; administrators see all.
+
+- **Filter pane.** Provider, capabilities (one at a time), input types, model provisioning (SAP
+  Hosted, SAP Managed, Remote), access type (LLM Access, Orchestration) and the switches *Latest
+  Version Only*, *Streaming Support* and *Show Deployments*. Every group has its own reset, and the
+  active settings appear as removable tokens above the cards. The search box matches names and
+  identifiers.
+- **Card badges.** A card is marked *Deployed* when the model has a deployment of its own,
+  *Deployment* when the card is that deployment's entry (visible with *Show Deployments* on), and
+  *Retires <date>* when SAP has announced a retirement date for the model. A model SAP AI Core
+  offers only through a deployment of its own is marked *Deployment only*: the gateway cannot call
+  it by name, but once deployed it answers under its `--deployed` id. *Not callable* marks the rare
+  model SAP allows neither way.
+- **Modes.** *Catalog* shows one card per model; *Leaderboard* lists published benchmark scores;
+  *Chart* plots two benchmarks against each other — choose the axes above the chart. Leaderboard and
+  chart always list foundation models, never their deployments, which carry the same scores.
+- **Model details.** Metrics (safety and quality benchmarks), Cost, Properties, Configuration (the
+  model's and its provider's settings in the active gateway configuration), Deployments and Catalogs.
+- **Cost.** Prices are shown in SAP capacity units per million tokens, with the published price per
+  thousand tokens and the conversion factor in brackets so you can see how the figure is derived. When
+  no conversion factor is configured, a warning says the SAP default is used. Administrators can *Edit
+  price* to override a published price and *Revert to SAP price* at any time; the price history lists
+  every change.
+- **Deployments** (administrators). *Fetch Deployments* lists the model's SAP AI Core deployments.
+  *Deploy* creates one: it reuses an existing configuration or creates one, starts the deployment and
+  waits up to five minutes for it to run. Deployments incur cost until they are stopped in the SAP AI
+  Launchpad.
+- **Refresh** (administrators) re-reads the model list from the gateway.
+
+**Entitlements & Quotas** (Models → Entitlements & Quotas) decides which models a user may call and
+how much they may use. A switch at the top of the list chooses between **Catalogs** and **Quota
+profiles**.
+
+**Catalogs** decide which models a user may call through the gateway. The gateway lists only entitled
+models on `/v1/models` and refuses requests for other models.
+
+- The **Default** catalog applies to everyone without an assignment. It contains every model unless an
+  administrator excludes it (*Exclusions* tab). New models published by SAP are entitled automatically
+  until excluded.
+- Every change to a catalog — its **name and description**, the **models** in it, the Default
+  catalog's **exclusions** and the user **assignments** — is collected and written together with
+  *Save*; *Discard* drops all of it. A model or user changed but not yet saved is marked as such in
+  its row, the footer counts the unsaved changes, and leaving a catalog with unsaved changes asks
+  before dropping them. If part of a save is refused, what was refused stays marked unsaved with the
+  reason; the rest is written.
+- Administrators create catalogs over all models and **assign** one to a user (*Assignments* tab);
+  the assignment takes effect on *Save*. Re-assigning a user trims their personal catalogs to the new
+  catalog. Select several users and use *Assign to this catalog* or *Unassign* to change them
+  together; the search box narrows the list by e-mail or assigned catalog.
+- Every user can create personal catalogs within their assigned catalog: *Add models* offers only
+  models the assigned catalog contains. Removing a model from a parent catalog also removes it from
+  the catalogs below it.
+- The Default catalog cannot be deleted. A catalog that is assigned to a user or has child catalogs
+  cannot be deleted until those are reassigned or removed.
+
+**Quota profiles** decide how much a user may use. A profile is a named set of seven limits —
+requests per minute; tokens per day, week and month; and spend per day, week and month — that an
+administrator assigns to a user. A user's effective limit for each of the seven values is, in order:
+their own constraint if one is set, else the assigned profile's value, else the platform default from
+the configuration, else unlimited. An administrator can still set a user's own constraint above the
+assigned profile.
+
+- A profile carries a **name**, a **description** and the seven limits; the *Assignments* tab assigns
+  it to users. As with catalogs, every change — name, limits, assignments — is collected and written
+  together with *Save*, and *Discard* drops it; leaving a profile with unsaved changes asks first. An
+  assignment marked **(unsaved)** does not take effect until *Save*.
+- Deleting a profile that still has users assigned is refused, naming them; reassign or unassign those
+  users first.
+- The first time the cockpit starts with no profiles, it creates three starter profiles:
+
+  | Profile | Requests/min | Tokens/day | Tokens/week | Tokens/month | Spend/day | Spend/week | Spend/month |
+  |---|---|---|---|---|---|---|---|
+  | Light | 30 | 500,000 | 2,000,000 | 5,000,000 | 25 | 75 | 150 |
+  | Standard | 60 | 5,000,000 | 20,000,000 | 60,000,000 | 250 | 1,000 | 3,000 |
+  | Power | 200 | 25,000,000 | 100,000,000 | 300,000,000 | 1,500 | 6,000 | 12,000 |
+
+  Spend figures are in the billing currency shown on the page. These three are starting points
+  derived from a real deployment's usage, meant to be tuned from the home tiles and Usage Analytics
+  once you see your own traffic. After that first creation they are ordinary profiles like any other
+  you create yourself — edit or delete them freely. If all three are ever deleted, they are created
+  again the next time the cockpit starts.
+
+### Users & Quotas
+
+Administrators use this application to see and manage every user's quota consumption and account
+status.
+
+**List**: sorted by last seen, showing e-mail, display name, status, last seen, and tokens and spend
+this month against the limit. Spend figures and spend limits carry the currency of the SAP capacity
+unit price and are shown with that currency's decimals. Select one or more rows and choose
+**Reset Quota** to reset them together.
+
+A token figure or token limit on this page always means input, output and cache-write tokens.
+Cache-read tokens are priced — they count toward spend — but are never counted toward a token limit
+or a token usage figure. If a token figure here reads lower than it used to for the same activity,
+this is why.
+
+**Object page**:
+
+- **Constraints** — the user's own limits, grouped as *Requests*, *Tokens* and *Spend*. Under each
+  field a **Default** line shows what applies while the field above it is empty, and where that value
+  comes from — for example "(Standard profile)" when the assigned quota profile supplies it,
+  "(platform)" when the platform-wide default supplies it, or "unlimited" when neither applies. An
+  administrator can still set a user's own value above the assigned profile. Within tokens and within
+  spend the windows have to be ordered — a day's limit cannot be higher than a week's, nor a week's
+  higher than a month's — and a save that breaks the order is refused with a message naming the two
+  fields.
+- **Usage** — used, limit and remaining for each window (requests per minute; tokens and spend per
+  day, week and month), with when each window resets. The limit shown here is the same effective
+  limit as under Constraints, and its source can now be the user's own constraint, an assigned quota
+  profile, or the platform default. The figures are kept as running counters and update within about
+  a minute of a request; "requests" counts requests served by the gateway.
+- **API Keys** and **AWS Credentials** — the user's credentials, read-only here: whether each is
+  active or locked because the account was deactivated, and its own rate limits.
+- **Entitlement** — the quota profile and the catalog assigned to the user, both read-only here.
+  Change the quota profile from Entitlements & Quotas' *Quota profiles* mode, *Assignments* tab;
+  change the catalog from its *Catalogs* mode, *Assignments* tab.
+- **Record** — when the user was first and last seen.
+
+**Actions**:
+
+- **Deactivate** asks for a reason, then locks every active credential of the user and blocks new
+  credentials from being created for them.
+- **Reactivate** restores exactly the credentials that Deactivate locked.
+- **Reset Quota** clears the user's recorded usage.
+
+A deactivated user cannot receive new credentials until the account is reactivated.
 
 ### Configuration Management
 
@@ -269,10 +409,12 @@ schema allows, numbers as numeric fields carrying their own minimum and maximum,
 switches. A value that genuinely cannot be represented as a typed control is shown as JSON in place,
 with a notice saying why, rather than being silently dropped.
 
-**Provider panels.** Each of the five providers the gateway reads — Anthropic, AWS Bedrock, Openai,
-Openrouter, Perplexity — shows only the settings its own request path reads, not the union of all
-five. Six are common to every provider: Emulate Streaming For Models, Substitute Models, Unsupported
-Params, Param Renames, Supports Responses API and Supports Prompt Caching. Anthropic Bedrock Version,
+**Provider panels.** Each of the six providers the gateway reads — Anthropic, AWS Bedrock, Google,
+Openai, Openrouter, Perplexity — shows only the settings its own request path reads, not the union of
+all six. Six settings are common to most providers: Emulate Streaming For Models, Substitute Models,
+Unsupported Params, Param Renames, Supports Responses API and Supports Prompt Caching. **Google** is
+the exception and the narrowest panel: it holds Substitute Models alone, because that is the only one
+its route reads. Anthropic Bedrock Version,
 Excluded Beta Headers and Supported Beta Headers appear on **Anthropic** and **AWS Bedrock** only,
 because only the Anthropic request path reads them; Openai adds its Azure api-version, Openrouter its
 fallback prices and model mappings. A setting written under a provider that does not read it is
@@ -406,6 +548,27 @@ the rest are gaps in the form itself, each with the JSON editor as its way round
 - The **JSON / Form** toggle lives in the detail page's title bar and is not reachable below roughly
   **600 px** of viewport width — on a phone the detail page offers the JSON editor only, and no
   overflow control exposes the toggle. The form is a desktop and tablet affordance.
+
+#### Daily Maintenance Run
+
+Once a day the service corrects the recorded cost of recent usage, rebuilds the usage figures the
+quota checks read, and refreshes every user's quota status. Left alone, that run starts five minutes
+after the service starts and repeats every 24 hours from then — so a deployment at midday pins the
+heaviest job of the day to the middle of the working day, until the next restart moves it again.
+
+**Platform → Maintenance → Daily Run At (UTC)** fixes the time of day instead. Enter a 24-hour time
+as `HH:MM` — `02:30`, `23:00`. The first run after a start still happens five minutes in, because
+that is the pass that repairs whatever was missed while the service was down; every run after it
+starts at the time you entered.
+
+The value is UTC and is never adjusted for daylight saving. To run at midnight Pacific Time, enter
+`08:00` while Pacific Standard Time is in effect (UTC-8), or `07:00` during Pacific Daylight Time
+(UTC-7), and change it when the clocks change.
+
+Leave the field empty for the default: a run five minutes after the service starts and every
+24 hours from then. Activating a configuration, or rolling one back, takes a changed time into use
+immediately without starting a run; clearing a previously set time starts a fresh 24-hour cadence
+from that moment.
 
 #### SIEM Event Export
 

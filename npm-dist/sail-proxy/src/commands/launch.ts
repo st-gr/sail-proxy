@@ -7,8 +7,10 @@ import { HarnessAdapter, LaunchContext } from '../launcher/adapters/types';
 import { codexAdapter } from '../launcher/adapters/codex';
 import { claudeAdapter } from '../launcher/adapters/claude';
 import { opencodeAdapter } from '../launcher/adapters/opencode';
+import { geminiAdapter } from '../launcher/adapters/gemini';
+import { piAdapter } from '../launcher/adapters/pi';
 
-export const ADAPTERS: Record<string, HarnessAdapter> = { codex: codexAdapter, claude: claudeAdapter, opencode: opencodeAdapter };
+export const ADAPTERS: Record<string, HarnessAdapter> = { codex: codexAdapter, claude: claudeAdapter, opencode: opencodeAdapter, gemini: geminiAdapter, pi: piAdapter };
 
 /** For a local endpoint, make sure the bundled gateway answers /health; start it if not. */
 async function ensureLocalRunning(rootUrl: string): Promise<void> {
@@ -36,10 +38,10 @@ export async function runLauncher(harness: string, passthrough: string[],
   if (!adapter) throw new Error(`Unknown harness "${harness}". Known: ${Object.keys(ADAPTERS).join(', ')}`);
   const { rootUrl, resolveKey, isLocal } = resolveEndpoint();
   const ctx: LaunchContext = { rootUrl, apiKey: resolveKey(), webSearch: harness === 'codex' && !opts.noWebSearch, dryRun: !!opts.dryRun };
-  const plan = await adapter.plan(ctx, passthrough);
 
   if (opts.dryRun) {
     // Preview only: never resolves the binary, never touches config, never starts the gateway.
+    const plan = await adapter.plan(ctx, passthrough);
     for (const edit of plan.fileEdits) {
       let d = diffEdit(edit);
       if (ctx.apiKey) d = d.split(ctx.apiKey).join('sk-***REDACTED***');
@@ -52,12 +54,15 @@ export async function runLauncher(harness: string, passthrough: string[],
 
   // Real launch: resolve the binary FIRST so a missing harness fails before any config is touched.
   const cmd = await adapter.locate();
+  // The local gateway comes up before the plan is computed: an adapter that reads the gateway
+  // while planning (pi lists its models) needs it answering.
+  if (isLocal) await ensureLocalRunning(rootUrl);
+  const plan = await adapter.plan(ctx, passthrough);
   for (const edit of plan.fileEdits) {
     const { backupPath } = applyEdit(edit);
     if (backupPath) console.log(chalk.gray(`backed up ${edit.file} → ${backupPath}`));
   }
   plan.notes.forEach(n => console.log(chalk.yellow('note: ') + n));
-  if (isLocal) await ensureLocalRunning(rootUrl);
   return await new Promise<number>((resolve) => {
     const child = spawn(cmd, plan.argv, { stdio: 'inherit', env: { ...process.env, ...plan.env } });
     child.on('exit', (code) => resolve(code ?? 0));

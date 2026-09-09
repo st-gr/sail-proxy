@@ -4,8 +4,10 @@ sap.ui.require([
 	"admin/shell/test/integration/expectations",
 	"admin/shell/test/integration/pages/App",
 	"admin/shell/test/integration/RoleSanityJourney",
-	"admin/shell/test/integration/NavigationJourney"
-], function (Opa5, expectations, App, RoleSanityJourney, NavigationJourney) {
+	"admin/shell/test/integration/NavigationJourney",
+	"admin/shell/test/integration/MyQuotaJourney",
+	"admin/shell/test/integration/HomeTilesJourney"
+], function (Opa5, expectations, App, RoleSanityJourney, NavigationJourney, MyQuotaJourney, HomeTilesJourney) {
 	"use strict";
 
 	if (expectations.error) {
@@ -25,5 +27,7 @@ sap.ui.require([
 
 	RoleSanityJourney.run();
 	NavigationJourney.run();
+	MyQuotaJourney.run();
+	HomeTilesJourney.run();
 	QUnit.start();
 });

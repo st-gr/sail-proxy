@@ -140,6 +140,9 @@
           }
         ]
       },
+      "google": {
+        "substitute_models": []
+      },
       "openai": {
         "emulate_streaming_for_models": [
           "anthropic--claude-4-opus"
@@ -1899,6 +1902,18 @@
       "security": {
         "trust_forwarded_for": false,
         "credentialExpirationDays": 90
+      },
+      "quotas": {
+        "requestsPerMinute": null,
+        "spendPerDay": null,
+        "spendPerWeek": null,
+        "spendPerMonth": null,
+        "tokensPerDay": null,
+        "tokensPerWeek": null,
+        "tokensPerMonth": null
+      },
+      "maintenance": {
+        "dailyRunAtUtc": null
       }
     },
     "observability": {

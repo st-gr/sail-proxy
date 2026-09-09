@@ -39,6 +39,7 @@ import { awaitResponsesStreamIdle, abortResponsesStreamContinuation } from '../u
 // interceptors. It lived here as a third private copy — and independently drifting copies
 // of exactly this set is what the extraction into sseFraming existed to stop.
 import { TERMINAL_RESPONSE_TYPES } from '../utils/sseFraming';
+import { enforceEntitlement } from '../utils/modelEntitlement';
 
 function badRequest(res: Response, message: string, code = 'model_not_supported'): void {
   res.status(400).json({ error: { message, type: 'invalid_request_error', code } });
@@ -671,6 +672,8 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
       payloadLogger.savePayload(debugRequestId, '00_original_responses_request', req.body, req);
     }
 
+    if (!enforceEntitlement(req, res, requestedModel)) return;
+
     let modelDetails: any = await modelService.getModelDetails(requestedModel);
 
     // This route is served only by a DIRECT deployment, and the gateway lists
@@ -706,6 +709,9 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
           logger.info('responsesController', `Resolved ${requestedModel} to its deployment ${sibling} for the Responses API`);
           modelDetails = siblingDetails;
           effectiveModel = sibling;
+          // The swap moves the request onto a DIFFERENT catalog id, so re-check: a catalog that
+          // lists only the bare id must not admit the decorated deployment, or vice versa.
+          if (!enforceEntitlement(req, res, effectiveModel)) return;
         } else {
           logger.info('responsesController', `${requestedModel}'s deployment ${sibling} cannot serve the Responses API; leaving it on the orchestration bridge`);
         }

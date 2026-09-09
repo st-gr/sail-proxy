@@ -58,6 +58,11 @@
 								<tnt:NavigationListItem key="usage" text="Usage" />
 								<tnt:NavigationListItem key="securityEvents" text="Security Notifications" />
 							</tnt:NavigationListItem>
+							<tnt:NavigationListItem key="modelsGroup" text="Models" icon="product" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="modelLibrary" text="Model Library" />
+								<tnt:NavigationListItem key="catalogs" text="Entitlements &amp; Quotas" />
+							</tnt:NavigationListItem>
 						</tnt:NavigationList>
 						<tnt:fixedItem>
 							<tnt:NavigationList>
@@ -65,6 +70,7 @@
 									selectable="false">
 									<tnt:NavigationListItem key="settings" text="Configuration Management" />
 									<tnt:NavigationListItem key="sapRates" text="SAP Capacity Unit Prices" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="users" text="Users &amp; Quotas" visible="{appView>/isAdmin}" />
 								</tnt:NavigationListItem>
 							</tnt:NavigationList>
 						</tnt:fixedItem>
@@ -111,6 +117,7 @@
 					<webc:Avatar initials="{appView>/userInitials}" shape="Circle" size="L" class="sapUiSmallMarginBottom" />
 					<Text text="{appView>/userEmail}" class="sapUiSmallMarginBottom" />
 					<Text text="{appView>/userRole}" class="sapUiTinyMarginBottom" />
+					<core:Fragment fragmentName="admin.shell.fragments.MyQuotaCompact" type="XML" />
 					<webc:Button text="Sign Out" icon="log" click=".onSignOut" design="Emphasized" />
 				</VBox>
 			</webc:Popover>

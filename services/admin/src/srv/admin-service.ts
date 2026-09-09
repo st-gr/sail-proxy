@@ -10,14 +10,24 @@ import { lifecycleChangeViolation, defaultExpiresAt, rotationPolicy, creationExp
 import SecurityEventService from '../services/securityEventService';
 import { recordAuditEvent } from '../services/auditEventService';
 import securityEventSubscriber from '../services/securityEventSubscriber';
+import { clientContext } from '../utils/clientIp';
 import { costRecalculationService } from '../services/costRecalculationService';
 import { reconcile } from '../services/reconciliationService';
 import { seedSapCapacityUnitPrice } from '../db/data/sap-capacity-unit-price-seed';
 import { backfillNeverExpires } from '../db/data/never-expires-backfill';
+import { backfillNotificationContext } from '../db/data/security-notification-context-backfill';
 import { securityNotificationConfig } from '../config/security-notifications';
 import { notificationPopulationService } from '../services/notificationPopulationService';
 import { dismissNotification, markNotificationSeen, markNotificationUnseen, snoozeNotification, pinNotification, unpinNotification, deleteSecurityNotification } from './notification-handlers';
 import { notificationStreamService } from './notification-stream';
+import { registerLibraryHandlers, initializeModelLibrary } from './admin-service-library';
+import { registerUserHandlers } from './admin-service-users';
+import { registerQuotaProfileHandlers } from './admin-service-quota-profiles';
+import { touch as touchUser, backfillUsers, migrateCatalogAssignments } from '../services/usersService';
+import { isDeactivated } from '../services/userLifecycleService';
+import { quotaStateStore } from '../services/quotaStateStore';
+import { republishAll, startRolloverTimer } from '../services/userQuotaService';
+import { rebuildIfEmpty } from '../services/usageCounters';
 import { processOrderByForCompatibility } from '../config/database-compatibility';
 import { startDispatcher } from '../siem/dispatcher';
 import { resolveSiemDispatch } from '../siem/siemConfigResolver';
@@ -137,7 +147,10 @@ function maskApiKey(key: string): string {
  * Implementation for AdminService custom actions and functions
  */
 class AdminService {
-  init(service: any): void {
+  // async because the Model Library seed below must complete before the first request is
+  // served. The invariant only holds because the CAP impl wrapper at the bottom of this file
+  // RETURNS this promise - cds awaits the impl's return value - so do not drop it there.
+  async init(service: any): Promise<void> {
     // ========================================
     // Add global request debugging
     // ========================================
@@ -186,14 +199,23 @@ class AdminService {
     
     // Initialize configuration service
     configurationService(service);
-    
+
+    // Model Library and entitlement catalogs (srv/admin-service-library.ts)
+    registerLibraryHandlers(service);
+    // Users & quotas (srv/admin-service-users.ts)
+    registerUserHandlers(service);
+    // Quota profiles and their assignment (srv/admin-service-quota-profiles.ts)
+    registerQuotaProfileHandlers(service);
+
     // Initialize services
     this.initializeUsageProcessor();
     this.initializeCacheInvalidation();
+    this.initializeQuotaPublisher();
     this.initializeSecurityEventSubscriber();
     this.initializeCostRecalculation();
     this.initializeSapCapacityUnitPrice();
     this.initializeNeverExpiresBackfill();
+    this.initializeNotificationContextBackfill();
     this.initializeSiemDispatcher();
     this.initializeCredentialSweepReport();
 
@@ -336,6 +358,16 @@ class AdminService {
     // SQLite-compatible MySecurityNotifications READ handlers
     service.before('READ', 'MySecurityNotifications', this.beforeReadMySecurityNotifications.bind(this));
     service.after('READ', 'MySecurityNotifications', this.afterReadMySecurityNotifications.bind(this));
+
+    // Awaited, and last: until the default catalog exists, entitlementBlockFor cannot compute a
+    // block, the validation service answers with none at all - i.e. unrestricted - and both the
+    // admin and the gateway cache that for an hour. The impl wrapper at the bottom of this file
+    // returns this promise and cds awaits it (@sap/cds lib/srv/factory.js:76), so the seed is
+    // done before the first request is served. It sits after every registration above because
+    // those must stay synchronous: handlers registered past an await land too late for CAP's
+    // draft and authorization wiring.
+    await this.initializeUsers();
+    await this.initializeModelLibrary();
   }
 
   // ========================================
@@ -369,6 +401,8 @@ class AdminService {
       userRoles,
       endpoint: 'createApiKey'
     });
+
+    if (await this.rejectIfDeactivated(req, email)) return {} as ApiKeyResponse;
 
     try {
       // Generate new API key using same format as gateway service
@@ -418,6 +452,7 @@ class AdminService {
       });
 
       await cds.run(INSERT);
+      await touchUser(cds, email!);
 
       // Insert rate limits
       if (Object.keys(defaultRateLimits).length > 0) {
@@ -532,12 +567,15 @@ class AdminService {
       };
     }
 
+    const ownerRow = await cds.run(cds.ql.SELECT.one.from('sap.llm.gateway.admin.ApiKeys').columns('email').where({ ID: keyId }));
+    if (await this.rejectIfDeactivated(req, ownerRow?.email)) return { success: false, message: 'User is deactivated' };
+
     const UPDATE = cds.ql.UPDATE('sap.llm.gateway.admin.ApiKeys')
       .set({ isActive: true })
       .where({ ID: keyId });
-    
+
     const updateResult = await cds.run(UPDATE);
-    
+
     return {
       success: updateResult > 0,
       message: updateResult > 0 ? 'API key enabled successfully' : 'API key not found'
@@ -1358,7 +1396,9 @@ class AdminService {
         
         const currentState = currentKey[0].isActive;
         const newState = req.data.isActive;
-        
+
+        if (newState === true && (await this.rejectIfDeactivated(req, currentKey[0].email))) return;
+
         // Only process if the state is actually changing
         if (currentState !== newState) {
           if (newState) {
@@ -1640,7 +1680,9 @@ class AdminService {
       userRoles,
       endpoint: 'createAwsCredentials'
     });
-    
+
+    if (await this.rejectIfDeactivated(req, email)) return {} as AwsCredentialsResponse;
+
     // Generate AWS-style credentials using same format as gateway service
     const accessKeyId = 'AKIA' + crypto.randomBytes(8).toString('hex').toUpperCase(); // 16 chars total
     const secretAccessKey = crypto.randomBytes(20).toString('hex'); // 40 chars
@@ -1672,6 +1714,7 @@ class AdminService {
     });
     
     await cds.run(INSERT);
+    await touchUser(cds, email!);
 
     // Insert permissions
     for (const permission of permissions as any[]) {
@@ -1785,20 +1828,23 @@ class AdminService {
       const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials')
         .columns('userId')
         .where({ ID: credentialId });
-      
+
       const result = await cds.run(SELECT);
-      
+
       if (result.length === 0) {
         req.error(404, 'AWS credentials not found');
         return { success: false, message: 'AWS credentials not found' };
       }
-      
+
       if (result[0].userId !== userId) {
         req.error(403, 'Access denied: You can only enable your own AWS credentials');
         return { success: false, message: 'Access denied: You can only enable your own AWS credentials' };
       }
     }
-    
+
+    const ownerRow = await cds.run(cds.ql.SELECT.one.from('sap.llm.gateway.admin.AwsCredentials').columns('email').where({ ID: credentialId }));
+    if (await this.rejectIfDeactivated(req, ownerRow?.email)) return { success: false, message: 'User is deactivated' };
+
     try {
       await this.enableAwsCredentialsLogic(credentialId, req);
       return {
@@ -1853,7 +1899,8 @@ class AdminService {
     // Delete related records first (foreign key constraints)
     await cds.run(cds.ql.DELETE.from('sap.llm.gateway.admin.AwsCredentialPermissions').where({ credential_ID: credentialId }));
     await cds.run(cds.ql.DELETE.from('sap.llm.gateway.admin.AwsCredentialIPRestrictions').where({ credential_ID: credentialId }));
-    await cds.run(cds.ql.DELETE.from('sap.llm.gateway.admin.AwsCredentialUsage').where({ credential_ID: credentialId }));
+    // Usage rows outlive the credential (spec §3.6): they keep the owner and the name snapshots, lose the link.
+    await cds.run(cds.ql.UPDATE('sap.llm.gateway.admin.AwsCredentialUsage').set({ credential_ID: null }).where({ credential_ID: credentialId }));
     await cds.run(cds.ql.DELETE.from('sap.llm.gateway.admin.AwsCredentialSecurityEvents').where({ credential_ID: credentialId }));
     await cds.run(cds.ql.DELETE.from('sap.llm.gateway.admin.AwsCredentialRotations').where({ credential_ID: credentialId }));
     
@@ -3305,16 +3352,11 @@ class AdminService {
   }
 
   /**
-   * Extract client IP and user agent from the CAP request's underlying HTTP request,
-   * same source as the clientIP passed to SecurityEventService elsewhere in this file.
-   * @param req - Request object
+   * Client IP and user agent of the CAP request, derived with the same trust rule as the gateway
+   * (utils/clientIp.ts): never Express's req.ip unless platform.security.trust_forwarded_for is set.
    */
   private getClientContext(req: any): { clientIP: string; userAgent: string } {
-    const httpReq = req?.http?.req;
-    return {
-      clientIP: httpReq?.ip || httpReq?.connection?.remoteAddress || 'unknown',
-      userAgent: httpReq?.headers?.['user-agent'] || 'unknown'
-    };
+    return clientContext(req);
   }
 
   /**
@@ -3371,6 +3413,13 @@ class AdminService {
     });
   }
 
+  /** 403 user_deactivated when the owner is deactivated; used by every credential-creating and enabling path. */
+  private async rejectIfDeactivated(req: any, email: string | undefined): Promise<boolean> {
+    if (!email || !(await isDeactivated(cds, email))) return false;
+    req.reject({ status: 403, code: 'user_deactivated', message: `User ${email} is deactivated; no credentials can be created or enabled` });
+    return true;
+  }
+
   /**
    * Initialize usage event processor for tracking gateway usage
    */
@@ -3398,6 +3447,38 @@ class AdminService {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.warn('AdminService', `Failed to initialize cache invalidation service: ${errorMsg}`);
       // Don't throw - cache invalidation is not critical for admin service functionality
+    }
+  }
+
+  /** Valkey client for quota documents, first publication of every user, and the rollover timer. */
+  private async initializeQuotaPublisher(): Promise<void> {
+    try {
+      await quotaStateStore.initialize();
+      startRolloverTimer();
+      // Users are backfilled in initializeUsers (awaited at the end of init); publish once it is done.
+      setTimeout(() => this.publishQuotaDocuments(1), 5000).unref?.();
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to initialize quota publisher: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Rebuilds the usage buckets if empty, then republishes every quota document. A rejected
+   * rebuild (or publish) leaves quota documents unwritten rather than publishing zero-usage
+   * ones — a wrong zero would silently lift every quota, where a missing document instead fails
+   * open with the gateway's `quota_unenforced` signal. Retried once, 60 s later.
+   */
+  private async publishQuotaDocuments(attempt: number): Promise<void> {
+    try {
+      const db = await cds.connect.to('db');
+      const did = await rebuildIfEmpty(db);
+      if (did) logger.info('AdminService', 'Usage buckets built from the usage rows (first start with counters)');
+      const n = await republishAll();
+      logger.info('AdminService', `Published ${n} quota documents`);
+    } catch (e: any) {
+      logger.warn('AdminService', `Usage buckets could not be built (${e?.message ?? e}); quota documents not published — quotas stay unenforced until rebuildUsageCounters or the next usage batch`);
+      if (attempt === 1) setTimeout(() => this.publishQuotaDocuments(2), 60_000).unref?.();
     }
   }
 
@@ -3457,6 +3538,45 @@ class AdminService {
       logger.warn('AdminService', `Failed to backfill neverExpires: ${errorMsg}`);
       // Don't throw - the backfill is a one-off migration, not critical for serving requests
     }
+  }
+
+  /**
+   * Users backfill (one row per known e-mail) and the one-shot ModelCatalogAssignments migration.
+   * Both idempotent; never throws — an empty Users table only delays quotas until the first contact.
+   */
+  private async initializeUsers(): Promise<void> {
+    try {
+      const db = await cds.connect.to('db');
+      const created = await backfillUsers(db);
+      const migrated = await migrateCatalogAssignments(db);
+      logger.info('AdminService', `Users backfill created ${created} rows; migrated ${migrated} catalog assignments`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to initialize users: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Copy the request context of the source event into envelope rows that predate the context
+   * columns, once. Idempotent; never throws.
+   */
+  private async initializeNotificationContextBackfill(): Promise<void> {
+    try {
+      const db = await cds.connect.to('db');
+      const updated = await backfillNotificationContext(db);
+      logger.info('AdminService', `Security notification context backfill filled ${updated} rows`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to backfill security notification context: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Guarantee the default entitlement catalog exists, so every unassigned caller resolves to
+   * it on the first request. Idempotent; never throws.
+   */
+  private async initializeModelLibrary(): Promise<void> {
+    await initializeModelLibrary();
   }
 
   /**
@@ -3855,9 +3975,14 @@ class AdminService {
         };
       }
 
-      // Matches gateway SecurityEventType exactly (types/security.ts): this action is called
-      // by the gateway, which can only ever send one of these three.
-      const validEventTypes = ['failed_auth', 'rate_limit_exceeded', 'credential_rotation'];
+      // The subset of the gateway's SecurityEventType (types/security.ts) that the gateway
+      // actually emits over this action. It does not list every member of that enum, so a new
+      // gateway event type has to be added here as well or it is rejected as invalid.
+      // 'rate_limit_exceeded' is no longer in the gateway's enum (Task 6 replaced it with
+      // quota_exceeded) but stays here: it is still accepted for already-stored rows and for
+      // older gateway builds still running it, and SecurityEventService.logRateLimitExceeded
+      // still constructs it directly.
+      const validEventTypes = ['failed_auth', 'rate_limit_exceeded', 'credential_rotation', 'model_not_entitled', 'deployment_created', 'quota_exceeded', 'quota_unenforced'];
       if (!validEventTypes.includes(eventType)) {
         return {
           success: false,
@@ -3991,6 +4116,8 @@ class AdminService {
     if (!isAdmin) {
       req.data.email = userEmail;  // lock to self
     }
+
+    if (await this.rejectIfDeactivated(req, req.data.email)) return;
 
     // Set defaults
     req.data.isActive ??= true;
@@ -4381,7 +4508,8 @@ class AdminService {
     deployTarget: string;
   }> {
     const userRoles = this.getUserRoles(req);
-    
+    await touchUser(cds, req.user?.id || '', { roles: userRoles });
+
     return {
       user: req.user?.id || 'anonymous',
       roles: userRoles,
@@ -4556,7 +4684,9 @@ class AdminService {
       req.data.userId = userEmail;  // lock to self
       req.data.email = userEmail;   // lock email to self
     }
-    
+
+    if (await this.rejectIfDeactivated(req, req.data.email)) return;
+
     // Validate that userId is not empty
     if (!req.data.userId || req.data.userId.trim() === '') {
       req.error(400, 'User ID is required');
@@ -4720,19 +4850,21 @@ class AdminService {
       try {
         // Get current state first
         const SELECT = cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials')
-          .columns('isActive', 'userId', 'name')
+          .columns('isActive', 'userId', 'name', 'email')
           .where({ ID });
-        
+
         const currentCredential = await cds.run(SELECT);
-        
+
         if (currentCredential.length === 0) {
           req.error(404, 'AWS credentials not found');
           return;
         }
-        
+
         const currentState = currentCredential[0].isActive;
         const newState = req.data.isActive;
-        
+
+        if (newState === true && (await this.rejectIfDeactivated(req, currentCredential[0].email))) return;
+
         // Only process if the state is actually changing
         if (currentState !== newState) {
           if (newState) {
@@ -5050,9 +5182,12 @@ class AdminService {
     // STEP 4: Ensure proper server-side filtering for unseen notifications
     // The OData filter (seenAt EQ null) should be sufficient, but we can add additional validation here if needed
     
-    // Set the final WHERE clause
-    req.query.SELECT.where = where;
-    
+    // Set the final WHERE clause; skip when empty (admin, no $filter) so a following $search
+    // isn't AND-combined against an empty group — SQLite rejects "WHERE () and (...)".
+    if (where.length) {
+      req.query.SELECT.where = where;
+    }
+
     logger.debug('AdminService', '[beforeReadMySecurityNotifications] Final WHERE clause:', {
       whereTokens: where.length,
       query: JSON.stringify(where)
@@ -5713,6 +5848,8 @@ class AdminService {
         await this.updateUserRoles(preferences.ID, userRoles);
       }
 
+      await touchUser(cds, userEmail, { roles: userRoles, displayName: preferences.displayName ?? undefined });
+
       // Compute role-based capabilities
       const computed = this.computeUserCapabilities(userRoles);
 
@@ -5923,7 +6060,12 @@ const adminService = new AdminService();
 
 // Initialize with CDS service when module is loaded
 module.exports = (srv: any) => {
-  adminService.init(srv);
+  // The init() promise is RETURNED, not dropped: cds awaits the impl function's return value
+  // (@sap/cds lib/srv/factory.js:76, `await impl.call(srv, srv)`), so returning it is what makes
+  // the awaited Model Library seed at the end of init() complete before the service is served.
+  // Everything below registers synchronously first, so the 'served' hook and the nextTick mount
+  // are in place regardless of when the seed settles.
+  const initialized = adminService.init(srv).then(() => adminService);
   
   // Mount REST API routes during service initialization
   srv.on('served', () => {
@@ -5971,5 +6113,5 @@ module.exports = (srv: any) => {
     }
   });
   
-  return adminService;
+  return initialized;
 };

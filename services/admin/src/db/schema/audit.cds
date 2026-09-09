@@ -9,7 +9,7 @@ using { cuid, managed } from '@sap/cds/common';
  */
 entity AuditEvents : cuid, managed {
   actorId       : String(200);   // operator identity, or 'system'
-  actorType     : String(40);    // admin_user | system | api_key
+  actorType     : String(40);    // admin_user | user | system | api_key
   action        : String(80);    // api_key.create | api_key.rotate | config.update | ...
   resourceType  : String(60);    // ApiKey | AwsCredential | ApiConfiguration
   resourceId    : String(200);

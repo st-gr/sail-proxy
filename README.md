@@ -84,6 +84,7 @@ The original draw.io file can be found here: docs/assets/sail-proxy-deployment-o
 | OpenRouter  | `/openrouter/api/v1/chat/completions`                      | OpenRouter chat completions API → SAP AI Core      |
 | OpenRouter  | `/openrouter/api/v1/models`                                | OpenRouter models list from SAP AI Core            |
 | Ollama      | `see ./services/ollama/README.md`                          | All Ollama endpoints → SAP AI Core (via adapter)   |
+| Google      | `/google/v1beta/models/{model}:{method}`                   | Gemini API (generateContent/streamGenerateContent/embedContent) → SAP AI Core |
 | Common      | `/v1/models`                                               | List available SAP AI Core foundation models       |
 | Admin *)    | `/api/admin/api-keys`                                      | API key management for unified authentication      |
 | Admin *)    | `/aws/api-keys`                                            | AWS-style credentials management (for SigV4 auth)  |
@@ -1202,6 +1203,60 @@ Reasoning items, tool calls and native SSE framing pass through unchanged, and P
 Codex's `multi_agent` sub-agent tools work as-is: the gateway rewrites the `namespace` tool wrapper SAP deployments reject and restores the routing namespace on the way back, so no `--disable multi_agent` flag is needed.
 
 See the [Codex chapter](docs/user/chapter-5-codex.md) for the full setup guide (and the [opencode chapter](docs/user/chapter-6-opencode.md) for opencode), or [Chapter 2 – Features](docs/user/chapter-2-features.md#using-codex-cli) for the model-eligibility rules, the sub-agent handling and notes on older Codex versions.
+
+### Google Gemini CLI
+
+Gemini CLI speaks the Gemini API, so point it at the gateway's `/google` route. Every model in the
+Model Library works: a Gemini model with a deployment of its own is served by that deployment,
+everything else (Claude, GPT, Mistral, undeployed Gemini models) goes through SAP orchestration with
+the request translated on the way in and the answer translated back — tool calls included, which is
+what Gemini CLI's built-in tools rely on.
+
+```bash
+export GOOGLE_GEMINI_BASE_URL=http://localhost:3000/google
+export GEMINI_API_KEY=your_api_key_from_api_keys_endpoint
+gemini -m gemini-3.5-flash                      # or -m anthropic--claude-4.5-haiku
+```
+
+Gemini CLI also needs its sign-in type set to "Gemini API key" (its interactive dialog writes
+`security.auth.selectedType` into `~/.gemini/settings.json`); the standalone launcher does that for
+you: `sail-proxy gemini` sets both variables, selects the sign-in type and starts the CLI. Headless
+runs (`-p`) need `--skip-trust` or a folder trusted once interactively.
+
+See the [Gemini chapter](docs/user/chapter-12-google-gemini.md) for models, embeddings, masking and
+limits.
+
+### pi coding agent
+
+[pi](https://pi.dev) takes custom providers in `~/.pi/agent/models.json`. Point one at the gateway's
+`/openai/v1` base URL with the Responses API and list the models you want in its `/model` picker —
+any chat model in the Model Library works: a deployed GPT model natively, everything else through
+SAP orchestration with tool calls, streaming and images intact.
+
+```json
+{
+  "providers": {
+    "sail-proxy": {
+      "baseUrl": "http://localhost:3000/openai/v1",
+      "api": "openai-responses",
+      "apiKey": "SAILPROXY_KEY",
+      "models": [
+        { "id": "gpt-5.6-sol", "reasoning": true, "input": ["text", "image"], "contextWindow": 1050000 },
+        { "id": "anthropic--claude-4.5-sonnet", "input": ["text", "image"], "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export SAILPROXY_KEY=your_api_key_from_api_keys_endpoint
+pi --model sail-proxy/gpt-5.6-sol
+```
+
+The standalone launcher does all of that for you: `sail-proxy pi` reads the Model Library, writes
+the provider block with every chat model, hands pi the key and starts it. See the
+[pi chapter](docs/user/chapter-13-pi.md).
 
 ### VS Code with GitHub Copilot
 

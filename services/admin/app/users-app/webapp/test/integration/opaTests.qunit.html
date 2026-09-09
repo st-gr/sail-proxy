@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Users & Quotas - UI journeys</title>
+	<!-- The framework served for this app (incl. sap.fe.test); test/app.html loads the same
+	     one, so the OPA page and the app iframe run one UI5 version. -->
+	<script id="sap-ui-bootstrap"
+		src="../../resources/sap-ui-core.js"
+		data-sap-ui-resourceroots='{"admin.users": "../../"}'
+		data-sap-ui-theme="sap_horizon"
+		data-sap-ui-language="en"
+		data-sap-ui-compatVersion="edge"
+		data-sap-ui-async="true">
+	</script>
+	<link rel="stylesheet" type="text/css" href="../../resources/sap/ui/thirdparty/qunit-2.css">
+	<script src="../../resources/sap/ui/thirdparty/qunit-2.js"></script>
+	<!-- OPA's default QUnit test timeout is 90 s; the edit journey (edit, two side-effect
+	     round trips and a save) legitimately runs longer, so raise it well below the
+	     runner's 10 min page timeout. -->
+	<script>QUnit.config.autostart = false; QUnit.config.testTimeout = 300000;</script>
+	<script src="opaTests.qunit.js"></script>
+</head>
+<body>
+	<div id="qunit"></div>
+	<div id="qunit-fixture"></div>
+</body>
+</html>

@@ -41,6 +41,31 @@ spec:
         port:
           number: 8080
       weight: 100
+  # Google Gemini endpoints - streamGenerateContent
+  - match:
+    - uri:
+        prefix: /gateway/google/
+    retries:
+      attempts: 0                 # Disable mesh retries for streaming
+    timeout: 86400s               # 24-hour timeout (effectively disabled)
+    headers:
+      request:
+        set:
+          x-forwarded-host: <%= domain %>
+      response:
+        remove:
+        - Access-Control-Allow-Origin
+        - Access-Control-Expose-Headers
+        - Access-Control-Allow-Headers
+        - Access-Control-Allow-Credentials
+        - Access-Control-Allow-Methods
+        - Access-Control-Max-Age
+    route:
+    - destination:
+        host: nginx.sail-proxy.svc.cluster.local
+        port:
+          number: 8080
+      weight: 100
   # OpenAI streaming endpoints - same treatment
   - match:
     - uri:

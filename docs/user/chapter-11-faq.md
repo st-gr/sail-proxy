@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-10-troubleshooting.md) | [Content Table](README.md)
+[<< Previous Chapter](chapter-10-troubleshooting.md) | [Content Table](README.md) | [Next Chapter >>](chapter-12-google-gemini.md)
 
 ---
 
@@ -84,6 +84,13 @@ IP Restrictions: 192.168.1.0/24, 10.0.0.100
 ```
 
 **Note for Kyma deployments**: IP restrictions are enforced at the Istio ingress gateway level via AuthorizationPolicies in the `istio-system` namespace, providing network-level access control before requests reach your application.
+
+#### Why does my request get 429 although my key's limit is not reached?
+An administrator can also set a requests-per-minute limit on your user account, on top of any
+limit on the key or credential itself. A request has to stay under both, so it can be refused for
+the user-level limit even while the key still has room. Check your consumption on the Admin
+Cockpit's home page — the response body's `scope` field says `user` when this is the one that was
+hit.
 
 ### Usage & Integration
 
@@ -350,3 +357,5 @@ LLM inference is a shared resource. At peek hours inference can get really slow 
 ---
 
 *For additional support, consult the [Troubleshooting guide](chapter-10-troubleshooting.md) or contact your system administrator.*
+
+*Next: Use Gemini CLI and the Google GenAI SDK through the gateway in [Google Gemini](chapter-12-google-gemini.md).*

@@ -190,6 +190,7 @@ interface ProvidersConfig {
   // so it isn't silently dropped by a future reader that expects it.
   openrouter?: OpenRouterProviderConfig;
   perplexity?: ProviderConfig;
+  google?: ProviderConfig;
 }
 
 interface ModelsConfig {
@@ -234,14 +235,14 @@ interface ApiConfig {
   observability?: ObservabilityConfig;
 }
 
-const PROVIDER_KEYS = ['anthropic', 'aws-bedrock', 'openai', 'openrouter', 'perplexity'] as const;
+const PROVIDER_KEYS = ['anthropic', 'aws-bedrock', 'openai', 'openrouter', 'perplexity', 'google'] as const;
 // No `Record<string, ProviderConfig | undefined>` cast on `api.providers` here:
 // that cast would type EVERY string key (including ones that aren't provider
 // keys) as ProviderConfig, so renaming e.g. 'aws-bedrock' on ProvidersConfig
 // would compile and silently start returning undefined instead of failing the
 // build. Narrowing the *key* via the typeof PROVIDER_KEYS[number] guard keeps
 // the indexed access on the real ProvidersConfig type, so a rename of any one
-// of the five provider keys is a compile error here.
+// of the six provider keys is a compile error here.
 function providerConfig(api: ApiConfig, provider: string): ProviderConfig | undefined {
   return PROVIDER_KEYS.includes(provider as typeof PROVIDER_KEYS[number])
     ? api.providers?.[provider as typeof PROVIDER_KEYS[number]]
@@ -858,9 +859,14 @@ const publishModelListAfterConfigUpdate = async (): Promise<void> => {
   }
   
   try {
-    // Get the model list from the model service
+    // Get the model list from the model service. The one consumer of this channel is the admin's
+    // modelCostService, which snapshots it into the Model Library and prices it - so it gets the
+    // same list the admin's direct pull asks for (include=unroutable). Without that, a Valkey
+    // deployment would snapshot only the routable models and mark the others absent again after
+    // every publish. Models marked routable:false reach the snapshot and nothing else; pricing
+    // skips them.
     const modelService = require('./modelService').default;
-    const modelListResponse = await modelService.getModels();
+    const modelListResponse = await modelService.getModels(false, { includeUnroutable: true });
     const modelList = modelListResponse.data;
     
     if (modelList && modelList.length > 0) {

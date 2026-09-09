@@ -4,6 +4,7 @@ import sapAIService from '../services/sapAIService';
 import modelService from '../services/modelService';
 import { getDefaultLogger } from '@libs/logger';
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { enforceEntitlement } from '../utils/modelEntitlement';
 
 const logger = getDefaultLogger();
 
@@ -31,6 +32,8 @@ export const handleEmbedding = async (req: EmbeddingRequestExtended, res: Respon
       });
       return;
     }
+
+    if (!enforceEntitlement(req, res, model)) return;
 
     // Handle array input - for now, we'll process the first input only (SAP AI Core v2 limitation)
     const textInput = Array.isArray(input) ? input[0] : input;

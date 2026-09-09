@@ -83,9 +83,9 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
         expect(groupSectionKeys(groupSchema)).toEqual(['pseudonymization', 'siem']);
     });
 
-    it('orders platform\'s five sections as the schema declares them, with no document to follow', () => {
+    it('orders platform\'s seven sections as the schema declares them, with no document to follow', () => {
         const groupSchema = resolveGroupSchema(apiConfigSchema, 'platform');
-        expect(groupSectionKeys(groupSchema)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
+        expect(groupSectionKeys(groupSchema)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security', 'quotas', 'maintenance']);
     });
 
     it('orders capabilities\' six sections as the schema declares them, with no document to follow', () => {
@@ -109,7 +109,7 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
             const shipped = require('../../../../gateway/api_config.json').api_config.platform;
             expect(groupSectionKeys(platformSchema(), shipped)).toEqual(Object.keys(shipped));
             // The shipped document happens to carry its sections in the schema's own order.
-            expect(Object.keys(shipped)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
+            expect(Object.keys(shipped)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security', 'quotas', 'maintenance']);
         });
 
         it('keeps the schema\'s order for a document that reverses two keys, not the document\'s', () => {
@@ -120,7 +120,7 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
         it('holds an absent section in its schema position rather than trailing it', () => {
             // A single carried section no longer leads the rest: the schema's order stands.
             expect(groupSectionKeys(platformSchema(), { security: {} }))
-                .toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
+                .toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security', 'quotas', 'maintenance']);
         });
 
         it('ignores a document key the group does not declare - that is not a section', () => {
@@ -135,24 +135,24 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
 
         it('carries the same order through groupSections, which is what buildTab calls', () => {
             const sections = groupSections(apiConfigSchema, 'platform', { security: {}, logging: {} });
-            expect(sections.map(s => s.key)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security']);
+            expect(sections.map(s => s.key)).toEqual(['billing', 'timeouts', 'logging', 'rate_limit_handling', 'security', 'quotas', 'maintenance']);
             expect(sections.map(s => s.pointer)[0]).toBe('/api_config/platform/billing');
         });
     });
 
     // providers and models declare their sections the same way every other group does. providers
-    // names all five keys the gateway actually reads (configService.ts's PROVIDER_KEYS), so each
-    // gets its own panel; its `additionalProperties` still accepts a sixth provider, but an
+    // names all six keys the gateway actually reads (configService.ts's PROVIDER_KEYS), so each
+    // gets its own panel; its `additionalProperties` still accepts a seventh provider, but an
     // undeclared key is not a section - see groupSectionKeys's own header. models declares only
     // `overrides`, whose per-model keys live inside that one section.
-    it('lists providers\' five named providers and models\' one section, not the dynamic keys within them', () => {
+    it('lists providers\' six named providers and models\' one section, not the dynamic keys within them', () => {
         expect(groupSectionKeys(resolveGroupSchema(apiConfigSchema, 'providers'))).toEqual([
-            'anthropic', 'aws-bedrock', 'openai', 'openrouter', 'perplexity'
+            'anthropic', 'aws-bedrock', 'google', 'openai', 'openrouter', 'perplexity'
         ]);
         expect(groupSectionKeys(resolveGroupSchema(apiConfigSchema, 'models'))).toEqual(['overrides']);
     });
 
-    // The five above are not a hand-kept twin of the gateway's list: PROVIDER_KEYS is what decides
+    // The six above are not a hand-kept twin of the gateway's list: PROVIDER_KEYS is what decides
     // whether a provider's configuration is read at all (providerConfig() returns undefined for any
     // other key), so a provider named in the schema but not there would render an editable panel
     // that changes nothing. Asserted against the shipped configuration's own provider keys, which
@@ -181,14 +181,16 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
             expect(sections.find(s => s.key === 'siem')!.schema).toBe(siemSchemaDef);
         });
 
-        it('pointers platform\'s five sections under /api_config/platform/<key>', () => {
+        it('pointers platform\'s seven sections under /api_config/platform/<key>', () => {
             const sections = groupSections(apiConfigSchema, 'platform');
             expect(sections.map(s => s.pointer)).toEqual([
                 '/api_config/platform/billing',
                 '/api_config/platform/timeouts',
                 '/api_config/platform/logging',
                 '/api_config/platform/rate_limit_handling',
-                '/api_config/platform/security'
+                '/api_config/platform/security',
+                '/api_config/platform/quotas',
+                '/api_config/platform/maintenance'
             ]);
             expect(sections.every(s => s.schema.type === 'object')).toBe(true);
         });

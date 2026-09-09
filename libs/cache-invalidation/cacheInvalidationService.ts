@@ -7,9 +7,12 @@ try {
 }
 
 export interface CacheInvalidationEvent {
-  type: 'api_key_disabled' | 'api_key_deleted' | 'aws_credential_disabled' | 'aws_credential_deleted' | 'manual_invalidation';
-  credentialId: string;
-  authType: 'api_key' | 'aws_credential';
+  type: 'api_key_disabled' | 'api_key_deleted' | 'aws_credential_disabled' | 'aws_credential_deleted' | 'manual_invalidation' | 'pattern_invalidation';
+  /** Credential events only. A 'pattern_invalidation' carries `pattern` instead. */
+  credentialId?: string;
+  authType?: 'api_key' | 'aws_credential';
+  /** 'pattern_invalidation' only: the key pattern every subscriber must clear, e.g. 'unified-cache:*'. */
+  pattern?: string;
   reason?: string;
   timestamp: number;
   requestId?: string;
@@ -181,6 +184,38 @@ export class CacheInvalidationService {
   }
 
   /**
+   * Invalidate every cache entry matching a key pattern, everywhere.
+   *
+   * Deleting the Valkey keys is only half the job: each gateway process also holds the same
+   * validations in memory, and nothing in a KEYS+DEL reaches those. So this clears the
+   * distributed keys AND publishes a 'pattern_invalidation' that every subscriber dispatches to
+   * its registered caches' clearByPattern. Used when a change affects everyone at once - a
+   * default entitlement catalog change, for instance - where per-credential invalidation would
+   * mean enumerating every credential in the system.
+   *
+   * Distributed keys go first: a subscriber that cleared its memory before the Valkey keys were
+   * gone would just repopulate from them.
+   */
+  async invalidatePattern(pattern: string, reason?: string, requestId?: string): Promise<number> {
+    const cleared = await this.clearCachePattern(pattern);
+
+    const event: CacheInvalidationEvent = {
+      type: 'pattern_invalidation',
+      pattern,
+      reason,
+      timestamp: Date.now(),
+      requestId
+    };
+    await this.publishInvalidationEvent(event);
+
+    if (this.config.enableLogging) {
+      this.logger.info('CacheInvalidationService', `Invalidated cache pattern ${pattern} (reason: ${reason ?? 'manual'}) - ${cleared} distributed key(s), published to subscribers`);
+    }
+
+    return cleared;
+  }
+
+  /**
    * Clear specific cache keys directly
    */
   async clearCacheKey(cacheKey: string): Promise<boolean> {
@@ -251,7 +286,7 @@ export class CacheInvalidationService {
       const event: CacheInvalidationEvent = JSON.parse(message);
       
       if (this.config.enableLogging) {
-        this.logger.info('CacheInvalidationService', `Received invalidation event: ${event.type} for ${event.credentialId}`);
+        this.logger.info('CacheInvalidationService', `Received invalidation event: ${event.type} for ${event.pattern ?? event.credentialId}`);
       }
 
       // Process the invalidation event
@@ -264,10 +299,23 @@ export class CacheInvalidationService {
   }
 
   /**
-   * Process a cache invalidation event (gateway only)
+   * Process a cache invalidation event (gateway only).
+   *
+   * Public so the dispatch can be driven directly by a test: everything above it is ValKey
+   * plumbing, and a wiring bug here (an event type nobody dispatches) is invisible from outside.
    */
-  private async processInvalidationEvent(event: CacheInvalidationEvent): Promise<void> {
+  async processInvalidationEvent(event: CacheInvalidationEvent): Promise<void> {
     if (this.config.serviceName !== 'gateway') return;
+
+    if (event.type === 'pattern_invalidation') {
+      await this.processPatternInvalidation(event);
+      return;
+    }
+
+    if (!event.credentialId || !event.authType) {
+      this.logger.warn('CacheInvalidationService', `Ignoring ${event.type} event without a credentialId/authType`);
+      return;
+    }
 
     const startTime = Date.now();
     let totalCleared = 0;
@@ -312,6 +360,41 @@ export class CacheInvalidationService {
   }
 
   /**
+   * A pattern event reaches the in-process caches, which a KEYS+DEL on ValKey never touches.
+   * A registered cache without clearByPattern is skipped rather than treated as an error - the
+   * capability is optional on the CacheService contract.
+   */
+  private async processPatternInvalidation(event: CacheInvalidationEvent): Promise<void> {
+    const pattern = event.pattern;
+    if (!pattern) {
+      this.logger.warn('CacheInvalidationService', 'Ignoring pattern_invalidation event without a pattern');
+      return;
+    }
+
+    const startTime = Date.now();
+    let totalCleared = 0;
+
+    for (const service of this.registeredCacheServices) {
+      if (typeof service.clearByPattern !== 'function') {
+        this.logger.debug('CacheInvalidationService', `${service.name} has no clearByPattern - skipping pattern ${pattern}`);
+        continue;
+      }
+      try {
+        const cleared = await service.clearByPattern(pattern);
+        totalCleared += typeof cleared === 'number' ? cleared : 0;
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        this.logger.warn('CacheInvalidationService', `Failed to clear pattern ${pattern} in ${service.name}: ${errorMsg}`);
+      }
+    }
+
+    if (this.config.enableLogging) {
+      this.logger.info('CacheInvalidationService',
+        `Processed pattern invalidation ${pattern}: cleared ${totalCleared} entries in ${Date.now() - startTime}ms`);
+    }
+  }
+
+  /**
    * Build specific cache key for a credential (replaces wildcard pattern approach)
    */
   private buildSpecificCacheKey(credentialId: string, authType: 'api_key' | 'aws_credential'): string {
@@ -351,7 +434,7 @@ export class CacheInvalidationService {
       await this.commandClient.publish(this.config.channelName, eventJson);
       
       if (this.config.enableLogging) {
-        this.logger.debug('CacheInvalidationService', `Published invalidation event: ${event.type} for ${event.credentialId}`);
+        this.logger.debug('CacheInvalidationService', `Published invalidation event: ${event.type} for ${event.pattern ?? event.credentialId}`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';

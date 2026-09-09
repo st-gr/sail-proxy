@@ -251,5 +251,78 @@ describe('Configuration Service - JSON Schema Validation', () => {
         'openai_deployment_api_version)'
       ]);
     });
+
+    it('accepts platform.quotas as the seven-null block', async () => {
+      const req = {
+        data: {
+          configData: JSON.stringify({
+            api_config: {
+              platform: {
+                quotas: {
+                  requestsPerMinute: null,
+                  spendPerDay: null,
+                  spendPerWeek: null,
+                  spendPerMonth: null,
+                  tokensPerDay: null,
+                  tokensPerWeek: null,
+                  tokensPerMonth: null
+                }
+              }
+            }
+          })
+        }
+      };
+
+      const result = await configService.validateConfiguration(req);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toBeDefined();
+      expect(result.errors.length).toBe(0);
+    });
+
+    it('rejects a negative platform.quotas.tokensPerDay', async () => {
+      const req = {
+        data: {
+          configData: JSON.stringify({
+            api_config: {
+              platform: {
+                quotas: {
+                  tokensPerDay: -1
+                }
+              }
+            }
+          })
+        }
+      };
+
+      const result = await configService.validateConfiguration(req);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toBeDefined();
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some((error: string) => error.includes('tokensPerDay'))).toBe(true);
+    });
+
+    const maintenance = (dailyRunAtUtc: unknown) => ({
+      data: { configData: JSON.stringify({ api_config: { platform: { maintenance: { dailyRunAtUtc } } } }) }
+    });
+
+    it.each(['08:00', '23:59', '00:00', null])(
+      'accepts platform.maintenance.dailyRunAtUtc %p', async (value) => {
+        const result = await configService.validateConfiguration(maintenance(value));
+
+        expect(result.errors).toEqual([]);
+        expect(result.valid).toBe(true);
+      });
+
+    // A 24-hour HH:MM and nothing else: no single-digit hour, no hour 24, no missing colon.
+    it.each(['8:00', '24:00', '0800'])(
+      'rejects platform.maintenance.dailyRunAtUtc %p and names the field', async (value) => {
+        const result = await configService.validateConfiguration(maintenance(value));
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.length).toBeGreaterThan(0);
+        expect(result.errors.some((error: string) => error.includes('dailyRunAtUtc'))).toBe(true);
+      });
   });
 });

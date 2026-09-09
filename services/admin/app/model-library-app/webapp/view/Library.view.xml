@@ -1,0 +1,219 @@
+<mvc:View controllerName="admin.modellibrary.controller.Library"
+  xmlns:mvc="sap.ui.core.mvc" xmlns="sap.m" xmlns:f="sap.f" xmlns:card="sap.f.cards" xmlns:l="sap.ui.layout"
+  xmlns:core="sap.ui.core" xmlns:table="sap.ui.table" xmlns:ctl="admin.modellibrary.control" displayBlock="true"
+  core:require="{ formatter: 'admin/modellibrary/model/formatter', formatMessage: 'sap/base/strings/formatMessage' }">
+  <f:DynamicPage id="libraryPage" headerExpanded="true" showFooter="false">
+    <f:title>
+      <f:DynamicPageTitle>
+        <f:heading><Title text="{i18n>appTitle}" level="H1"/></f:heading>
+        <f:snappedContent><Text text="{i18n>appSubtitle}"/></f:snappedContent>
+        <f:expandedContent><Text text="{i18n>appSubtitle}"/></f:expandedContent>
+        <f:actions>
+          <Button id="refreshButton" text="{i18n>refresh}" icon="sap-icon://refresh" press=".onRefresh" visible="{viewModel>/isAdmin}"/>
+          <Button id="catalogsButton" text="{i18n>catalogsTitle}" icon="sap-icon://folder" press=".onOpenCatalogs"/>
+          <Button id="addSelectedButton" text="{i18n>addToCatalog}" icon="sap-icon://add-folder" enabled="{= ${viewModel>/library/selectedCount} > 0}" press=".onAddSelectedToCatalog" visible="{= ${viewModel>/library/mode} === 'catalog'}"/>
+          <ToggleButton id="selectMode" icon="sap-icon://multi-select" pressed="{viewModel>/library/selectMode}" tooltip="Select models"/>
+        </f:actions>
+      </f:DynamicPageTitle>
+    </f:title>
+    <f:content>
+      <l:Splitter id="splitter" height="100%">
+        <!-- Filter pane -->
+        <ScrollContainer id="filterPane" vertical="true" class="mlFilterPane">
+          <layoutData><l:SplitterLayoutData size="18rem" resizable="false"/></layoutData>
+          <VBox class="sapUiSmallMargin">
+            <HBox justifyContent="SpaceBetween" alignItems="Center">
+              <Title text="{i18n>filters}" level="H2"/>
+              <Button id="resetAll" icon="sap-icon://clear-filter" type="Transparent" tooltip="{i18n>reset}" press=".onReset"/>
+            </HBox>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterProvider}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetProviderGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <VBox id="providerBox" items="{viewModel>/library/providerList}">
+                <HBox alignItems="Center">
+                  <Avatar displaySize="XS" displayShape="Square" src="{path: '', model: 'viewModel', formatter: 'formatter.providerSrc'}" initials="{path: '', model: 'viewModel', formatter: 'formatter.providerInitials'}" class="mlFilterIcon"/>
+                  <CheckBox text="{path: '', model: 'viewModel', formatter: 'formatter.providerLabel'}" select=".onProviderChange"/>
+                </HBox>
+              </VBox>
+            </Panel>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterCapabilities}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetCapabilityGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <RadioButtonGroup id="capabilityGroup" class="mlIconRadioGroup" columns="1" selectedIndex="0" select=".onFilterChange">
+                <RadioButton text="{i18n>capAll}"/>
+                <RadioButton text="{path: 'i18n>capEmbedding', formatter: 'formatter.capEmbeddingRadioLabel'}"/>
+                <RadioButton text="{path: 'i18n>capImageGeneration', formatter: 'formatter.capImageGenerationRadioLabel'}"/>
+                <RadioButton text="{path: 'i18n>capImageRecognition', formatter: 'formatter.capImageRecognitionRadioLabel'}"/>
+                <RadioButton text="{path: 'i18n>capReasoning', formatter: 'formatter.capReasoningRadioLabel'}"/>
+                <RadioButton text="{path: 'i18n>capSpeechToText', formatter: 'formatter.capSpeechToTextRadioLabel'}"/>
+                <RadioButton text="{path: 'i18n>capText', formatter: 'formatter.capTextRadioLabel'}"/>
+              </RadioButtonGroup>
+            </Panel>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterInputTypes}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetInputTypesGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://sound" class="mlFilterIcon"/>
+                <CheckBox id="inAudio" text="{i18n>inAudio}" selected="{viewModel>/library/filters/inputTypes/audio}" select=".onFilterChange"/>
+              </HBox>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://image-viewer" class="mlFilterIcon"/>
+                <CheckBox id="inImage" text="{i18n>inImage}" selected="{viewModel>/library/filters/inputTypes/image}" select=".onFilterChange"/>
+              </HBox>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://text" class="mlFilterIcon"/>
+                <CheckBox id="inText" text="{i18n>inText}" selected="{viewModel>/library/filters/inputTypes/text}" select=".onFilterChange"/>
+              </HBox>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://video" class="mlFilterIcon"/>
+                <CheckBox id="inVideo" text="{i18n>inVideo}" selected="{viewModel>/library/filters/inputTypes/video}" select=".onFilterChange"/>
+              </HBox>
+            </Panel>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterProvisioning}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetProvisioningGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://cloud" class="mlFilterIcon"/>
+                <CheckBox id="provHosted" text="{i18n>provHosted}" tooltip="{i18n>provHostedTip}" selected="{viewModel>/library/filters/provisioning/hosted}" select=".onFilterChange"/>
+              </HBox>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://sap-box" class="mlFilterIcon"/>
+                <CheckBox id="provManaged" text="{i18n>provManaged}" tooltip="{i18n>provManagedTip}" selected="{viewModel>/library/filters/provisioning/managed}" select=".onFilterChange"/>
+              </HBox>
+              <HBox alignItems="Center">
+                <core:Icon src="sap-icon://chain-link" class="mlFilterIcon"/>
+                <CheckBox id="provRemote" text="{i18n>provRemote}" tooltip="{i18n>provRemoteTip}" selected="{viewModel>/library/filters/provisioning/remote}" select=".onFilterChange"/>
+              </HBox>
+            </Panel>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterAccessType}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetAccessTypeGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <CheckBox id="accessLlm" text="{i18n>accessLlm}" selected="{viewModel>/library/filters/accessType/llmAccess}" select=".onFilterChange"/>
+              <CheckBox id="accessOrchestration" text="{i18n>accessOrchestration}" selected="{viewModel>/library/filters/accessType/orchestration}" select=".onFilterChange"/>
+            </Panel>
+            <Panel expandable="true" expanded="true" backgroundDesign="Transparent">
+              <headerToolbar>
+                <Toolbar>
+                  <Title text="{i18n>filterOther}" level="H3"/>
+                  <ToolbarSpacer/>
+                  <Button icon="sap-icon://reset" type="Transparent" tooltip="{i18n>reset}" press=".onResetOtherGroup"/>
+                </Toolbar>
+              </headerToolbar>
+              <CheckBox id="otherLatest" text="{i18n>otherLatestOnly}" selected="{viewModel>/library/filters/other/latestOnly}" select=".onFilterChange"/>
+              <CheckBox id="otherStreaming" text="{i18n>otherStreaming}" selected="{viewModel>/library/filters/other/streaming}" select=".onFilterChange"/>
+              <CheckBox id="otherDeployments" text="{i18n>otherDeployments}" selected="{viewModel>/library/filters/other/deployments}" select=".onFilterChange"/>
+            </Panel>
+          </VBox>
+        </ScrollContainer>
+        <!-- Results -->
+        <VBox id="results" class="sapUiSmallMargin">
+          <OverflowToolbar id="resultsToolbar">
+            <Title id="modelsCount" text="{parts: ['i18n>modelsCount', 'viewModel>/library/count'], formatter: 'formatMessage'}" level="H2"/>
+            <Label text="Mode:" class="sapUiTinyMarginBegin"/>
+            <SegmentedButton id="modeButton" selectedKey="{viewModel>/library/mode}" selectionChange=".onModeChange">
+              <items>
+                <SegmentedButtonItem key="catalog" icon="sap-icon://grid" text="{i18n>modeCatalog}"/>
+                <SegmentedButtonItem key="leaderboard" icon="sap-icon://table-view" text="{i18n>modeLeaderboard}"/>
+                <SegmentedButtonItem key="chart" icon="sap-icon://bubble-chart" text="{i18n>modeChart}"/>
+              </items>
+            </SegmentedButton>
+            <ToolbarSpacer/>
+            <SearchField id="searchField" width="16rem" placeholder="{i18n>searchPlaceholder}" search=".onSearch" liveChange=".onSearchLive">
+              <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+            </SearchField>
+          </OverflowToolbar>
+          <Text text="{i18n>catalogHint}" visible="{= ${viewModel>/library/mode} === 'catalog'}" class="sapUiTinyMarginTop"/>
+          <HBox visible="{= ${viewModel>/library/mode} !== 'catalog'}" alignItems="Baseline" wrap="Wrap" class="sapUiTinyMarginTop">
+            <Text text="{i18n>leaderboardHint}" class="sapUiTinyMarginEnd"/>
+            <Text id="scoredModelsCount" text="{parts: ['i18n>scoredCount', 'viewModel>/library/leaderboard/scoredCount'], formatter: 'formatMessage'}"/>
+          </HBox>
+          <HBox alignItems="Center" wrap="Wrap" class="sapUiTinyMarginTop">
+            <Label text="{i18n>viewSettings}" class="sapUiTinyMarginEnd"/>
+            <HBox id="activeFilters" wrap="Wrap" items="{viewModel>/library/activeTokens}">
+              <Token text="{viewModel>text}" key="{viewModel>key}" editable="true" delete=".onTokenReset" class="sapUiTinyMarginEnd"/>
+            </HBox>
+          </HBox>
+          <!-- Catalog mode -->
+          <f:GridContainer id="grid" visible="{= ${viewModel>/library/mode} === 'catalog'}"
+            items="{path: '/LibraryModels', parameters: {$count: true, $orderby: 'displayName,modelId'}, events: {dataReceived: '.onDataReceived'}}">
+            <f:layout><f:GridContainerSettings rowSize="5rem" columnSize="13.5rem" gap="0.75rem"/></f:layout>
+            <f:Card class="mlCard" press=".onCardPress">
+              <f:layoutData><f:GridContainerItemLayoutData columns="1" minRows="2"/></f:layoutData>
+              <f:content>
+                <VBox class="sapUiSmallMargin">
+                  <CheckBox visible="{viewModel>/library/selectMode}" select=".onCardSelect" class="sapUiTinyMarginBottom"/>
+                  <HBox alignItems="Center" class="sapUiTinyMarginBottom">
+                    <Avatar displaySize="XS" displayShape="Square" src="{path: 'provider', formatter: 'formatter.providerSrc'}" initials="{path: 'provider', formatter: 'formatter.providerInitials'}" class="sapUiTinyMarginEnd"/>
+                    <VBox>
+                      <Text text="{displayName}" class="mlCardName"/>
+                      <Text text="({modelId})" class="mlCardId"/>
+                    </VBox>
+                  </HBox>
+                  <Text text="{path: 'latestVersion', formatter: 'formatter.version'}"/>
+                  <ObjectStatus text="{i18n>deployed}" state="Success" icon="sap-icon://cloud" visible="{parts: [{path: 'modelId', targetType: 'any'}, {path: 'accessType', targetType: 'any'}, {path: 'viewModel>/library/deployedBaseModels'}], formatter: 'formatter.isDeployed'}"/>
+                  <ObjectStatus text="{i18n>deploymentRow}" state="Information" visible="{path: 'accessType', targetType: 'any', formatter: 'formatter.isDeployment'}"/>
+                  <ObjectStatus text="{path: 'retirementDate', targetType: 'any', formatter: 'formatter.retires'}" state="Warning" visible="{= !!${retirementDate} }"/>
+                  <ObjectStatus text="{i18n>deploymentOnly}" state="Information" tooltip="{i18n>deploymentOnlyTip}" visible="{parts: [{path: 'accessType', targetType: 'any'}, {path: 'llmAccess', targetType: 'any'}, {path: 'orchestration', targetType: 'any'}], formatter: 'formatter.deploymentOnly'}"/>
+                  <ObjectStatus text="{i18n>notCallable}" state="Warning" tooltip="{i18n>notCallableTip}" visible="{parts: [{path: 'accessType', targetType: 'any'}, {path: 'llmAccess', targetType: 'any'}, {path: 'orchestration', targetType: 'any'}], formatter: 'formatter.notCallable'}"/>
+                  <ctl:IconStrip capabilities="{capabilities}" inputTypes="{inputTypes}" class="sapUiTinyMarginTop"/>
+                </VBox>
+              </f:content>
+            </f:Card>
+          </f:GridContainer>
+          <!-- Leaderboard and chart are filled by Task 3 (the chart is the self-contained SVG control webapp/control/BubbleChart.ts) -->
+          <table:Table id="leaderboard" visible="{= ${viewModel>/library/mode} === 'leaderboard'}" rows="{viewModel>/library/leaderboard/rows}" selectionMode="None" visibleRowCountMode="Auto" minAutoRowCount="10"/>
+          <VBox id="chartBox" visible="{= ${viewModel>/library/mode} === 'chart'}">
+            <HBox alignItems="Center" class="sapUiSmallMarginBottom">
+              <Label text="X-Axis:" class="sapUiTinyMarginEnd"/>
+              <Select id="chartX" selectedKey="{viewModel>/library/chart/x}" items="{viewModel>/library/chart/keys}" change=".onChartAxisChange"><core:Item key="{viewModel>key}" text="{viewModel>label}"/></Select>
+              <Button icon="sap-icon://synchronize" tooltip="Swap X and Y axes" press=".onSwapAxes" class="sapUiTinyMarginBeginEnd"/>
+              <Label text="Y-Axis:" class="sapUiTinyMarginEnd"/>
+              <Select id="chartY" selectedKey="{viewModel>/library/chart/y}" items="{viewModel>/library/chart/keys}" change=".onChartAxisChange"><core:Item key="{viewModel>key}" text="{viewModel>label}"/></Select>
+            </HBox>
+            <HBox alignItems="Start">
+              <ctl:BubbleChart id="chart" points="{viewModel>/library/chart/points}" xLabel="{viewModel>/library/chart/xLabel}" yLabel="{viewModel>/library/chart/yLabel}" height="480px" press=".onChartBubblePress" class="sapUiTinyMarginEnd"/>
+              <!-- C2: legend, one row per point — a coloured dot ("color", set by the controller
+                   from chartLayout.colorForIndex, the same colour as the matching bubble) plus
+                   "<name> - <version>" (the point's "label", already built by benchmarks.chartPoints). -->
+              <List id="chartLegend" items="{viewModel>/library/chart/points}" showSeparators="None" class="mlChartLegend">
+                <items>
+                  <CustomListItem>
+                    <HBox alignItems="Center" class="mlChartLegendRow">
+                      <core:Icon src="sap-icon://circle-task-2" size="0.75rem" color="{viewModel>color}"/>
+                      <Text text="{viewModel>label}" class="mlLegendLabel"/>
+                    </HBox>
+                  </CustomListItem>
+                </items>
+              </List>
+            </HBox>
+          </VBox>
+        </VBox>
+      </l:Splitter>
+    </f:content>
+  </f:DynamicPage>
+</mvc:View>

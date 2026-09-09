@@ -13,6 +13,12 @@
  */
 import { Request } from 'express';
 
+/** ::ffff:203.0.113.7 -> 203.0.113.7; every other address as received (columns are String(45)). */
+export function normalizeIp(ip: string): string {
+  const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(String(ip).trim());
+  return m ? m[1] : String(ip).trim();
+}
+
 export function getClientIp(req: Request, trustForwardedFor: boolean): string {
   if (!trustForwardedFor) {
     // req.ip is derived from X-Forwarded-For whenever Express's `trust proxy` is
@@ -22,7 +28,7 @@ export function getClientIp(req: Request, trustForwardedFor: boolean): string {
       (req as any)?.socket?.remoteAddress ||
       (req as any)?.connection?.remoteAddress ||
       '';
-    return socketPeer || 'unknown';
+    return normalizeIp(socketPeer) || 'unknown';
   }
 
   const peer =
@@ -34,7 +40,7 @@ export function getClientIp(req: Request, trustForwardedFor: boolean): string {
   // nginx sets X-Real-IP with proxy_set_header, which overwrites rather than appends,
   // so it cannot carry a client-supplied value through a correctly configured proxy.
   const realIp = (req.headers?.['x-real-ip'] as string | undefined)?.trim();
-  if (realIp) return realIp;
+  if (realIp) return normalizeIp(realIp);
 
   // X-Forwarded-For is append-only, so the entry added by the nearest trusted proxy is
   // the LAST one. Never take [0] — that is the client's own claim.
@@ -42,8 +48,8 @@ export function getClientIp(req: Request, trustForwardedFor: boolean): string {
   const chain = Array.isArray(forwarded) ? forwarded.join(',') : (forwarded as string | undefined);
   if (chain) {
     const parts = chain.split(',').map(p => p.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
+    if (parts.length > 0) return normalizeIp(parts[parts.length - 1]);
   }
 
-  return peer || 'unknown';
+  return normalizeIp(peer) || 'unknown';
 }

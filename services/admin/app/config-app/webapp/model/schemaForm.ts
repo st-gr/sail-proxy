@@ -108,7 +108,18 @@ export type Descriptor =
       kind: 'number';
       pointer: string;
       label: string;
-      value: number;
+      /**
+       * `null` where the field is `nullable` and the document has it empty - the value the schema
+       * itself gives that meaning to (`platform.quotas.*`: null = unlimited). It is written back
+       * into the document as `null`, not as 0 and not as a missing key.
+       */
+      value: number | null;
+      /**
+       * The schema declares this field as a union with `"null"` in it, so EMPTY is a value it may
+       * take. The control renders an Input rather than a StepInput for such a field - a StepInput
+       * has no empty state at all - and writes `null` when it is cleared. See `narrowType`.
+       */
+      nullable?: boolean;
       /**
        * The schema said `type: "integer"`, not `type: "number"`. The control renders every number
        * as a `StepInput`, whose default `step: 1`/`displayValuePrecision: 0` silently ROUNDS a
@@ -153,7 +164,25 @@ export type Descriptor =
       description?: string;
       required?: boolean;
     }
-  | { kind: 'text'; pointer: string; label: string; value: string; pattern?: string; minLength?: number; maxLength?: number; description?: string; required?: boolean }
+  | {
+      kind: 'text';
+      pointer: string;
+      label: string;
+      /** An empty field is the empty string; `nullable` is what makes it `null` in the document. */
+      value: string;
+      /**
+       * The schema declares this field as a union with `"null"` in it (today
+       * `platform.maintenance.dailyRunAtUtc`), so an emptied field writes `null` rather than `""`
+       * - which the schema's own `pattern` would reject - and the pattern and length checks are
+       * skipped while it is empty. See `narrowType`.
+       */
+      nullable?: boolean;
+      pattern?: string;
+      minLength?: number;
+      maxLength?: number;
+      description?: string;
+      required?: boolean;
+    }
   | {
       kind: 'section';
       pointer: string;
@@ -453,7 +482,7 @@ function schemaValuedAdditional(schema: JsonSchemaNode): JsonSchemaNode | undefi
  * key), so neither makes a map - the same rule `buildChildren` follows, which is why
  * `$defs/modelOverride` (open, `additionalProperties: true`) is an entry rather than a map itself.
  *
- * A node may declare BOTH named `properties` and a dynamic rule - `providers` names its five
+ * A node may declare BOTH named `properties` and a dynamic rule - `providers` names its six
  * readable providers, `hooks.defaults.<endpoint>` names `pseudonymization` - and is still a map:
  * the declared keys are entries the schema happens to be able to title.
  */
@@ -772,7 +801,9 @@ function buildChildren(
 /**
  * Folds an object schema's composing `allOf` branches into the node itself, so a schema written as
  * "everything `$defs/providerCommon` says, plus these extra fields" renders as one set of fields
- * rather than as nothing at all. The five `providers` entries are the such nodes in this schema:
+ * rather than as nothing at all. Five of the six `providers` entries are the such nodes in this
+ * schema (`google` is the exception - it declares its own `properties` with one targeted `$ref` and
+ * needs no folding):
  * each is a bare `{ allOf: [ { $ref: providerCommon }, <its own extension> ] }` with no `type` and no
  * `properties` of its own, so without this every one of their fields - the six common ones and
  * whatever that provider adds - degrades to a single `raw` JSON blob for the whole provider.
@@ -786,7 +817,8 @@ function buildChildren(
  * node states none. `additionalProperties` is deliberately NOT inherited from a branch: draft-07
  * scopes it to the schema object that declares it - which is exactly why a composed node cannot be
  * closed with an `additionalProperties: false` of its own (it would reject the branch's own fields)
- * and the five providers are closed with `propertyNames` instead - so copying a branch's up here
+ * and those five providers are closed with `propertyNames` instead (`google`, which composes
+ * nothing, can and does use `additionalProperties: false`) - so copying a branch's up here
  * would describe keys the composed node does not actually declare.
  */
 function composeAllOf(schema: JsonSchemaNode, rootSchema: JsonSchemaNode): JsonSchemaNode {
@@ -938,16 +970,25 @@ function buildNode(
       kind: 'number',
       pointer,
       label,
-      value: data as number,
+      value: data as number | null,
       integer: schemaType === 'integer'
     };
+    if (isNullable(declaredType)) descriptor.nullable = true;
     if (typeof schema.multipleOf === 'number') descriptor.multipleOf = schema.multipleOf;
     if (typeof schema.minimum === 'number') descriptor.minimum = schema.minimum;
     if (typeof schema.maximum === 'number') descriptor.maximum = schema.maximum;
     return withDescription(descriptor, schema);
   }
   if (schemaType === 'string') {
-    const descriptor: Extract<Descriptor, { kind: 'text' }> = { kind: 'text', pointer, label, value: data as string };
+    // A control's value is a string, so a nullable field the document has empty renders as "";
+    // `nullable` below is what turns that back into `null` on the way out.
+    const descriptor: Extract<Descriptor, { kind: 'text' }> = {
+      kind: 'text',
+      pointer,
+      label,
+      value: data === null ? '' : (data as string)
+    };
+    if (isNullable(declaredType)) descriptor.nullable = true;
     if (typeof schema.pattern === 'string') descriptor.pattern = schema.pattern;
     if (typeof schema.minLength === 'number') descriptor.minLength = schema.minLength;
     if (typeof schema.maxLength === 'number') descriptor.maxLength = schema.maxLength;
@@ -1320,18 +1361,38 @@ function buildItemSection(
  * has already been checked against the whole union by Rule 2 above, so a member always matches when
  * there is data at all; with no data to narrow by - an optional union the document never set - the
  * first member is used, which renders an empty control of that type rather than a blob.
+ *
+ * `"null"` is the one member that is never narrowed TO while another one is left, and that
+ * exception is the whole of `nullable`. A union with `"null"` in it - every `platform.quotas.*`
+ * field, `platform.maintenance.dailyRunAtUtc` - says the field may be EMPTY, not that empty is a
+ * type to render: matching the data's own `null` against it returned `"null"`, which no rule below
+ * renders, so the field degraded to a JSON blob reading "Unsupported schema shape (type: null)".
+ * Dropping it leaves the type the field actually has, and `isNullable` carries the permission to
+ * be empty onto the descriptor instead, where the control can offer it.
+ *
+ * Exported for the unit test that pins exactly this, and for nothing else in the app.
  */
-function narrowType(schemaType: string | string[] | undefined, data: unknown): string | string[] | undefined {
+export function narrowType(schemaType: string | string[] | undefined, data: unknown): string | string[] | undefined {
   if (!Array.isArray(schemaType) || schemaType.length === 0) {
     return schemaType;
   }
+  // `["null"]` alone has nothing else to be read as, so it still reads as null and still degrades.
+  const members = schemaType.filter(t => t !== 'null');
+  if (members.length === 0) {
+    return schemaType[0];
+  }
   if (data !== undefined) {
-    const match = schemaType.filter(t => typeMatches(t, data));
+    const match = members.filter(t => typeMatches(t, data));
     if (match.length > 0) {
       return match[0];
     }
   }
-  return schemaType[0];
+  return members[0];
+}
+
+/** Whether a declared type says the field may be empty - see `narrowType`. */
+function isNullable(declaredType: string | string[] | undefined): boolean {
+  return Array.isArray(declaredType) && declaredType.includes('null') && declaredType.length > 1;
 }
 
 function typeMatches(schemaType: string | string[], data: unknown): boolean {
@@ -1380,9 +1441,9 @@ export function resolveRef(schema: JsonSchemaNode, rootSchema: JsonSchemaNode, s
  * has no `$ref` support at all (see its header) and would read an unexpanded `{ "$ref": ... }` as
  * an empty schema that accepts everything - a fail-OPEN gate. `apiConfigGroups.ts` hands each
  * section's schema to `buildDescriptors`, which treats the schema it is given as the root for
- * `resolveRef`: a `$ref` living inside a section (`$defs/providerCommon`, under the `allOf` of
- * every one of the five providers) cannot be resolved from the section subtree, so without this the
- * whole provider degraded to one `raw` JSON blob.
+ * `resolveRef`: a `$ref` living inside a section (`$defs/providerCommon`, under the `allOf` of five
+ * of the six providers, and as a targeted property `$ref` under `google`) cannot be resolved from
+ * the section subtree, so without this the whole provider degraded to one `raw` JSON blob.
  *
  * Structural sharing is deliberate: a node containing no `$ref` anywhere below it is returned as
  * itself, not as a copy. A `$ref`-free section (every one but the providers) is therefore still
@@ -1391,7 +1452,7 @@ export function resolveRef(schema: JsonSchemaNode, rootSchema: JsonSchemaNode, s
  * document schema. Nothing here mutates its input.
  *
  * `seen` guards a chain of `$ref`s repeating along one path from root to leaf; the same `$ref` used
- * from two different branches (`providerCommon` from each of the five providers) is not a cycle
+ * from two different branches (`providerCommon` from each of the five composing providers) is not a cycle
  * and must not be treated as one, so a fresh copy of `seen` is threaded per branch rather than one
  * set mutated across the whole walk.
  */

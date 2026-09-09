@@ -21,7 +21,12 @@ service AdminService {
     
     // Bound action authorization
     { grant: 'rotateApiKey', to: 'user', where: 'email = $user.id' },
-    { grant: 'rotateApiKey', to: 'admin' }
+    { grant: 'rotateApiKey', to: 'admin' },
+
+    // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
+    // return what is stored, the gateway enforces it on the next request after cache invalidation.
+    { grant: 'setRateLimits', to: 'user', where: 'email = $user.id' },
+    { grant: 'setRateLimits', to: 'admin' }
   ])
   entity ApiKeys as projection on admin.ApiKeys {
     ID,
@@ -35,9 +40,13 @@ service AdminService {
     deletedAt,
     expiresAt,
     neverExpires,
+    lockedByUserDeactivation @readonly,
     isActiveFC,
     expiresAtFC,
     neverExpiresFC,
+    requestsPerMinute,
+    requestsPerHour,
+    requestsPerDay,
     createdAt,
     createdBy,
     modifiedAt,
@@ -52,6 +61,11 @@ service AdminService {
       newMaskedKey: String;
       message: String;
     };
+
+    // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
+    // return what is stored, the gateway enforces it on the next request after cache invalidation.
+    action setRateLimits(requestsPerMinute : Integer, requestsPerHour : Integer, requestsPerDay : Integer)
+      returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
   };
 
   
@@ -107,7 +121,12 @@ service AdminService {
     { grant: 'enableAwsCredentials', to: 'admin' },
     { grant: 'disableAwsCredentials', to: 'admin' },
     { grant: 'deleteAwsCredentials', to: 'user', where: 'email = $user.id' },
-    { grant: 'deleteAwsCredentials', to: 'admin' }
+    { grant: 'deleteAwsCredentials', to: 'admin' },
+
+    // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
+    // return what is stored, the gateway enforces it on the next request after cache invalidation.
+    { grant: 'setRateLimits', to: 'user', where: 'email = $user.id' },
+    { grant: 'setRateLimits', to: 'admin' }
   ])
   entity AwsCredentials as projection on admin.AwsCredentials {
     *
@@ -140,6 +159,11 @@ service AdminService {
       success: Boolean;
       message: String;
     };
+
+    // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
+    // return what is stored, the gateway enforces it on the next request after cache invalidation.
+    action setRateLimits(requestsPerMinute : Integer, requestsPerHour : Integer, requestsPerDay : Integer)
+      returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
   };
   
   // Computed fields are added by service handlers, not in projection
@@ -162,7 +186,11 @@ service AdminService {
       'createdAt', 'createdBy', 'modifiedAt', 'modifiedBy', 'accessKeyId', 'secretAccessKey'
     ]
   };
-  
+
+  // lockedByUserDeactivation is lifecycle-owned (userLifecycleService); AwsCredentials has no
+  // element list to annotate in place (a `* excluding` projection), so it's server-owned here.
+  annotate AdminService.AwsCredentials with { lockedByUserDeactivation @readonly; };
+
   // These computed fields will be added in service handlers
   
   @readonly
@@ -285,6 +313,7 @@ service AdminService {
     { grant: 'unpinNotification', to: 'admin' },
     { grant: 'deleteSecurityNotification', to: 'admin' }
   ])
+  @cds.search: { title, message, ownerEmail, eventType, clientIP, userAgent, endpoint, requestId }
   entity MySecurityNotifications as projection on admin.SecurityNotifications {
     ID,
     createdAt,
@@ -301,6 +330,11 @@ service AdminService {
     actionable,
     actionText,
     actionUrl,
+    // Request context of the source event (read-only; rotation notifications carry none)
+    clientIP,
+    userAgent,
+    endpoint,
+    requestId,
     // User state fields - Using cast to ensure proper timestamp type in PostgreSQL
     // These will be populated by afterRead handler from SecurityNotificationUserState
     cast(null as Timestamp) as seenAt : Timestamp,
@@ -1154,6 +1188,255 @@ service AdminService {
     success: Boolean;
     message: String;
   };
+
+  // ========================================
+  // Model Library and Entitlements & Quotas
+  // ========================================
+  //
+  // LibraryModels is the snapshot of the gateway's /v1/models list (modelCostService.
+  // upsertLibrarySnapshot). Reads are filtered per caller in admin-service-library.ts:
+  // a user sees only the effective set of their assigned catalog (or the default minus its
+  // exclusions); admins see everything. Catalogs form a two-level hierarchy (admin catalogs
+  // and the default as parents, user catalogs as children); members are maintained through
+  // the bound actions, never by deep insert (see modelEntitlementService.ts).
+
+  @readonly
+  @cds.search: { displayName, modelId, description, provider }
+  entity LibraryModels as projection on admin.LibraryModels;
+
+  @(restrict: [
+    // A bound action is authorized against the entity's own @restrict with the action name as
+    // the event, so every action has to be granted here as well - the @(requires: 'admin') on
+    // excludeModels/includeModels is what still keeps plain users out of those two.
+    { grant: ['READ', 'CREATE', 'UPDATE', 'DELETE', 'addModels', 'removeModels', 'excludeModels', 'includeModels'], to: 'admin' },
+    { grant: ['READ', 'CREATE', 'UPDATE', 'DELETE', 'addModels', 'removeModels'], to: 'user' }   // rows and columns narrowed in before-handlers
+  ])
+  entity ModelCatalogs as projection on admin.ModelCatalogs;
+
+  @readonly
+  entity ModelCatalogMembers as projection on admin.ModelCatalogMembers;
+
+  @readonly
+  entity ModelCatalogExclusions as projection on admin.ModelCatalogExclusions;
+
+  // Legacy: drained into Users.entitlementCatalog by the startup migration
+  // (usersService.migrateCatalogAssignments); stays declared, empty, for one release.
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity ModelCatalogAssignments as projection on admin.ModelCatalogAssignments;
+
+  @readonly
+  entity ModelPrices as projection on admin.ModelCosts {
+    ID, model, displayName, dateFrom, dateTo, inputCost, outputCost,
+    cacheReadInputCost, cacheCreationInputCost, provider, version, source, createdAt, createdBy
+  };
+
+  type PruneResult { prunedFromChildren : Integer; }
+  type ConfigContext {
+    override         : LargeString;   // JSON of models.overrides.<modelId> or null
+    providerSettings : LargeString;   // JSON of providers.<provider> or null
+    cuFactor         : Decimal(10,5);
+    cuFactorSource   : String(8);     // config | default
+    productive       : Boolean;
+  }
+  type ManualPriceResult {
+    ID : UUID; model : String(100); inputCost : Decimal(10,6); outputCost : Decimal(10,6);
+    cacheReadInputCost : Decimal(10,6); cacheCreationInputCost : Decimal(10,6);
+    source : String(8); dateFrom : Timestamp;
+  }
+
+  extend entity AdminService.LibraryModels with actions {
+    @(requires: 'admin')
+    action setPrice(inputCost : Decimal(10,6), outputCost : Decimal(10,6),
+                    cacheReadInputCost : Decimal(10,6), cacheCreationInputCost : Decimal(10,6)) returns ManualPriceResult;
+    @(requires: 'admin')
+    action revertToSapPrice() returns ManualPriceResult;
+    function configContext() returns ConfigContext;
+    @(requires: 'admin')
+    function fetchDeployments() returns array of {
+      id : String; status : String; configurationId : String; configurationName : String;
+      createdAt : String; deploymentUrl : String; modelVersion : String;
+    };
+    @(requires: 'admin')
+    action deploy() returns { deploymentId : String; status : String; configurationId : String; reusedConfiguration : Boolean; };
+  };
+
+  extend entity AdminService.ModelCatalogs with actions {
+    action addModels(modelIds : array of String) returns { added : Integer; prunedFromChildren : Integer; };
+    action removeModels(modelIds : array of String) returns { removed : Integer; prunedFromChildren : Integer; };
+    @(requires: 'admin')
+    action excludeModels(modelIds : array of String, reason : String) returns { excluded : Integer; prunedFromChildren : Integer; };
+    @(requires: 'admin')
+    action includeModels(modelIds : array of String) returns { included : Integer; };
+  };
+
+  @(requires: 'admin')
+  action refreshModelLibrary() returns { models : Integer; deployments : Integer; absent : Integer; };
+
+  function myEntitlement() returns {
+    catalog  : { ID : UUID; name : String; isDefault : Boolean; };
+    modelIds : array of String;
+    unrestricted : Boolean;
+  };
+
+  @(requires: 'admin')
+  action assignCatalog(email : String, catalogId : UUID) returns PruneResult;
+  @(requires: 'admin')
+  action unassignCatalog(email : String) returns PruneResult;
+  @(requires: 'admin')
+  function libraryUsers() returns array of { email : String; displayName : String; status : String; catalogId : UUID; catalogName : String; };
+
+  @(requires: 'admin')
+  function deploymentStatus(deploymentId : String) returns { status : String; deploymentUrl : String; };
+
+  // ========================================
+  // Users & quotas (spec §4)
+  // ========================================
+  type QuotaLimits {
+    requestsPerMinute : Integer; spendPerDay : Decimal(12,4); spendPerWeek : Decimal(12,4); spendPerMonth : Decimal(12,4);
+    tokensPerDay : Integer64; tokensPerWeek : Integer64; tokensPerMonth : Integer64;
+  }
+  type QuotaLimitSources {
+    requestsPerMinute : String(9); spendPerDay : String(9); spendPerWeek : String(9); spendPerMonth : String(9);
+    tokensPerDay : String(9); tokensPerWeek : String(9); tokensPerMonth : String(9);
+  }
+  type QuotaWindowUsage { requests : Integer; tokens : Integer64; sapCost : Decimal(12,6); }
+  type QuotaStatus {
+    email : String(255); status : String(12); roles : array of String;
+    limits : QuotaLimits; limitSource : QuotaLimitSources; quotaProfileName : String(100); sapCostCurrency : String(3);
+    used : { minuteRequests : Decimal(10,2); day : QuotaWindowUsage; week : QuotaWindowUsage; month : QuotaWindowUsage; };
+    remaining : { spendDay : Decimal(12,6); spendWeek : Decimal(12,6); spendMonth : Decimal(12,6);
+                  tokensDay : Integer64; tokensWeek : Integer64; tokensMonth : Integer64; };
+    resetsAt : { day : Timestamp; week : Timestamp; month : Timestamp; };
+    quotaResetAt : Timestamp; lastSeenAt : Timestamp;
+  }
+  // The home screen's key-metric tiles (usageSummaryService): this calendar month, UTC. `sapCost` is
+  // the total in `sapCostCurrency` only; other currencies with cost this month are named, not summed.
+  type UsageSummary {
+    scope : String(4);            // 'self' (the caller's own usage) or 'all' (every user; administrators)
+    monthStart : Date;
+    requests : Integer64; tokens : Integer64; users : Integer;
+    sapCost : Decimal(14,6); sapCostCurrency : String(3); otherCurrencies : array of String(3);
+  }
+  type UserLifecycleResult {
+    email : String(255); status : String(12);
+    lockedApiKeys : Integer; lockedAwsCredentials : Integer; restoredApiKeys : Integer; restoredAwsCredentials : Integer;
+    cacheInvalidated : Boolean;
+  }
+  type QuotaResetResult { email : String(255); ok : Boolean; message : String; quotaResetAt : Timestamp; }
+  type CounterRebuildResult { email : String(255); ok : Boolean; buckets : Integer; message : String; }
+
+  @odata.draft.enabled
+  @cds.redirection.target: true
+  @(Capabilities: { InsertRestrictions: { Insertable: false }, DeleteRestrictions: { Deletable: false } })
+  @(restrict: [
+    { grant: ['READ', 'UPDATE', 'deactivate', 'reactivate', 'resetQuota'], to: 'admin' }
+  ])
+  entity Users as projection on admin.Users {
+    *,
+    // usage figures and effective limits from userQuotaService.status (afterReadUsers), never persisted
+    virtual null as usedRequestsMinute : Decimal(10,2) @Core.Computed,
+    // the currency every spend figure and spend limit below is denominated in (the active SAP
+    // capacity-unit price's currency); the users-app's @Measures.ISOCurrency on the used-spend
+    // figures points here. The effective limits carry their own copy that is null when the limit
+    // is null: Fiori Elements renders a unit beside an empty amount, and "USD" alone in a limit
+    // column reads as a broken value rather than "unlimited".
+    virtual null as sapCostCurrency : String(3) @Core.Computed,
+    // The assigned quota profile's name (null when the user carries none). The association itself
+    // is written ONLY by assignQuotaProfile/unassignQuotaProfile - the draft's read-only guard
+    // refuses a PATCH of quotaProfile_ID (admin-service-users.ts).
+    virtual null as quotaProfileName : String(100) @Core.Computed,
+    // the value that applies when the constraint is empty, and where it comes from (spec §4.2)
+    virtual null as requestsPerMinuteDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerDayDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerWeekDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerMonthDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerDayDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerWeekDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerMonthDefaultText : String(60) @Core.Computed,
+    virtual null as effectiveSpendPerDayCurrency : String(3) @Core.Computed,
+    virtual null as effectiveSpendPerWeekCurrency : String(3) @Core.Computed,
+    virtual null as effectiveSpendPerMonthCurrency : String(3) @Core.Computed,
+    virtual null as usedSpendDay : Decimal(12,6) @Core.Computed,
+    virtual null as usedSpendWeek : Decimal(12,6) @Core.Computed,
+    virtual null as usedSpendMonth : Decimal(12,6) @Core.Computed,
+    virtual null as usedTokensDay : Integer64 @Core.Computed,
+    virtual null as usedTokensWeek : Integer64 @Core.Computed,
+    virtual null as usedTokensMonth : Integer64 @Core.Computed,
+    virtual null as effectiveRequestsPerMinute : Integer @Core.Computed,
+    virtual null as effectiveSpendPerDay : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveSpendPerWeek : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveSpendPerMonth : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveTokensPerDay : Integer64 @Core.Computed,
+    virtual null as effectiveTokensPerWeek : Integer64 @Core.Computed,
+    virtual null as effectiveTokensPerMonth : Integer64 @Core.Computed,
+    virtual null as limitSourceRequestsPerMinute : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerDay : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerWeek : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerMonth : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerDay : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerWeek : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerMonth : String(9) @Core.Computed,
+    virtual null as resetsAtDay : Timestamp @Core.Computed,
+    virtual null as resetsAtWeek : Timestamp @Core.Computed,
+    virtual null as resetsAtMonth : Timestamp @Core.Computed,
+    virtual null as canDeactivate : Boolean @Core.Computed,
+    virtual null as canReactivate : Boolean @Core.Computed,
+    // Plan B (the Fiori app) criticality for the status field: 3 = active (positive), 1 = deactivated
+    // (critical); set in afterReadUsers alongside canDeactivate/canReactivate.
+    virtual null as statusCriticality : Integer @Core.Computed,
+    apiKeys : Association to many ApiKeys on apiKeys.email = $self.email,
+    awsCredentials : Association to many AwsCredentials on awsCredentials.email = $self.email
+  } actions {
+    action deactivate(reason : String(500)) returns UserLifecycleResult;
+    action reactivate() returns UserLifecycleResult;
+    action resetQuota() returns QuotaResetResult;
+  };
+
+  // A named set of the seven limits an administrator assigns per user (spec 2026-09-08 §2). Sits
+  // between the user's own values and platform.quotas; the name is unique and trimmed, the window
+  // order is enforced like a user's own constraints, and a profile that is still assigned cannot be
+  // deleted (admin-service-quota-profiles.ts).
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }])
+  entity QuotaProfiles as projection on admin.QuotaProfiles;
+
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity UserCredentials as projection on admin.UserCredentials;
+
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity UserQuotaStatus {
+    key email : String(255); status : String(12); lastSeenAt : Timestamp; quotaResetAt : Timestamp;
+    requestsPerMinute : Integer; spendPerDay : Decimal(12,4); spendPerWeek : Decimal(12,4); spendPerMonth : Decimal(12,4);
+    tokensPerDay : Integer64; tokensPerWeek : Integer64; tokensPerMonth : Integer64;
+    sapCostCurrency : String(3); quotaProfileName : String(100);
+    limitSourceRequestsPerMinute : String(9); limitSourceSpendPerDay : String(9); limitSourceSpendPerWeek : String(9); limitSourceSpendPerMonth : String(9);
+    limitSourceTokensPerDay : String(9); limitSourceTokensPerWeek : String(9); limitSourceTokensPerMonth : String(9);
+    usedRequestsMinute : Decimal(10,2); usedSpendDay : Decimal(12,6); usedSpendWeek : Decimal(12,6); usedSpendMonth : Decimal(12,6);
+    usedTokensDay : Integer64; usedTokensWeek : Integer64; usedTokensMonth : Integer64;
+    remainingSpendDay : Decimal(12,6); remainingSpendWeek : Decimal(12,6); remainingSpendMonth : Decimal(12,6);
+    remainingTokensDay : Integer64; remainingTokensWeek : Integer64; remainingTokensMonth : Integer64;
+    resetsAtDay : Timestamp; resetsAtWeek : Timestamp; resetsAtMonth : Timestamp;
+  };
+
+  @(requires: 'admin') action deactivateUser(email : String(255), reason : String(500)) returns UserLifecycleResult;
+  @(requires: 'admin') action reactivateUser(email : String(255)) returns UserLifecycleResult;
+  @(requires: 'admin') action resetUserQuotas(emails : array of String) returns array of QuotaResetResult;
+  @(requires: 'admin') action rebuildUsageCounters(emails : array of String) returns array of CounterRebuildResult;
+  @(requires: 'admin') action setUserConstraints(email : String(255), constraints : QuotaLimits) returns Users;
+  // The ONLY write path for Users.quotaProfile_ID: both audit, republish the user's quota document
+  // and invalidate their credential cache (spec 2026-09-08 §3).
+  @(requires: 'admin') action assignQuotaProfile(email : String(255), profileId : UUID) returns Users;
+  @(requires: 'admin') action unassignQuotaProfile(email : String(255)) returns Users;
+  @(requires: 'admin') function quotaProfileUsers() returns array of {
+    email : String(255); displayName : String(255); status : String(12); profileId : UUID; profileName : String(100);
+  };
+  @(requires: 'admin') function userQuotaStatus(email : String(255)) returns QuotaStatus;
+  function myQuotaStatus() returns QuotaStatus;
+  /** This month's usage: the caller's own, or every user's for an administrator (the home tiles). */
+  function myUsageSummary() returns UsageSummary;
 }
 
 // ========================================

@@ -1,0 +1,12 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+    <VBox id="myQuotaCompact" class="sapUiSmallMarginBottom">
+        <Title text="My quota" class="sapUiTinyMarginBottom"/>
+        <MessageStrip id="myQuotaCompactDeactivated" text="{quota>/statusText}" type="Error" showIcon="true" visible="{quota>/deactivated}" class="sapUiTinyMarginBottom"/>
+        <MessageStrip id="myQuotaCompactUnavailable" text="{quota>/statusText}" type="Information" showIcon="true" visible="{= !${quota>/available} }" class="sapUiTinyMarginBottom"/>
+        <List id="myQuotaCompactList" items="{quota>/rows}" showSeparators="None" visible="{quota>/available}">
+            <CustomListItem>
+                <Text text="{quota>label}: {quota>used} / {quota>limit}" class="sapUiTinyMargin"/>
+            </CustomListItem>
+        </List>
+    </VBox>
+</core:FragmentDefinition>

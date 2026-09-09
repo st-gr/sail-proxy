@@ -1,0 +1,25 @@
+{
+  "name": "admin.modellibrary",
+  "version": "1.0.0",
+  "description": "SAP UI5 Model Library and Entitlements & Quotas",
+  "author": "SAP SE",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "start": "ui5 serve --open /index.html",
+    "build": "ui5 build --dest dist",
+    "generate:marks": "ts-node --project scripts/tsconfig.json scripts/generate-provider-marks.ts",
+    "test": "npm run build"
+  },
+  "devDependencies": {
+    "@lobehub/icons-static-svg": "1.95.0",
+    "@ui5/cli": "^4.0.16",
+    "simple-icons": "16.30.0",
+    "ts-node": "^10.9.1",
+    "ui5-tooling-modules": "^3.27.3",
+    "ui5-tooling-transpile": "^3.8.0"
+  },
+  "dependencies": {
+    "@types/node": "^20.0.0"
+  }
+}

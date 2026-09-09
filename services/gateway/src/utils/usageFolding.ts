@@ -81,10 +81,14 @@ export function foldInclusiveUsage(
  * bridge duplicating its system message, and once the duplicate was removed the
  * bridge measured EXCLUSIVE too — prompt_tokens flat at 14, cache field
  * 0 -> 17692 (arm A2, test/fixtures/orchestration/bridge-cache-probe-result.md).
- * Both known SAP endpoints are exclusive today, and `recordOrchestrationUsage`
- * is this function's first and only caller. The regime is still chosen by
- * call site, from a measurement, never guessed from the shape of a usage
- * object.
+ * Both known SAP endpoints are exclusive today. This function has two callers,
+ * both folding the SAME orchestration `usage` object: `recordOrchestrationUsage`
+ * (the Responses bridge, responsesController.ts) and `foldOrchestrationUsage`
+ * (the Gemini bridge, controllers/googleWire.ts) — which is the point of routing
+ * both through this marker rather than through a bare `updateTokenCounts`, since
+ * the second one shipped with a hardcoded 0 for cache-write until review caught
+ * it. The regime is still chosen by call site, from a measurement, never guessed
+ * from the shape of a usage object.
  *
  * On an exclusive source, subtracting is the bug: it was written once and
  * caught in review before it merged, computing `max(0, 14 − 29004) = 0` and

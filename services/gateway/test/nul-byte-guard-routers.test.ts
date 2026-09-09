@@ -90,7 +90,7 @@ jest.mock('../src/middlewares/unifiedTokenAuth', () => ({
   default: mockPassThrough,
 }));
 
-jest.mock('../src/middlewares/rateLimiter', () => ({
+jest.mock('../src/middlewares/quotaEnforcement', () => ({
   __esModule: true,
   default: mockPassThrough,
 }));
@@ -106,7 +106,6 @@ jest.mock('../src/services/unifiedAuthProxyService', () => ({
   __esModule: true,
   unifiedAuthProxyService: {
     createServiceAuthMiddleware: () => mockPassThrough,
-    createUnifiedRateLimitMiddleware: () => mockPassThrough,
   },
   serviceConfigurations: { openai: {}, openrouter: {}, bedrock: {}, anthropic: {} },
 }));

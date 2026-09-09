@@ -555,9 +555,22 @@ enum SecurityEventType {
   API_KEY_REVOKED = 'api_key_revoked',
   CONFIGURATION_CHANGED = 'config_changed',
   UNUSUAL_USAGE_PATTERN = 'unusual_usage',
-  IP_RESTRICTION_VIOLATION = 'ip_restriction_violation'
+  IP_RESTRICTION_VIOLATION = 'ip_restriction_violation',
+  QUOTA_EXCEEDED = 'quota_exceeded',
+  QUOTA_UNENFORCED = 'quota_unenforced'
 }
 ```
+
+**Client-IP trust.** Every event's `ipAddress` goes through one derivation
+(`services/gateway/src/utils/clientIp.ts`), gated by the `trust_forwarded_for` platform setting
+(default `false`). On Docker, nginx sets `X-Real-IP` and appends the real peer to
+`X-Forwarded-For`, so `trust_forwarded_for: true` yields the real caller address. On Kyma, the
+Istio ingress appends to `X-Forwarded-For` and may not set `X-Real-IP`, so the last hop of that
+header is used instead. With the shipped default of `false`, the socket peer — the proxy in front
+of the gateway, not the caller — is recorded, on purpose: an unconditionally trusted forwarding
+header would let any client dictate the IP recorded against its own security events. IPv4-mapped
+IPv6 addresses (`::ffff:203.0.113.7`) are normalised to their IPv4 form. The IP is personal data
+and is written only into security and audit events.
 
 #### Event Detection and Logging
 
@@ -706,61 +719,19 @@ async function getAPIKeyByToken(token: string): Promise<APIKey | null> {
 
 ### Rate Limiting and DDoS Protection
 
-#### Adaptive Rate Limiting
+#### Rate Limiting and Quota Enforcement
 
-```typescript
-export class AdaptiveRateLimiter {
-  private redis: Redis;
-  
-  async checkRateLimit(
-    identifier: string, 
-    baseLimit: RateLimit,
-    adaptiveFactors: AdaptiveFactors
-  ): Promise<RateLimitResult> {
-    // Calculate adaptive limit based on factors
-    const adaptedLimit = this.calculateAdaptiveLimit(baseLimit, adaptiveFactors);
-    
-    // Apply sliding window rate limiting
-    const result = await this.slidingWindowLimit(identifier, adaptedLimit);
-    
-    // Update adaptive factors based on result
-    if (!result.allowed) {
-      await this.updateAdaptiveFactors(identifier, adaptiveFactors);
-    }
-    
-    return result;
-  }
-  
-  private calculateAdaptiveLimit(
-    baseLimit: RateLimit, 
-    factors: AdaptiveFactors
-  ): RateLimit {
-    let multiplier = 1.0;
-    
-    // User reputation factor
-    if (factors.userReputation < 0.5) {
-      multiplier *= 0.5; // Reduce limit for low reputation users
-    } else if (factors.userReputation > 0.8) {
-      multiplier *= 1.5; // Increase limit for high reputation users
-    }
-    
-    // System load factor
-    if (factors.systemLoad > 0.8) {
-      multiplier *= 0.7; // Reduce limits under high system load
-    }
-    
-    // Time-based factor (e.g., business hours vs off-hours)
-    if (factors.isBusinessHours) {
-      multiplier *= 0.9; // Slightly reduce limits during peak hours
-    }
-    
-    return {
-      requests: Math.floor(baseLimit.requests * multiplier),
-      windowMs: baseLimit.windowMs
-    };
-  }
-}
-```
+Rate limiting is not adaptive or reputation-based: it is the fixed, per-key and per-user
+enforcement in `quotaEnforcement` (`services/gateway/src/middlewares/quotaEnforcement.ts`) — see
+[Quota enforcement](chapter-3-gateway.md#quota-enforcement) for the full mechanism. In short:
+Valkey-backed requests-per-minute/hour/day counters per credential and per user
+(`rl:key:<id>:*`, `rl:user:<sha256(email)>:*`), spend and token admission per day/week/month
+against the per-user state document the admin publishes (`quota:user:<sha256(email)>`), a `429`
+naming the scope, dimension, window, limit, usage and reset time, and fail-open to per-pod memory
+counters — with a throttled `quota_unenforced` security event — when Valkey is unreachable.
+Standalone mode (no admin configured) falls back to an in-memory per-key requests-per-minute limit
+only (`RATE_LIMIT_RPM`), with no user scope. There is no separate DDoS-specific layer: these
+per-key and per-user limits are what bound request volume from any one caller.
 
 ### Secure Communication
 

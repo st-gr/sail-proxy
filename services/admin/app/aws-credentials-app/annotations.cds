@@ -131,6 +131,11 @@ annotate AdminService.AwsCredentials with @(
         },
         {
             $Type: 'UI.ReferenceFacet',
+            Label: 'Rate Limits',
+            Target: '@UI.FieldGroup#RateLimits'
+        },
+        {
+            $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#Metadata', 
             Label: 'Record Information'
         }
@@ -218,6 +223,14 @@ annotate AdminService.AwsCredentials with @(
             }
         ]
     },
+
+    // Rate Limits Field Group (spec §4) - read-only, changed only through setRateLimits
+    UI.FieldGroup#RateLimits: { Data: [
+        { $Type: 'UI.DataField', Value: requestsPerMinute, Label: 'Requests per Minute' },
+        { $Type: 'UI.DataField', Value: requestsPerHour, Label: 'Requests per Hour' },
+        { $Type: 'UI.DataField', Value: requestsPerDay, Label: 'Requests per Day' },
+        { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: 'Set Rate Limits' }
+    ] },
     
     // Metadata Field Group  
     UI.FieldGroup#Metadata: {
@@ -246,6 +259,11 @@ annotate AdminService.AwsCredentials with @(
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.rotateAwsCredentials', 
             Label: 'Rotate Credentials'
+        },
+        {
+            $Type: 'UI.DataFieldForAction',
+            Action: 'AdminService.setRateLimits',
+            Label: 'Set Rate Limits'
         }
     ]
 );
@@ -320,6 +338,13 @@ annotate AdminService.AwsCredentials with {
         Common.Label: 'Never Expires',
         Common.FieldControl: neverExpiresFC
     );
+
+    lockedByUserDeactivation @(Common.Label: 'Locked by Deactivation', Common.FieldControl: #ReadOnly);
+
+    // Per-credential rate limits (spec §4), enforced by the gateway alongside the user-level limit.
+    requestsPerMinute @(Common.Label: 'Requests per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
+    requestsPerHour @(Common.Label: 'Requests per Hour', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
+    requestsPerDay @(Common.Label: 'Requests per Day', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
 
     // Status - field control handled in TypeScript handlers
     isActive @(

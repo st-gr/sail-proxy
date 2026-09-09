@@ -1,0 +1,470 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "mistralai--mistral-small",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Mistral AI",
+      "model": "mistralai--mistral-small",
+      "executableId": "aicore-mistralai",
+      "description": "Mistral Small 4",
+      "versions": [
+        {
+          "name": "2603",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "2026-10-30",
+          "contextLength": 128000,
+          "inputTypes": [
+            "text",
+            "image"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition"
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00007"
+            },
+            {
+              "outputCost": "0.00028"
+            }
+          ],
+          "streamingSupported": true
+        }
+      ],
+      "displayName": "Mistral Small 4",
+      "accessType": "foundation",
+      "provider": "Mistral AI",
+      "allowedScenarios": [
+        {
+          "executableId": "aicore-mistralai",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": true,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "text-embedding-3-large",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "OpenAI",
+      "model": "text-embedding-3-large",
+      "executableId": "azure-openai",
+      "description": "Azure OpenAI Text Embedding 3 Large Model",
+      "versions": [
+        {
+          "name": "1",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "inputTypes": [
+            "text"
+          ],
+          "capabilities": [
+            "embedding"
+          ],
+          "metadata": [
+            {
+              "mtebAverageScore": "64.6"
+            }
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00009"
+            }
+          ],
+          "streamingSupported": false
+        }
+      ],
+      "displayName": "Text Embedding 3 Large",
+      "accessType": "foundation",
+      "provider": "OpenAI",
+      "allowedScenarios": [
+        {
+          "executableId": "azure-openai",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": false,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "gpt-5.4",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "OpenAI",
+      "model": "gpt-5.4",
+      "executableId": "azure-openai",
+      "description": "OpenAI GPT-5.4 provides deeper, richer reasoning for analytics and code generation capabilities",
+      "versions": [
+        {
+          "name": "2026-03-05",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 1050000,
+          "inputTypes": [
+            "text",
+            "image"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition",
+            "reasoning"
+          ],
+          "metadata": [
+            {
+              "lmArenaTextArenaScore": "1474"
+            }
+          ],
+          "streamingSupported": true
+        }
+      ],
+      "displayName": "GPT-5.4",
+      "accessType": "foundation",
+      "provider": "OpenAI",
+      "allowedScenarios": [
+        {
+          "executableId": "azure-openai",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": true,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Google",
+      "model": "gemini-2.5-flash",
+      "executableId": "gcp-vertexai",
+      "description": "Gemini 2.5 Flash",
+      "versions": [
+        {
+          "name": "001",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "2026-10-16",
+          "contextLength": 1000000,
+          "inputTypes": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition",
+            "speech-to-text"
+          ],
+          "metadata": [
+            {
+              "chatBotArenaScore": "1418"
+            },
+            {
+              "lmArenaTextArenaScore": "1411"
+            }
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00027"
+            },
+            {
+              "outputCost": "0.00167"
+            }
+          ],
+          "streamingSupported": true
+        }
+      ],
+      "displayName": "Gemini 2.5 Flash",
+      "accessType": "foundation",
+      "provider": "Google",
+      "allowedScenarios": [
+        {
+          "executableId": "gcp-vertexai",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": true,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "sonar",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Perplexity",
+      "model": "sonar",
+      "executableId": "perplexity-ai",
+      "description": "Perplexity's Sonar",
+      "versions": [
+        {
+          "name": "perplexity-us",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 128000,
+          "inputTypes": [
+            "text",
+            "image"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition"
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00086"
+            },
+            {
+              "outputCost": "0.00086"
+            }
+          ],
+          "streamingSupported": false
+        }
+      ],
+      "displayName": "Perplexity Sonar",
+      "accessType": "foundation",
+      "provider": "Perplexity",
+      "allowedScenarios": [
+        {
+          "executableId": "perplexity-ai",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": false,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "anthropic--claude-4.5-haiku",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Anthropic",
+      "model": "anthropic--claude-4.5-haiku",
+      "executableId": "aws-bedrock",
+      "description": "Anthropic Claude 4.5 Haiku",
+      "versions": [
+        {
+          "name": "1",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 200000,
+          "inputTypes": [
+            "text",
+            "image"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition"
+          ],
+          "metadata": [
+            {
+              "helmCapabilitiesAccuracyMeanScore": "0.717"
+            },
+            {
+              "lmArenaTextArenaScore": "1410"
+            },
+            {
+              "airBenchRefusalRate": "0.932"
+            },
+            {
+              "biasRefusalRate": "0.9"
+            }
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00079"
+            },
+            {
+              "outputCost": "0.00367"
+            },
+            {
+              "cacheReadInputCost": "0.00008"
+            },
+            {
+              "cacheCreationInputCost": "0.00099"
+            }
+          ],
+          "streamingSupported": true
+        }
+      ],
+      "displayName": "Claude 4.5 Haiku",
+      "accessType": "foundation",
+      "provider": "Anthropic",
+      "allowedScenarios": [
+        {
+          "executableId": "aws-bedrock",
+          "scenarioId": "foundation-models"
+        },
+        {
+          "executableId": "orchestration",
+          "scenarioId": "orchestration"
+        }
+      ],
+      "streamingSupported": true,
+      "subpaths_native": [],
+      "subpaths_emulated": []
+    },
+    {
+      "id": "cohere-reranker--deployed",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Cohere",
+      "model": "cohere-reranker",
+      "executableId": "aicore-cohere",
+      "description": "Cohere's Reranker model",
+      "versions": [
+        {
+          "name": "3.5",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "2026-09-30",
+          "contextLength": 4096,
+          "inputTypes": [
+            "text"
+          ],
+          "streamingSupported": false
+        }
+      ],
+      "displayName": "Cohere Rerank",
+      "accessType": "deployment",
+      "provider": "Cohere",
+      "streamingSupported": false,
+      "details": {
+        "scaling": {
+          "backendDetails": {}
+        },
+        "resources": {
+          "backendDetails": {
+            "model": {
+              "name": "cohere-reranker",
+              "version": "latest"
+            }
+          }
+        }
+      },
+      "scenarioId": "foundation-models",
+      "configurationId": "00000000-0000-4000-8000-0000000000c1",
+      "configurationName": "cohere-reranker_autogenerated",
+      "deploymentUrl": "https://sap.example/v2/inference/deployments/d0000000000000a1"
+    },
+    {
+      "id": "anthropic--claude-4.5-haiku--deployed",
+      "object": "model",
+      "created": 184978800,
+      "owned_by": "Anthropic",
+      "model": "anthropic--claude-4.5-haiku",
+      "executableId": "aws-bedrock",
+      "description": "Anthropic Claude 4.5 Haiku",
+      "versions": [
+        {
+          "name": "1",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 200000,
+          "inputTypes": [
+            "text",
+            "image"
+          ],
+          "capabilities": [
+            "text-generation",
+            "image-recognition"
+          ],
+          "metadata": [
+            {
+              "helmCapabilitiesAccuracyMeanScore": "0.717"
+            },
+            {
+              "lmArenaTextArenaScore": "1410"
+            },
+            {
+              "airBenchRefusalRate": "0.932"
+            },
+            {
+              "biasRefusalRate": "0.9"
+            }
+          ],
+          "cost": [
+            {
+              "inputCost": "0.00079"
+            },
+            {
+              "outputCost": "0.00367"
+            },
+            {
+              "cacheReadInputCost": "0.00008"
+            },
+            {
+              "cacheCreationInputCost": "0.00099"
+            }
+          ],
+          "streamingSupported": true
+        }
+      ],
+      "displayName": "Claude 4.5 Haiku",
+      "accessType": "deployment",
+      "provider": "Anthropic",
+      "streamingSupported": true,
+      "details": {
+        "scaling": {
+          "backendDetails": {}
+        },
+        "resources": {
+          "backendDetails": {
+            "model": {
+              "name": "anthropic--claude-4.5-haiku",
+              "version": "latest"
+            }
+          }
+        }
+      },
+      "scenarioId": "foundation-models",
+      "configurationId": "00000000-0000-4000-8000-0000000000c2",
+      "configurationName": "anthropic--claude-4.5-haiku_autogenerated",
+      "deploymentUrl": "https://sap.example/v2/inference/deployments/d0000000000000b2",
+      "subpaths_native": [
+        "invoke",
+        "invoke-with-response-stream",
+        "converse",
+        "converse-stream"
+      ],
+      "subpaths_emulated": [],
+      "anthropic_version": "bedrock-2023-05-31",
+      "cachePricing": {
+        "cacheReadInputCostPer1K": "0.00008",
+        "cacheCreationInputCostPer1K": "0.00099"
+      }
+    }
+  ]
+}

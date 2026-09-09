@@ -2,10 +2,11 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import { SERVICE_KEYS, createServiceKeyData } from '@libs/service-auth';
+import { mapModelToLibraryRow, GatewayModel } from './librarySnapshot';
 
 const logger = getDefaultLogger();
 const cds = require('@sap/cds');
-const { INSERT, SELECT, UPDATE } = cds.ql;
+const { INSERT, SELECT, UPDATE, UPSERT } = cds.ql;
 
 interface ModelVersion {
   cost: Array<{ inputCost?: string; outputCost?: string; cacheReadInputCost?: string; cacheCreationInputCost?: string }>;
@@ -32,6 +33,7 @@ interface ModelCostEntry {
   cacheCreationInputCost?: number; // per 1000 tokens (cache creation/write pricing)
   provider?: string;
   version?: string;
+  source?: string;
 }
 
 /**
@@ -258,7 +260,14 @@ class ModelCostService {
       return this.serviceApiKey;
     }
 
-    const db = await cds.connect.to('db');
+    // Each statement below runs in its own short root transaction (cds.tx), NOT in the caller's
+    // request transaction. The admin's SQLite pool holds a single connection (@cap-js/sqlite
+    // `max: 1`), and this lookup is followed by an HTTP call to the gateway whose key validation
+    // calls back into this admin's database: a connection held across that round-trip deadlocks
+    // the validation until the gateway's 5 s timeout and the call fails with 401. That was the
+    // root cause of the "admin-service/model-cost" failed_auth events and of the first
+    // refreshModelLibrary after a start failing.
+    const db = { run: (q: any) => cds.tx((tx: any) => tx.run(q)) };
     const { INSERT, SELECT } = cds.ql;
     const serviceEmail = SERVICE_KEYS.ADMIN_TO_GATEWAY.EMAIL;
 
@@ -355,7 +364,10 @@ class ModelCostService {
       // Get service API key for authentication
       const apiKey = await this.getServiceApiKey();
       
-      const response = await axios.get(`${this.gatewayUrl}/v1/models`, {
+      // include=unroutable so the library snapshot can list the foundation models the gateway
+      // cannot route (no orchestration scenario). They are marked routable:false and reach
+      // nothing but the snapshot — updatePricingDatabase skips them.
+      const response = await axios.get(`${this.gatewayUrl}/v1/models?include=unroutable`, {
         timeout: 30000, // 30 seconds to handle unbuffered model list fetching
         headers: {
           'Accept': 'application/json',
@@ -365,8 +377,9 @@ class ModelCostService {
       });
 
       const models: ModelInfo[] = response.data.data || [];
+      await this.trySnapshot(models as any);
       await this.updatePricingDatabase(models);
-      
+
       this.lastFetch = now;
       this.hasModelData = true; // Mark as successfully fetched
       logger.info('ModelCostService', `Updated pricing for ${models.length} models (timer-based)`);
@@ -388,6 +401,9 @@ class ModelCostService {
     this.modelProviderMap.clear();
 
     for (const model of models) {
+      // A model the gateway cannot route never serves a request, so it gets no price row and no
+      // provider mapping — the library snapshot is the only consumer of those entries.
+      if ((model as { routable?: boolean }).routable === false) continue;
       // Cache the provider mapping
       if (model.owned_by) {
         this.modelProviderMap.set(model.id, model.owned_by);
@@ -433,6 +449,10 @@ class ModelCostService {
 
           if (existing.length > 0) {
             const existingCost = existing[0];
+            if (existingCost.source === 'manual') {
+              logger.debug('ModelCostService', `Keeping manual price for ${model.id}; SAP price ${inputCost}/${outputCost} recorded on the library snapshot only`);
+              continue;
+            }
             const existingInputCost = parseFloat(existingCost.inputCost) || 0;
             const existingOutputCost = parseFloat(existingCost.outputCost) || 0;
             const existingCacheReadInputCost = existingCost.cacheReadInputCost ? parseFloat(existingCost.cacheReadInputCost) : undefined;
@@ -463,7 +483,8 @@ class ModelCostService {
                 cacheReadInputCost,
                 cacheCreationInputCost,
                 provider: model.owned_by || model.provider,
-                version: latestVersion.name
+                version: latestVersion.name,
+                source: 'sap'
               });
 
               logger.debug('ModelCostService', `Cost change detected for ${model.id}: input ${existingInputCost} -> ${inputCost}, output ${existingOutputCost} -> ${outputCost}, cacheRead ${existingCacheReadInputCost} -> ${cacheReadInputCost}, cacheCreation ${existingCacheCreationInputCost} -> ${cacheCreationInputCost}`);
@@ -480,7 +501,8 @@ class ModelCostService {
               cacheReadInputCost,
               cacheCreationInputCost,
               provider: model.owned_by || model.provider,
-              version: latestVersion.name
+              version: latestVersion.name,
+              source: 'sap'
             });
           }
         }
@@ -503,6 +525,7 @@ class ModelCostService {
         cacheCreationInputCost: entry.cacheCreationInputCost !== undefined ? entry.cacheCreationInputCost.toString() : null,
         provider: entry.provider,
         version: entry.version,
+        source: entry.source ?? 'sap',
         createdAt: now
       }));
 
@@ -518,6 +541,76 @@ class ModelCostService {
     if (process.env.DEBUG === 'true') {
       logger.debug('ModelCostService', `Provider cache contents: ${JSON.stringify(Array.from(this.modelProviderMap.entries()))}`);
     }
+  }
+
+  /**
+   * The library snapshot is a display feature; pricing is what the usage processor bills from.
+   * A snapshot write that fails (a schema drift, an over-long column, a locked table) must never
+   * take pricing down with it, so every entry point goes through here and continues regardless.
+   */
+  private async trySnapshot(models: GatewayModel[]): Promise<{ upserted: number; absent: number; deployments: number }> {
+    try {
+      return await this.upsertLibrarySnapshot(models);
+    } catch (error) {
+      logger.error('ModelCostService', 'Library snapshot failed - continuing with the pricing update', error instanceof Error ? error : new Error(String(error)));
+      return { upserted: 0, absent: 0, deployments: 0 };
+    }
+  }
+
+  /**
+   * Snapshot the gateway's model list into LibraryModels (spec section 2). UPSERT by modelId,
+   * then mark every row not stamped in this run absent. Never deletes. An empty payload is a
+   * no-op so a failed pull cannot blank the library.
+   */
+  async upsertLibrarySnapshot(models: GatewayModel[], now: Date = new Date()): Promise<{ upserted: number; absent: number; deployments: number }> {
+    if (!Array.isArray(models) || models.length === 0) {
+      return { upserted: 0, absent: 0, deployments: 0 };
+    }
+    const rows = models.filter(m => m && typeof m.id === 'string').map(m => mapModelToLibraryRow(m, now));
+    if (rows.length === 0) {
+      return { upserted: 0, absent: 0, deployments: 0 };
+    }
+    const db = await cds.connect.to('db');
+    const CHUNK = 50;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await db.run(UPSERT.into('sap.llm.gateway.admin.LibraryModels').entries(rows.slice(i, i + CHUNK)));
+    }
+    const absent = await db.run(
+      UPDATE('sap.llm.gateway.admin.LibraryModels')
+        .set({ absent: true })
+        .where([{ ref: ['lastSeenAt'] }, '<', { val: now }, 'or', { ref: ['lastSeenAt'] }, 'is', 'null'])
+    );
+    const deployments = rows.filter(r => r.accessType === 'deployment').length;
+    logger.info('ModelCostService', `Library snapshot: ${rows.length} models upserted (${deployments} deployments), ${typeof absent === 'number' ? absent : 0} marked absent`);
+    return { upserted: rows.length, absent: typeof absent === 'number' ? absent : 0, deployments };
+  }
+
+  /**
+   * On-demand pull for the refreshModelLibrary action: same request as the timer path, but
+   * independent of cooldown and Valkey mode. Snapshot first, pricing second.
+   */
+  async refreshFromGateway(): Promise<{ models: number; deployments: number; absent: number }> {
+    const list = () => this.getServiceApiKey().then((apiKey) => axios.get(`${this.gatewayUrl}/v1/models?include=unroutable`, {
+      timeout: 30000,
+      headers: { 'Accept': 'application/json', 'X-API-Key': apiKey, 'User-Agent': 'admin-service/model-library' }
+    }));
+    let response;
+    try {
+      response = await list();
+    } catch (error: any) {
+      // The cached service key may have been deleted or deactivated underneath us (an admin
+      // purging keys, a restored database): forget it, re-read or re-create it, and try once more.
+      if (error?.response?.status !== 401 || !this.serviceApiKey) throw error;
+      logger.warn('ModelCostService', 'Gateway rejected the cached service key (401); re-resolving it and retrying once');
+      this.serviceApiKey = null;
+      response = await list();
+    }
+    const models: GatewayModel[] = response.data?.data || [];
+    const snap = await this.trySnapshot(models);
+    await this.updatePricingDatabase(models as any);
+    this.hasModelData = true;
+    this.lastFetch = Date.now();
+    return { models: models.length, deployments: snap.deployments, absent: snap.absent };
   }
 
   /**
@@ -776,6 +869,11 @@ class ModelCostService {
     return this.hasModelData && this.modelProviderMap.size > 0;
   }
 
+  /** The ADMIN_TO_GATEWAY key for other admin→gateway calls (deployments). */
+  async getGatewayServiceKey(): Promise<string> {
+    return this.getServiceApiKey();
+  }
+
   /**
    * Process model list from Valkey event (replaces timer-based fetching)
    */
@@ -794,6 +892,7 @@ class ModelCostService {
 
       const models: ModelInfo[] = modelListEvent.models || [];
       if (models.length > 0) {
+        await this.trySnapshot(models as any);
         await this.updatePricingDatabase(models);
         this.hasModelData = true;
         logger.info('ModelCostService', `Updated pricing from event for ${models.length} models`);

@@ -65,3 +65,11 @@ describe('getClientIp always returns something usable', () => {
     expect(getClientIp({ headers: {} } as any, true)).toBe('unknown');
   });
 });
+
+describe('IPv4-mapped IPv6 peers', () => {
+  it('are stored as IPv4, real IPv6 stays', () => {
+    expect(getClientIp(req({}, '::ffff:203.0.113.7'), false)).toBe('203.0.113.7');
+    expect(getClientIp(req({}, '::1'), false)).toBe('::1');
+    expect(getClientIp(req({ 'x-real-ip': '::ffff:198.51.100.9' }), true)).toBe('198.51.100.9');
+  });
+});

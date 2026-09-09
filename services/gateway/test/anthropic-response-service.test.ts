@@ -269,3 +269,21 @@ describe('AnthropicResponseService', () => {
     });
   });
 });
+
+describe('mapSapFinishReasonToAnthropic', () => {
+  const { mapSapFinishReasonToAnthropic } = require('../src/services/anthropicResponseService');
+  it('maps every SAP finish reason the three response paths see onto Anthropic stop reasons', () => {
+    expect(mapSapFinishReasonToAnthropic('tool_calls')).toBe('tool_use');
+    expect(mapSapFinishReasonToAnthropic('tool_use')).toBe('tool_use');
+    expect(mapSapFinishReasonToAnthropic('length')).toBe('max_tokens');
+    expect(mapSapFinishReasonToAnthropic('stop_sequences')).toBe('stop_sequence');
+    expect(mapSapFinishReasonToAnthropic('stop')).toBe('end_turn');
+    expect(mapSapFinishReasonToAnthropic('end_turn')).toBe('end_turn');
+  });
+  it('defaults an absent reason to end_turn and passes an unknown one through', () => {
+    expect(mapSapFinishReasonToAnthropic(null)).toBe('end_turn');
+    expect(mapSapFinishReasonToAnthropic(undefined)).toBe('end_turn');
+    expect(mapSapFinishReasonToAnthropic('')).toBe('end_turn');
+    expect(mapSapFinishReasonToAnthropic('content_filter')).toBe('content_filter');
+  });
+});

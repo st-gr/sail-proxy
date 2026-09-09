@@ -1,0 +1,13 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.ui.layout.form">
+  <!-- Enter creates the catalog from either field, and the name field has the focus when the
+       dialog opens, so the whole dialog can be completed from the keyboard. onCreateCatalog is
+       the same handler the Create button presses and keeps its own empty-name guard. -->
+  <Dialog id="newCatalogDialog" title="{i18n>newCatalog}" contentWidth="28rem" initialFocus="newCatalogName">
+    <f:SimpleForm layout="ResponsiveGridLayout" editable="true">
+      <Label text="Name" required="true"/><Input id="newCatalogName" value="{viewModel>/catalogs/new/name}" submit=".onCreateCatalog"/>
+      <Label text="Description"/><Input id="newCatalogDescription" value="{viewModel>/catalogs/new/description}" submit=".onCreateCatalog"/>
+    </f:SimpleForm>
+    <beginButton><Button text="Create" type="Emphasized" press=".onCreateCatalog"/></beginButton>
+    <endButton><Button text="Cancel" press=".onCancelNewCatalog"/></endButton>
+  </Dialog>
+</core:FragmentDefinition>

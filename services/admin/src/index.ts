@@ -251,6 +251,18 @@ async function startProgrammatically(port: number, authMode: string) {
           route: `${routePrefix}/sap-rates-app`,
           webappPath: path.join(appBasePath, 'sap-rates-app/webapp'),
           distPath: path.join(appBasePath, 'sap-rates-app/dist')
+        },
+        {
+          name: 'model-library-app',
+          route: `${routePrefix}/model-library-app`,
+          webappPath: path.join(appBasePath, 'model-library-app/webapp'),
+          distPath: path.join(appBasePath, 'model-library-app/dist')
+        },
+        {
+          name: 'users-app',
+          route: `${routePrefix}/users-app`,
+          webappPath: path.join(appBasePath, 'users-app/webapp'),
+          distPath: path.join(appBasePath, 'users-app/dist')
         }
       ];
 

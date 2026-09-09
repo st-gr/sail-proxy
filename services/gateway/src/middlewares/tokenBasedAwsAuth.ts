@@ -13,6 +13,7 @@ import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
+import type { EntitlementBlock, UserBlock } from '../clients/adminServiceClient';
 const logger = getDefaultLogger();
 
 interface ParsedAuthHeader {
@@ -38,6 +39,9 @@ interface AwsCredentialsExtended extends Request {
     permissions: any[];
     region?: string;
     credentialId?: string;
+    entitlement?: EntitlementBlock;
+    user?: UserBlock;
+    rateLimits?: { requestsPerMinute: number | null; requestsPerHour: number | null; requestsPerDay: number | null };
   };
   isAwsAuthenticated?: boolean;
   validationMetadata?: {
@@ -153,7 +157,9 @@ class TokenBasedAwsAuth {
                 region: unifiedResult.data.region,
                 sapAiRegion: unifiedResult.data.sapAiRegion,
                 userId: unifiedResult.data.userId,
-                rateLimits: unifiedResult.data.rateLimits
+                rateLimits: unifiedResult.data.rateLimits,
+                entitlement: unifiedResult.data.entitlement,
+                user: unifiedResult.data.user
               },
               validationToken: '',
               auditInfo: {
@@ -241,9 +247,12 @@ class TokenBasedAwsAuth {
         userId: validationResult.credentialMetadata?.userId || 'unknown',
         permissions: validationResult.credentialMetadata?.permissions || [],
         region: validationResult.credentialMetadata?.region,
-        credentialId: validationResult.credentialMetadata?.credentialId
+        credentialId: validationResult.credentialMetadata?.credentialId,
+        entitlement: validationResult.credentialMetadata?.entitlement,
+        user: validationResult.credentialMetadata?.user,
+        rateLimits: validationResult.credentialMetadata?.rateLimits
       };
-      
+
       req.isAwsAuthenticated = true;
       req.validationMetadata = {
         requestId,
@@ -259,7 +268,10 @@ class TokenBasedAwsAuth {
           userId: validationResult.credentialMetadata?.userId || 'unknown',
           permissions: validationResult.credentialMetadata?.permissions || [],
           region: validationResult.credentialMetadata?.region,
-          credentialId: validationResult.credentialMetadata?.credentialId
+          credentialId: validationResult.credentialMetadata?.credentialId,
+          entitlement: validationResult.credentialMetadata?.entitlement,
+          user: validationResult.credentialMetadata?.user,
+          rateLimits: validationResult.credentialMetadata?.rateLimits
         };
         (req as any).unifiedAuth.auditInfo.validationTime = Date.now() - startTime;
         (req as any).unifiedAuth.auditInfo.cacheHit = cacheHit;

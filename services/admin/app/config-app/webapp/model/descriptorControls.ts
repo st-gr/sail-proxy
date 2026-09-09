@@ -46,6 +46,7 @@ import {
     nextTokens
 } from "./formContainers";
 import { helpFor, helpRowCells, splitHelpText } from "./fieldHelp";
+import { NullableNumberField, nullableNumberEntry } from "./nullableEntry";
 import { Descriptor } from "./schemaForm";
 import { ScrollAncestorNode, tabScrollAncestor } from "./formViewport";
 
@@ -1056,6 +1057,37 @@ function buildField(descriptor: Descriptor, options: DescriptorControlOptions, c
             // nothing of the union to read `minimum` off in the branch where it is not a number.
             const minimum = typeof descriptor.minimum === "number" ? descriptor.minimum : undefined;
             const maximum = typeof descriptor.maximum === "number" ? descriptor.maximum : undefined;
+            // A nullable number - every `platform.quotas.*` field, where `null` is the schema's own
+            // "unlimited" - cannot be a StepInput at all: a StepInput has no empty state (see the
+            // `value` setting below), so it would offer 0, a quota of nothing, as the only way to
+            // say "no limit". It is an Input instead, and `nullableNumberEntry` is what its text
+            // means; the bounds the StepInput enforced are enforced there rather than lost.
+            if (descriptor.nullable) {
+                const field: NullableNumberField = { integer: descriptor.integer, minimum, maximum };
+                const number = new Input({
+                    // A number keypad on a phone, and the browser's own numeric input on a desktop.
+                    type: "Number",
+                    editable: options.editable,
+                    change: (event: InputBase$ChangeEvent) => {
+                        const control = event.getSource() as Input;
+                        const entry = nullableNumberEntry(control.getValue(), field);
+                        if ("error" in entry) {
+                            control.setValueState("Error");
+                            control.setValueStateText(
+                                options.text(entry.error) + (entry.bound === undefined ? "" : " " + entry.bound)
+                            );
+                            return;
+                        }
+                        control.setValueState("None");
+                        options.onChange(descriptor.pointer, entry.value);
+                    }
+                });
+                // A document's own number, but `.setValue` all the same, for the reason the text
+                // case gives: the constructor reads "{" as a binding.
+                number.setValue(typeof descriptor.value === "number" ? String(descriptor.value) : "");
+                setDescriptionTooltip(number, descriptor.description);
+                return number;
+            }
             // A StepInput defaults to whole-number stepping (step 1, displayValuePrecision 0), which
             // ROUNDS a typed decimal to an integer - so a float field like min_confidence could not
             // accept 0.5 at all. A control must never be stricter than the schema, so a float gets
@@ -1139,6 +1171,15 @@ function buildField(descriptor: Descriptor, options: DescriptorControlOptions, c
                 change: (event: InputBase$ChangeEvent) => {
                     const control = event.getSource() as Input;
                     const value = control.getValue();
+                    // A nullable string cleared to empty is `null`, the value its schema gives that
+                    // meaning to (`platform.maintenance.dailyRunAtUtc`: no fixed time). The pattern
+                    // and length checks below are skipped for it rather than failed: "" matches no
+                    // HH:MM pattern, so enforcing them would make the field impossible to clear.
+                    if (descriptor.kind === "text" && descriptor.nullable && value.trim() === "") {
+                        control.setValueState("None");
+                        options.onChange(descriptor.pointer, null);
+                        return;
+                    }
                     // The schema's own pattern is enforced here, so the form cannot produce
                     // something validateConfiguration would reject on save.
                     if (descriptor.kind === "text" && descriptor.pattern && !new RegExp(descriptor.pattern).test(value)) {

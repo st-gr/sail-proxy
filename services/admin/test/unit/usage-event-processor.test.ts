@@ -393,7 +393,7 @@ describe('UsageEventProcessor', () => {
       // observe how many events reach the DB layer via persistApiKeyUsage.
       persistSpy.mockRestore();
       const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
-        .mockResolvedValue(undefined);
+        .mockResolvedValue([]);
 
       const event: UsageEvent = {
         requestId: 'dup-req-1',
@@ -424,7 +424,7 @@ describe('UsageEventProcessor', () => {
     it('keeps distinct requestIds in the same batch', async () => {
       persistSpy.mockRestore();
       const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
-        .mockResolvedValue(undefined);
+        .mockResolvedValue([]);
 
       const base = {
         timestamp: Math.floor(Date.now() / 1000),
@@ -455,7 +455,7 @@ describe('UsageEventProcessor', () => {
       // signature must keep events that differ in their billable fields.
       persistSpy.mockRestore();
       const awsSpy = jest.spyOn(processor as any, 'persistAwsCredentialUsage')
-        .mockResolvedValue(undefined);
+        .mockResolvedValue([]);
 
       const base = {
         requestId: 'unknown',
@@ -511,8 +511,11 @@ describe('UsageEventProcessor', () => {
         where: jest.fn().mockReturnThis()
       });
       const capturedEntries: any[] = [];
-      const testDb = {
+      const testDb: any = {
         run: jest.fn((query: any, values?: any[]) => {
+          // db.run(fn) is CAP's join-the-ambient-transaction form (see the persist sites):
+          // run the callback against the same testDb, no real transaction.
+          if (typeof query === 'function') return Promise.resolve(query(testDb));
           if (typeof query === 'string' && /^\s*INSERT/i.test(query)) {
             const columns = (query.match(/\(([^)]+)\)\s*VALUES/i)?.[1] ?? '')
               .split(',').map((c: string) => c.trim());
@@ -557,7 +560,7 @@ describe('UsageEventProcessor', () => {
 
       await expect(
         (processor as any).persistApiKeyUsage(testDb, [baseEvent])
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual([]);
 
       const entries = getEntries();
       expect(entries).toHaveLength(1);
@@ -615,7 +618,7 @@ describe('UsageEventProcessor', () => {
 
       await expect(
         (processor as any).persistAwsCredentialUsage(testDb, [baseAwsEvent])
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual([]);
 
       const entries = getEntries();
       expect(entries).toHaveLength(1);

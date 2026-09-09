@@ -5,7 +5,7 @@
 import * as express from 'express';
 import * as vectorStoresController from '../controllers/vectorStoresController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
-import rateLimiter from '../middlewares/rateLimiter';
+import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import { registerVectorStoreRoutes } from './vectorStoreRouteTable';
@@ -23,9 +23,8 @@ router.param('batch_id', nulByteParamGuard);
 
 const vectorStoresAuth = createUnifiedTokenAuth();
 const vectorStoresServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.openai);
-const vectorStoresRateLimit = unifiedAuthProxyService.createUnifiedRateLimitMiddleware(serviceConfigurations.openai);
 
-const guard = [vectorStoresAuth, vectorStoresServiceAuth, vectorStoresRateLimit, rateLimiter];
+const guard = [vectorStoresAuth, vectorStoresServiceAuth, quotaEnforcement];
 
 // Declared in src/routes/vectorStoreRouteTable.ts and registered from there,
 // because openRouterRoutes.ts must expose the identical set under its own

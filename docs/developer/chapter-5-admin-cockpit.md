@@ -122,7 +122,54 @@ entity UsageEvents {
   responseTime        : Integer;
   timestamp           : Timestamp;
 }
+
+entity Users : managed {
+  key email             : String(255);
+  displayName           : String(255);
+  rolesSnapshot         : String(500);        // JSON array, refreshed on contact
+  firstSeenAt           : Timestamp;
+  lastSeenAt            : Timestamp;
+  status                : String(12) enum { active; deactivated } default 'active';
+  statusChangedAt       : Timestamp;
+  statusChangedBy       : String(255);
+  statusReason          : String(500);
+  requestsPerMinute     : Integer;
+  spendPerDay           : Decimal(12,4);      // SAP cost, currency of SapCapacityUnitPrice
+  spendPerWeek          : Decimal(12,4);
+  spendPerMonth         : Decimal(12,4);
+  tokensPerDay          : Integer64;
+  tokensPerWeek         : Integer64;
+  tokensPerMonth        : Integer64;
+  quotaResetAt          : Timestamp;          // watermark: usage before it does not count
+  entitlementCatalog    : Association to ModelCatalogs;   // null = the default catalog
+}
 ```
+
+One row per person the platform knows, created lazily on first contact (`usersService.touch`) and
+by a startup backfill; never deleted. A `null` constraint column inherits the platform default, and
+a `null` platform default means unlimited. `ModelCatalogAssignments` is legacy: it is drained once
+at startup (`usersService.migrateCatalogAssignments`, called from the admin service's
+`initializeUsers`) by copying every row into the matching user's `entitlementCatalog` and deleting
+it, so it stays empty from the first boot onward — assignment now lives on `Users.entitlementCatalog`.
+
+```cds
+entity UserUsageDaily {
+  key email    : String(255);
+  key day      : Date;            // UTC calendar date of the usage row's validFrom
+  key currency : String(3);       // sapCostCurrency of the rows, '' when they carry none
+  requests     : Integer64 default 0;
+  tokens       : Integer64 default 0;   // input + output + cacheCreationInput + cacheReadInput
+  sapCost      : Decimal(12,6) default 0;
+  updatedAt    : Timestamp;
+}
+```
+
+The running usage counters the quota windows are read from (developer guide chapter 3, "Quota
+enforcement"). Written by the usage processor with the rows, deleted by a quota reset, rebuilt from
+the rows by `usageCounters.rebuild()`. A new deployment needs the table before the admin starts:
+Postgres (Docker, Kyma) gets it through schema evolution, local SQLite through `pnpm run
+db:migrate`; the first start then backfills it from the rows. Deleting an AWS credential no longer
+deletes its usage rows — they keep the owner snapshot (`userId`) and lose `credential_ID`.
 
 ### Service Implementation
 

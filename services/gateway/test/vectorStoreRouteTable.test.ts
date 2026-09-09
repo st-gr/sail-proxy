@@ -95,13 +95,13 @@ describe('the shared vector-store route table', () => {
   });
 
   it('keeps each router\'s auth shape: per-route chain on openai, router-wide on OpenRouter', () => {
-    // vectorStoresRoutes passes a four-middleware guard per route (unified token
-    // auth, service auth, unified rate limit, rateLimiter) plus the controller.
-    // openRouterRoutes passes none, because its chain is applied by a
-    // router.use above — the reason the two cannot share one router. If these
-    // ever converge, the registrar is being called with the wrong guard and one
-    // prefix is either unauthenticated or double-charged for rate limiting.
-    expect(handlerCount(vectorStoresRoutes, 'post', '/:id/search')).toBe(5);
+    // vectorStoresRoutes passes a three-middleware guard per route (unified token
+    // auth, service auth, quotaEnforcement) plus the controller. openRouterRoutes
+    // passes none, because its chain is applied by a router.use above — the
+    // reason the two cannot share one router. If these ever converge, the
+    // registrar is being called with the wrong guard and one prefix is either
+    // unauthenticated or double-charged for rate limiting.
+    expect(handlerCount(vectorStoresRoutes, 'post', '/:id/search')).toBe(4);
     expect(handlerCount(openRouterRoutes, 'post', '/vector_stores/:id/search')).toBe(1);
   });
 });
@@ -138,7 +138,7 @@ describe('the shared Files route table', () => {
   });
 
   it('keeps each router\'s auth shape', () => {
-    expect(handlerCount(filesRoutes, 'get', '/:id')).toBe(5);        // 4 guards + controller
+    expect(handlerCount(filesRoutes, 'get', '/:id')).toBe(4);        // 3 guards (unified token auth, service auth, quotaEnforcement) + controller
     expect(handlerCount(openRouterRoutes, 'get', '/files/:id')).toBe(1);
   });
 });

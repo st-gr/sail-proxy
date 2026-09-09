@@ -12,13 +12,26 @@
 
 import { getDefaultLogger } from '../../../../libs/logger';
 import { getCacheBillingFactors, isProductive, cuFactor as getConfiguredCuFactor } from './sapCapacityService';
+import { rebuild } from './usageCounters';
+import { republishAll } from './userQuotaService';
+import { maintenanceRunAtUtc } from './quotaLimits';
 const logger = getDefaultLogger();
 
 const cds = require('@sap/cds');
 
+/** The next occurrence of 'HH:MM' UTC strictly after `now` + `minLeadMs` (a run cannot be armed for a moment that is about to pass). */
+export function nextOccurrenceUtc(now: Date, hhmm: string, minLeadMs = 60_000): Date {
+  const [h, m] = hhmm.split(':').map(Number);
+  const candidate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m, 0, 0));
+  if (candidate.getTime() - now.getTime() < minLeadMs) candidate.setUTCDate(candidate.getUTCDate() + 1);
+  return candidate;
+}
+
 export class CostRecalculationService {
   private timer?: NodeJS.Timeout;
+  private alignTimer?: NodeJS.Timeout;
   private startupTimer?: NodeJS.Timeout;
+  private runAtUtc: string | null = null;
   private isProcessing = false;
   private readonly intervalMs = 24 * 60 * 60 * 1000; // 24 hours
   private readonly startupDelayMs = 5 * 60 * 1000;   // 5 minutes
@@ -34,10 +47,63 @@ export class CostRecalculationService {
       lookbackDays: this.lookbackDays
     });
 
-    this.startupTimer = setTimeout(() => {
-      this.runRecalculation();
-      this.timer = setInterval(() => this.runRecalculation(), this.intervalMs);
+    this.startupTimer = setTimeout(async () => {
+      await this.runRecalculation();
+      await this.armDailyTimer();
     }, this.startupDelayMs);
+  }
+
+  /**
+   * Arm the runs that follow the startup one. Without `platform.maintenance.dailyRunAtUtc` that is
+   * a plain 24-hour interval from now, which is what this service always did — and which pins the
+   * job to whatever time of day the service was last restarted. With the setting, an alignment
+   * timeout carries the schedule to the next occurrence of that UTC time of day and the 24-hour
+   * interval runs from there.
+   */
+  private async armDailyTimer(): Promise<void> {
+    let at: string | null = null;
+    try {
+      at = await maintenanceRunAtUtc(await cds.connect.to('db'));
+    } catch (error: any) {
+      logger.warn('CostRecalculation', `Could not read platform.maintenance.dailyRunAtUtc: ${error?.message ?? error} — running every 24 h from now`);
+    }
+
+    // Clear and re-arm in one synchronous step, after the read: two activations in quick
+    // succession must not leave the first one's timer running beside the second's.
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    if (this.alignTimer) { clearTimeout(this.alignTimer); this.alignTimer = undefined; }
+    this.runAtUtc = at;
+
+    const run = () => { void this.runRecalculation(); };
+
+    if (!this.runAtUtc) {
+      this.timer = setInterval(run, this.intervalMs);
+      this.timer.unref?.();
+      logger.info('CostRecalculation', 'Daily maintenance runs every 24 h from startup');
+      return;
+    }
+
+    const next = nextOccurrenceUtc(new Date(), this.runAtUtc);
+    this.alignTimer = setTimeout(() => {
+      run();
+      this.timer = setInterval(run, this.intervalMs);
+      this.timer.unref?.();
+    }, next.getTime() - Date.now());
+    this.alignTimer.unref?.();
+    logger.info('CostRecalculation', `Daily maintenance aligned to ${this.runAtUtc} UTC, next run at ${next.toISOString()}`);
+  }
+
+  /**
+   * Re-read the setting and re-arm, without running: a configuration activation or rollback may
+   * have changed the time of day. Cheap and idempotent.
+   */
+  async rearm(): Promise<void> {
+    await this.armDailyTimer();
+  }
+
+  /** The moment the next daily run is armed for, or null while the plain 24-hour interval runs. */
+  nextRunAt(): Date | null {
+    return this.runAtUtc ? nextOccurrenceUtc(new Date(), this.runAtUtc) : null;
   }
 
   /**
@@ -86,6 +152,20 @@ export class CostRecalculationService {
         awsRecords,
         lookbackDays: this.lookbackDays
       });
+
+      // Rewritten costs must reach the buckets and the documents the same night (spec §3.5), and
+      // both run EVERY night, not only when the recalculation rewrote rows: the rebuild carries
+      // the 62-day retention, and the republish refreshes the quota documents, whose TTL is 24 h.
+      // Gating them on the counts meant that on a quiet system the retention never ran and an
+      // idle user's document simply expired. Its own try/catch: a rebuild/republish failure must
+      // not be reported as a recalculation failure or collapse the (already-committed) UPDATE
+      // counts below to zero.
+      try {
+        await rebuild(db);
+        await republishAll();
+      } catch (error: any) {
+        logger.warn('CostRecalculation', `The usage buckets were not rebuilt: ${error?.message ?? error} — run rebuildUsageCounters to repair`, { apiKeyRecords, awsRecords });
+      }
 
       return { apiKeyRecords, awsRecords };
     } catch (error: any) {
@@ -314,6 +394,10 @@ export class CostRecalculationService {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = undefined;
+    }
+    if (this.alignTimer) {
+      clearTimeout(this.alignTimer);
+      this.alignTimer = undefined;
     }
     if (this.timer) {
       clearInterval(this.timer);

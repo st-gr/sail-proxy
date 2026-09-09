@@ -7,7 +7,7 @@ import { handleResponses } from '../controllers/responsesController';
 import { registerVectorStoreRoutes } from './vectorStoreRouteTable';
 import { registerFileRoutes } from './fileRouteTable';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
-import rateLimiter from '../middlewares/rateLimiter';
+import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import { getDefaultLogger } from '@libs/logger';
@@ -33,10 +33,9 @@ const openRouterAuth = createUnifiedTokenAuth();
 
 // Service-specific middleware for OpenRouter
 const openRouterServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.openrouter);
-const openRouterRateLimit = unifiedAuthProxyService.createUnifiedRateLimitMiddleware(serviceConfigurations.openrouter);
 
-// Apply unified authentication and rate limiting to all routes
-router.use(openRouterAuth, openRouterServiceAuth, openRouterRateLimit, rateLimiter);
+// Apply unified authentication and quota enforcement to all routes
+router.use(openRouterAuth, openRouterServiceAuth, quotaEnforcement);
 
 // Log all requests to OpenRouter routes
 router.use((req, _res, next) => {

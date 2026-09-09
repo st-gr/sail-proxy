@@ -74,16 +74,18 @@ RUN --mount=type=cache,target=/root/.ui5/framework,sharing=locked \
     cd ../api-keys-app && pnpm install && pnpm ui5 build --all --exclude-dependency sap.fe.test --exclude-dependency sap.ushell --exclude-dependency themelib_sap_horizon --clean-dest --dest dist && \
     cd ../aws-credentials-app && pnpm install && pnpm ui5 build --all --exclude-dependency sap.fe.test --exclude-dependency sap.ushell --exclude-dependency themelib_sap_horizon --clean-dest --dest dist && \
     cd ../config-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist && \
-    cd ../security-notifications-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist && \
+    cd ../security-notifications-app && pnpm install && pnpm ui5 build --all --exclude-dependency sap.fe.test --exclude-dependency sap.ushell --exclude-dependency themelib_sap_horizon --clean-dest --dest dist && \
     cd ../usage-analytics-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist && \
     cd ../sap-rates-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist && \
+    cd ../model-library-app && pnpm install && pnpm ui5 build --all --clean-dest --dest dist && \
+    cd ../users-app && pnpm install && pnpm ui5 build --all --exclude-dependency sap.fe.test --exclude-dependency sap.ushell --exclude-dependency themelib_sap_horizon --clean-dest --dest dist && \
     cd .. && rm -rf */dist/test && \
     echo "🧹 Stripped OPA test pages (app/*/dist/test) from the image" && \
     echo "✅ UI5 applications built successfully with cached SAPUI5 framework"
 
 # Update index.html and manifest.json files for Docker deployment
 RUN echo "=== Updating files for Docker deployment ===" && \
-    for app in shell api-keys-app aws-credentials-app config-app security-notifications-app usage-analytics-app sap-rates-app; do \
+    for app in shell api-keys-app aws-credentials-app config-app security-notifications-app usage-analytics-app sap-rates-app model-library-app users-app; do \
         # Update index.html to use absolute path with /admin prefix
         if [ -f "app/$app/dist/index.html" ]; then \
             # Handle both relative (resources/) and absolute (/resources/) paths

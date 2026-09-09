@@ -16,6 +16,7 @@ const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
 import { foldExclusiveUsage } from '../utils/usageFolding';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
+import { enforceEntitlement } from '../utils/modelEntitlement';
 import {
   isUnsupportedParam,
   stripUnsupportedParams,
@@ -189,6 +190,8 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
 
   // --- BEGIN DEPLOYED MODEL HANDLING ---
   if (originalModelFromRequest && originalModelFromRequest.endsWith('--deployed')) {
+    if (!enforceEntitlement(req, res, originalModelFromRequest)) return;
+
     // This branch bypasses transformRequestToSAPFormat (and the ref collection that
     // follows it, below, for the non-deployed path) entirely -- a SAP-hosted vision
     // deployment (e.g. gpt-4o--deployed) still needs its image_url refs collected for
@@ -409,6 +412,8 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     const isBeta = req.query.beta === 'true';
     logger.info('openaiController', `Request received with stream=${stream}${isBeta ? ', beta=true' : ''}`);
     
+    if (!enforceEntitlement(req, res, originalModelFromRequest)) return;
+
     // Validate that the model is not embedding-only
     try {
       const modelDetails = await modelService.getModelDetails(originalModelFromRequest);

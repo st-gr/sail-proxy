@@ -11,7 +11,7 @@ module.exports = {
     isAdmin: true,
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
-        'Configuration Management', 'SAP Capacity Unit Prices'],
+        'Model Library', 'Entitlements & Quotas', 'Configuration Management', 'SAP Capacity Unit Prices', 'Users & Quotas'],
       hiddenNav: [],
       userRoleLabel: 'Admin user'
     },
@@ -24,15 +24,21 @@ module.exports = {
       seesOtherUsersRows: true,
       editable: { isActive: true, expiresAt: true, neverExpires: true },
       canCreate: true, canRotate: true, presetDays: 90
-    }
+    },
+    library: {
+      seesAllModels: true, canEditPrice: true, canDeploy: true, canManageDefault: true, canAssign: true
+    },
+    users: { canManage: true },
+    securityNotifications: { seesClientIp: true },
+    quota: { cardVisible: true }
   },
   user: {
     credentials: 'user@test.com:user',
     isAdmin: false,
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
-        'Configuration Management'],
-      hiddenNav: ['SAP Capacity Unit Prices'],
+        'Model Library', 'Entitlements & Quotas', 'Configuration Management'],
+      hiddenNav: ['SAP Capacity Unit Prices', 'Users & Quotas'],
       userRoleLabel: 'User'
     },
     apiKeys: {
@@ -44,6 +50,12 @@ module.exports = {
       seesOtherUsersRows: false,
       editable: { isActive: false, expiresAt: false, neverExpires: false },
       canCreate: true, canRotate: true, presetDays: 90
-    }
+    },
+    library: {
+      seesAllModels: false, canEditPrice: false, canDeploy: false, canManageDefault: false, canAssign: false
+    },
+    users: { canManage: false },
+    securityNotifications: { seesClientIp: true },
+    quota: { cardVisible: true }
   }
 };

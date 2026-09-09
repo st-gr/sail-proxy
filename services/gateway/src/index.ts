@@ -21,10 +21,12 @@ import { runMigration } from './fileSearch/db';
 import { startIngestWorker, stopIngestWorker } from './fileSearch/ingestWorker';
 import { startExpirySweeper, stopExpirySweeper } from './fileSearch/expirySweeper';
 import anthropicRoutes from './routes/anthropicRoutes';
+import googleRoutes from './routes/googleRoutes';
 import awsBedrockRoutes from './routes/awsBedrockRoutes';
 import awsCredentialsRoutes from './routes/awsCredentialsRoutes';
 import apiKeyRoutes from './routes/apiKeyRoutes';
 import configRoutes from './routes/configRoutes';
+import { mountDeploymentRoutes } from './routes/deploymentRoutes';
 import openRouterRoutes from './routes/openRouterRoutes';
 
 // Middleware imports
@@ -165,6 +167,10 @@ app.use('/openai/v1/vector_stores', vectorStoresRoutes);
 // Anthropic Routes
 app.use('/anthropic/v1', anthropicRoutes);
 
+// Google Gemini Routes - both API versions the @google/genai SDK builds URLs for
+app.use('/google/v1beta', googleRoutes);
+app.use('/google/v1', googleRoutes);
+
 // AWS Bedrock Routes
 app.use('/aws-bedrock', awsBedrockRoutes);
 
@@ -174,6 +180,7 @@ app.use('/aws/api-keys', awsCredentialsRoutes);
 // Admin Routes (temporary - will move to admin service later)
 app.use('/api/admin/api-keys', apiKeyRoutes);
 app.use('/api/admin/api-config', configRoutes);
+mountDeploymentRoutes(app);   // skipped in standalone mode - see routes/deploymentRoutes.ts
 
 // OpenRouter Routes
 app.use('/openrouter/api/v1', openRouterRoutes);
@@ -192,9 +199,10 @@ app.get('/', (_req: express.Request, res: express.Response) => {
       chat: ['/openai/api/v1/chat/completions', '/openai/v1/chat/completions'],
       embeddings: ['/openai/api/v1/embeddings', '/openai/v1/embeddings'],
       anthropic: '/anthropic/v1',
+      google: ['/google/v1beta', '/google/v1'],
       awsBedrock: '/aws-bedrock',
       awsCredentials: '/aws/api-keys',
-      admin: ['/api/admin/api-keys', '/api/admin/api-config'],
+      admin: ['/api/admin/api-keys', '/api/admin/api-config', '/api/admin/deployments'],
       openRouter: '/openrouter/api/v1'
     },
     availableFiles: {
@@ -216,6 +224,7 @@ import usageEmitter from './services/usageEventEmitter';
 import securityEventEmitter from './services/securityEventEmitter';
 import Redis from 'iovalkey';
 import { isStandaloneMode, shouldEnableDistributedCaching } from './config/unifiedAuthConfig';
+import { configureQuotaEnforcement } from './middlewares/quotaEnforcement';
 
 // Initialize cache invalidation system
 import { gatewayCacheInvalidationService } from './services/gatewayCacheInvalidationService';
@@ -327,6 +336,20 @@ async function initializeSecurityEventSystem() {
   }
 }
 
+async function initializeQuotaEnforcement() {
+  if (!shouldEnableDistributedCaching()) {
+    logger.info('Quota Enforcement', `Using per-pod memory buckets (${isStandaloneMode() ? 'standalone mode' : 'Valkey not configured'})`);
+    return;
+  }
+  // Short command timeout and no offline queue: a Valkey outage must fail the decision fast (the
+  // middleware then falls back to memory buckets), never stall the request behind a reconnect.
+  const valkeyClient = new Redis(process.env.VALKEY_URL!, { enableOfflineQueue: false, commandTimeout: 500, maxRetriesPerRequest: 1 });
+  valkeyClient.on('error', (err: any) => logger.warn('Quota Enforcement', 'Valkey client error:', err.message));
+  valkeyClient.on('connect', () => logger.info('Quota Enforcement', 'Connected to Valkey for rate-limit counters'));
+  configureQuotaEnforcement({ valkeyClient });
+  cleanupResources.valkeyClients.push(valkeyClient);
+}
+
 async function initializeCacheInvalidation() {
   try {
     // Initialize cache invalidation service
@@ -387,6 +410,7 @@ async function initializeGatewayService(): Promise<void> {
   // Initialize systems after configuration is ready
   await initializeUsageTracking();
   await initializeSecurityEventSystem();
+  await initializeQuotaEnforcement();
   await initializeCacheInvalidation();
 
   // file_search: apply the schema migration (a no-op that logs and returns

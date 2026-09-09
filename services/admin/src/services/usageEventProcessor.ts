@@ -10,6 +10,9 @@ import { createHash } from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import modelCostService from './modelCostService';
 import { computeSapNative, isProductive } from './sapCapacityService';
+import { touch as touchUser } from './usersService';
+import { publishMany } from './userQuotaService';
+import { foldIncrements, applyIncrements, OWNER_EMAIL_FALLBACKS } from './usageCounters';
 
 const logger = getDefaultLogger();
 const cds = require('@sap/cds');
@@ -293,14 +296,16 @@ class UsageEventProcessor {
       const awsCredentialEvents = dedupedEvents.filter(e => e.authType === 'aws_credential');
 
       // Process API key usage events
-      if (apiKeyEvents.length > 0) {
-        await this.persistApiKeyUsage(db, apiKeyEvents);
-      }
+      const apiKeyEmails = apiKeyEvents.length > 0 ? await this.persistApiKeyUsage(db, apiKeyEvents) : [];
 
-      // Process AWS credential usage events  
-      if (awsCredentialEvents.length > 0) {
-        await this.persistAwsCredentialUsage(db, awsCredentialEvents);
-      }
+      // Process AWS credential usage events
+      const awsCredentialEmails = awsCredentialEvents.length > 0 ? await this.persistAwsCredentialUsage(db, awsCredentialEvents) : [];
+
+      // Refresh the Users row (task 7 publishes the quota document from the same set) for every
+      // distinct owner e-mail this batch touched.
+      const emails = new Set([...apiKeyEmails, ...awsCredentialEmails]);
+      for (const email of emails) await touchUser(db, email);
+      await publishMany(db, emails);
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -310,15 +315,16 @@ class UsageEventProcessor {
   }
 
   /**
-   * Persist API key usage events
+   * Persist API key usage events. Returns the distinct owner e-mails resolved from the batch
+   * (skipping the 'unknown@example.com' fallback), for the caller to touch afterwards.
    */
-  private async persistApiKeyUsage(db: any, events: UsageEvent[]): Promise<void> {
+  private async persistApiKeyUsage(db: any, events: UsageEvent[]): Promise<string[]> {
     // All events are valid - provider will be resolved from model data
     const validEvents = events;
 
     if (validEvents.length === 0) {
       logger.warn('UsageEventProcessor', 'No valid API key usage events to persist after filtering');
-      return;
+      return [];
     }
 
     // Fetch API key details for email and name preservation
@@ -402,51 +408,39 @@ class UsageEventProcessor {
       };
     }));
 
-    // Conflict-tolerant insert: the DB-level idempotency guard (see class doc). A row whose
-    // usageSignature already exists (e.g. a second admin subscriber replica persisting the
-    // same broadcast usage event) is silently dropped rather than duplicated.
-    const inserted = await this.insertIgnoringDuplicateSignature(
-      db, 'sap_llm_gateway_admin_ApiKeyUsage', usageRecords
-    );
-
-    // Batch increment usageCount for API keys — ONLY for events whose row actually landed.
-    // Counting every validEvent here (as before conflict-tolerance) would double the usageCount
-    // stat on a duplicate persist even though the ApiKeyUsage row itself was correctly deduped.
+    // Rows, usageCount and the usage buckets land together or not at all (spec §3.2): one
+    // transaction per table batch. The cost lookups above stay outside it — the single SQLite
+    // connection is never held across a gateway call, and the transaction only touches the DB.
+    // db.tx(fn) would open a root transaction and deadlock the single connection from inside a
+    // request; db.run(fn) joins the ambient one or opens its own.
+    const inserted: boolean[] = await db.run(async (tx: any) => {
+      const flags = await this.insertIgnoringDuplicateSignature(tx, 'sap_llm_gateway_admin_ApiKeyUsage', usageRecords);
+      await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_ApiKeys', validEvents.filter((_, i) => flags[i]));
+      await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]), (r) => r.email));
+      return flags;
+    });
     const insertedEvents = validEvents.filter((_, i) => inserted[i]);
-    const keyUsageCounts = insertedEvents.reduce((acc, event) => {
-      acc[event.credentialId] = (acc[event.credentialId] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    if (Object.keys(keyUsageCounts).length > 0) {
-      const keyIds = Object.keys(keyUsageCounts);
-      const caseStatements = Object.entries(keyUsageCounts)
-        .map(([keyId, count]) => `WHEN '${keyId}' THEN ${count}`)
-        .join(' ');
-      
-      await db.run(`
-        UPDATE sap_llm_gateway_admin_ApiKeys 
-        SET usageCount = usageCount + CASE ID
-          ${caseStatements}
-          ELSE 0
-        END
-        WHERE ID IN (${keyIds.map(id => `'${id}'`).join(',')})
-      `);
-    }
 
     logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} API key usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
+
+    return [...new Set(
+      Array.from(keyDetailsMap.values())
+        .map((key: any) => key?.email)
+        .filter((email: any) => email && !OWNER_EMAIL_FALLBACKS.has(email))
+    )] as string[];
   }
 
   /**
-   * Persist AWS credential usage events
+   * Persist AWS credential usage events. Returns the distinct owner e-mails resolved from the
+   * batch (skipping the 'unknown-user' fallback), for the caller to touch afterwards.
    */
-  private async persistAwsCredentialUsage(db: any, events: UsageEvent[]): Promise<void> {
+  private async persistAwsCredentialUsage(db: any, events: UsageEvent[]): Promise<string[]> {
     // All events are valid - provider will be resolved from model data
     const validEvents = events;
 
     if (validEvents.length === 0) {
       logger.warn('UsageEventProcessor', 'No valid AWS credential usage events to persist after filtering');
-      return;
+      return [];
     }
 
     // Fetch AWS credential details for email and name preservation
@@ -531,38 +525,40 @@ class UsageEventProcessor {
       };
     }));
 
-    // Conflict-tolerant insert: the DB-level idempotency guard (see class doc). A row whose
-    // usageSignature already exists (e.g. a second admin subscriber replica persisting the
-    // same broadcast usage event) is silently dropped rather than duplicated.
-    const inserted = await this.insertIgnoringDuplicateSignature(
-      db, 'sap_llm_gateway_admin_AwsCredentialUsage', usageRecords
-    );
-
-    // Batch increment usageCount for AWS credentials — ONLY for events whose row actually
-    // landed (see the matching comment in persistApiKeyUsage for why).
+    // db.tx(fn) would open a root transaction and deadlock the single connection from inside a
+    // request; db.run(fn) joins the ambient one or opens its own.
+    const inserted: boolean[] = await db.run(async (tx: any) => {
+      const flags = await this.insertIgnoringDuplicateSignature(tx, 'sap_llm_gateway_admin_AwsCredentialUsage', usageRecords);
+      await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_AwsCredentials', validEvents.filter((_, i) => flags[i]));
+      await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]),
+        (r) => (credentialDetailsMap.get(r.credential_ID) as any)?.email ?? null));
+      return flags;
+    });
     const insertedEvents = validEvents.filter((_, i) => inserted[i]);
-    const credentialUsageCounts = insertedEvents.reduce((acc, event) => {
-      acc[event.credentialId] = (acc[event.credentialId] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    if (Object.keys(credentialUsageCounts).length > 0) {
-      const credentialIds = Object.keys(credentialUsageCounts);
-      const caseStatements = Object.entries(credentialUsageCounts)
-        .map(([credentialId, count]) => `WHEN '${credentialId}' THEN ${count}`)
-        .join(' ');
-      
-      await db.run(`
-        UPDATE sap_llm_gateway_admin_AwsCredentials 
-        SET usageCount = usageCount + CASE ID
-          ${caseStatements}
-          ELSE 0
-        END
-        WHERE ID IN (${credentialIds.map(id => `'${id}'`).join(',')})
-      `);
-    }
 
     logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} AWS credential usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
+
+    return [...new Set(
+      Array.from(credentialDetailsMap.values())
+        .map((cred: any) => cred?.email)
+        .filter((email: any) => email && !OWNER_EMAIL_FALLBACKS.has(email))
+    )] as string[];
+  }
+
+  /** Adds each credential's landed-row count to its usageCount, in one statement. `db` may be a transaction. */
+  private async bumpUsageCount(db: any, table: 'sap_llm_gateway_admin_ApiKeys' | 'sap_llm_gateway_admin_AwsCredentials', events: UsageEvent[]): Promise<void> {
+    const counts = events.reduce((acc, event) => { acc[event.credentialId] = (acc[event.credentialId] || 0) + 1; return acc; }, {} as Record<string, number>);
+    const ids = Object.keys(counts);
+    if (ids.length === 0) return;
+    const caseStatements = Object.entries(counts).map(([id, count]) => `WHEN '${id}' THEN ${count}`).join(' ');
+    await db.run(`
+      UPDATE ${table}
+      SET usageCount = usageCount + CASE ID
+        ${caseStatements}
+        ELSE 0
+      END
+      WHERE ID IN (${ids.map(id => `'${id}'`).join(',')})
+    `);
   }
 
   /**
@@ -581,9 +577,7 @@ class UsageEventProcessor {
   ): Promise<boolean[]> {
     if (records.length === 0) return [];
 
-    const isPostgreSQL = db.options?.credentials?.kind === 'postgres' ||
-      process.env.CDS_ENV === 'pg' ||
-      process.env.NODE_CONFIG_ENV === 'pg';
+    const isPostgreSQL = (db.options ?? db.service?.options)?.credentials?.kind === 'postgres' || process.env.CDS_ENV === 'pg' || process.env.NODE_CONFIG_ENV === 'pg';
 
     // Every record is built from the same object-literal shape (see the two callers), so the
     // key set/order is stable across all of them — safe to derive columns from the first row.

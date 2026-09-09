@@ -197,7 +197,11 @@ export function responsesInputToMessages(input: any, instructions?: string): Sap
     if (DROPPED_ITEM_TYPES.has(type)) continue;
 
     if (type === 'message' || (type === undefined && item?.role)) {
-      messages.push({ role: item.role, content: textBlocks(item.content) });
+      // OpenAI's `developer` role is the Responses-era spelling of `system`; orchestration
+      // knows only system/user/assistant/tool ("Invalid role 'developer' in message" from
+      // SAP's LLM module for gemini-3.5-flash, measured live 2026-09-08 — pi sends the
+      // system prompt as `developer` to any model it marks as reasoning-capable).
+      messages.push({ role: item.role === 'developer' ? 'system' : item.role, content: textBlocks(item.content) });
       continue;
     }
 
@@ -311,6 +315,55 @@ export function buildOrchestrationPayload(body: any, opts: BuildOptions): SapV2C
     toolChoice: params.tool_choice,
   }));
 
+  return assembleOrchestrationPayload({
+    messages,
+    modelName: opts.modelName,
+    params,
+    stream: opts.stream,
+    tools: Array.isArray(body?.tools) && body.tools.length > 0 ? translateTools(body.tools) : undefined,
+  });
+}
+
+/** Models whose SAP LLM module refuses a system message after a tool result. */
+const REFUSES_TRAILING_SYSTEM = /^mistralai--/i;
+
+/**
+ * SAP's placeholder grammar, as its templating module states it: `{{?name}}` or
+ * `{{ ?name }}`, the name starting with a letter, ending with a letter or digit,
+ * `_` and `-` the only other characters and never doubled. A template message
+ * containing one is SUBSTITUTED, and a name with no value is a 400 ("Input
+ * Parameters: ... Unused parameters: ['name']") — measured live 2026-09-08 via
+ * /v2/completion; `{{bar}}`, `{{ x }}`, `{{#if}}` and `{{}}` pass untouched.
+ * Mapping each name to the text it was written as puts the message back on the
+ * wire verbatim (measured: `{{?foo}} end` round-tripped unchanged). A malformed
+ * name (`{{? foo }}`, `{{?foo.bar}}`) is a hard templating error no value fixes.
+ */
+const PLACEHOLDER = /\{\{\s*\?([A-Za-z](?:[_-]?[A-Za-z0-9])*)\s*\}\}/g;
+
+export function literalPlaceholderValues(message: SapV2Message): Record<string, string> {
+  const texts: string[] = typeof message.content === 'string'
+    ? [message.content]
+    : (Array.isArray(message.content) ? message.content.map((b: any) => (typeof b?.text === 'string' ? b.text : '')) : []);
+  const values: Record<string, string> = {};
+  for (const text of texts) {
+    for (const m of text.matchAll(PLACEHOLDER)) {
+      if (values[m[1]] === undefined) values[m[1]] = m[0];
+    }
+  }
+  return values;
+}
+
+/** The payload envelope, shared with the Gemini bridge (src/google/orchestrationBridge) — extracted from buildOrchestrationPayload unchanged. */
+export function assembleOrchestrationPayload(input: {
+  messages: SapV2Message[];
+  modelName: string;
+  params: Record<string, any>;
+  stream: boolean;
+  /** Already chat-shaped (`{type:'function', function:{...}}`); omitted when empty. */
+  tools?: any[];
+  /** Goes on the PROMPT, not on model.params — where openaiController puts it. */
+  responseFormat?: any;
+}): SapV2CompletionRequest {
   // The system message goes in the template and NOWHERE ELSE. template and
   // messages_history are DISJOINT — the same shape openaiController's Anthropic
   // branch builds (openaiController.ts:1072-1073: the template message is the
@@ -332,31 +385,54 @@ export function buildOrchestrationPayload(body: any, opts: BuildOptions): SapV2C
   // by identity — not every system-role message. A second system message, if a
   // client ever sends one, is content, and dropping content silently is what
   // the rest of this module refuses to do.
-  const systemMessage = messages.find((m) => m.role === 'system');
-  const template: SapV2Message[] = systemMessage
-    ? [systemMessage]
-    : [{ role: 'system', content: [{ type: 'text', text: 'You are a helpful assistant.' }] }];
-  // With no system message at all, the default template entry above is the only
-  // copy on the wire and history is untouched — still exactly one, still disjoint.
-  const history = systemMessage ? messages.filter((m) => m !== systemMessage) : messages;
+  const systemMessage = input.messages.find((m) => m.role === 'system');
+  const conversation = systemMessage ? input.messages.filter((m) => m !== systemMessage) : input.messages;
+  const newest = conversation[conversation.length - 1];
+  let template: SapV2Message[];
+  let history: SapV2Message[];
+  let placeholderValues: Record<string, string> = {};
+  if (newest?.role === 'tool' && REFUSES_TRAILING_SYSTEM.test(input.modelName)) {
+    // SAP appends the template AFTER messages_history, so the shape above ends every turn
+    // with the system message. Mistral's LLM module refuses a system message that follows a
+    // tool result (a bare "400 - LLM Module: An error occurred while processing your request",
+    // measured live 2026-09-08 on mistralai--mistral-medium; the same messages with the
+    // system first succeed, and user→system is accepted, so only tool turns swap). Here the
+    // newest message is the template and the system message leads the history — the shape
+    // openaiController's chat branch has always sent. The template is the one place SAP's
+    // placeholder parser reads, hence literalPlaceholderValues; the swap stays confined to
+    // this provider so no other model's newest message is ever exposed to that parser.
+    template = [newest];
+    history = systemMessage ? [systemMessage, ...conversation.slice(0, -1)] : conversation.slice(0, -1);
+    placeholderValues = literalPlaceholderValues(newest);
+  } else {
+    template = systemMessage
+      ? [systemMessage]
+      : [{ role: 'system', content: [{ type: 'text', text: 'You are a helpful assistant.' }] }];
+    // With no system message at all, the default template entry above is the only
+    // copy on the wire and history is untouched — still exactly one, still disjoint.
+    history = conversation;
+  }
 
   const payload: SapV2CompletionRequest = {
     config: {
       modules: {
         prompt_templating: {
           prompt: { template },
-          model: { name: opts.modelName, version: 'latest', params },
+          model: { name: input.modelName, version: 'latest', params: input.params },
         },
       },
     },
-    placeholder_values: {},
+    placeholder_values: placeholderValues,
     messages_history: history,
   };
 
-  if (Array.isArray(body?.tools) && body.tools.length > 0) {
-    payload.config.modules.prompt_templating.prompt.tools = translateTools(body.tools);
+  if (Array.isArray(input.tools) && input.tools.length > 0) {
+    payload.config.modules.prompt_templating.prompt.tools = input.tools;
   }
-  if (opts.stream) {
+  if (input.responseFormat !== undefined) {
+    payload.config.modules.prompt_templating.prompt.response_format = input.responseFormat;
+  }
+  if (input.stream) {
     payload.config.stream = { enabled: true };
   }
 

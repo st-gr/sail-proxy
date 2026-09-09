@@ -178,6 +178,40 @@ Nothing degrades either way: rewriting is best-effort and a search works identic
 
 **The order of those two plugin entries differs between the two arrays, deliberately.** `responses-stream` lists `responsesNamespaceToolsPlugin` *before* `responsesWebSearchPlugin`; `responses` lists it *after*. Write interceptors nest inside-out, while after-handlers chain in array order, so the two paths need opposite orders. When hand-merging, copy each array verbatim rather than normalising them to match — `test/responses-tool-plugin-layering.test.ts` fails by name if they agree.
 
+**Fresh-token usage and quota profiles (this release).** Two related changes land together.
+`UserUsageDaily.tokens` — the bucket the day/week/month usage windows and the Users & Quotas app
+read from — now sums only fresh tokens (input + output + cache *creation*; cache *reads* are still
+priced into `sapCost`, exactly as before, but no longer counted as tokens).
+`usageCounters.foldIncrements` and the rebuild's `TOKENS_SUM` SQL both changed the same way, so
+**token figures visibly drop after upgrading** — this is expected, not data loss. The two "tokens"
+the admin cockpit reports are deliberately different definitions now: per-user quota usage
+(`UserUsageDaily`, the Users & Quotas app, the gateway's quota checks) is fresh-tokens-only; the
+per-key and per-credential `totalTokens` the reporting endpoints return (`admin-service.ts`) stays
+all-inclusive, unchanged. `usageCounters.rebuild` — reachable as the `rebuildUsageCounters` admin
+action, and run automatically by the nightly cost recalculation — recomputes the buckets under the
+new definition; an install upgrading with an existing bucket table should run one rebuild after
+upgrading so historical figures read consistently, rather than waiting for the 62-day retention
+window to roll the old-definition buckets off on its own.
+
+Quota profiles are new in this release: `QuotaProfiles` seeds three starters (Light / Standard /
+Power) once, into an empty table, from the same startup hook that seeds the default entitlement
+catalog (`initializeModelLibrary`) — so an existing deployment gets the three starter profiles
+automatically on first start after upgrading, no admin action required. Nothing is auto-assigned:
+every `Users.quotaProfile` starts null, exactly as before this release, and the platform default
+continues to apply until an administrator assigns a profile. See "Quota profiles" in
+[model-library-entitlements.md](model-library-entitlements.md) for the resolution order and write
+paths. Postgres deployments need nothing further; an existing local SQLite `db/admin.db` needs the
+"Local SQLite dev" statements in that same section applied by hand, or the admin logs "default
+catalog / starter profile seed failed: no such table: sap_llm_gateway_admin_QuotaProfiles" and the
+Quota profiles mode fails until they are applied.
+
+**The `#catalogs` shell route is now titled "Entitlements & Quotas" (this release).** The route is
+not new: the catalogs screen has been served by `admin.modellibrary.Component` under both
+`#model-library` and `#catalogs` since before this release, the latter titled "Entitlement
+Catalogs". Only the title changed, to cover the quota profiles the screen gained. Both routes work
+after upgrading; this is a title change only, with no deployment step and no breakage of a
+bookmarked `#model-library` or `#catalogs` URL.
+
 ## Release Checklist
 
 - [ ] `git status` clean (tracked files), on the intended branch

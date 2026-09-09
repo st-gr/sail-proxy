@@ -168,6 +168,7 @@ The proxy provides the following API endpoints:
 | OpenAI | `/openai/api/v1/responses` | OpenAI Responses API (deployed GPT-5+ models) |
 | OpenAI | `/openai/v1/responses` | OpenAI Responses alias |
 | Anthropic | `/anthropic/v1/messages` | Anthropic messages API |
+| Google | `/google/v1beta/models/{model}:{method}` | Gemini generateContent/streamGenerateContent/embedContent |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke` | Bedrock invoke API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke-with-response-stream` | Bedrock streaming API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse` | Bedrock converse API |
@@ -193,7 +194,7 @@ Verified against Codex CLI 0.145.0 and 0.146.0. See the project's `docs/user/cha
 
 ## Launch a coding harness
 
-Point Codex CLI, Claude Code, or OpenCode at the gateway — no hand-editing their config:
+Point Codex CLI, Claude Code, OpenCode, Gemini CLI, or pi at the gateway — no hand-editing their config:
 
 ```bash
 sail-proxy endpoint set local                 # or a remote gateway:
@@ -203,13 +204,21 @@ sail-proxy endpoint show
 sail-proxy codex "…"        # start the harness against the gateway
 sail-proxy claude
 sail-proxy opencode
+sail-proxy gemini                              # Gemini CLI; any model, e.g. -m anthropic--claude-4.5-haiku
+sail-proxy pi                                  # pi; every chat model in its /model picker, e.g. --model sail-proxy/anthropic--claude-4.5-sonnet
 
 sail-proxy codex --dry-run "…"                 # preview what will run, change nothing
 ```
 
 - `endpoint set` chooses which gateway (local or remote) the harnesses use; `endpoint show`
   prints it and the key source.
-- `codex`, `claude`, and `opencode` configure the tool and launch it against that endpoint.
+- `codex`, `claude`, `opencode`, `gemini`, and `pi` configure the tool and launch it against that
+  endpoint. `gemini` sets `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, selects the API-key auth
+  type in `~/.gemini/settings.json` (backed up first), and defaults the model to
+  `gemini-3.5-flash`; headless runs (`-p`) also need `--skip-trust` or a folder trusted once
+  interactively. `pi` reads the gateway's model list, writes one `sail-proxy` provider (Responses
+  API, every chat model) into `~/.pi/agent/models.json` (backed up first), passes the key as
+  `SAILPROXY_KEY`, and defaults the model to `gpt-5.6-sol`; rerun it to refresh the list.
 - `--dry-run` shows exactly what would run without changing anything on disk or starting the
   harness — handy for checking an endpoint first.
 

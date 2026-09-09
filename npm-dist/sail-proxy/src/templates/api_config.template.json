@@ -2,6 +2,8 @@
   "api_config": {
     "providers": {
       "anthropic": {
+        "sap_cache_read_token_billing_factor": 1.0,
+        "sap_cache_write_token_billing_factor": 1.0,
         "anthropic_bedrock_version": "bedrock-2023-05-31",
         "excluded_beta_headers": [
           "prompt-caching-scope-2026-01-05",
@@ -137,6 +139,9 @@
             "to": "anthropic--claude-4.8-opus--deployed"
           }
         ]
+      },
+      "google": {
+        "substitute_models": []
       },
       "openai": {
         "emulate_streaming_for_models": [
@@ -1845,6 +1850,10 @@
       }
     },
     "platform": {
+      "billing": {
+        "productive": true,
+        "cuFactor": 1.90385
+      },
       "timeouts": {
         "default": 600000,
         "streaming": 600000
@@ -1891,7 +1900,20 @@
         }
       },
       "security": {
-        "trust_forwarded_for": false
+        "trust_forwarded_for": false,
+        "credentialExpirationDays": 90
+      },
+      "quotas": {
+        "requestsPerMinute": null,
+        "spendPerDay": null,
+        "spendPerWeek": null,
+        "spendPerMonth": null,
+        "tokensPerDay": null,
+        "tokensPerWeek": null,
+        "tokensPerMonth": null
+      },
+      "maintenance": {
+        "dailyRunAtUtc": null
       }
     },
     "observability": {

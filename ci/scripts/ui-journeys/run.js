@@ -19,23 +19,44 @@ const TEST_PAGE = '/test/integration/opaTests.qunit.html';
 // minTests = the journeys the page must actually run; a page that silently ran fewer
 // (a journey dropped from opaTests.qunit.js, a bootstrap that never started) is a failure.
 const APPS = [
-  { name: 'shell', mount: '/shell', minTests: 2 },
+  { name: 'shell', mount: '/shell', minTests: 4 },
   { name: 'api-keys-app', mount: '/api-keys', minTests: 6 },
-  { name: 'aws-credentials-app', mount: '/aws-credentials', minTests: 5 }
+  { name: 'aws-credentials-app', mount: '/aws-credentials', minTests: 5 },
+  { name: 'model-library-app', mount: '/model-library', minTests: 7 },
+  { name: 'security-notifications-app', mount: '/security-notifications', minTests: 3 },
+  { name: 'users-app', mount: '/users', minTests: 6, roles: ['admin'] }   // admin-only app (plan B ruling 1)
 ];
+
+// UI_JOURNEYS_APPS=<name>[,<name>…] restricts a run to those apps. seed.js honours the same
+// variable (its model-library fixtures need the gateway the pipeline starts in Phase 5).
+function selectedApps() {
+  const filter = process.env.UI_JOURNEYS_APPS;
+  if (!filter) return APPS;
+  const wanted = filter.split(',').map((name) => name.trim());
+  return APPS.filter((app) => wanted.includes(app.name));
+}
 
 const SKIP_MESSAGE = `[ui-journeys] skipped: ADMIN_SERVICE_URL is not set.
 The journeys purge and seed the database they run against — never point them at a dev DB.
 Start a throwaway admin (schema in a scratch file, port 4014), then re-run:
   cd services/admin && npx cds deploy --to sqlite:/tmp/ui-journeys.db
   cd services/admin && CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"/tmp/ui-journeys.db"}}}}' PORT=4014 pnpm run dev:ts:mock
-  ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys`;
+  ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys
+A throwaway admin has no gateway, so the model-library seed (refreshModelLibrary) fails there:
+restrict a standalone run with UI_JOURNEYS_APPS=shell,api-keys-app,aws-credentials-app, or run
+the full pipeline (pnpm run ci).`;
 
-// The page gets the role entry minus the password, plus the email and the fixture names.
+// The page gets the role entry minus the password, plus the email, the fixture names and —
+// when the seed that just ran created them — the model-library fixture ids.
 function encodeExpectations(role) {
   const { credentials, ...expect } = roles[role];
   expect.email = credentials.split(':')[0];
-  expect.fixtures = fixtures.names;
+  expect.fixtures = { ...fixtures.names };
+  const seeded = path.join(ROOT, REPORT_ROOT, 'fixtures.json');
+  if (fs.existsSync(seeded)) {
+    const seededFixtures = JSON.parse(fs.readFileSync(seeded, 'utf8'));
+    for (const block of ['library', 'quota', 'securityEvent']) if (seededFixtures[block]) expect.fixtures[block] = seededFixtures[block];
+  }
   return Buffer.from(JSON.stringify(expect), 'utf8').toString('base64url');
 }
 
@@ -89,9 +110,16 @@ function main() {
     return 1;
   }
   const results = [];
+  const apps = selectedApps();
+  if (apps.length === 0) {
+    console.error(`[ui-journeys] UI_JOURNEYS_APPS=${process.env.UI_JOURNEYS_APPS} matches none of ` +
+      APPS.map((app) => app.name).join(', '));
+    return 1;
+  }
   roleLoop:
   for (const role of Object.keys(roles)) {
-    for (const app of APPS) {
+    for (const app of apps) {
+      if (app.roles && !app.roles.includes(role)) continue;
       console.log(`\n[ui-journeys] ${app.name} as ${role}`);
       try {
         seed(adminUrl); // fresh fixtures for every role × app run

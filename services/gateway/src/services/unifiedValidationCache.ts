@@ -14,6 +14,14 @@ import { ValkeyDistributedCacheAdapter } from './valkeyDistributedCacheAdapter';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
+/**
+ * Key prefix the distributed (Valkey) tier stores unified cache entries behind.
+ * The in-process map holds the same logical keys WITHOUT this prefix, so any
+ * invalidation pattern that addresses the Valkey namespace has to be translated
+ * before it is matched against local keys (see clearByPattern).
+ */
+export const VALKEY_CACHE_KEY_PREFIX = 'unified-cache:';
+
 // Extended cache entry types
 export interface UnifiedCacheEntry {
   data: ValidationResponse | CredentialMetadata | UnifiedValidationResponse;
@@ -113,7 +121,7 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
     if (this.unifiedConfig.enableDistributed && this.unifiedConfig.valkeyUrl) {
       this.valkeyAdapter = new ValkeyDistributedCacheAdapter({
         valkeyUrl: this.unifiedConfig.valkeyUrl,
-        keyPrefix: 'unified-cache:',
+        keyPrefix: VALKEY_CACHE_KEY_PREFIX,
         defaultTTL: Math.floor(this.unifiedConfig.tokenTTL / 1000), // Convert to seconds
         enableEncryption: this.unifiedConfig.encryptTokenData
       });
@@ -608,7 +616,7 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
     try {
       // Clear from local cache (approximate pattern matching)
       const localKeys = Array.from(this.unifiedCache.keys());
-      const matchingLocalKeys = localKeys.filter(key => this.matchesPattern(key, pattern));
+      const matchingLocalKeys = localKeys.filter(key => this.matchesLocalKey(key, pattern));
       
       for (const key of matchingLocalKeys) {
         this.unifiedCache.delete(key);
@@ -662,6 +670,27 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
     }
     
     return keys;
+  }
+
+  /**
+   * Match an in-process cache key against an invalidation pattern.
+   *
+   * Local keys are stored un-prefixed ('unified:apikey:<hash>'), while the Valkey
+   * tier stores them behind VALKEY_CACHE_KEY_PREFIX. Publishers address the
+   * distributed namespace ('unified-cache:*'), so a pattern carrying that prefix
+   * is also matched with the prefix stripped - otherwise a broadcast invalidation
+   * would clear Valkey and leave every gateway's memory serving stale entitlements.
+   */
+  private matchesLocalKey(key: string, pattern: string): boolean {
+    if (this.matchesPattern(key, pattern)) {
+      return true;
+    }
+
+    if (pattern.startsWith(VALKEY_CACHE_KEY_PREFIX)) {
+      return this.matchesPattern(key, pattern.slice(VALKEY_CACHE_KEY_PREFIX.length));
+    }
+
+    return false;
   }
 
   /**

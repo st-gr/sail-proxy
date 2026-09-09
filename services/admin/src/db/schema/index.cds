@@ -6,3 +6,5 @@ using from './security-notifications';
 using from './user-preferences';
 using from './audit';
 using from './siem';
+using from './model-library';
+using from './users';

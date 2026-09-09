@@ -44,6 +44,13 @@ import {
   appendResponsesInstructions,
   unmaskResponsesOutput,
 } from '../../utils/responsesBodyAdapter';
+import {
+  isGeminiBody,
+  extractGeminiInputTexts,
+  setGeminiInputText,
+  appendGeminiInstructions,
+  unmaskGeminiOutput,
+} from '../../utils/geminiBodyAdapter';
 import { beginStreamContentCapture } from '../../services/siemUsageEvent';
 import { appendStreamContent } from '../../services/siemStreamCapture';
 
@@ -566,6 +573,19 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       }
     }
 
+    // Gemini bodies use `systemInstruction` + `contents` instead of `system` +
+    // `messages`. Without this the /google route would bypass masking entirely.
+    const geminiBody = isGeminiBody(req.body);
+    if (geminiBody) {
+      for (const { text, path } of extractGeminiInputTexts(req.body)) {
+        const detected = detectEntities(text, maskingConfig);
+        allEntities.push(...detected);
+        const masked = replaceEntities(text, detected, map, maskingConfig);
+        maskedInputs.push(masked);
+        setGeminiInputText(req.body, path, masked);
+      }
+    }
+
     // Process system messages (Anthropic format)
     if (Array.isArray(req.body.system)) {
       for (let i = 0; i < req.body.system.length; i++) {
@@ -637,6 +657,8 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         + 'in the conversation.';
       if (responsesBody) {
         appendResponsesInstructions(req.body, copyNote);
+      } else if (geminiBody) {
+        appendGeminiInstructions(req.body, copyNote);
       } else if (Array.isArray(req.body.system)) {
         req.body.system.push({ type: 'text', text: copyNote });
       } else if (typeof req.body.system === 'string') {
@@ -771,6 +793,12 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
 
     // Responses API output items (message/function_call/reasoning).
     unmaskResponsesOutput(upstreamResponse, (s: string) => unmaskText(s, map));
+
+    // Gemini candidates[].content.parts (text + functionCall.args). Stream frames on
+    // /google share this exact shape (no `delta`/`type` field `isStreamingChunk` above
+    // recognizes), so a streamed Gemini chunk lands here too — this one site unmasks
+    // both the final response and every streamed frame.
+    unmaskGeminiOutput(upstreamResponse, (s: string) => unmaskText(s, map));
 
     // Residue audit (the non-streaming path had none — this is the incident path).
     // Scan the fully-unmasked client-facing body for surviving MASKED_* tokens and
@@ -1110,6 +1138,65 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
           }
           modified = true;
         }
+      }
+    }
+
+    // Gemini stream frames (/google). Text rides on `candidates[i].content.parts[j].text`
+    // with no delta wrapper of its own, so a MASKED_* token can straddle two frames
+    // exactly as an Anthropic text_delta can — and the catch-all below only ever
+    // resolves WHOLE tokens, which is why retention has to happen here, before it.
+    // Retention is per candidate index and flushed when that candidate's `finishReason`
+    // arrives; a Gemini stream always ends with one (the bridge translator's `finish()`
+    // emits a terminal frame even when SAP sent no finish_reason).
+    //
+    // What this is FOR is the NATIVE pass-through, which has no per-frame plugin chain.
+    // On the BRIDGE path frames reach res.write already unmasked, so there is nothing
+    // left here to resolve — but the buffer still runs, and it is not inert: an append
+    // may retain a prefix-shaped tail (a trailing "M" of "5 PM" could begin MASKED_) and
+    // shift it into the NEXT frame. The terminal frame flushes whatever is held, so the
+    // text a client reconstructs by concatenating frames is unchanged; only the frame
+    // boundaries within it move.
+    if (Array.isArray(event?.candidates)) {
+      for (const candidate of event.candidates) {
+        const key = `gemini_text:${candidate?.index ?? 0}`;
+        const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : null;
+        if (parts) {
+          for (const part of parts) {
+            if (typeof part?.text !== 'string') continue;
+            part.text = getBuf(key).append(part.text);
+            track(key, part.text);
+            modified = true;
+          }
+        }
+        if (!candidate?.finishReason) continue;
+        const buf = buffers.get(key);
+        if (buf) {
+          const remainder = buf.flush();
+          // The terminal frame is the LAST one the client parses, so a retained tail has
+          // no later frame to ride on and no synthetic Gemini frame to be emitted as —
+          // it is appended to this candidate's own text instead.
+          //
+          // A terminal frame routinely carries NO text of its own: `parts` may be empty,
+          // and SAP's native shape omits `content` entirely
+          // (`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{…}}`). Both cases
+          // still have to deliver the tail — a retained fragment is real answer text (a
+          // trailing "M" from "5 PM" is prefix-shaped enough to be held back) — so the
+          // container is materialised rather than treated as "nothing to append to".
+          // Dropping it here would truncate the answer silently and hide it from
+          // `auditBlock` as well.
+          if (remainder) {
+            if (parts) {
+              const lastText = [...parts].reverse().find((p: any) => typeof p?.text === 'string');
+              if (lastText) lastText.text += remainder; else parts.push({ text: remainder });
+            } else {
+              candidate.content = { role: 'model', parts: [{ text: remainder }] };
+            }
+            track(key, remainder);
+            modified = true;
+          }
+          buffers.delete(key);
+        }
+        auditBlock(key);
       }
     }
 

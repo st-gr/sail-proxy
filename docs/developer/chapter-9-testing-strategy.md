@@ -84,6 +84,11 @@ services/admin/test/
     └── analytics/
 ```
 
+- `test/unit/services/usage-counters.test.ts` — bucket folding, upsert, window derivation, rebuild from rows (watermarks, AWS attribution, retention)
+- `test/unit/usage-event-processor-counters.test.ts` — the processor's buckets land with the rows in one transaction (real SQLite)
+- `test/unit/services/cost-recalculation-rebuild.test.ts` — the daily recalculation rebuilds the buckets and republishes on every run, and a rebuild failure leaves its own counts intact
+- `test/unit/services/cost-recalculation-schedule.test.ts` — when that run happens: 5 minutes after startup and every 24 hours from then, or at `platform.maintenance.dailyRunAtUtc` each day, re-armed on a configuration activation
+
 ### Shared Test Utilities (`libs/test-utils/`)
 
 #### Test Data Factories
@@ -553,18 +558,26 @@ describe('API Keys HTTP Endpoint', () => {
 Role-based UI5 control-level tests for the admin cockpit run on every `pnpm run ci` as
 **Phase 6.6** (after the CLI end-to-end phase, as the last consumer of the CI database),
 against the dev-mode admin the pipeline starts in Phase 5. They cover the
-shell (navigation entries and profile per role), the API-keys app and the AWS-credentials
-app (list visibility, object page, edit, create) as `admin@test.com` and `user@test.com`.
+shell (navigation entries and profile per role, the home page's key-metric tiles and its "My quota"
+card), the
+API-keys app and the AWS-credentials app (list visibility, object page, edit, create), the
+Model Library (entitled models, filters, model detail, manual prices, catalogs), Users & Quotas
+(admin only: list, object page, edit, deactivate/reactivate lifecycle, reset quota) and Security
+Notifications (client IP on the list and the object page) as `admin@test.com` and
+`user@test.com`.
 
 **Where things live**
 
 | Path | Purpose |
 |---|---|
 | `ci/scripts/ui-journeys/roles.js` | the role matrix — what each role must and must not see or edit |
-| `ci/scripts/ui-journeys/fixtures.js` | fixture names (`UI Fixture — …`) and dev user emails |
-| `ci/scripts/ui-journeys/seed.js` | deletes every draft, API key and AWS credential, then creates the fixtures over OData (as the admin) |
-| `ci/scripts/ui-journeys/run.js` | runs `ui5-test-runner` per role × app, writes `ci/reports/ui-journeys/<app>-<role>/` (HTML report, `junit.xml`, screenshots) |
+| `ci/scripts/ui-journeys/fixtures.js` | fixture names (`UI Fixture — …`) and dev user emails, plus a `quota` block (minimal limits so an accidental real request is refused, and the seeded usage figures) and a `securityEvent` block (client IP, user agent, endpoint, request ID of the seeded notification) |
+| `ci/scripts/ui-journeys/seed.js` | deletes every draft, API key, AWS credential and non-default model catalog, then creates the fixtures over OData (as the admin); posts synthetic usage for the quota fixtures through the admin's `processUsageEvents` action and a security event through `logSecurityEvent` |
+| `ci/scripts/ui-journeys/run.js` | runs `ui5-test-runner` per role × app, writes `ci/reports/ui-journeys/<app>-<role>/` (HTML report, `junit.xml`, screenshots); an `APPS` entry can restrict itself to certain roles via `roles` — `users-app` is `roles: ['admin']`, since it is an admin-only app |
 | `services/admin/app/<app>/webapp/test/integration/` | the OPA5 pages and journeys of each app (`opaTests.qunit.html` is the entry) |
+| `services/admin/app/model-library-app/webapp/test/integration/` | Model Library journeys: grid count per role, filters, leaderboard/chart (admin), detail cost operands and role-gated actions, manual price round trip (admin), catalogs create / stage and save members / discard a staged removal / the unsaved-changes guard / admin tabs / delete, and (`ProfilesJourney.js`, admin only) quota profiles create / edit the limits / the unsaved-profile guard / assign and unassign / delete refused while assigned — `minTests: 7` in `run.js` covers the added journey |
+| `services/admin/app/users-app/webapp/test/integration/` | Users & Quotas journeys (admin only): list sort/status/seeded usage, object page constraints/usage/API Keys/Entitlement (including the assigned quota-profile field), edit field control, deactivate/reactivate lifecycle with locked credentials, reset quota |
+| `services/admin/app/security-notifications-app/webapp/test/integration/` | Security Notifications journeys: list Client IP column, object page notification details (Client IP, User Agent, Endpoint, Request ID) |
 
 `run.js` injects the selected role's expectations into the page URL (`?role=…&expect=<base64url JSON>`);
 journeys read them from `expectations.js` and never assert against literals. **To add a role
@@ -587,6 +600,32 @@ CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"/tmp/ui-journeys.db"}}}}' P
 # in another terminal, from the repository root
 ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys
 ```
+
+The Model Library journeys need the gateway the pipeline starts in Phase 5
+(`refreshModelLibrary` reads the model list; it spends no tokens). Locally, either restrict a run to
+the other apps with `UI_JOURNEYS_APPS=shell,api-keys-app,aws-credentials-app`, run the full
+pipeline, or give the throwaway admin a scratch *copy* of a database that already holds a
+library snapshot (copy `admin.db` and its `-wal` file while the dev admin is stopped) and set
+`UI_JOURNEYS_SKIP_LIBRARY_REFRESH=1` so the seed keeps that snapshot instead of asking the
+gateway — `UI_JOURNEYS_APPS=model-library-app UI_JOURNEYS_SKIP_LIBRARY_REFRESH=1
+ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys`. The pipeline never sets that flag. `run.js` and `seed.js` read `UI_JOURNEYS_APPS`, so a restricted run seeds only the fixtures its
+apps read: the model-library fixtures (the seed drops every non-default catalog, refreshes the
+snapshot and creates the fixture catalog, its assignment and one default-catalog exclusion) for
+`model-library-app`, the quota fixtures for `shell` or `users-app`, and the security event for
+`security-notifications-app`.
+
+The Users & Quotas and shell "My quota" journeys need the seeded usage rows, and the admin only
+persists a `processUsageEvents` batch once it has model data from a gateway
+(`modelCostService.hasValidModelData()`, which reads `GET <GATEWAY_URL>/v1/models`, by default
+`http://localhost:3000`). Without one the seed still reports success and those journeys then time
+out waiting for usage that was never stored, so start the gateway — or a stub that answers
+`/v1/models` — on a private port and give the throwaway admin `GATEWAY_URL=http://localhost:<port>`
+next to its `CDS_CONFIG`. The pipeline starts the real gateway in Phase 5, so this is a standalone
+concern only. When the scratch copy predates the current schema, run
+`npx cds deploy --to sqlite:/tmp/ui-journeys.db` against the copy before starting the admin;
+otherwise the first read fails with `no such table: sap_llm_gateway_admin_Users`. Deploying
+recreates every table, so the copy loses its library snapshot — when the model-library journeys
+are part of the run, copy a database that already has the current schema instead.
 
 The dev admin serves each app's `webapp/` live (cds-plugin-ui5), so no build is needed before a
 run. Docker and Kyma images strip `app/*/dist/test` and exclude the test-only UI5 libraries, so
