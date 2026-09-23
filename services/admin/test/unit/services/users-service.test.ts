@@ -46,38 +46,64 @@ describe('touch', () => {
     expect(await db.run(cds.ql.SELECT.from(USERS))).toHaveLength(0);
   });
 
+  const isUsersWrite = (q: any): boolean =>
+    (q?.INSERT?.into?.ref?.[0] ?? q?.UPSERT?.into?.ref?.[0]) === USERS;
+
   /**
-   * A DbLike wrapper whose `run` fails the first INSERT into Users, so touch's race-recovery
-   * path (re-read once, refresh if the row is now there, else rethrow) can be driven without a
-   * real concurrent process. `onFailedInsert` runs (against the real db) before the synthetic
-   * rejection, so a test can plant the "a concurrent first contact already inserted it" row.
+   * A DbLike that behaves like PostgreSQL inside one request transaction: once a statement has
+   * failed, every later statement fails with "current transaction is aborted". SQLite has no such
+   * rule, which is why the old recovery (catch the duplicate-key INSERT, re-read) passed every test
+   * here and still failed in the Docker and Kyma deployments on a user's first login.
    */
-  function dbWithFailingUserInsert(onFailedInsert?: (insertQuery: any) => Promise<void>) {
-    let intercepted = false;
+  function postgresLikeDb(inner: any) {
+    let aborted = false;
     return {
       run: async (q: any) => {
-        const isUsersInsert = q?.INSERT?.into?.ref?.[0] === USERS;
-        if (isUsersInsert && !intercepted) {
-          intercepted = true;
-          if (onFailedInsert) await onFailedInsert(q);
-          throw new Error('synthetic insert failure');
-        }
-        return db.run(q);
+        if (aborted) throw new Error('current transaction is aborted, commands ignored until end of transaction block');
+        try { return await inner.run(q); } catch (e) { aborted = true; throw e; }
       }
     };
   }
 
-  it('rethrows when the INSERT fails and no concurrent row appears (not a benign race)', async () => {
-    const failingDb = dbWithFailingUserInsert();
-    await expect(users.touch(failingDb, 'insert-fails@test.com')).rejects.toThrow('synthetic insert failure');
-    expect(await db.run(cds.ql.SELECT.from(USERS).where({ email: 'insert-fails@test.com' }))).toHaveLength(0);
+  it('a first contact that loses the race to a concurrent one succeeds, even where a failed statement aborts the transaction', async () => {
+    // The winner created the row between our read and our write: our read still saw nothing.
+    const { INSERT } = cds.ql;
+    const winnerSeen = '2026-09-23T17:14:43.000Z';
+    await db.run(INSERT.into(USERS).entries({ email: 'races@test.com', firstSeenAt: winnerSeen, lastSeenAt: winnerSeen, status: 'active' }));
+    let firstRead = true;
+    const staleRead = {
+      run: async (q: any) => {
+        const isUsersRead = q?.SELECT?.from?.ref?.[0] === USERS;
+        if (isUsersRead && firstRead) { firstRead = false; return null; }
+        return db.run(q);
+      }
+    };
+    const result = await users.touch(postgresLikeDb(staleRead), 'races@test.com', { roles: ['admin'] });
+    expect(result).toMatchObject({ email: 'races@test.com', status: 'active', rolesSnapshot: '["admin"]' });
+    expect(new Date(result!.firstSeenAt!).toISOString()).toBe(winnerSeen);   // the winner's first contact stands
+    expect(await db.run(cds.ql.SELECT.from(USERS).where({ email: 'races@test.com' }))).toHaveLength(1);
   });
 
-  it('refreshes the row when the INSERT fails but a concurrent first contact already created it', async () => {
-    const failingDb = dbWithFailingUserInsert(async (insertQuery) => { await db.run(insertQuery); });
-    const result = await users.touch(failingDb, 'insert-races@test.com', { roles: ['user'] });
-    expect(result).toMatchObject({ email: 'insert-races@test.com', rolesSnapshot: '["user"]' });
-    expect(await db.run(cds.ql.SELECT.from(USERS).where({ email: 'insert-races@test.com' }))).toHaveLength(1);
+  it('parallel first contacts of one user (a page load) all succeed and leave one active row', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => users.touch(db, 'page-load@test.com', { roles: ['user'] }))
+    );
+    for (const r of results) expect(r).toMatchObject({ email: 'page-load@test.com', status: 'active' });
+    const rows = await db.run(cds.ql.SELECT.from(USERS).where({ email: 'page-load@test.com' }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].firstSeenAt).toBeTruthy();
+  });
+
+  it('rethrows a genuine write failure on first contact', async () => {
+    let intercepted = false;
+    const failingDb = {
+      run: async (q: any) => {
+        if (isUsersWrite(q) && !intercepted) { intercepted = true; throw new Error('synthetic write failure'); }
+        return db.run(q);
+      }
+    };
+    await expect(users.touch(failingDb, 'write-fails@test.com')).rejects.toThrow('synthetic write failure');
+    expect(await db.run(cds.ql.SELECT.from(USERS).where({ email: 'write-fails@test.com' }))).toHaveLength(0);
   });
 });
 

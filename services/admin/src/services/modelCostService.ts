@@ -46,6 +46,8 @@ interface ModelCostEntry {
 class ModelCostService {
   private gatewayUrl: string;
   private lastFetch: number = 0;
+  /** Tail of the running library snapshots; trySnapshot appends to it so runs never overlap. */
+  private snapshotChain: Promise<unknown> = Promise.resolve();
   private fetchCooldown: number = 24 * 60 * 60 * 1000; // 24 hours (once per day)
   private modelProviderMap: Map<string, string> = new Map(); // Cache model ID -> provider mapping
   private serviceApiKey: string | null = null; // Cache for service API key
@@ -562,8 +564,14 @@ class ModelCostService {
    * take pricing down with it, so every entry point goes through here and continues regardless.
    */
   private async trySnapshot(models: GatewayModel[]): Promise<{ upserted: number; absent: number; deployments: number }> {
+    // One snapshot at a time per process. The boot timer, the Valkey model-list event and the
+    // refresh action can all fire together, and on PostgreSQL one run's UPSERT and another run's
+    // mark-absent sweep lock the same rows in different orders - one of them dies with "deadlock
+    // detected". A failed run releases the chain like a successful one.
+    const run = this.snapshotChain.then(() => this.upsertLibrarySnapshot(models));
+    this.snapshotChain = run.catch(() => undefined);
     try {
-      return await this.upsertLibrarySnapshot(models);
+      return await run;
     } catch (error) {
       logger.error('ModelCostService', 'Library snapshot failed - continuing with the pricing update', error instanceof Error ? error : new Error(String(error)));
       return { upserted: 0, absent: 0, deployments: 0 };
@@ -588,7 +596,9 @@ class ModelCostService {
     // mark-absent sweep below - keyed on lastSeenAt - treats them as seen in this run and leaves
     // their mirrored `absent` alone, instead of nulling it and flipping them absent regardless.
     const derivedRows = deriveDeepContextRows(rows).map(r => ({ ...r, lastSeenAt: now }));
-    const all = [...rows, ...derivedRows];
+    // modelId order: two admin replicas writing the same rows then lock them in the same order and
+    // wait for each other instead of deadlocking (per-process runs are serialized in trySnapshot).
+    const all = [...rows, ...derivedRows].sort((a, b) => (a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0));
     const db = await cds.connect.to('db');
     const CHUNK = 50;
     for (let i = 0; i < all.length; i += CHUNK) {

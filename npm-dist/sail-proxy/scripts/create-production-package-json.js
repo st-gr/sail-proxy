@@ -21,9 +21,12 @@ try {
   
   // Forward root pnpm.overrides into the bundled package.json so npm install
   // --production (which has no pnpm context) still pins the CVE-patched
-  // versions. NPM's `overrides` field rejects entries that target a direct
-  // dependency (EOVERRIDE), so for direct deps we replace the dependency
-  // version inline; for transitive deps we add an `overrides` entry.
+  // versions. For a DIRECT dependency the version is pinned inline AND an
+  // override "$<name>" is added: npm rejects any other override value for a
+  // direct dependency (EOVERRIDE), and without one the copies other packages
+  // bring along keep their own ranges - express 4.22.0 shipped its own
+  // qs@6.14.2 (three advisories) beside the pinned qs@6.16.0. For transitive
+  // deps a plain `overrides` entry is added.
   // Drop pnpm-specific parent>child syntax — those target dev-only chains.
   const rootOverrides = (rootPackage.pnpm && rootPackage.pnpm.overrides) || {};
   const dependencies = { ...(originalPackage.dependencies || {}) };
@@ -35,9 +38,11 @@ try {
     if (key.includes('>')) continue;
     if (Object.prototype.hasOwnProperty.call(dependencies, key)) {
       dependencies[key] = version;
+      overrides[key] = `$${key}`;
       pinnedDirect++;
     } else if (Object.prototype.hasOwnProperty.call(optionalDependencies, key)) {
       optionalDependencies[key] = version;
+      overrides[key] = `$${key}`;
       pinnedDirect++;
     } else {
       overrides[key] = version;

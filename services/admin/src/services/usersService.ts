@@ -3,12 +3,10 @@
  * touch() creates or refreshes a row and never changes status or constraints; the backfill and the
  * one-shot assignment migration run at startup (admin-service.ts initializeUsers).
  */
-import { getDefaultLogger } from '@libs/logger';
 import { effectiveLimits, platformQuotaDefaults, Limits } from './quotaLimits';
 import { getProfile } from './quotaProfilesService';
 
 const cds = require('@sap/cds');
-const logger = getDefaultLogger();
 
 export const USERS = 'sap.llm.gateway.admin.Users';
 const KEYS = 'sap.llm.gateway.admin.ApiKeys';
@@ -62,29 +60,25 @@ async function refreshUser(db: DbLike, email: string, now: Date, opts: { display
 
 export async function touch(db: DbLike, email: string, opts: { displayName?: string; roles?: string[] } = {}): Promise<UserRow | null> {
   if (!email || isServiceKeyEmail(email)) return null;
-  const { INSERT } = cds.ql;
   const now = new Date();
   const existing = await getUser(db, email);
-  if (!existing) {
-    try {
-      await db.run(INSERT.into(USERS).entries({
-        email, displayName: opts.displayName ?? null,
-        rolesSnapshot: opts.roles ? JSON.stringify(opts.roles) : null,
-        firstSeenAt: now, lastSeenAt: now, status: 'active'
-      }));
-    } catch (error) {
-      // Re-read ONCE: if a concurrent first contact inserted the row between our read and our
-      // insert, refresh it instead. Any other failure (constraint violation, locked connection,
-      // disk full, ...) leaves the row still missing on this re-read, so it is rethrown rather
-      // than retried - retrying unconditionally would recurse indefinitely on a genuine error.
-      logger.debug('UsersService', `insert failed for ${email}, checking for a concurrent race: ${error instanceof Error ? error.message : String(error)}`);
-      const raced = await getUser(db, email);
-      if (!raced) throw error;
-      return refreshUser(db, email, now, opts);
-    }
-    return getUser(db, email);
-  }
-  return refreshUser(db, email, now, opts);
+  if (existing) return refreshUser(db, email, now, opts);
+  // First contact. A page load sends several requests at once, and each finds no row. A plain INSERT
+  // then fails on the duplicate key for all but one of them - and on PostgreSQL a failed statement
+  // aborts the request's whole transaction, so nothing after it can run, a re-read included. (SQLite
+  // has no such rule, which is how the earlier catch-and-re-read passed every local test while every
+  // Docker and Kyma user's first page load reported an error and showed the wrong role.) UPSERT is
+  // INSERT ... ON CONFLICT DO UPDATE on SQLite and PostgreSQL alike: the requests that lose the race
+  // update the row the winner created instead of failing. It writes only the first-contact columns,
+  // so status and limits keep their defaults or what the winner already stored, and firstSeenAt is
+  // set only where it is still empty so the winner's first contact stands.
+  const { UPSERT, UPDATE } = cds.ql;
+  const entry: any = { email, lastSeenAt: now };
+  if (opts.displayName !== undefined) entry.displayName = opts.displayName;
+  if (opts.roles) entry.rolesSnapshot = JSON.stringify(opts.roles);
+  await db.run(UPSERT.into(USERS).entries(entry));
+  await db.run(UPDATE(USERS).set({ firstSeenAt: now }).where({ email, firstSeenAt: null }));
+  return getUser(db, email);
 }
 
 /** A Users row for every distinct e-mail of ApiKeys, AwsCredentials and UserPreferences that has none. */

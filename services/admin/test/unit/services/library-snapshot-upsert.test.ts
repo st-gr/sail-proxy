@@ -132,3 +132,39 @@ describe('a failing snapshot never takes pricing down', () => {
     expect(order).toEqual(['snapshot', 'pricing']);
   });
 });
+
+// Three entry points can snapshot at once - the boot timer, the Valkey model-list event and the
+// refresh action. Each statement is its own transaction, and on PostgreSQL one run's UPSERT and
+// another run's mark-absent sweep lock the same rows in different orders: one of them deadlocks
+// ("deadlock detected" at container start). Runs are serialized per process, and each run writes
+// its rows in modelId order so that separate replicas lock in the same order too.
+describe('concurrent snapshots', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('runs one snapshot at a time, in call order, even when one fails', async () => {
+    const events: string[] = [];
+    let n = 0;
+    jest.spyOn(modelCostService, 'upsertLibrarySnapshot').mockImplementation(async () => {
+      const id = ++n;
+      events.push(`start ${id}`);
+      await new Promise((r) => setTimeout(r, 20));
+      events.push(`end ${id}`);
+      if (id === 1) throw new Error('first run fails');
+      return { upserted: 1, absent: 0, deployments: 0 };
+    });
+    const trySnapshot = (modelCostService as any).trySnapshot.bind(modelCostService);
+    const results = await Promise.all([trySnapshot([{ id: 'a' }]), trySnapshot([{ id: 'b' }]), trySnapshot([{ id: 'c' }])]);
+    expect(events).toEqual(['start 1', 'end 1', 'start 2', 'end 2', 'start 3', 'end 3']);
+    expect(results[0]).toEqual({ upserted: 0, absent: 0, deployments: 0 });   // the failure stays contained
+    expect(results[2]).toEqual({ upserted: 1, absent: 0, deployments: 0 });
+  });
+
+  it('writes rows in modelId order', async () => {
+    mockRun.mockReset(); upsertCalls.length = 0; updateCalls.length = 0;
+    mockRun.mockResolvedValue(1);
+    const shuffled = [...(sample as any).data].reverse();
+    await modelCostService.upsertLibrarySnapshot(shuffled, NOW);
+    const ids = upsertCalls.filter(c => c[0] === 'entries').flatMap(c => c[1]).map((e: any) => e.modelId);
+    expect(ids).toEqual([...ids].sort());
+  });
+});
