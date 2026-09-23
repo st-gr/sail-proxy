@@ -107,6 +107,20 @@ describe('grants and shape', () => {
   });
 });
 
+describe('IEEE754Compatible clients', () => {
+  it('serialises the computed Integer64 figures as strings when the client asks for IEEE754Compatible, as numbers otherwise', async () => {
+    const plain = (await GET(u('uq-user@test.com'), ADMIN)).data;
+    expect(typeof plain.usedTokensDay).toBe('number');
+    const ieee = (await GET(u('uq-user@test.com'), { ...ADMIN, headers: { Accept: 'application/json;odata.metadata=minimal;IEEE754Compatible=true' } })).data;
+    // the UI5 V4 model sends this header; its Int64 type throws on a JSON number when it converts
+    // for a float control property (the users-app bullet charts' target value)
+    expect(ieee.usedTokensDay).toBe('400');
+    expect(ieee.usedTokensMonth).toBe('400');
+    expect(ieee.effectiveTokensPerDay).toBeNull();
+    expect(typeof ieee.usedSpendDay).toBe('number');
+  });
+});
+
 describe('list fan-out', () => {
   // afterReadUsers hands the whole page to userQuotaService.statusMany (one currency and one
   // platform-defaults resolution for the page, chunked fan-out) instead of one status() per row.
@@ -127,8 +141,9 @@ describe('list fan-out', () => {
       for (const key of ['usedRequestsMinute', 'sapCostCurrency', 'usedTokensDay', 'usedTokensWeek', 'usedTokensMonth',
         'usedSpendDay', 'usedSpendWeek', 'usedSpendMonth', 'resetsAtDay', 'resetsAtWeek', 'resetsAtMonth',
         'effectiveTokensPerDay', 'limitSourceTokensPerDay', 'effectiveRequestsPerMinute', 'limitSourceRequestsPerMinute',
-        'quotaProfile_ID', 'quotaProfileName', 'requestsPerMinuteDefaultText', 'spendPerDayDefaultText', 'spendPerWeekDefaultText',
-        'spendPerMonthDefaultText', 'tokensPerDayDefaultText', 'tokensPerWeekDefaultText', 'tokensPerMonthDefaultText']) {
+        'quotaProfile_ID', 'toolPolicy_ID', 'quotaProfileName', 'requestsPerMinuteDefaultText', 'spendPerDayDefaultText', 'spendPerWeekDefaultText',
+        'spendPerMonthDefaultText', 'tokensPerDayDefaultText', 'tokensPerWeekDefaultText', 'tokensPerMonthDefaultText',
+        'criticalitySpendDay', 'criticalitySpendWeek', 'criticalitySpendMonth', 'criticalityTokensDay', 'criticalityTokensWeek', 'criticalityTokensMonth']) {
         expect(row).toHaveProperty(key);
       }
       expect(row).toMatchObject({ canDeactivate: true, canReactivate: false, statusCriticality: 3 });
@@ -175,11 +190,20 @@ describe('constraints', () => {
     expect(row.rolesSnapshot).toBe('["user","extra"]');
   });
 
+  it('carries a criticality per window: 0 without a limit, 2 at 80 %, from the same 75/90 rule as the card', async () => {
+    // the seeded user has 400 tokens today; a 500-token day limit puts the day window at 80 %
+    await POST(`${u('uq-user@test.com')}/AdminService.draftEdit`, { PreserveChanges: true }, ADMIN);
+    await ok(PATCH(ud('uq-user@test.com'), { tokensPerDay: 500 }, ADMIN));
+    expect((await POST(`${ud('uq-user@test.com')}/AdminService.draftActivate`, {}, ADMIN)).status).toBe(200);
+    const row = (await GET(u('uq-user@test.com'), ADMIN)).data;
+    expect(row).toMatchObject({ criticalityTokensDay: 2, criticalityTokensWeek: 0, criticalityTokensMonth: 0, criticalitySpendDay: 0, criticalitySpendWeek: 0, criticalitySpendMonth: 0 });
+  });
+
   it('a draft PATCH carrying the read-back currency virtual is not refused as read-only', async () => {
     // Fiori Elements resubmits what it read; sapCostCurrency is one of the values the READ pipeline
     // wrote onto the draft row, so the read-only guard must let it through like the other virtuals.
     await POST(`${u('uq-user@test.com')}/AdminService.draftEdit`, { PreserveChanges: true }, ADMIN);
-    const patched = await ok(PATCH(ud('uq-user@test.com'), { spendPerDay: '1.5', sapCostCurrency: 'USD', quotaProfileName: null, tokensPerDayDefaultText: 'unlimited' }, ADMIN));
+    const patched = await ok(PATCH(ud('uq-user@test.com'), { spendPerDay: '1.5', sapCostCurrency: 'USD', quotaProfileName: null, tokensPerDayDefaultText: 'unlimited', criticalityTokensDay: 2 }, ADMIN));
     expect(patched.status).toBeLessThan(300);
     const activated = await POST(`${ud('uq-user@test.com')}/AdminService.draftActivate`, {}, ADMIN);
     expect(activated.status).toBe(200);
@@ -191,6 +215,19 @@ describe('constraints', () => {
     expect(row.effectiveSpendPerDayCurrency).toBe('USD');
     expect(row.effectiveSpendPerWeek).toBeNull();
     expect(row.effectiveSpendPerWeekCurrency).toBeNull();
+  });
+
+  it('the setRateLimits parameters default to the bound credential\'s current limits (Fiori Elements prefills the dialog from these paths)', async () => {
+    const edmx = (await GET(`${S}/$metadata`, ADMIN)).data as string;
+    for (const entity of ['ApiKeys', 'AwsCredentials']) {
+      for (const p of ['requestsPerMinute', 'requestsPerHour', 'requestsPerDay']) {
+        const target = `Target="AdminService.setRateLimits(AdminService.${entity})/${p}"`;
+        const block = edmx.slice(edmx.indexOf(target), edmx.indexOf(target) + 400);
+        expect(block).toMatch(/ParameterDefaultValue/);
+        expect(block).toContain(`<Path>in/${p}</Path>`);
+      }
+      expect(edmx).toMatch(new RegExp(`<Property Name="ownerRequestsPerMinuteText"[^>]*>`));
+    }
   });
 
   it('the users-app metadata measures every spend field in sapCostCurrency', async () => {
@@ -208,6 +245,27 @@ describe('constraints', () => {
     for (const field of ['spendPerDay', 'spendPerWeek', 'spendPerMonth']) {
       expect(edmx).not.toMatch(new RegExp(`Target="AdminService.Users/${field}"[\\s\\S]{0,400}?ISOCurrency`));
     }
+  });
+
+  it('the users-app metadata declares a Bullet chart per budget window, bound to a data point with criticality', async () => {
+    const edmx = (await GET('/odata/v4/admin/$metadata', ADMIN)).data as string;
+    for (const w of ['SpendDay', 'SpendWeek', 'SpendMonth', 'TokensDay', 'TokensWeek', 'TokensMonth']) {
+      expect(edmx).toMatch(new RegExp(`Term="(com\\.sap\\.vocabularies\\.)?UI(\\.v1)?\\.Chart" Qualifier="${w}"[\\s\\S]{0,600}?ChartType/Bullet`));
+      expect(edmx).toMatch(new RegExp(`Term="(com\\.sap\\.vocabularies\\.)?UI(\\.v1)?\\.DataPoint" Qualifier="${w}"[\\s\\S]{0,600}?Criticality[\\s\\S]{0,60}?criticality${w}`));
+    }
+  });
+
+  // The charts are an addition, not a replacement: the Usage field group keeps the exact figures
+  // (a UI.Chart is not rendered inside a form, and a form is what the Usage section is).
+  it('the Usage field group still lists the plain used figures', async () => {
+    const edmx = (await GET('/odata/v4/admin/$metadata', ADMIN)).data as string;
+    const group = /Term="(?:com\.sap\.vocabularies\.)?UI(?:\.v1)?\.FieldGroup" Qualifier="Usage"[\s\S]*?<\/Annotation>/.exec(edmx);
+    expect(group).not.toBeNull();
+    for (const field of ['usedTokensDay', 'effectiveTokensPerDay', 'usedSpendDay', 'resetsAtDay']) {
+      expect(group![0]).toMatch(new RegExp(`Path="${field}"`));
+    }
+    // the match really is this one annotation and not the rest of the document
+    expect(group![0]).not.toMatch(/quotaProfile_ID/);
   });
 
   it('setUserConstraints is partial and explicit null falls back to platform', async () => {
@@ -305,6 +363,7 @@ describe('status functions', () => {
     expect(admin).toMatchObject({ email: 'uq-user@test.com', status: 'active', used: { day: { tokens: 400, requests: 1 } }, limitSource: { tokensPerDay: 'unlimited' } });
     const mine = (await GET(`${S}/myQuotaStatus()`, USER)).data;
     expect(mine).toMatchObject({ email: 'uq-user@test.com', used: { day: { tokens: 400 } } });
+    expect(mine.toolPolicy).toEqual({ name: 'Default', mode: 'monitor' });
     expect((await ok(GET(`${S}/userQuotaStatus(email='uq-user@test.com')`, USER))).status).toBe(403);
     const flat = (await GET(`${S}/UserQuotaStatus(email='uq-user@test.com')`, ADMIN)).data;
     expect(flat).toMatchObject({ email: 'uq-user@test.com', status: 'active', usedTokensDay: 400, limitSourceTokensPerDay: 'unlimited', sapCostCurrency: 'USD' });
@@ -353,6 +412,35 @@ describe('myUsageSummary (the home tiles)', () => {
     expect(Number(all.sapCost)).toBeCloseTo(0.3, 4);
 
     expect((await ok(GET(`${S}/myUsageSummary()`))).status).toBe(401);
+  });
+});
+
+describe('usageUnits', () => {
+  it('lists the models whose usage is counted in cells', async () => {
+    await cds.db.run(cds.ql.INSERT.into(KEY_USAGE).entries({ apiKey_ID: 'k-u1', email: 'uq-user@test.com', validFrom: new Date(), validTo: new Date(), provider: 'sap', model: 'sap-rpt-1.6', statusCode: 200, inputTokens: 30, outputTokens: 0, totalTokens: 30, sapCost: 0.01, sapCostCurrency: 'USD', unit: 'cells', usageSignature: `sig-cells-${Date.now()}` }));
+
+    const res = await GET(`${S}/usageUnits()`, USER);
+    expect(res.status).toBe(200);
+    expect(res.data.value).toEqual([{ model: 'sap-rpt-1.6', unit: 'cells' }]);
+  });
+});
+
+describe("the owner's user-level limit on a credential", () => {
+  it('rides on ApiKeys and AwsCredentials rows as ownerRequestsPerMinuteText, naming its source', async () => {
+    // Nothing applies: no own constraint, no profile, no platform default in the test configuration.
+    expect((await GET(`${S}/ApiKeys(ID='k-u1',IsActiveEntity=true)`, USER)).data.ownerRequestsPerMinuteText).toBe('unlimited');
+    // An assigned profile is what applies.
+    const profile = (await POST(`${S}/QuotaProfiles`, { name: 'RL', requestsPerMinute: 42 }, ADMIN)).data;
+    await POST(`${S}/assignQuotaProfile`, { email: 'uq-user@test.com', profileId: profile.ID }, ADMIN);
+    expect((await GET(`${S}/ApiKeys(ID='k-u1',IsActiveEntity=true)`, USER)).data.ownerRequestsPerMinuteText).toBe('42 (RL profile)');
+    expect((await GET(`${S}/AwsCredentials(ID='c-u1',IsActiveEntity=true)`, USER)).data.ownerRequestsPerMinuteText).toBe('42 (RL profile)');
+    // The user's own constraint wins over the profile.
+    await POST(`${S}/setUserConstraints`, { email: 'uq-user@test.com', constraints: { requestsPerMinute: 12 } }, ADMIN);
+    expect((await GET(`${S}/ApiKeys(ID='k-u1',IsActiveEntity=true)`, USER)).data.ownerRequestsPerMinuteText).toBe('12 (own constraint)');
+    // The list carries it for every row of the page, and a key without a Users row says unlimited.
+    const page = (await GET(`${S}/ApiKeys?$select=ID,ownerRequestsPerMinuteText`, ADMIN)).data.value;
+    expect(page.find((r: any) => r.ID === 'k-u1').ownerRequestsPerMinuteText).toBe('12 (own constraint)');
+    expect(page.find((r: any) => r.ID === 'k-o1').ownerRequestsPerMinuteText).toBe('unlimited');
   });
 });
 
@@ -447,5 +535,19 @@ describe('usage buckets: reset, rebuild action, credential deletion', () => {
     expect(r.data).toMatchObject({ processed: 1, status: 'success' });
     expect(await cds.db.run(cds.ql.SELECT.from(KEY_USAGE))).toHaveLength(before + 1);
     expect((await GET(u('uq-user@test.com'), ADMIN)).data.usedTokensDay).toBe(405);
+  });
+});
+
+describe('toolUsageDaily navigation', () => {
+  it('GET /Users(email)/toolUsageDaily returns the daily aggregates for that user', async () => {
+    const TOOL_USAGE_DAILY = 'sap.llm.gateway.admin.ToolUsageDaily';
+    const today = new Date().toISOString().slice(0, 10);
+    await cds.db.run(cds.ql.INSERT.into(TOOL_USAGE_DAILY).entries([
+      { email: 'uq-user@test.com', day: today, identity: 'function:x', facet: 'declared', requests: 3, allowed: 3, lastSeen: new Date().toISOString() },
+      { email: 'uq-other@test.com', day: today, identity: 'function:y', facet: 'declared', requests: 1, allowed: 1, lastSeen: new Date().toISOString() }
+    ]));
+    const res = await GET(`${u('uq-user@test.com')}/toolUsageDaily`, ADMIN);
+    expect(res.status).toBe(200);
+    expect(res.data.value).toEqual([expect.objectContaining({ email: 'uq-user@test.com', identity: 'function:x', facet: 'declared', requests: 3, allowed: 3 })]);
   });
 });

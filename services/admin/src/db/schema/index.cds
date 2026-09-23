@@ -7,4 +7,5 @@ using from './user-preferences';
 using from './audit';
 using from './siem';
 using from './model-library';
+using from './tool-governance';
 using from './users';

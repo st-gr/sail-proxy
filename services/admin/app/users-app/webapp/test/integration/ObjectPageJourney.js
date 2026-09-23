@@ -17,10 +17,20 @@ sap.ui.define([
 				Then.onTheObjectPage.onForm("Usage").iCheckField("Tokens Today");
 				// a spend field is an amount measured in sapCostCurrency: the template must render the pair
 				Then.onTheObjectPage.onForm("Usage").iCheckField("Spend Today");
+				// the limited windows again as bullet charts, in the "Usage charts" custom section below
+				Then.onTheObjectPage.iSeeBulletCharts();
 				Then.onTheObjectPage.iSeeStoredValue("tokensPerDay", oFx.quota.tokensPerDay);
+				// the API Keys section sits below the fold since "Usage charts" joined the page: scroll it into view so its table loads
+				When.onTheObjectPage.iGoToSection("API Keys");
 				Then.onTheObjectPage.onTable({ property: "apiKeys", qualifier: "ForUser" }).iCheckRows({ "Name": oFx.userActiveKey }, 1);
+				// "Tools used" sits below the fold too, and is empty in this journey (no seeded tool usage) -
+				// scroll it into view and assert the section/table exists rather than its rows: iCheckRows()
+				// with no arguments waits for at least one matching row, which this table never has here.
+				When.onTheObjectPage.iGoToSection("Tools used");
+				Then.onTheObjectPage.onTable({ property: "toolUsageDaily", qualifier: "ForUser" }).iCheckColumns();
 				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Entitlement Catalog");
 				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Quota Profile");
+				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Tool Policy");
 				Then.onTheObjectPage.iSeeStoredValue("quotaProfileName", oFx.quota.profileName);
 				// The Default line names what applies while the field is empty: here the assigned
 				// profile's value, in the server's own format (en-US grouping for counts, two decimals

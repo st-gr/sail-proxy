@@ -40,6 +40,9 @@ entity AwsCredentials : cuid, managed {
   virtual requestsPerMinute : Integer;
   virtual requestsPerHour   : Integer;
   virtual requestsPerDay    : Integer;
+  // The owner's user-level requests-per-minute limit with its source ("60 (Standard profile)"),
+  // the second layer the gateway checks; filled in afterReadRateLimits, never persisted.
+  virtual ownerRequestsPerMinuteText : String(60);
 
   // AWS region configuration
   region            : String(20) default 'us-east-1';
@@ -125,7 +128,8 @@ entity AwsCredentialUsage : cuid, temporal {
   usageEstimated      : Boolean;            // True when tokens were derived locally because the
                                              // client aborted before the provider reported usage;
                                              // absent/null means provider-reported.
-  
+  unit                : String(6);          // 'tokens' (default) or 'cells' (SAP-RPT): what inputTokens/outputTokens count
+
   // Client information
   userAgent           : String(500);
   clientIP            : String(45);
@@ -140,6 +144,12 @@ entity AwsCredentialUsage : cuid, temporal {
 
   // SAP-native Capacity-Unit accounting (additive; nullable; beside the dollar estimate)
   imageInputTokens    : Integer;            // billed image input tokens (captured or computed)
+  imageOutputTokens   : Integer;            // generated-image tokens (subset of outputTokens), priced at ModelCosts.imageOutputCost
+  imageOutputCost     : Decimal(10,6);      // Image output cost in USD (text share of outputTokens stays in outputCost)
+  audioInputTokens    : Integer;            // realtime audio input tokens (subset of inputTokens), priced at ModelCosts.audioInputCost
+  audioOutputTokens   : Integer;            // realtime audio output tokens (subset of outputTokens), priced at ModelCosts.audioOutputCost
+  audioInputCost      : Decimal(10,6);      // Audio input cost in USD (text share of inputTokens stays in inputCost)
+  audioOutputCost     : Decimal(10,6);      // Audio output cost in USD (text share of outputTokens stays in outputCost)
   genAiTokens         : Decimal(14,4);      // Sum per-type: tokens * GenAi rate (cache scaled by calibration)
   capacityUnits       : Decimal(14,6);      // genAiTokens * cuFactor
   sapCost             : Decimal(12,6);      // capacityUnits * pricePerCu, in sapCostCurrency
@@ -216,14 +226,20 @@ view AwsCredentialUsageStats as select from AwsCredentialUsage {
   coalesce(sum(outputTokens), 0) as totalOutputTokens : Integer,
   coalesce(sum(cacheCreationInputTokens), 0) as totalCacheCreationInputTokens : Integer,
   coalesce(sum(cacheReadInputTokens), 0) as totalCacheReadInputTokens : Integer,
+  coalesce(sum(imageOutputTokens), 0) as totalImageOutputTokens : Integer,
+  coalesce(sum(audioInputTokens), 0) as totalAudioInputTokens : Integer,
+  coalesce(sum(audioOutputTokens), 0) as totalAudioOutputTokens : Integer,
   coalesce(sum(inputCost), 0.0) as totalInputCost : Decimal(12,6),
   coalesce(sum(outputCost), 0.0) as totalOutputCost : Decimal(12,6),
   coalesce(sum(cacheCreationInputCost), 0.0) as totalCacheCreationInputCost : Decimal(12,6),
   coalesce(sum(cacheReadInputCost), 0.0) as totalCacheReadInputCost : Decimal(12,6),
   coalesce(sum(totalCost), 0.0) as totalCost : Decimal(12,6),
+  coalesce(sum(imageOutputCost), 0.0) as totalImageOutputCost : Decimal(12,6),
+  coalesce(sum(audioInputCost), 0.0) as totalAudioInputCost : Decimal(12,6),
+  coalesce(sum(audioOutputCost), 0.0) as totalAudioOutputCost : Decimal(12,6),
   coalesce(avg(responseTime), 0) as avgResponseTime : Integer,
   count(case when statusCode >= 400 then 1 end) as errorCount : Integer
-} 
+}
 where provider is not null
 group by credential;
 

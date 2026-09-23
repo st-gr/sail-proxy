@@ -6,6 +6,8 @@
  * the condition file ingestion creates.
  */
 
+import { firstValue, queryString } from '../utils/queryParam';
+
 export type PageOrder = 'asc' | 'desc';
 
 export interface PageParams {
@@ -18,15 +20,6 @@ export interface PageParams {
 const DEFAULT_LIMIT = 20;
 const MIN_LIMIT = 1;
 const MAX_LIMIT = 100;
-
-function firstValue(v: unknown): unknown {
-  return Array.isArray(v) ? v[0] : v;
-}
-
-function stringOrNull(v: unknown): string | null {
-  const s = firstValue(v);
-  return typeof s === 'string' && s.length > 0 ? s : null;
-}
 
 /**
  * Parses `limit`/`order`/`after`/`before` off an Express `req.query`-shaped
@@ -46,8 +39,8 @@ export function parsePageParams(query: Record<string, unknown>): PageParams {
   return {
     limit,
     order,
-    after: stringOrNull(query?.after),
-    before: stringOrNull(query?.before),
+    after: queryString(query?.after),
+    before: queryString(query?.before),
   };
 }
 

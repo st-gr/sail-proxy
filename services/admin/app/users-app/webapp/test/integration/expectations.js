@@ -1,7 +1,7 @@
 sap.ui.define([], function () {
 	"use strict";
 
-	// One of six verbatim copies (shell, api-keys-app, aws-credentials-app, model-library-app, users-app, security-notifications-app): keep them identical.
+	// One of seven verbatim copies (shell, api-keys-app, aws-credentials-app, model-library-app, users-app, security-notifications-app, tool-policies-app): keep them identical.
 	// Decodes the role expectations that ci/scripts/ui-journeys/run.js injects into the
 	// page URL as ?role=<name>&expect=<base64url JSON>. Never throws: opaTests.qunit.js
 	// turns `error` into a failing QUnit test so the runner reports it readably.

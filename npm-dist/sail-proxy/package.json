@@ -66,7 +66,7 @@
   ],
   "dependencies": {
     "@sap-llm-gateway/service-key-parser": "workspace:*",
-    "axios": "^1.15.1",
+    "axios": "^1.18.0",
     "chalk": "^4.1.2",
     "commander": "^14.0.0",
     "dotenv": "^16.3.1",

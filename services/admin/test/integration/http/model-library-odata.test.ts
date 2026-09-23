@@ -267,15 +267,36 @@ describe('prices and config context', () => {
   it('setPrice inserts a manual row, ModelPrices shows history, revert restores SAP', async () => {
     const { INSERT } = cds.ql;
     await cds.db.run(INSERT.into(COSTS).entries([{ ID: 'c-m1', model: 'm1', dateFrom: new Date('2026-01-01'), dateTo: new Date('9999-12-31'), inputCost: '0.001', outputCost: '0.002', provider: 'Anthropic', source: 'sap' }]));
-    const set = await POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01 }, ADMIN);
+    const set = await POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01, imageOutputCost: 0.06, audioInputCost: 0.01954, audioOutputCost: 0.03901 }, ADMIN);
     expect(set.data.source).toBe('manual');
+    expect(String(set.data.imageOutputCost)).toBe('0.06');
+    expect(String(set.data.audioInputCost)).toBe('0.01954');
+    expect(String(set.data.audioOutputCost)).toBe('0.03901');
     const hist = await GET(`/odata/v4/admin/ModelPrices?$filter=model eq 'm1'&$orderby=dateFrom`, ADMIN);
     expect(hist.data.value.map((r: any) => r.source)).toEqual(['sap', 'manual']);
     expect(hist.data.value[0].dateTo).not.toMatch(/^9999/);
+    expect(String(hist.data.value[1].imageOutputCost)).toBe('0.06');
+    expect(String(hist.data.value[1].audioInputCost)).toBe('0.01954');
+    expect(String(hist.data.value[1].audioOutputCost)).toBe('0.03901');
     const rev = await POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.revertToSapPrice`, {}, ADMIN);
     expect(rev.data.source).toBe('sap');
     expect(String(rev.data.inputCost)).toBe('0.001');
+    expect(rev.data.imageOutputCost).toBeNull();
+    expect(rev.data.audioInputCost).toBeNull();
+    expect(rev.data.audioOutputCost).toBeNull();
     expect((await ok(POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 1, outputCost: 1 }, USER))).status).toBe(403);
+  });
+
+  it('setPrice rejects a negative imageOutputCost', async () => {
+    const bad = await ok(POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01, imageOutputCost: -1 }, ADMIN));
+    expect(bad.status).toBe(400);
+    expect(bad.data.error.message).toMatch(/imageOutputCost/);
+  });
+
+  it('setPrice rejects a negative audio rate', async () => {
+    const bad = await ok(POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01, audioOutputCost: -1 }, ADMIN));
+    expect(bad.status).toBe(400);
+    expect(bad.data.error.message).toMatch(/audioOutputCost/);
   });
 
   it('configContext falls back to the file when no configuration is active and reports the cuFactor source', async () => {

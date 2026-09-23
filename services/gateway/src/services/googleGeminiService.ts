@@ -1,4 +1,4 @@
-import { deployedSiblingName } from '../utils/responsesEligibility';
+import { DeployedTwin, resolveDeployedTwin } from '../utils/deployedTwin';
 
 /**
  * SAP's inference proxy allowlists only these three subpaths for a Gemini
@@ -22,24 +22,9 @@ export function parseModelMethod(segment: string): { model: string; method: Gemi
   return { model, method: method as GeminiMethod };
 }
 
-export interface GeminiDeployment { id: string; baseModel: string; deploymentUrl: string }
-
-/**
- * The gateway lists every deployment twice: the bare model (orchestration
- * entry, no deploymentUrl) and its `<model>--deployed` twin (has the URL).
- * Resolves whichever of the two actually carries a deploymentUrl.
- */
-export async function resolveGeminiDeployment(model: string, getDetails: (id: string) => Promise<any>): Promise<GeminiDeployment | null> {
-  const baseModel = model.endsWith('--deployed') ? model.slice(0, -'--deployed'.length) : model;
-  const direct = await getDetails(model);
-  if (direct?.deploymentUrl) return { id: model, baseModel, deploymentUrl: direct.deploymentUrl };
-  const twin = deployedSiblingName(model);
-  if (twin) {
-    const twinDetails = await getDetails(twin);
-    if (twinDetails?.deploymentUrl) return { id: twin, baseModel, deploymentUrl: twinDetails.deploymentUrl };
-  }
-  return null;
-}
+/** The twin resolver lives in utils/deployedTwin.ts; these names keep the Gemini route's imports stable. */
+export type GeminiDeployment = DeployedTwin;
+export const resolveGeminiDeployment = resolveDeployedTwin;
 
 /**
  * A Gemini deployment's inference URL is `<SAP_AI_CORE_URL>/v2/inference/deployments/<id>`;
@@ -50,19 +35,45 @@ export function geminiUrl(deploymentUrl: string, baseModel: string, method: Gemi
   return `${deploymentUrl}/models/${baseModel}:${method}${method === 'streamGenerateContent' ? '?alt=sse' : ''}`;
 }
 
-export interface GeminiUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number }
+export interface GeminiUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Prompt tokens Gemini attributes to the IMAGE modality (image input). */
+  imageInputTokens: number;
+  /** Candidate tokens Gemini attributes to the IMAGE modality (generated images); part of outputTokens. */
+  imageOutputTokens: number;
+}
+
+/** Sum of `tokenCount` over the entries of a `*TokensDetails` array whose modality matches (case-insensitive). */
+function modalityTokens(details: any, modality: string): number {
+  if (!Array.isArray(details)) return 0;
+  return details.reduce((sum: number, d: any) => {
+    if (String(d?.modality ?? '').toUpperCase() !== modality) return sum;
+    const n = Number(d?.tokenCount);
+    // Clamped: a negative count is nonsense SAP has never sent, and subtracting it would
+    // inflate the text share (`outputTokens - imageOutputTokens`) above outputTokens itself.
+    return sum + (Number.isFinite(n) ? Math.max(0, n) : 0);
+  }, 0);
+}
 
 /**
  * Gemini folds extended-thinking tokens into `thoughtsTokenCount`, separate
  * from `candidatesTokenCount`; the gateway's usage accounting counts both as
- * output alongside the input and cache-read figures.
+ * output alongside the input and cache-read figures. Image tokens (generated
+ * images, image prompts) are reported INSIDE those totals and additionally
+ * broken out per modality in `candidatesTokensDetails` / `promptTokensDetails`;
+ * the split is carried separately so image output can be priced at its own rate
+ * while every existing total stays inclusive.
  */
 export function usageFromGemini(usageMetadata: any): GeminiUsage {
   const u = usageMetadata || {};
   return {
     inputTokens: u.promptTokenCount || 0,
     outputTokens: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
-    cacheReadTokens: u.cachedContentTokenCount || 0
+    cacheReadTokens: u.cachedContentTokenCount || 0,
+    imageInputTokens: modalityTokens(u.promptTokensDetails, 'IMAGE'),
+    imageOutputTokens: modalityTokens(u.candidatesTokensDetails, 'IMAGE'),
   };
 }
 
@@ -115,4 +126,10 @@ export function estimateEmbedTokens(body: any): number {
     }
   }
   return Math.ceil(chars / 4);
+}
+
+/** True when the request asks for generated images: `generationConfig.responseModalities` lists IMAGE. */
+export function requestsImageOutput(body: any): boolean {
+  const modalities = body?.generationConfig?.responseModalities;
+  return Array.isArray(modalities) && modalities.some((m: any) => String(m).toUpperCase() === 'IMAGE');
 }

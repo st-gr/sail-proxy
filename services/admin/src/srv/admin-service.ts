@@ -1,5 +1,7 @@
 const cds = require('@sap/cds');
 const { SELECT, INSERT, UPDATE, DELETE } = cds.ql;
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
@@ -15,12 +17,15 @@ import { costRecalculationService } from '../services/costRecalculationService';
 import { reconcile } from '../services/reconciliationService';
 import { seedSapCapacityUnitPrice } from '../db/data/sap-capacity-unit-price-seed';
 import { backfillNeverExpires } from '../db/data/never-expires-backfill';
+import { ensureToolUsageIndexes } from '../db/data/tool-usage-indexes';
+import { healSqliteSchema, healableSqliteFile } from '../db/data/sqlite-schema-heal';
 import { backfillNotificationContext } from '../db/data/security-notification-context-backfill';
 import { securityNotificationConfig } from '../config/security-notifications';
 import { notificationPopulationService } from '../services/notificationPopulationService';
 import { dismissNotification, markNotificationSeen, markNotificationUnseen, snoozeNotification, pinNotification, unpinNotification, deleteSecurityNotification } from './notification-handlers';
 import { notificationStreamService } from './notification-stream';
 import { registerLibraryHandlers, initializeModelLibrary } from './admin-service-library';
+import { registerToolPolicyHandlers } from './admin-service-tool-policies';
 import { registerUserHandlers } from './admin-service-users';
 import { registerQuotaProfileHandlers } from './admin-service-quota-profiles';
 import { touch as touchUser, backfillUsers, migrateCatalogAssignments } from '../services/usersService';
@@ -146,11 +151,27 @@ function maskApiKey(key: string): string {
 /**
  * Implementation for AdminService custom actions and functions
  */
+/**
+ * The model's SQLite DDL, compiled from the `db` and `srv` source folders (what `cds deploy` reads).
+ * Falls back to the served runtime model if the folders are not present.
+ */
+async function compileSqliteDdl(): Promise<string[]> {
+  const folders = [cds.env.folders?.db, cds.env.folders?.srv].filter((f: any) => typeof f === 'string' && fs.existsSync(path.resolve(cds.root ?? process.cwd(), f)));
+  const csn = folders.length > 0 ? await cds.load(folders) : cds.model;
+  return cds.compile.to.sql(csn, { dialect: 'sqlite' }) as string[];
+}
+
 class AdminService {
   // async because the Model Library seed below must complete before the first request is
   // served. The invariant only holds because the CAP impl wrapper at the bottom of this file
   // RETURNS this promise - cds awaits the impl's return value - so do not drop it there.
   async init(service: any): Promise<void> {
+    // A local SQLite file can lag the model (the dev admin never deploys schema, and `pnpm run ci`
+    // restores db/admin.db from its pre-run backup). Heal it additively BEFORE anything reads the
+    // database, or the first Users read fails with "no such column" and takes whoami, the quota
+    // status and the Fiori apps with it. No-op on PostgreSQL and on in-memory test databases.
+    await this.healLocalSqliteSchema();
+
     // ========================================
     // Add global request debugging
     // ========================================
@@ -202,6 +223,8 @@ class AdminService {
 
     // Model Library and entitlement catalogs (srv/admin-service-library.ts)
     registerLibraryHandlers(service);
+    // Tool governance policies, assignments, inventory (srv/admin-service-tool-policies.ts)
+    registerToolPolicyHandlers(service);
     // Users & quotas (srv/admin-service-users.ts)
     registerUserHandlers(service);
     // Quota profiles and their assignment (srv/admin-service-quota-profiles.ts)
@@ -215,6 +238,7 @@ class AdminService {
     this.initializeCostRecalculation();
     this.initializeSapCapacityUnitPrice();
     this.initializeNeverExpiresBackfill();
+    this.initializeToolUsageIndexes();
     this.initializeNotificationContextBackfill();
     this.initializeSiemDispatcher();
     this.initializeCredentialSweepReport();
@@ -1508,6 +1532,12 @@ class AdminService {
     if ('key' in req.data) {
       delete req.data.key;
       logger.info('AdminService', 'Removed key field - key can only be changed via action');
+    }
+
+    // toolPolicy_ID's only write path is setApiKeyToolPolicy (admin-service.cds) - same treatment as key above.
+    if ('toolPolicy_ID' in req.data) {
+      delete req.data.toolPolicy_ID;
+      logger.info('AdminService', 'Removed toolPolicy_ID field - toolPolicy can only be changed via setApiKeyToolPolicy');
     }
 
     // Only strip the absolutely essential managed fields that CAP handles automatically
@@ -3541,6 +3571,51 @@ class AdminService {
   }
 
   /**
+   * Additive SQLite self-heal (db/data/sqlite-schema-heal.ts): create missing tables, add missing
+   * columns, recreate views. Never drops anything, never runs against PostgreSQL or an in-memory
+   * database, never throws — a local database that cannot be healed is a warning, not a failed boot.
+   */
+  private async healLocalSqliteSchema(): Promise<void> {
+    try {
+      if (!healableSqliteFile(cds.env.requires?.db)) return;
+      const db = await cds.connect.to('db');
+      // Compile the model from its SOURCE folders: the served runtime model has been transformed for
+      // OData and the DDL compiler rejects it, while cds.load of db+srv is exactly what cds deploy uses.
+      const compiled = await compileSqliteDdl();
+      const { applied, failed, summary } = await healSqliteSchema(db, compiled);
+      if (applied === 0 && failed.length === 0) {
+        logger.debug('AdminService', 'Local SQLite schema already matches the model');
+        return;
+      }
+      logger.info('AdminService', `Local SQLite schema healed: ${summary.tablesCreated} table(s), ${summary.columnsAdded} column(s), ${summary.viewsRecreated} view(s) - ${applied} statement(s) applied`);
+      for (const s of summary.skipped) logger.warn('AdminService', `Local SQLite schema: ${s.object} needs the by-hand migration (${s.reason})`);
+      for (const f of failed) logger.warn('AdminService', `Local SQLite schema statement failed: ${f.error} (${f.statement})`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Local SQLite schema heal skipped: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Secondary indexes on the tool usage tables, which CAP's schema evolution does not generate
+   * (db/data/tool-usage-indexes.ts). Idempotent on every boot; never throws.
+   */
+  private async initializeToolUsageIndexes(): Promise<void> {
+    try {
+      const db = await cds.connect.to('db');
+      const { ensured, failed } = await ensureToolUsageIndexes(db);
+      if (failed.length === 0) {
+        logger.info('AdminService', `Tool usage indexes ensured (${ensured})`);
+      } else {
+        logger.warn('AdminService', `Tool usage indexes: ${ensured} ensured, ${failed.length} failed and retried on the next boot: ${failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to ensure tool usage indexes: ${errorMsg}`);
+    }
+  }
+
+  /**
    * Users backfill (one row per known e-mail) and the one-shot ModelCatalogAssignments migration.
    * Both idempotent; never throws — an empty Users table only delays quotas until the first contact.
    */
@@ -3982,7 +4057,7 @@ class AdminService {
       // quota_exceeded) but stays here: it is still accepted for already-stored rows and for
       // older gateway builds still running it, and SecurityEventService.logRateLimitExceeded
       // still constructs it directly.
-      const validEventTypes = ['failed_auth', 'rate_limit_exceeded', 'credential_rotation', 'model_not_entitled', 'deployment_created', 'quota_exceeded', 'quota_unenforced'];
+      const validEventTypes = ['failed_auth', 'rate_limit_exceeded', 'credential_rotation', 'model_not_entitled', 'deployment_created', 'quota_exceeded', 'quota_unenforced', 'tool_not_entitled', 'placeholder_invented'];
       if (!validEventTypes.includes(eventType)) {
         return {
           success: false,
@@ -4194,6 +4269,9 @@ class AdminService {
     delete (data as any).expiresAtFC;
     delete (data as any).neverExpiresFC;
 
+    // toolPolicy_ID's only write path is setApiKeyToolPolicy (admin-service.cds) - a CREATE payload cannot set it.
+    delete (data as any).toolPolicy_ID;
+
     // Ensure maskedKey is computed if we have a key
     if (data.key && !data.maskedKey) {
       data.maskedKey = maskApiKey(data.key);
@@ -4227,7 +4305,7 @@ class AdminService {
 
     // Strip non-updatable and virtual fields, but handle managed fields properly
     const drop = new Set([
-      'key', 'createdAt', 'createdBy', // Never allow these to be updated
+      'key', 'createdAt', 'createdBy', 'toolPolicy_ID', // Never allow these to be updated (toolPolicy_ID: only via setApiKeyToolPolicy)
       'maskedKey', 'statusCriticality', 'emailFC', 'keyFC', 'isActiveFC', 'expiresAtFC', 'neverExpiresFC' // Virtual fields
     ]);
     

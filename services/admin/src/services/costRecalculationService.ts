@@ -15,6 +15,7 @@ import { getCacheBillingFactors, isProductive, cuFactor as getConfiguredCuFactor
 import { rebuild } from './usageCounters';
 import { republishAll } from './userQuotaService';
 import { maintenanceRunAtUtc } from './quotaLimits';
+import { applyRetention } from './toolUsageService';
 const logger = getDefaultLogger();
 
 const cds = require('@sap/cds');
@@ -162,6 +163,14 @@ export class CostRecalculationService {
       // counts below to zero.
       try {
         await rebuild(db);
+        // The tool-usage retention purge gets its own boundary: it is the one step whose failure
+        // must not cost the republish below (the quota documents expire after 24 h, while stale
+        // tool rows only wait for the next night's run).
+        try {
+          await applyRetention(db);
+        } catch (error: any) {
+          logger.warn('CostRecalculation', `The tool usage retention purge failed: ${error?.message ?? error} — the rows stay until the next run`, { apiKeyRecords, awsRecords });
+        }
         await republishAll();
       } catch (error: any) {
         logger.warn('CostRecalculation', `The usage buckets were not rebuilt: ${error?.message ?? error} — run rebuildUsageCounters to repair`, { apiKeyRecords, awsRecords });
@@ -179,8 +188,12 @@ export class CostRecalculationService {
   /**
    * Build the UPDATE SQL for a usage table.
    *
-   * Row eligibility (which rows get touched at all) is governed entirely by the pre-existing
-   * ModelCosts join/drift gate below — unchanged by the SAP-native addition. The SAP-native
+   * Row eligibility (which rows get touched at all) is governed by the pre-existing ModelCosts
+   * join/drift gate below — unchanged by the SAP-native addition, and extended by one image
+   * disjunct: an image row can carry no input and no cache tokens at all (a generation is one
+   * short prompt and 1290 image tokens) and its rate is the manual `imageOutputCost`, which
+   * neither the input nor the cache drift terms look at. Without the disjunct, entering the
+   * image rate later would reprice no history at all on Postgres. The SAP-native
    * columns (genAiTokens/capacityUnits/sapCost/sapCostCurrency) ride the same ModelCosts row:
    * genAiTokens/capacityUnits fill in for every selected row (the GenAI rates come from
    * ModelCosts too, /1000, with the constant CU factor), and sapCost/sapCostCurrency also
@@ -219,13 +232,28 @@ export class CostRecalculationService {
       const cacheReadRate = `COALESCE(mc.cacheReadInputCost::numeric / 1000, ${inputRate})`;
       const cacheWriteRate = `COALESCE(mc.cacheCreationInputCost::numeric / 1000, ${inputRate})`;
       const imageRate = inputRate; // image GenAI rate is not published per model; fall back to input
+      // Generated-image output tokens are a subset of outputTokens (spec §3): priced at the
+      // manual ModelCosts.imageOutputCost when maintained, else the output rate; the remaining
+      // (text) share of outputTokens keeps pricing at the output rate. outputTokens itself never
+      // changes — only the split of its dollar/GenAI-token contribution.
+      const imageOutputRate = `COALESCE(mc.imageOutputCost::numeric / 1000, ${outputRate})`;
+      const imageOutTokens = `COALESCE(u.imageOutputTokens, 0)::numeric`;
+      // Realtime audio tokens are a subset of inputTokens/outputTokens (spec §3): priced at the
+      // manual ModelCosts.audioInputCost/audioOutputCost when maintained, else the text rate of
+      // their direction. audioInputTokens is additionally clamped to inputTokens.
+      const audioInputRate = `COALESCE(mc.audioInputCost::numeric / 1000, ${inputRate})`;
+      const audioOutputRate = `COALESCE(mc.audioOutputCost::numeric / 1000, ${outputRate})`;
+      const audioInTokens = `LEAST(COALESCE(u.audioInputTokens, 0)::numeric, u.inputTokens::numeric)`;
+      const audioOutTokens = `COALESCE(u.audioOutputTokens, 0)::numeric`;
+      const textInTokens = `GREATEST(u.inputTokens::numeric - ${audioInTokens}, 0)`;
+      const textOutTokens = `GREATEST(u.outputTokens::numeric - ${imageOutTokens} - ${audioOutTokens}, 0)`;
       const cuFactor = `${getConfiguredCuFactor()}::numeric`;
       const pricePerCu = `(SELECT p.pricePerCu::numeric FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
       const currency = `(SELECT p.currency FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
 
       const genAiTokensExpr = `(
-              (u.inputTokens::numeric) * ${inputRate}
-              + (u.outputTokens::numeric) * ${outputRate}
+              ${textInTokens} * ${inputRate} + ${audioInTokens} * ${audioInputRate}
+              + ${textOutTokens} * ${outputRate} + ${imageOutTokens} * ${imageOutputRate} + ${audioOutTokens} * ${audioOutputRate}
               + (COALESCE(u.cacheReadInputTokens, 0)::numeric * ${fRead}) * ${cacheReadRate}
               + (COALESCE(u.cacheCreationInputTokens, 0)::numeric * ${fWrite}) * ${cacheWriteRate}
               + COALESCE(u.imageInputTokens, 0)::numeric * ${imageRate}
@@ -234,15 +262,21 @@ export class CostRecalculationService {
       return `
         UPDATE ${table} u
         SET
-          inputCost = ROUND((u.inputTokens::numeric / 1000) * mc.inputCost::numeric, 6),
-          outputCost = ROUND((u.outputTokens::numeric / 1000) * mc.outputCost::numeric, 6),
+          inputCost = ROUND((${textInTokens} / 1000) * mc.inputCost::numeric, 6),
+          outputCost = ROUND((${textOutTokens} / 1000) * mc.outputCost::numeric, 6),
           cacheReadInputCost = ROUND((COALESCE(u.cacheReadInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheReadInputCost, mc.inputCost)::numeric, 6),
           cacheCreationInputCost = ROUND((COALESCE(u.cacheCreationInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric, 6),
+          imageOutputCost = ROUND((${imageOutTokens} / 1000) * COALESCE(mc.imageOutputCost, mc.outputCost)::numeric, 6),
+          audioInputCost = ROUND((${audioInTokens} / 1000) * COALESCE(mc.audioInputCost, mc.inputCost)::numeric, 6),
+          audioOutputCost = ROUND((${audioOutTokens} / 1000) * COALESCE(mc.audioOutputCost, mc.outputCost)::numeric, 6),
           totalCost = ROUND(
-            (u.inputTokens::numeric / 1000) * mc.inputCost::numeric +
-            (u.outputTokens::numeric / 1000) * mc.outputCost::numeric +
+            (${textInTokens} / 1000) * mc.inputCost::numeric +
+            (${textOutTokens} / 1000) * mc.outputCost::numeric +
             (COALESCE(u.cacheReadInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheReadInputCost, mc.inputCost)::numeric +
-            (COALESCE(u.cacheCreationInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric
+            (COALESCE(u.cacheCreationInputTokens, 0)::numeric / 1000) * COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric +
+            (${imageOutTokens} / 1000) * COALESCE(mc.imageOutputCost, mc.outputCost)::numeric +
+            (${audioInTokens} / 1000) * COALESCE(mc.audioInputCost, mc.inputCost)::numeric +
+            (${audioOutTokens} / 1000) * COALESCE(mc.audioOutputCost, mc.outputCost)::numeric
           , 6),
           genAiTokens = CASE WHEN ${cuFactor} IS NOT NULL
             THEN ROUND(${genAiTokensExpr}, 4)
@@ -260,11 +294,15 @@ export class CostRecalculationService {
         WHERE ${joinCondition}
           AND u.validFrom >= $1
           AND mc.dateFrom <= u.validFrom AND mc.dateTo >= u.validFrom
-          AND (u.inputTokens > 1 OR COALESCE(u.cacheReadInputTokens, 0) > 0 OR COALESCE(u.cacheCreationInputTokens, 0) > 0)
+          AND ((u.inputTokens > 1 OR COALESCE(u.cacheReadInputTokens, 0) > 0 OR COALESCE(u.cacheCreationInputTokens, 0) > 0) OR ${imageOutTokens} > 0)
           AND (
-            ABS(
-              (u.inputCost::numeric / GREATEST(u.inputTokens, 1) * 1000) - mc.inputCost::numeric
-            ) / GREATEST(mc.inputCost::numeric, 0.000001) > 0.05
+            (
+              ${textInTokens} > 0 AND (
+                ABS(
+                  (u.inputCost::numeric / GREATEST(${textInTokens}, 1) * 1000) - mc.inputCost::numeric
+                ) / GREATEST(mc.inputCost::numeric, 0.000001) > 0.05
+              )
+            )
             OR (
               COALESCE(u.cacheReadInputTokens, 0) > 0 AND (
                 u.cacheReadInputCost IS NULL
@@ -279,6 +317,30 @@ export class CostRecalculationService {
                 OR ABS(
                   (u.cacheCreationInputCost::numeric / GREATEST(COALESCE(u.cacheCreationInputTokens, 0), 1) * 1000) - COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric
                 ) / GREATEST(COALESCE(mc.cacheCreationInputCost, mc.inputCost)::numeric, 0.000001) > 0.05
+              )
+            )
+            OR (
+              ${imageOutTokens} > 0 AND (
+                u.imageOutputCost IS NULL
+                OR ABS(
+                  (u.imageOutputCost::numeric / GREATEST(COALESCE(u.imageOutputTokens, 0), 1) * 1000) - COALESCE(mc.imageOutputCost, mc.outputCost)::numeric
+                ) / GREATEST(COALESCE(mc.imageOutputCost, mc.outputCost)::numeric, 0.000001) > 0.05
+              )
+            )
+            OR (
+              ${audioInTokens} > 0 AND (
+                u.audioInputCost IS NULL
+                OR ABS(
+                  (u.audioInputCost::numeric / GREATEST(${audioInTokens}, 1) * 1000) - COALESCE(mc.audioInputCost, mc.inputCost)::numeric
+                ) / GREATEST(COALESCE(mc.audioInputCost, mc.inputCost)::numeric, 0.000001) > 0.05
+              )
+            )
+            OR (
+              ${audioOutTokens} > 0 AND (
+                u.audioOutputCost IS NULL
+                OR ABS(
+                  (u.audioOutputCost::numeric / GREATEST(${audioOutTokens}, 1) * 1000) - COALESCE(mc.audioOutputCost, mc.outputCost)::numeric
+                ) / GREATEST(COALESCE(mc.audioOutputCost, mc.outputCost)::numeric, 0.000001) > 0.05
               )
             )
           )
@@ -301,13 +363,27 @@ export class CostRecalculationService {
     const cacheReadRate = `COALESCE(${mcRate('cacheReadInputCost')}, ${inputRate})`;
     const cacheWriteRate = `COALESCE(${mcRate('cacheCreationInputCost')}, ${inputRate})`;
     const imageRate = inputRate; // image GenAI rate not published per model; fall back to input
+    // Generated-image output tokens are a subset of outputTokens (spec §3): priced at the manual
+    // ModelCosts.imageOutputCost when maintained, else the output rate; the remaining (text)
+    // share of outputTokens keeps pricing at the output rate. outputTokens itself never changes.
+    const imageOutputRate = `COALESCE(${mcRate('imageOutputCost')}, ${outputRate})`;
+    const imageOutTokens = `CAST(COALESCE(${table}.imageOutputTokens, 0) AS REAL)`;
+    // Realtime audio tokens are a subset of inputTokens/outputTokens (spec §3): priced at the
+    // manual ModelCosts.audioInputCost/audioOutputCost when maintained, else the text rate of
+    // their direction. audioInputTokens is additionally clamped to inputTokens.
+    const audioInputRate = `COALESCE(${mcRate('audioInputCost')}, ${inputRate})`;
+    const audioOutputRate = `COALESCE(${mcRate('audioOutputCost')}, ${outputRate})`;
+    const audioInTokens = `MIN(CAST(COALESCE(${table}.audioInputTokens, 0) AS REAL), CAST(${table}.inputTokens AS REAL))`;
+    const audioOutTokens = `CAST(COALESCE(${table}.audioOutputTokens, 0) AS REAL)`;
+    const textInTokens = `MAX(CAST(${table}.inputTokens AS REAL) - ${audioInTokens}, 0)`;
+    const textOutTokens = `MAX(CAST(${table}.outputTokens AS REAL) - ${imageOutTokens} - ${audioOutTokens}, 0)`;
     const cuFactor = `${getConfiguredCuFactor()}`;
     const pricePerCu = priceField('pricePerCu');
     const currency = priceField('currency');
 
     const genAiTokensExpr = `(
-          CAST(${table}.inputTokens AS REAL) * ${inputRate}
-          + CAST(${table}.outputTokens AS REAL) * ${outputRate}
+          ${textInTokens} * ${inputRate} + ${audioInTokens} * ${audioInputRate}
+          + ${textOutTokens} * ${outputRate} + ${imageOutTokens} * ${imageOutputRate} + ${audioOutTokens} * ${audioOutputRate}
           + (CAST(COALESCE(${table}.cacheReadInputTokens, 0) AS REAL) * ${fRead}) * ${cacheReadRate}
           + (CAST(COALESCE(${table}.cacheCreationInputTokens, 0) AS REAL) * ${fWrite}) * ${cacheWriteRate}
           + CAST(COALESCE(${table}.imageInputTokens, 0) AS REAL) * ${imageRate}
@@ -316,13 +392,13 @@ export class CostRecalculationService {
     return `
       UPDATE ${table}
       SET
-        inputCost = ROUND(CAST(inputTokens AS REAL) / 1000 * (
+        inputCost = ROUND(${textInTokens} / 1000 * (
           SELECT mc.inputCost FROM sap_llm_gateway_admin_ModelCosts mc
           WHERE ${joinCondition.replace(/u\./g, `${table}.`).replace('mc.model', 'mc.model')}
             AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
           LIMIT 1
         ), 6),
-        outputCost = ROUND(CAST(outputTokens AS REAL) / 1000 * (
+        outputCost = ROUND(${textOutTokens} / 1000 * (
           SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
           WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
             AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
@@ -340,14 +416,47 @@ export class CostRecalculationService {
             AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
           LIMIT 1
         ), 6),
+        imageOutputCost = ROUND(${imageOutTokens} / 1000 * COALESCE((
+          SELECT mc.imageOutputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        ), (
+          SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        )), 6),
+        audioInputCost = ROUND(${audioInTokens} / 1000 * COALESCE((
+          SELECT mc.audioInputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        ), (
+          SELECT mc.inputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        )), 6),
+        audioOutputCost = ROUND(${audioOutTokens} / 1000 * COALESCE((
+          SELECT mc.audioOutputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        ), (
+          SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
+          WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+            AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+          LIMIT 1
+        )), 6),
         totalCost = ROUND(
-          CAST(inputTokens AS REAL) / 1000 * (
+          ${textInTokens} / 1000 * (
             SELECT mc.inputCost FROM sap_llm_gateway_admin_ModelCosts mc
             WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
               AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
             LIMIT 1
           ) +
-          CAST(outputTokens AS REAL) / 1000 * (
+          ${textOutTokens} / 1000 * (
             SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
             WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
               AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
@@ -364,7 +473,41 @@ export class CostRecalculationService {
             WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
               AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
             LIMIT 1
-          ), 6),
+          ) +
+          ${imageOutTokens} / 1000 * COALESCE((
+            SELECT mc.imageOutputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          ), (
+            SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          )) +
+          ${audioInTokens} / 1000 * COALESCE((
+            SELECT mc.audioInputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          ), (
+            SELECT mc.inputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          )) +
+          ${audioOutTokens} / 1000 * COALESCE((
+            SELECT mc.audioOutputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          ), (
+            SELECT mc.outputCost FROM sap_llm_gateway_admin_ModelCosts mc
+            WHERE ${joinCondition.replace(/u\./g, `${table}.`)}
+              AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
+            LIMIT 1
+          ))
+        , 6),
         genAiTokens = CASE WHEN ${cuFactor} IS NOT NULL
           THEN ROUND(${genAiTokensExpr}, 4)
           ELSE ${table}.genAiTokens END,
@@ -378,7 +521,7 @@ export class CostRecalculationService {
           THEN COALESCE(${currency}, ${table}.sapCostCurrency)
           ELSE ${table}.sapCostCurrency END
       WHERE validFrom >= ?
-        AND (inputTokens > 1 OR COALESCE(cacheReadInputTokens, 0) > 0 OR COALESCE(cacheCreationInputTokens, 0) > 0)
+        AND ((inputTokens > 1 OR COALESCE(cacheReadInputTokens, 0) > 0 OR COALESCE(cacheCreationInputTokens, 0) > 0) OR COALESCE(imageOutputTokens, 0) > 0)
         AND EXISTS (
           SELECT 1 FROM sap_llm_gateway_admin_ModelCosts mc
           WHERE ${joinCondition.replace(/u\./g, `${table}.`)}

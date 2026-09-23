@@ -53,19 +53,44 @@ function mkTemp(label) {
 
 // Assert every (pkg, minVersion) actually resolved to >= minVersion. Guards
 // against silently shipping a lockfile that still pins a vulnerable version.
+//
+// A floor governs the major it names, not the whole package: several majors of
+// one package legitimately coexist in these closures (npm-dist resolves
+// minimatch 3.1.5, 9.0.9 and 10.2.6 side by side), and a single whole-package
+// floor would have to be lowered to the oldest line, which would stop guarding
+// the newest. Pass an array to floor more than one major
+// (`minimatch: ['9.0.9', '10.2.3']`); majors present with no floor of their own
+// are reported so they stay visible rather than silently unchecked.
 function assertPatched(lockText, lockfileName, expectations) {
-  for (const [pkg, min] of Object.entries(expectations)) {
-    const versions = [...lockText.matchAll(new RegExp(`(?:^|/| )${pkg.replace(/[/\\]/g, '\\$&')}@(\\d[\\d.]*)`, 'g'))]
-      .map((m) => m[1]);
+  for (const [pkg, expectation] of Object.entries(expectations)) {
+    const mins = Array.isArray(expectation) ? expectation : [expectation];
+    const versions = [...new Set(
+      [...lockText.matchAll(new RegExp(`(?:^|/| )${pkg.replace(/[/\\]/g, '\\$&')}@(\\d[\\d.]*)`, 'g'))]
+        .map((m) => m[1])
+    )];
     if (versions.length === 0) {
       console.log(`   ⚠️  ${lockfileName}: ${pkg} not present (nothing to check)`);
       continue;
     }
-    const bad = versions.filter((v) => cmpSemver(v, min) < 0);
-    if (bad.length) {
-      throw new Error(`${lockfileName}: ${pkg} resolved to ${[...new Set(bad)].join(', ')} (expected >= ${min})`);
+    const floored = new Set();
+    for (const min of mins) {
+      const major = min.split('.')[0];
+      const line = versions.filter((v) => v.split('.')[0] === major);
+      line.forEach((v) => floored.add(v));
+      if (line.length === 0) {
+        console.log(`   ⚠️  ${lockfileName}: ${pkg}@${major} not present (nothing to check)`);
+        continue;
+      }
+      const bad = line.filter((v) => cmpSemver(v, min) < 0);
+      if (bad.length) {
+        throw new Error(`${lockfileName}: ${pkg} resolved to ${bad.join(', ')} (expected >= ${min})`);
+      }
+      console.log(`   ✓ ${lockfileName}: ${pkg} >= ${min} (found ${line.sort().join(', ')})`);
     }
-    console.log(`   ✓ ${lockfileName}: ${pkg} >= ${min} (found ${[...new Set(versions)].sort().join(', ')})`);
+    const unfloored = versions.filter((v) => !floored.has(v));
+    if (unfloored.length) {
+      console.log(`   ℹ️  ${lockfileName}: ${pkg} other majors present, no floor given: ${unfloored.sort().join(', ')}`);
+    }
   }
 }
 
@@ -106,9 +131,15 @@ function regenDocker() {
     pnpmInstall(tmp);
     const lock = fs.readFileSync(path.join(tmp, 'pnpm-lock.yaml'), 'utf8');
     assertPatched(lock, 'docker', {
-      qs: '6.15.2',
+      qs: '6.16.0',
       'form-data': '4.0.6',
       'http-proxy-middleware': '3.0.7',
+      axios: '1.18.0',
+      'body-parser': '1.20.8',
+      express: '4.22.0',
+      morgan: '1.12.0',
+      cookie: '0.7.1',
+      'serve-static': '1.16.2',
     });
     return commit('docker/pnpm-lock.yaml', lock);
   } finally {
@@ -153,7 +184,15 @@ function regenNpmDist() {
       /specifier: link:\.\.\/\.\.\/libs\/service-key-parser/g,
       'specifier: workspace:*'
     );
-    assertPatched(lock, 'npm-dist', { 'form-data': '4.0.6' });
+    assertPatched(lock, 'npm-dist', {
+      'form-data': '4.0.6',
+      axios: '1.18.0',
+      'follow-redirects': '1.16.0',
+      'js-yaml': '4.3.2',
+      minimatch: '10.2.3',
+      'brace-expansion': '1.1.18',
+      picomatch: '4.0.4',
+    });
     if (!workspaceDeps.length) console.log('   ⚠️  no workspace:* deps found to substitute');
     return commit('npm-dist/sail-proxy/pnpm-lock.yaml', lock);
   } finally {

@@ -13,8 +13,11 @@ const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').repl
 // file → number of guard positions that must name quotaEnforcement
 const EXPECTED: Array<[string, number]> = [
   ['chatRoutes.ts', 1], ['responsesRoutes.ts', 1], ['embeddingRoutes.ts', 1], ['filesRoutes.ts', 1],
-  ['vectorStoresRoutes.ts', 1], ['anthropicRoutes.ts', 3], ['awsBedrockRoutes.ts', 1], ['openRouterRoutes.ts', 1],
-  ['googleRoutes.ts', 1]
+  ['vectorStoresRoutes.ts', 1], ['anthropicRoutes.ts', 3], ['awsBedrockRoutes.ts', 1],
+  // openRouterRoutes: one guard position per tool-carrying route chain (the router-level mount
+  // that covers the remaining endpoints takes no comma and is not counted).
+  ['openRouterRoutes.ts', 3],
+  ['googleRoutes.ts', 1], ['imagesRoutes.ts', 1]
 ];
 
 describe('every LLM-serving router mounts quotaEnforcement', () => {

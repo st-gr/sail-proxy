@@ -69,7 +69,7 @@ Client: ["I recommend ", "",       "",             "John Smith", " call back"]
 | Priority | Tier | Detector | Examples |
 |----------|------|----------|----------|
 | 0 (highest) | Custom Regex | User-defined patterns | Permit numbers, badge IDs |
-| 1 | Structural Regex | Email, phone, SSN, ITIN, credit card, IBAN, bank routing number, DEA number, URL, IP address, address, credentials, org (legal-form suffix), location (gazetteer) | `john@example.com`, `123-45-6789` |
+| 1 | Structural Regex | Email, phone, SSN, ITIN, credit card, IBAN, bank routing number, DEA number, URL, IP address, address, credentials, org (legal-form suffix), location (gazetteer), transcript speaker labels | `john@example.com`, `123-45-6789`, `Okafor, Lena:` |
 | 2 | NER (wink-nlp) | Person names | `John Smith` |
 | 3 (lowest) | Dictionary | Nationality, ethnicity, gender, religion, political group, etc. | `Republican`, `Buddhist` |
 
@@ -78,6 +78,30 @@ Client: ["I recommend ", "",       "",             "John Smith", " call back"]
 **Organisation and location detection is NOT NER.** wink-nlp's shipped model emits no `ORG`/`GPE`/`LOC` entity types, so `profile-org` and `profile-location` are detected at Tier 1 instead: an organisation is recognised only by a configured legal-form suffix (`Acme Industries Inc`), a location only by a literal, configured gazetteer term. See [Organisation, location and the new US identifier categories](#organisation-location-and-the-new-us-identifier-categories) below.
 
 **Person name run length is capped at 4 tokens.** Alongside wink-nlp's own PERSON entities, a supplemental heuristic masks runs of 2+ capitalised tokens wink-nlp misses. A run of up to 4 tokens masks whole. A run longer than 4 tokens is **not discarded** — it is truncated to its last 4 tokens, keeping the trailing tokens and dropping the leading remainder unmasked. For example, `Carlos Alberto De La Fuente Salgado` masks only `De La Fuente Salgado`; the leading `Carlos Alberto` stays in the prompt unmasked. This is deliberate: truncating from the tail keeps the placeholder stable regardless of what precedes the name (placeholders are content-derived, see "Placeholder format" above), and a partially masked long name is still an improvement over the pre-truncation behaviour, where a run over 4 tokens was masked not at all.
+
+**Transcript speaker labels, and the names they vouch for.** The capitalised run cannot see a
+speaker written `Surname, Given:` - the comma splits it into two single tokens, and one token is
+never a run. In the request behind incident k80nbbxr6 that form occurred 83 times and was masked
+zero times, and two of the three people in it never appeared as `Given Surname` at all. A line that
+opens with `Surname, Given:`, optionally behind a cue number, is therefore detected at Tier 1 - but
+only in a text that shows it is a transcript: the same label heads a second line, or the line
+carries a cue (a leading cue number, or a `-->` timing line directly above). One label-shaped line
+proves nothing (`Paris, France: the capital`), and neither does a list of `City, Country: value`
+rows, where no label repeats; ordinary heading words (`Note, Important:`) never count.
+
+The surname and the given name are masked as **separate** values, with the label's punctuation left
+in place. That keeps the round trip exact, and it gives a given name the same placeholder in its
+label and where it stands alone. Names a label has vouched for are then masked **wherever they
+stand alone in the request** - `I know Lena, you were going to say`, and the model's own later
+`Lena chaired the meeting` - case-sensitively and as whole words only, so `Lenaville` and
+`lena_config` are untouched. The 12-character floor of ordinary propagation does not apply to them,
+because something else has already established that the word is a person's name in this request.
+Two limits are deliberate. A name that is far more often an everyday word (`Will`, `May`, `Mark`,
+`Grace`, `Hill` - see `EVERYDAY_WORD_NAMES`) is masked in its label but never travels, so `Will you
+send it in May?` survives a transcript with speakers called Will and May. And only a speaker label
+vouches: the parts of a capitalised run never travel, because `Visual Studio` and `New York` are
+runs too. A given name with nothing in the request vouching for it (`Thanks, Lena`) is still not
+masked - the given-name dictionary is a confidence signal, never a detector.
 
 **Never re-masks a placeholder**: any span already occupied by an existing placeholder (`MASKED_*_<id>` or a `masked-url-<id>.invalid` URL) is excluded from detection, preventing a double-masking loop where a placeholder gets masked again into a new, unresolvable token.
 
@@ -253,6 +277,41 @@ swept up object names, `XXXXXXXX.XXXXXXXX` says the request really did carry a r
 Either way every value found was masked. The same counts ride on the request's usage SIEM event
 as `pseudonymization: { masked_values, categories, saturated }`, whether or not the number was
 passed, and whether or not any sink is opted into content — the block is counts, not text.
+
+### Placeholders the model invents (`unknown_placeholders`)
+
+A model does not reliably copy an eight-digit id out of a long context. It sometimes answers with
+a well-formed placeholder it was never sent. The plugin tells it not to (see the instruction it
+appends to the system prompt), and it happens anyway - measured over 7,230 logged pseudonymized
+responses, 56 carried such a placeholder: about 1 in 1,000 when a request masks up to fifty values,
+1 in 40 above 150, in every model family. Most are entirely new ids rather than copy errors, and a
+model will even tokenise a name it had in clear, by imitation of the placeholders around it.
+
+Such a placeholder names nobody and can never be resolved: the id is a hash of the original value,
+and nothing hashes to an invented one. Passed through, it lands in whatever the client writes and
+returns with every later request, where the model treats it as genuine.
+
+| `unknown_placeholders` | A placeholder in a response that is not in the request's map |
+|---|---|
+| `withhold` (default) | is replaced by a plain marker - `[name withheld]`, `[email address withheld]`, `[link withheld]`, `[value withheld]` - and reported |
+| `report` | reaches the client unchanged and is reported |
+| `off` | reaches the client unchanged, as it did before |
+
+Anything unreadable means `withhold`; a typo never turns the control off. A placeholder **the
+client itself sent in the same request** is never treated as invented: a developer discussing this
+plugin, a test file the model has just read, or residue from an earlier turn are all in the
+conversation already, and rewriting them would corrupt source code the model is editing. Use
+`report` for a deployment whose own developers write NEW placeholders into fixtures through the
+gateway.
+
+Reporting is one grep-stable log line per request,
+`pseudonymization_invented_placeholder_total=<n> by_type=<TYPE:n,...> action=withheld|reported placeholders=<ids> requestId=<id>`,
+and one `placeholder_invented` security event (severity low) per distinct placeholder, which the
+cockpit shows as a notification. The ids are random and name nobody, so logging them is safe, and
+they are what lets you find the artifact one ended up in.
+
+Streaming needs no special handling from a client: an invented placeholder is held until its id is
+complete, exactly as a real one is, so no fragment of it is ever sent ahead.
 
 ### Custom Entities
 

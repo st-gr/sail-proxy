@@ -1546,7 +1546,13 @@
           },
           "sonar-pro": {
             "streamingSupported": false
-          }
+          },
+          "sap-rpt-1-small--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] },
+          "sap-rpt-1-large--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] },
+          "sap-rpt-1.5--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] },
+          "sap-rpt-1.5-large--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] },
+          "sap-rpt-1.6--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] },
+          "sap-rpt-1.6-large--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] }
         }
     },
     "capabilities": {
@@ -1911,6 +1917,21 @@
         "tokensPerDay": null,
         "tokensPerWeek": null,
         "tokensPerMonth": null
+      },
+      "toolGovernance": {
+        "retention": {
+          "rawDays": 30,
+          "dailyDays": 400
+        },
+        "mcpNaming": {
+          "namePattern": "^mcp__(.+?)__(.+)$",
+          "clients": [
+            { "name": "claude-code", "userAgent": "claude-cli", "containerTools": [] },
+            { "name": "codex", "userAgent": "codex-tui", "containerTools": ["exec"], "nestedCallPattern": "tools\\.([A-Za-z0-9_]+)" },
+            { "name": "pi", "userAgent": "OpenAI/JS", "containerTools": [] },
+            { "name": "opencode", "userAgent": "opencode", "containerTools": [] }
+          ]
+        }
       },
       "maintenance": {
         "dailyRunAtUtc": null

@@ -17,6 +17,7 @@ import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
 import { foldExclusiveUsage } from '../utils/usageFolding';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { recordInvokedTools, openaiChatAdapter } from '../toolGovernance';
 import {
   isUnsupportedParam,
   stripUnsupportedParams,
@@ -643,6 +644,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         try {
           // Process normal chunk data
           const transformedResponse = transformSAPResponseToOpenAI(chunk, true, completion);
+          recordInvokedTools(req, openaiChatAdapter.invokedToolsFromChunk(transformedResponse));
           logger.trace('openaiController', 'Writing transformed data chunk to client:', { transformedResponse });
           sseWriter.writeChunk(res, JSON.stringify(transformedResponse));
 
@@ -841,6 +843,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
                   logger.info('openaiController', 'Non-streaming response received, sending via JSON');
                   if (!res.writableEnded) {
                     const transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
+                    // This fallback answers the client from a non-streaming response, so the
+                    // invoked tools are read the same way the non-streaming path reads them
+                    // (line ~916) — without this the tools a retried request called went
+                    // unrecorded.
+                    recordInvokedTools(req, openaiChatAdapter.invokedTools(transformedResponse));
                     return res.json(transformedResponse);
                   }
                 } catch (retryError: any) {
@@ -911,7 +918,8 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       try {
         const responseData = await sapAIService.completeChat(payload, debugRequestId);
         let transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
-        
+        recordInvokedTools(req, openaiChatAdapter.invokedTools(transformedResponse));
+
         // Track usage from transformed response
         if (transformedResponse && transformedResponse.usage) {
           foldExclusiveUsage(

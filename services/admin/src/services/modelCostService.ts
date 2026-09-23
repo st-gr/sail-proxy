@@ -2,7 +2,8 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import { SERVICE_KEYS, createServiceKeyData } from '@libs/service-auth';
-import { mapModelToLibraryRow, GatewayModel } from './librarySnapshot';
+import { mapModelToLibraryRow, deriveDeepContextRows, GatewayModel } from './librarySnapshot';
+import { pricingTwins, DEEP_CONTEXT_SUFFIX } from './pricingTwins';
 
 const logger = getDefaultLogger();
 const cds = require('@sap/cds');
@@ -31,6 +32,8 @@ interface ModelCostEntry {
   outputCost: number; // per 1000 tokens
   cacheReadInputCost?: number;     // per 1000 tokens (cache read pricing)
   cacheCreationInputCost?: number; // per 1000 tokens (cache creation/write pricing)
+  imageOutputCost?: number; // per 1000 tokens (generated images; manual rows only)
+  audioInputCost?: number; audioOutputCost?: number; // per 1000 tokens (realtime audio; manual rows only)
   provider?: string;
   version?: string;
   source?: string;
@@ -61,17 +64,21 @@ class ModelCostService {
    * Handles model ID mapping for substituted/deployed models
    */
   getModelProvider(modelId: string): string {
+    // A deep-context id names a pricing-only tier of its bare model; the gateway never lists a
+    // provider mapping for the suffixed id itself, so every lookup below runs against the bare id.
+    const bare = modelId.endsWith(DEEP_CONTEXT_SUFFIX) ? modelId.slice(0, -DEEP_CONTEXT_SUFFIX.length) : modelId;
+
     // Direct lookup first
-    let provider = this.modelProviderMap.get(modelId);
+    let provider = this.modelProviderMap.get(bare);
     if (provider) {
       return provider;
     }
 
     // Try to find deployed version (originalModel -> originalModel--deployed)
-    const deployedModelId = `${modelId}--deployed`;
+    const deployedModelId = `${bare}--deployed`;
     provider = this.modelProviderMap.get(deployedModelId);
     if (provider) {
-      logger.debug('ModelCostService', `Found provider for deployed version: ${modelId} -> ${deployedModelId} (${provider})`);
+      logger.debug('ModelCostService', `Found provider for deployed version: ${bare} -> ${deployedModelId} (${provider})`);
       return provider;
     }
 
@@ -79,39 +86,39 @@ class ModelCostService {
     for (const [cachedModelId, cachedProvider] of this.modelProviderMap.entries()) {
       if (cachedModelId.endsWith('--deployed')) {
         // Extract base model name from deployed model ID
-        // e.g., "anthropic--claude-3-haiku--deployed" -> "claude-3-haiku"  
+        // e.g., "anthropic--claude-3-haiku--deployed" -> "claude-3-haiku"
         const parts = cachedModelId.split('--');
         if (parts.length >= 3 && parts[parts.length - 1] === 'deployed') {
           const baseModel = parts.slice(1, -1).join('-'); // Skip provider prefix and --deployed suffix
-          if (modelId.includes(baseModel) || baseModel.includes(modelId)) {
-            logger.debug('ModelCostService', `Found provider via pattern matching: ${modelId} -> ${cachedModelId} (${cachedProvider})`);
+          if (bare.includes(baseModel) || baseModel.includes(bare)) {
+            logger.debug('ModelCostService', `Found provider via pattern matching: ${bare} -> ${cachedModelId} (${cachedProvider})`);
             return cachedProvider;
           }
         }
       }
     }
 
-    logger.debug('ModelCostService', `No provider found for model: ${modelId}`);
+    logger.debug('ModelCostService', `No provider found for model: ${bare}`);
     return 'unknown';
   }
 
   /**
    * Get current pricing for a model
    */
-  async getModelPricing(modelId: string, date: Date = new Date()): Promise<{ inputCost: number; outputCost: number; cacheReadInputCost?: number; cacheCreationInputCost?: number; provider?: string; complexCost?: string } | null> {
+  async getModelPricing(modelId: string, date: Date = new Date()): Promise<{ inputCost: number; outputCost: number; cacheReadInputCost?: number; cacheCreationInputCost?: number; imageOutputCost?: number; audioInputCost?: number; audioOutputCost?: number; provider?: string; complexCost?: string } | null> {
     try {
-      // Check cache first with direct model ID
-      let cached = await this.getCachedPricing(modelId, date);
-      if (cached) {
-        return cached;
-      }
-
-      // Try with deployed version if not found
-      const deployedModelId = `${modelId}--deployed`;
-      cached = await this.getCachedPricing(deployedModelId, date);
-      if (cached) {
-        logger.debug('ModelCostService', `Found pricing for deployed version: ${modelId} -> ${deployedModelId}`);
-        return cached;
+      // Check the cache under every id this model's price may be maintained under: the exact id,
+      // then (for a deep-context id) the bare model, then each of those with its --deployed twin -
+      // so a deep-context call is never priced at nothing when only the base rate is maintained,
+      // and the deployed/bare fallback (spec: usage is accounted against the DEPLOYMENT id while a
+      // manual price may have been entered on the bare model, or vice versa) still applies.
+      let cached: Awaited<ReturnType<ModelCostService['getCachedPricing']>> = null;
+      for (const id of pricingTwins(modelId)) {
+        cached = await this.getCachedPricing(id, date);
+        if (cached) {
+          if (id !== modelId) logger.debug('ModelCostService', `Found pricing via twin: ${modelId} -> ${id}`);
+          return cached;
+        }
       }
 
       // Try to find pricing for provider-prefixed deployed version
@@ -152,7 +159,7 @@ class ModelCostService {
   /**
    * Get cached pricing from database
    */
-  private async getCachedPricing(modelId: string, date: Date): Promise<{ inputCost: number; outputCost: number; cacheReadInputCost?: number; cacheCreationInputCost?: number; provider?: string; complexCost?: string } | null> {
+  private async getCachedPricing(modelId: string, date: Date): Promise<{ inputCost: number; outputCost: number; cacheReadInputCost?: number; cacheCreationInputCost?: number; imageOutputCost?: number; audioInputCost?: number; audioOutputCost?: number; provider?: string; complexCost?: string } | null> {
     const db = await cds.connect.to('db');
 
     // Use raw SQL for proper datetime comparison since CDS doesn't handle ISO timestamps with 'Z' suffix well
@@ -170,7 +177,7 @@ class ModelCostService {
     if (isPostgreSQL) {
       // PostgreSQL-compatible query using CAST for timestamp comparison
       result = await db.run(`
-        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, provider, complexCost, dateFrom, dateTo
+        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
           AND CAST(dateFrom AS TIMESTAMP) <= CAST(? AS TIMESTAMP)
@@ -181,7 +188,7 @@ class ModelCostService {
     } else {
       // SQLite-compatible query using datetime() function
       result = await db.run(`
-        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, provider, complexCost, dateFrom, dateTo
+        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
           AND datetime(dateFrom) <= datetime(?)
@@ -195,7 +202,7 @@ class ModelCostService {
     if ((!result || (Array.isArray(result) && result.length === 0))) {
       logger.debug('ModelCostService', 'No results with database-specific conversion, trying without');
       result = await db.run(`
-        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, provider, complexCost, dateFrom, dateTo
+        SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
           AND dateFrom <= ?
@@ -236,12 +243,18 @@ class ModelCostService {
       const outputCostValue = cost.outputCost || cost.outputcost;
       const cacheReadInputCostValue = cost.cacheReadInputCost || cost.cachereadinputcost;
       const cacheCreationInputCostValue = cost.cacheCreationInputCost || cost.cachecreationinputcost;
+      const imageOutputCostValue = cost.imageOutputCost ?? cost.imageoutputcost;
+      const audioInputCostValue = cost.audioInputCost ?? cost.audioinputcost;
+      const audioOutputCostValue = cost.audioOutputCost ?? cost.audiooutputcost;
 
       return {
         inputCost: parseFloat(inputCostValue) || 0,
         outputCost: parseFloat(outputCostValue) || 0,
         cacheReadInputCost: cacheReadInputCostValue ? parseFloat(cacheReadInputCostValue) : undefined,
         cacheCreationInputCost: cacheCreationInputCostValue ? parseFloat(cacheCreationInputCostValue) : undefined,
+        imageOutputCost: imageOutputCostValue !== null && imageOutputCostValue !== undefined ? parseFloat(imageOutputCostValue) : undefined,
+        audioInputCost: audioInputCostValue !== null && audioInputCostValue !== undefined ? parseFloat(audioInputCostValue) : undefined,
+        audioOutputCost: audioOutputCostValue !== null && audioOutputCostValue !== undefined ? parseFloat(audioOutputCostValue) : undefined,
         provider: cost.provider,
         complexCost: cost.complexCost || cost.complexcost
       };
@@ -570,10 +583,16 @@ class ModelCostService {
     if (rows.length === 0) {
       return { upserted: 0, absent: 0, deployments: 0 };
     }
+    // Deep Context pricing-only rows, one per sap-rpt-*-large row in this snapshot. lastSeenAt is
+    // stamped here (not inside deriveDeepContextRows, which is pure and carries none) so the
+    // mark-absent sweep below - keyed on lastSeenAt - treats them as seen in this run and leaves
+    // their mirrored `absent` alone, instead of nulling it and flipping them absent regardless.
+    const derivedRows = deriveDeepContextRows(rows).map(r => ({ ...r, lastSeenAt: now }));
+    const all = [...rows, ...derivedRows];
     const db = await cds.connect.to('db');
     const CHUNK = 50;
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      await db.run(UPSERT.into('sap.llm.gateway.admin.LibraryModels').entries(rows.slice(i, i + CHUNK)));
+    for (let i = 0; i < all.length; i += CHUNK) {
+      await db.run(UPSERT.into('sap.llm.gateway.admin.LibraryModels').entries(all.slice(i, i + CHUNK)));
     }
     const absent = await db.run(
       UPDATE('sap.llm.gateway.admin.LibraryModels')
@@ -637,8 +656,14 @@ class ModelCostService {
     inputTokens: number,
     outputTokens: number,
     cacheCreationInputTokens: number,
-    cacheReadInputTokens: number
-  ): { inputCost: number; outputCost: number; cacheCreationInputCost: number; cacheReadInputCost: number } | null {
+    cacheReadInputTokens: number,
+    imageOutputTokens: number = 0,
+    imageOutputCostRate?: number,
+    audioInputTokens: number = 0,
+    audioOutputTokens: number = 0,
+    audioInputCostRate?: number,
+    audioOutputCostRate?: number
+  ): { inputCost: number; outputCost: number; cacheCreationInputCost: number; cacheReadInputCost: number; imageOutputCost: number; audioInputCost: number; audioOutputCost: number } | null {
     try {
       const costStructure = JSON.parse(complexCostJson);
       
@@ -730,9 +755,19 @@ class ModelCostService {
         return null;
       }
 
-      // Calculate costs using the tiered rates
-      const inputCost = (inputTokens / 1000) * inputCostRate;
-      const outputCost = (outputTokens / 1000) * outputCostRate;
+      // Calculate costs using the tiered rates. Text output tokens exclude the generated-image
+      // share (spec §3): outputCost prices only the text share, imageOutputCost prices the rest
+      // at the manual imageOutputCost rate (falling back to the tier's output rate when unset).
+      const safeImageOutputTokens = Math.max(0, imageOutputTokens || 0);
+      const safeAudioInputTokens = Math.min(Math.max(0, audioInputTokens || 0), inputTokens);
+      const safeAudioOutputTokens = Math.max(0, audioOutputTokens || 0);
+      const textInputTokens = Math.max(0, inputTokens - safeAudioInputTokens);
+      const textOutputTokens = Math.max(0, outputTokens - safeImageOutputTokens - safeAudioOutputTokens);
+      const inputCost = (textInputTokens / 1000) * inputCostRate;
+      const audioInputCost = (safeAudioInputTokens / 1000) * (audioInputCostRate ?? inputCostRate);
+      const outputCost = (textOutputTokens / 1000) * outputCostRate;
+      const imageOutputCost = (safeImageOutputTokens / 1000) * (imageOutputCostRate ?? outputCostRate);
+      const audioOutputCost = (safeAudioOutputTokens / 1000) * (audioOutputCostRate ?? outputCostRate);
 
       // Cache token pricing - check if tiered cache pricing is available in the input tier
       // Some models like Gemini 2.5 Pro have tiered cache pricing (different rates per tier)
@@ -763,7 +798,10 @@ class ModelCostService {
         inputCost,
         outputCost,
         cacheCreationInputCost,
-        cacheReadInputCost
+        cacheReadInputCost,
+        imageOutputCost,
+        audioInputCost,
+        audioOutputCost
       };
 
     } catch (error) {
@@ -776,22 +814,28 @@ class ModelCostService {
    * Calculate costs for input, output, and cache tokens
    */
   async calculateCosts(
-    modelId: string, 
-    inputTokens: number, 
-    outputTokens: number, 
+    modelId: string,
+    inputTokens: number,
+    outputTokens: number,
     date: Date = new Date(),
     cacheCreationInputTokens?: number,
-    cacheReadInputTokens?: number
+    cacheReadInputTokens?: number,
+    imageOutputTokens: number = 0,
+    audioInputTokens: number = 0,
+    audioOutputTokens: number = 0
   ): Promise<{
     inputCost: number;
     outputCost: number;
     cacheCreationInputCost?: number;
     cacheReadInputCost?: number;
+    imageOutputCost: number;
+    audioInputCost: number;
+    audioOutputCost: number;
     totalCost: number;
     provider?: string;
   }> {
     if (!inputTokens && !outputTokens && !cacheCreationInputTokens && !cacheReadInputTokens) {
-      return { inputCost: 0, outputCost: 0, cacheCreationInputCost: 0, cacheReadInputCost: 0, totalCost: 0 };
+      return { inputCost: 0, outputCost: 0, cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0, totalCost: 0 };
     }
 
     let pricing = await this.getModelPricing(modelId, date);
@@ -805,6 +849,16 @@ class ModelCostService {
     const safeOutputTokens = outputTokens || 0;
     const safeCacheCreationInputTokens = cacheCreationInputTokens || 0;
     const safeCacheReadInputTokens = cacheReadInputTokens || 0;
+    // Generated-image tokens are a subset of outputTokens (spec §3): price the text share at the
+    // output rate and the image share at the manual imageOutputCost rate; outputTokens itself is
+    // never changed.
+    const safeImageOutputTokens = Math.max(0, imageOutputTokens || 0);
+    // Realtime audio tokens are subsets of inputTokens/outputTokens (audio spec §3): text shares
+    // at the text rates, audio shares at the manual audio rates; the totals never change.
+    const safeAudioInputTokens = Math.min(Math.max(0, audioInputTokens || 0), safeInputTokens);
+    const safeAudioOutputTokens = Math.max(0, audioOutputTokens || 0);
+    const textInputTokens = Math.max(0, safeInputTokens - safeAudioInputTokens);
+    const textOutputTokens = Math.max(0, safeOutputTokens - safeImageOutputTokens - safeAudioOutputTokens);
 
     // Check if we have complex cost structure for tiered pricing
     if (pricing.complexCost) {
@@ -817,17 +871,26 @@ class ModelCostService {
         safeInputTokens,
         safeOutputTokens,
         safeCacheCreationInputTokens,
-        safeCacheReadInputTokens
+        safeCacheReadInputTokens,
+        safeImageOutputTokens,
+        pricing.imageOutputCost,
+        safeAudioInputTokens,
+        safeAudioOutputTokens,
+        pricing.audioInputCost,
+        pricing.audioOutputCost
       );
 
       if (tieredCosts) {
-        const totalCost = tieredCosts.inputCost + tieredCosts.outputCost + tieredCosts.cacheCreationInputCost + tieredCosts.cacheReadInputCost;
-        
+        const totalCost = tieredCosts.inputCost + tieredCosts.outputCost + tieredCosts.cacheCreationInputCost + tieredCosts.cacheReadInputCost + tieredCosts.imageOutputCost + tieredCosts.audioInputCost + tieredCosts.audioOutputCost;
+
         return {
           inputCost: Number(tieredCosts.inputCost.toFixed(6)),
           outputCost: Number(tieredCosts.outputCost.toFixed(6)),
           cacheCreationInputCost: Number(tieredCosts.cacheCreationInputCost.toFixed(6)),
           cacheReadInputCost: Number(tieredCosts.cacheReadInputCost.toFixed(6)),
+          imageOutputCost: Number(tieredCosts.imageOutputCost.toFixed(6)),
+          audioInputCost: Number(tieredCosts.audioInputCost.toFixed(6)),
+          audioOutputCost: Number(tieredCosts.audioOutputCost.toFixed(6)),
           totalCost: Number(totalCost.toFixed(6)),
           provider: pricing.provider
         };
@@ -838,8 +901,11 @@ class ModelCostService {
 
     // Fall back to simple pricing calculation
     logger.debug('ModelCostService', `Using simple pricing for model ${modelId}`);
-    const inputCost = (safeInputTokens / 1000) * pricing.inputCost;
-    const outputCost = (safeOutputTokens / 1000) * pricing.outputCost;
+    const inputCost = (textInputTokens / 1000) * pricing.inputCost;
+    const audioInputCost = (safeAudioInputTokens / 1000) * (pricing.audioInputCost ?? pricing.inputCost);
+    const outputCost = (textOutputTokens / 1000) * pricing.outputCost;
+    const imageOutputCost = (safeImageOutputTokens / 1000) * (pricing.imageOutputCost ?? pricing.outputCost);
+    const audioOutputCost = (safeAudioOutputTokens / 1000) * (pricing.audioOutputCost ?? pricing.outputCost);
 
     // Cache token pricing - use actual cache pricing if available from model config,
     // otherwise fall back to 100% of regular input token cost
@@ -850,13 +916,16 @@ class ModelCostService {
       ? ((safeCacheReadInputTokens / 1000) * (pricing.cacheReadInputCost !== undefined ? pricing.cacheReadInputCost : pricing.inputCost))
       : 0;
 
-    const totalCost = inputCost + outputCost + cacheCreationInputCost + cacheReadInputCost;
+    const totalCost = inputCost + outputCost + cacheCreationInputCost + cacheReadInputCost + imageOutputCost + audioInputCost + audioOutputCost;
 
     return {
       inputCost: Number(inputCost.toFixed(6)),
       outputCost: Number(outputCost.toFixed(6)),
       cacheCreationInputCost: Number(cacheCreationInputCost.toFixed(6)),
       cacheReadInputCost: Number(cacheReadInputCost.toFixed(6)),
+      imageOutputCost: Number(imageOutputCost.toFixed(6)),
+      audioInputCost: Number(audioInputCost.toFixed(6)),
+      audioOutputCost: Number(audioOutputCost.toFixed(6)),
       totalCost: Number(totalCost.toFixed(6)),
       provider: pricing.provider
     };

@@ -318,9 +318,11 @@ describe('adjustments — each moves the score by exactly the spec amount', () =
     // Pinned as literals, not as the constants under test: a table quietly edited to zero
     // would otherwise satisfy every "moves the score by CONFIDENCE_ADJUSTMENTS.x" assertion
     // above by moving it by nothing.
+    // speakerLabel (2026-09-21) is the one tier added since the spec: `Surname, Given:` heading a
+    // line of a transcript, scored like an anchored rule because the structure is the evidence.
     expect(DETECTOR_CONFIDENCE).toEqual({
       custom: 1.0, validatedRegex: 0.95, anchoredRegex: 0.85,
-      ner: 0.7, dictionary: 0.5, propnRun: 0.5,
+      ner: 0.7, dictionary: 0.5, propnRun: 0.5, speakerLabel: 0.85,
     });
     expect(CONFIDENCE_ADJUSTMENTS).toEqual({
       honorific: 0.3, contactAdjacency: 0.2, firstName: 0.15, dataLiteral: 0.15,

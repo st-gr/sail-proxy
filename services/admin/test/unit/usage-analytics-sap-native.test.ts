@@ -55,6 +55,9 @@ describe('ApiKeyUsageStats / ApiKeyUsageSapCostStats: SAP-native CU/cost aggrega
       outputCost: 0.02,
       totalCost: 0.03,
       imageInputTokens: 2,
+      imageOutputTokens: 1290,
+      audioInputTokens: 55,
+      audioOutputTokens: 20,
       genAiTokens: 10,
       capacityUnits: 5,
       sapCost: 15,
@@ -74,6 +77,9 @@ describe('ApiKeyUsageStats / ApiKeyUsageSapCostStats: SAP-native CU/cost aggrega
       outputCost: 0.03,
       totalCost: 0.05,
       imageInputTokens: 3,
+      imageOutputTokens: 1120,
+      audioInputTokens: 45,
+      audioOutputTokens: 30,
       genAiTokens: 20,
       capacityUnits: 7,
       sapCost: 25,
@@ -88,6 +94,9 @@ describe('ApiKeyUsageStats / ApiKeyUsageSapCostStats: SAP-native CU/cost aggrega
     expect(rows).toHaveLength(1);
     const row = rows[0];
     expect(row.totalImageInputTokens).toBe(5); // 2 + 3
+    expect(row.totalImageOutputTokens).toBe(2410); // 1290 + 1120
+    expect(row.totalAudioInputTokens).toBe(100); // 55 + 45
+    expect(row.totalAudioOutputTokens).toBe(50); // 20 + 30
     expect(Number(row.totalGenAiTokens)).toBeCloseTo(30, 4); // 10 + 20
     expect(Number(row.totalCapacityUnits)).toBeCloseTo(12, 6); // 5 + 7
     // Still correct alongside the pre-existing dollar aggregates
@@ -114,5 +123,39 @@ describe('ApiKeyUsageStats / ApiKeyUsageSapCostStats: SAP-native CU/cost aggrega
     // Critically: no row anywhere carries the wrong, currency-blind sum of 40.
     const wronglyCombined = rows.find((r: any) => Number(r.totalSapCost) === 40);
     expect(wronglyCombined).toBeUndefined();
+  });
+
+  it('totalImageOutputTokens is 0 for an apiKey without image rows', async () => {
+    const { SELECT, INSERT } = cds.ql;
+    const keyWithoutImages = uuidv4();
+    const validTo = '9999-12-31T23:59:59.999Z';
+
+    await db.run(INSERT.into(USAGE).entries({
+      ID: uuidv4(),
+      apiKey_ID: keyWithoutImages,
+      provider: 'anthropic',
+      model: 'text-only-model',
+      validFrom: new Date().toISOString(),
+      validTo,
+      inputTokens: 50,
+      outputTokens: 25,
+      inputCost: 0.005,
+      outputCost: 0.01,
+      totalCost: 0.015,
+      // imageInputTokens, imageOutputTokens, audioInputTokens and audioOutputTokens left null/undefined
+      genAiTokens: 5,
+      capacityUnits: 2,
+      sapCost: 5,
+      sapCostCurrency: 'USD'
+    }));
+
+    const rows = await db.run(SELECT.from(STATS).where({ apiKey_ID: keyWithoutImages }));
+
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.totalImageInputTokens).toBe(0);
+    expect(row.totalImageOutputTokens).toBe(0);
+    expect(row.totalAudioInputTokens).toBe(0);
+    expect(row.totalAudioOutputTokens).toBe(0);
   });
 });

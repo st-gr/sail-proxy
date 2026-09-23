@@ -85,6 +85,7 @@ import {
   RESPONSES_STREAM_ABORT_HOOK,
 } from '../../utils/responsesStreamIdle';
 import { unmaskText } from '../pseudonymization/unmasker';
+import { containmentOf } from '../pseudonymization/containmentRegistry';
 import { noteExtraUsage, readCacheWriteTokens } from '../../utils/usageFolding';
 import {
   HostedToolDescriptor, Logger, ParsedCall, RenderCallItemOpts, ToolExecCtx, ToolExecResult,
@@ -2389,7 +2390,7 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
       // second (or third, ...) deployment call — unmask it ourselves, the same way, before
       // the client-facing output is built from it.
       if (pseudonymizationMap) {
-        unmaskResponsesOutput(next, (s: string) => unmaskText(s, pseudonymizationMap));
+        unmaskResponsesOutput(next, (s: string) => unmaskText(s, pseudonymizationMap, containmentOf(pseudonymizationMap)));
       }
 
       const u = next?.usage;

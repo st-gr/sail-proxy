@@ -40,7 +40,7 @@ Roles are supplied by your identity provider and evaluated as CDS `@restrict` ru
 
 ### The Applications
 
-The cockpit shell hosts eight applications:
+The cockpit shell hosts nine applications:
 
 | Application | Purpose |
 |---|---|
@@ -51,12 +51,21 @@ The cockpit shell hosts eight applications:
 | Model Library | Browse the models available through the gateway, their specifications, benchmarks and token prices; administrators maintain prices and create deployments |
 | Entitlements & Quotas | Define which models a user may use (catalogs) and how much they may use (quota profiles): a default catalog for everyone, administrator catalogs and quota profiles assigned per user, and personal catalogs within the assigned one |
 | Users & Quotas | Administrators constrain, deactivate and reactivate users and reset their quotas; usage per day, week and month next to the limit |
+| Tool Governance | Administrators decide which tools a user or an API key may declare and invoke when calling the gateway, and browse a live inventory of every tool seen |
 | Configuration | Versioned gateway configuration with activation and rollback |
 
 The home page shows this month's key metrics as tiles — requests, tokens and SAP cost in the billing
 currency, for your own usage or, as an administrator, for every user (plus the number of users with
 usage) — each opening Usage Analytics, and a "My quota" card with the signed-in user's own
-consumption against their limits.
+consumption against their limits. The card has a Spend and a Tokens group, each opening with the
+figures for today, this week and this month. Under a window that has a limit, a horizontal bullet
+chart follows: the bar is what has been used, the marker is the limit, and the bar turns amber at
+75 % and red at 90 % of the limit. A window without a limit gets no chart — a bar without a limit
+to compare against would say nothing — and a group whose windows are all unlimited says so in one
+line. The card ends with the times the day, week and month windows reset, in your local time. The
+per-minute request limit is a rate guard rather than a budget: it shows as a line of text in the
+profile popover and on the Users & Quotas page, not as a chart. The profile popover also names your
+own effective tool policy and its mode — see Tool Governance below.
 
 ### API Key Management
 
@@ -130,9 +139,12 @@ own keys.
 
 Each key (and each AWS credential) carries its own requests-per-minute, -hour and -day limit,
 enforced by the gateway. The owner or an administrator sets these with "Set Rate Limits" on the
-key or credential; clearing a value removes that limit. A user-level requests-per-minute limit
-applies in addition — see [Users & Quotas](#users--quotas) — so a request has to pass both the
-key's limit and the user's.
+key or credential; the dialog opens with the current values, and clearing a value removes that
+limit. A user-level requests-per-minute limit applies in addition, so a request has to pass both
+the key's limit and its owner's. The Rate Limits section shows that second layer as **Owner's
+Limit per Minute** — the owner's own constraint, else their quota profile, else the platform
+default, or "unlimited" — and it is changed in [Users & Quotas](#users--quotas) or
+[Entitlements & Quotas](#model-library-and-entitlements--quotas), never here.
 
 #### Permissions
 
@@ -203,6 +215,15 @@ The Usage Analytics application reports, broken down by provider and by model:
 - Error count
 - Cost per token, where cost data is available
 
+The SAP billing breakdown by API key also lists **Image Output Tokens** — tokens from generated
+images, priced at the image output rate entered in the Model Library (see below) rather than the
+ordinary output rate — and **Audio Input Tokens** and **Audio Output Tokens** — tokens from
+realtime voice sessions, priced at the audio rates entered in the Model Library (see below).
+
+The SAP-RPT tabular prediction models (see the [Tabular prediction
+chapter](chapter-15-tabular-prediction.md)) are metered in **cells** rather than tokens; a **Unit**
+column marks which of a model's figures are cells and which are tokens.
+
 **Export**: the table can be exported as **CSV**.
 
 ### Security Notifications
@@ -247,7 +268,21 @@ Core publishes them. Every user sees the models in their entitlement; administra
   thousand tokens and the conversion factor in brackets so you can see how the figure is derived. When
   no conversion factor is configured, a warning says the SAP default is used. Administrators can *Edit
   price* to override a published price and *Revert to SAP price* at any time; the price history lists
-  every change.
+  every change. SAP publishes no rate for image models, so the price dialog's fifth field, *Image
+  output cost per 1K tokens*, lets an administrator enter one; it prices generated-image tokens on
+  models with image output. The dialog's sixth and seventh fields, *Audio input cost per 1K tokens*
+  and *Audio output cost per 1K tokens*, price the audio tokens of realtime sessions; SAP publishes
+  these rates in SAP Note 3437766 rather than in the catalogue, so they are entered by hand (for
+  `gpt-realtime` the note lists them beside the text rates). A price entered by hand on either the
+  model or its *Deployed* entry applies to both, so you only have to enter it once. *Revert to SAP
+  price* clears a manually entered image rate along with the other manual prices — SAP publishes
+  none to fall back to, so image tokens go back to being priced like ordinary output tokens; it
+  clears the audio rates the same way. For the SAP-RPT tabular prediction models the same fields
+  price per 1,000 **cells** rather than per 1,000 tokens, labelled *Cost Factor (per 1K cells)*. The
+  large SAP-RPT models each carry an extra, pricing-only Model Library entry named *"<model> (Deep
+  Context)"* for the higher-priced Deep Context tier (see the [Tabular prediction
+  chapter](chapter-15-tabular-prediction.md#deep-context)); it has its own price but cannot be
+  deployed or called directly.
 - **Deployments** (administrators). *Fetch Deployments* lists the model's SAP AI Core deployments.
   *Deploy* creates one: it reuses an existing configuration or creates one, starts the deployment and
   waits up to five minutes for it to run. Deployments incur cost until they are stopped in the SAP AI
@@ -332,11 +367,13 @@ this is why.
   spend the windows have to be ordered — a day's limit cannot be higher than a week's, nor a week's
   higher than a month's — and a save that breaks the order is refused with a message naming the two
   fields.
-- **Usage** — used, limit and remaining for each window (requests per minute; tokens and spend per
-  day, week and month), with when each window resets. The limit shown here is the same effective
-  limit as under Constraints, and its source can now be the user's own constraint, an assigned quota
-  profile, or the platform default. The figures are kept as running counters and update within about
-  a minute of a request; "requests" counts requests served by the gateway.
+- **Usage** — used and limit for each window (requests per minute; tokens and spend per day, week
+  and month), with when each window resets. Below it, **Usage charts** draws a bullet chart for
+  each budget window that has a limit (bar = used, marker = limit, colour as on the home card),
+  followed by the time that window resets; a user without any limit sees a note instead of charts. The limit shown here is the same effective limit as under Constraints, and its source can
+  now be the user's own constraint, an assigned quota profile, or the platform default. The figures
+  are kept as running counters and update within about a minute of a request; "requests" counts
+  requests served by the gateway.
 - **API Keys** and **AWS Credentials** — the user's credentials, read-only here: whether each is
   active or locked because the account was deactivated, and its own rate limits.
 - **Entitlement** — the quota profile and the catalog assigned to the user, both read-only here.
@@ -352,6 +389,186 @@ this is why.
 - **Reset Quota** clears the user's recorded usage.
 
 A deactivated user cannot receive new credentials until the account is reactivated.
+
+### Tool Governance
+
+Administrators use this application — **Tool Governance** in the menu — to decide which tools a user,
+or one of their API keys, may
+declare and invoke when calling the gateway — function tools, a provider's own hosted tools (such
+as web search), and tools reached through an MCP server.
+
+**Policies.** A policy carries a name, an **allow list**, a **deny list** and a **mode**:
+
+- An empty allow list means everything not denied is permitted; a non-empty allow list means only
+  the listed tools are permitted, minus anything denied. A deny entry always wins over an allow
+  entry.
+- **Mode** decides what happens to a tool the policy denies:
+  - **Monitor** — record only. The request goes through unchanged; nothing is offered, stripped or
+    refused because of the policy.
+  - **Strip** — the denied tool is removed from the request before it reaches the model, and the
+    model is told which tools were taken away and that it may not reach for them another way. The
+    turn goes ahead without that tool, and the assistant can say the tool is not permitted rather
+    than appearing to ignore the request. This is the mode to use for an interactive client.
+  - **Reject** — the request is refused outright, with an error naming the denied tools and the
+    policy that denied them. A client offers its whole tool list on every turn, so as long as the
+    denied tool stays in that list, every request is refused, whatever the person asked for. That
+    is what Reject means, and it is the right mode for a tool nobody may use under any
+    circumstances. To let a client keep working without the tool, use Strip.
+
+One policy is always the **default** — it applies to every user who has no policy of their own
+assigned, cannot be deleted, and starts in Monitor mode with no entries, so adopting this feature
+changes nothing until an administrator writes an allow or deny entry somewhere. An administrator
+assigns a different policy to a user on the policy's own **Assigned Users** table (**Assign User**
+opens a searchable list of users) or from the user's own record in Users & Quotas; the
+**Assigned API Keys** table works the same way and narrows one specific key to its own policy. To
+undo either, select the rows and press **Unassign** above that table. The two tables list who the
+policy binds, so they offer no Create and no Delete: a user and an API key exist independently of
+any policy, and assignment only points one at it. The buttons appear while the policy is displayed,
+not while it is being edited. A key's policy can only ever narrow its owner's: a tool must be permitted by both, and
+where the two disagree on mode, the stricter one applies (Reject is stricter than Strip, which is
+stricter than Monitor). Unassigning a user or a key returns it to the default (for a user) or to
+relying on its owner's policy alone (for a key).
+
+**Writing patterns.** Allow and deny entries are written as one of four forms, each naming a kind
+of tool:
+
+| Form | Matches |
+|---|---|
+| `function:jira_*` | Every function tool whose name starts with `jira_` (a trailing `*` matches a prefix) |
+| `hosted:web_search` | The provider's built-in web search tool |
+| `mcp:github` | Every tool reached through the MCP server named `github` |
+| `mcp:github/create_issue` | Only the `create_issue` tool on that MCP server |
+| `hosted:custom` | Every tool a client declares as a custom tool |
+| `hosted:custom/exec` | Only the custom tool named `exec` (a client's shell, for example) |
+
+A client that runs its own MCP servers, as Claude Code does, offers each of their tools under a name
+of the form `mcp__server__tool`. Those are recognised and governed as `mcp:server/tool`, so one
+pattern covers a server whether the client hosts it or the model reaches it remotely. Which client
+programs spell their MCP tools this way is part of the gateway configuration, under tool governance,
+so support for a new one does not need a new release.
+
+Some clients keep their MCP tools out of the request entirely and reach them inside a tool of their
+own, as the codex command line does. A policy still applies: the gateway reads which MCP tools such
+a call reaches, refuses the call when the policy forbids one of them, and puts a message in its
+place telling the assistant it was not permitted. Under **Monitor**, such a call is never refused,
+whatever it reaches — Monitor never changes what the client sees, here or anywhere else; only
+**Strip** and **Reject** stop the call itself. The **Detected** column counts the cases where a
+denied tool was used without the gateway having prevented it, which is what a monitoring policy
+records; it never means a call was stopped, and it is counted apart from **Rejected**, which does.
+
+A pattern is either exact or ends in a single `*` for a prefix match; there is no other wildcard.
+Denying an MCP server (`mcp:github`) denies every tool behind it, without having to list them one
+by one.
+
+**Limiting one MCP server.** An allow entry of the form `mcp:<server>/<tool>` is *server-limited*:
+it narrows only that one server, leaving every other tool the caller has — including its other MCP
+servers — unaffected. For example, allow `mcp:github/get_issue` and `mcp:github/list_issues`: the
+github server offers only those two tools, every other tool of the caller is unaffected. Writing
+`mcp:github/*` as an allow entry means all of github's tools, the same as not limiting the server at
+all. A deny entry still wins over these: denying `mcp:github/create_issue` removes it even where it
+is also allowed.
+
+Some clients declare a whole MCP server up front without naming which of its tools a given request
+will use. When a policy limits such a server and a request declares it that way, what happens
+depends on the mode: **Strip** narrows the declaration to the listed tools before it reaches the
+model; **Reject** refuses the request outright, since letting it through would offer every tool on
+the server; **Monitor** records it without changing the request. A server-limiting entry that ends
+in `*` cannot be narrowed this way — there is no fixed list of names to write into the request — so
+under Strip it is recorded rather than narrowed, the same as under Monitor; Reject still refuses the
+request either way.
+
+**Sensitive tools and untrusted sources.** Beyond Allow and Deny, a policy carries two further
+lists, written with the same patterns: **Sensitive Tools** and **Untrusted Sources**. Sensitive
+tools are ones that act on the world — a shell, a tool that sends mail — the ones you would not
+want run on the strength of something the model did not write itself. Untrusted sources are tools
+whose output may carry third-party content into the conversation — a web search, a browser tool
+that fetches a page — text an assistant then reads that nobody at your organization wrote.
+
+The rule: once a request carries output from one of the caller's untrusted sources, every one of
+the caller's sensitive tools is withheld from that point on, whatever Allow and Deny would otherwise
+permit. What "withheld" means follows the policy's mode, the same as any other denial: **Monitor**
+only records it and changes nothing the caller sees; **Strip** removes the sensitive tools from the
+request and tells the model why, naming the source that caused it; **Reject** refuses the request
+outright, naming the source and the tools it withheld.
+
+The check applies starting with the next request: the gateway only sees an untrusted tool's output
+once it comes back in a later message, so a model that calls an untrusted tool and a sensitive one
+in the very same turn is caught from the turn after, not the one where the untrusted output first
+appeared.
+
+The Tool Inventory's **Facet** field offers a **Source** value that finds every tool whose output the
+gateway has seen carried in a request, and its **Trust Chain** column counts how many times a denial
+happened because of this rule rather than because of Allow or Deny. The policy's own page shows
+Sensitive Tools and Untrusted Sources as two further tables alongside Allow and Deny. Start a new
+policy in Monitor and look at what the Source facet actually shows for the caller before switching to
+Strip or Reject, so the two lists match what the caller really does rather than a guess.
+
+**Tool Inventory.** A second page in this application lists every tool identity the gateway has
+seen — declared by a request or invoked by a model — over a chosen **Period** (the last 30 days
+including today, by default; the field offers a calendar range and ready-made ranges, and **Facet**
+narrows the list to declared, invoked or source in a dropdown — **Source** finds a tool by whether its
+output was carried in a request, described above), with how many distinct users used it, how many
+requests carried it, and how many times it was allowed, monitored, stripped, rejected, or seen
+without ever being declared (a model can invoke a hosted-side tool the request itself never listed).
+A refused request counts here too: the tool it asked for appears under **Rejected**, so a tool that
+only ever gets blocked is still visible — and a tool
+the inventory already knows simply has its counter raised rather than being listed twice. The request
+figures are therefore attempts: a refused one reached no model and consumed no tokens and no cost.
+The filter bar narrows the list by **Tool**, by **Facet**, by
+**Requested By** (one client program) and by the free-text **Search**, which matches the tool and
+the client programs together. The Tool and Requested By fields suggest what has actually been
+recorded as you type. The table's own view settings can group by any column, Requested By included;
+a tool asked for by two client programs groups under both of them together ("codex-tui, curl"),
+because one row is one tool rather than one client. A filter the page cannot apply is refused with a message rather than quietly
+ignored, so a filtered list is never the unfiltered one in disguise.
+
+**Requested By** names the client programs that
+asked for that tool in the period — the calling program as it identifies itself, such as a command
+line assistant, an SDK or a browser, and `unknown` where a caller sent no identification.
+
+When you write an allow or deny entry, the **Pattern** field offers the tools that have actually been
+recorded, with how many people used each and when it was last seen, so you can pick a real tool
+instead of typing its name from memory. The list is a suggestion, not a restriction: a wildcard such
+as `function:jira_*`, or a tool nobody has used yet, can still be typed in.
+
+**On a user's record**, Users & Quotas shows the assigned tool policy next to the entitlement
+catalog, and a **Tools used** section listing that user's own tool activity from the same daily
+figures the inventory reads. **API Keys** shows a key's own narrowing policy, where one is set.
+
+**In the profile popover**, every signed-in user sees a line naming their own effective policy and
+its mode, for example `Tool policy: Support bots (strip)`.
+
+**A policy binds everyone it is assigned to, administrators included.** Unlike the model entitlement
+catalog, which administrators bypass, a tool policy applies to whoever holds the user account or the
+API key it is assigned to. An administrator who blocks their own tools can still change the policy
+here.
+
+**Security Notifications** raises a "not permitted by tool policy" event whenever a strip or a
+reject happens, naming the credential and, on a reject, the tools that were refused; when the reason
+was the trust chain rather than Allow or Deny, the event says so and names the source.
+
+**Retention.** How long the per-request tool activity and its daily totals are kept is controlled
+by two settings in the Configuration application — see below.
+
+**Limitations.**
+
+- **Realtime voice sessions** (the OpenAI Realtime API) are governed the same as any other request —
+  Monitor, Strip and Reject all apply — but a session is not a single request, so a refusal there
+  works differently. A declaration the policy refuses gets an error inside the session naming the
+  tools that were not permitted, and the session carries on with whatever tools it already had,
+  rather than the session itself ending. The trust chain applies too: once a result the session
+  receives comes from one of the caller's untrusted sources and the session still holds a sensitive
+  tool, the gateway removes that tool from the session from that point on (Strip), or refuses the
+  session's tool results from then on until the client removes the sensitive tools from the session
+  (Reject); Monitor only records it.
+- **AWS credentials** follow only the tool policy assigned to their owning user; there is no way to
+  narrow one credential's tools the way an API key can be narrowed.
+- **AWS Bedrock** — requests sent through the AWS Bedrock-compatible route are governed the same way
+  as the other routes, but a refusal arrives in Bedrock's own shape: an access-denied error, so AWS's
+  own SDKs raise their normal exception rather than an unrecognised one. A conversation that has
+  already used a tool cannot have every one of its tools taken away and continue — Bedrock itself
+  refuses a conversation shaped that way — so a strip that would empty its tool list is refused
+  outright instead.
 
 ### Configuration Management
 
@@ -569,6 +786,13 @@ Leave the field empty for the default: a run five minutes after the service star
 24 hours from then. Activating a configuration, or rolling one back, takes a changed time into use
 immediately without starting a run; clearing a previously set time starts a fresh 24-hour cadence
 from that moment.
+
+**Tool usage retention.** Two settings under Platform decide how long tool activity is kept:
+**Tool usage retention (days)** (default 30) is how long each per-request row of declared and
+invoked tools is kept before the nightly maintenance run purges it; **Tool usage aggregate
+retention (days)** (default 400) is how long the daily totals behind the Tool Inventory page and a
+user's Tools used section are kept. Raising either only keeps history longer; lowering one purges
+history older than the new value on the next run.
 
 #### SIEM Event Export
 

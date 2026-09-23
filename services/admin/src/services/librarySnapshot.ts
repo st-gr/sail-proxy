@@ -3,6 +3,7 @@
  * one LibraryModels row. No I/O here: modelCostService.upsertLibrarySnapshot owns the database.
  * Field inventory verified against the live payload on 2026-09-05 (spec "Facts").
  */
+import { DEEP_CONTEXT_SUFFIX } from './pricingTwins';
 
 export interface GatewayModelVersion {
   name: string;
@@ -255,4 +256,31 @@ export function mapModelToLibraryRow(model: GatewayModel, seenAt: Date): Library
     lastSeenAt: seenAt,
     absent: false
   };
+}
+
+/**
+ * Derives one pricing-only LibraryModels row per `sap-rpt-*-large` row in the snapshot: the Deep
+ * Context tier the gateway accounts under `<id>--deep-context` (spec: RPT usage above the deep
+ * context threshold). Not itself callable - `deployment` is null - it exists only so a price can
+ * be maintained on it (modelCostService.getModelPricing / sapCapacityService._lookupRate resolve
+ * the suffix to it, falling back to the parent). Mirrors the parent's `absent` so a withdrawn
+ * model takes its tier with it, and is excluded from the default entitlement catalog
+ * (modelEntitlementService.effectiveModelIds) so it never appears as an offerable model.
+ */
+export function deriveDeepContextRows(rows: any[]): any[] {
+  return rows
+    .filter((r) => typeof r.modelId === 'string' && /^sap-rpt-.*-large$/.test(r.modelId))
+    .map((r) => ({
+      modelId: `${r.modelId}${DEEP_CONTEXT_SUFFIX}`,
+      displayName: clamp(`${r.displayName} (Deep Context)`, SNAPSHOT_WIDTHS.displayName),
+      provider: r.provider,
+      executableId: r.executableId,
+      // Pricing-only: never deployable. The parent's accessType ('foundation') would offer
+      // Deploy on this row too (Detail.controller.ts gates canDeploy on accessType ===
+      // 'foundation'), so this row is always 'deployment' regardless of the parent's.
+      accessType: 'deployment',
+      absent: r.absent,
+      deployment: null,
+      description: `Pricing entry for the Deep Context tier of ${r.modelId}; not callable`
+    }));
 }

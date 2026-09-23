@@ -1,0 +1,304 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.toolpolicies",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": [
+                "",
+                "en"
+            ],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "Tool Governance",
+        "description": "Administration interface for Tool Policies management",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleUrl": "i18n/i18n.properties",
+                    "supportedLocales": [
+                        "",
+                        "en"
+                    ],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "resources": {
+            "css": []
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "ToolPoliciesList",
+                    "target": "ToolPoliciesList"
+                },
+                {
+                    "pattern": "ToolPolicies({key}):?query:",
+                    "name": "ToolPoliciesObjectPage",
+                    "target": "ToolPoliciesObjectPage"
+                },
+                {
+                    "pattern": "ToolInventory:?query:",
+                    "name": "ToolInventoryList",
+                    "target": "ToolInventoryList"
+                }
+            ],
+            "targets": {
+                "ToolPoliciesList": {
+                    "type": "Component",
+                    "id": "ToolPoliciesList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ToolPolicies",
+                            "entitySet": "ToolPolicies",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "navigation": {
+                                "ToolPolicies": {
+                                    "detail": {
+                                        "route": "ToolPoliciesObjectPage"
+                                    }
+                                }
+                            },
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "OpenInventory": {
+                                            "press": "admin.toolpolicies.ext.controller.ListReportExt.onOpenInventory",
+                                            "text": "Open Tool Inventory",
+                                            "visible": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "ToolPoliciesObjectPage": {
+                    "type": "Component",
+                    "id": "ToolPoliciesObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ToolPolicies",
+                            "entitySet": "ToolPolicies",
+                            "editableHeaderContent": false,
+                            "controlConfiguration": {
+                                "allows/@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "type": "GridTable",
+                                        "creationMode": {
+                                            "name": "Inline",
+                                            "createAtEnd": true
+                                        }
+                                    }
+                                },
+                                "denies/@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "type": "GridTable",
+                                        "creationMode": {
+                                            "name": "Inline",
+                                            "createAtEnd": true
+                                        }
+                                    }
+                                },
+                                "sensitive/@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "type": "GridTable",
+                                        "creationMode": {
+                                            "name": "Inline",
+                                            "createAtEnd": true
+                                        }
+                                    }
+                                },
+                                "untrusted/@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "type": "GridTable",
+                                        "creationMode": {
+                                            "name": "Inline",
+                                            "createAtEnd": true
+                                        }
+                                    }
+                                },
+                                "assignedUsersList/@com.sap.vocabularies.UI.v1.LineItem#ForPolicy": {
+                                    "tableSettings": {
+                                        "selectionMode": "Multi",
+                                        "p13nMode": []
+                                    },
+                                    "actions": {
+                                        "AssignUser": {
+                                            "press": "admin.toolpolicies.ext.controller.AssignmentActions.onAssignUser",
+                                            "text": "Assign User",
+                                            "visible": "{= !${ui>/isEditable} }",
+                                            "enabled": true,
+                                            "requiresSelection": false
+                                        },
+                                        "UnassignUsers": {
+                                            "press": "admin.toolpolicies.ext.controller.AssignmentActions.onUnassignUsers",
+                                            "text": "Unassign",
+                                            "visible": "{= !${ui>/isEditable} }",
+                                            "enabled": true,
+                                            "requiresSelection": true
+                                        }
+                                    }
+                                },
+                                "assignedKeys/@com.sap.vocabularies.UI.v1.LineItem#ForPolicy": {
+                                    "tableSettings": {
+                                        "selectionMode": "Multi",
+                                        "p13nMode": []
+                                    },
+                                    "actions": {
+                                        "AssignApiKey": {
+                                            "press": "admin.toolpolicies.ext.controller.AssignmentActions.onAssignApiKey",
+                                            "text": "Assign API Key",
+                                            "visible": "{= !${ui>/isEditable} }",
+                                            "enabled": true,
+                                            "requiresSelection": false
+                                        },
+                                        "UnassignApiKeys": {
+                                            "press": "admin.toolpolicies.ext.controller.AssignmentActions.onUnassignApiKeys",
+                                            "text": "Unassign",
+                                            "visible": "{= !${ui>/isEditable} }",
+                                            "enabled": true,
+                                            "requiresSelection": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "ToolInventoryList": {
+                    "type": "Component",
+                    "id": "ToolInventoryList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ToolInventory",
+                            "entitySet": "ToolInventory",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.SelectionFields": {
+                                    "filterFields": {
+                                        "day": {
+                                            "settings": {
+                                                "_comment": "TODAYFROMTO(30, 0) is 30 days before today THROUGH today. 'Last 30 Days' (LASTDAYS) ends yesterday, which leaves the page empty in any environment whose only recorded tool use is today's.",
+                                                "defaultValues": [
+                                                    {
+                                                        "operator": "TODAYFROMTO",
+                                                        "values": [
+                                                            30,
+                                                            0
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "BackToPolicies": {
+                                            "press": "admin.toolpolicies.ext.controller.ListReportExt.onOpenPolicies",
+                                            "text": "Back to Tool Policies",
+                                            "visible": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

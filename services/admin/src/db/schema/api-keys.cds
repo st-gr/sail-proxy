@@ -1,5 +1,6 @@
 using { cuid, managed, temporal } from '@sap/cds/common';
 using { sap.llm.gateway.admin.AwsCredentials as AwsCredentials } from './aws-credentials';
+using { sap.llm.gateway.admin.ToolPolicies as ToolPolicies } from './tool-governance';
 
 namespace sap.llm.gateway.admin;
 
@@ -37,13 +38,17 @@ entity ApiKeys : cuid, managed {
   virtual requestsPerMinute : Integer;
   virtual requestsPerHour   : Integer;
   virtual requestsPerDay    : Integer;
+  // The owner's user-level requests-per-minute limit with its source ("60 (Standard profile)"),
+  // the second layer the gateway checks; filled in afterReadRateLimits, never persisted.
+  virtual ownerRequestsPerMinuteText : String(60);
 
   // Rate limiting configuration
   rateLimits  : Composition of one RateLimits;
   
   // Permissions and scope
   permissions : Composition of many ApiKeyPermissions on permissions.apiKey = $self;
-  
+  toolPolicy  : Association to ToolPolicies;   // null = no key-level narrowing
+
   // Security events
   securityEvents : Composition of many ApiKeySecurityEvents on securityEvents.apiKey = $self;
   
@@ -128,7 +133,8 @@ entity ApiKeyUsage : cuid, temporal {
   usageEstimated      : Boolean;            // True when tokens were derived locally because the
                                              // client aborted before the provider reported usage;
                                              // absent/null means provider-reported.
-  
+  unit                : String(6);          // 'tokens' (default) or 'cells' (SAP-RPT): what inputTokens/outputTokens count
+
   // Cost tracking
   inputCost           : Decimal(10,6);      // Input cost in USD
   outputCost          : Decimal(10,6);      // Output cost in USD
@@ -138,6 +144,12 @@ entity ApiKeyUsage : cuid, temporal {
 
   // SAP-native Capacity-Unit accounting (additive; nullable; beside the dollar estimate)
   imageInputTokens    : Integer;            // billed image input tokens (captured or computed)
+  imageOutputTokens   : Integer;            // generated-image tokens (subset of outputTokens), priced at ModelCosts.imageOutputCost
+  imageOutputCost     : Decimal(10,6);      // Image output cost in USD (text share of outputTokens stays in outputCost)
+  audioInputTokens    : Integer;            // realtime audio input tokens (subset of inputTokens), priced at ModelCosts.audioInputCost
+  audioOutputTokens   : Integer;            // realtime audio output tokens (subset of outputTokens), priced at ModelCosts.audioOutputCost
+  audioInputCost      : Decimal(10,6);      // Audio input cost in USD (text share of inputTokens stays in inputCost)
+  audioOutputCost     : Decimal(10,6);      // Audio output cost in USD (text share of outputTokens stays in outputCost)
   genAiTokens         : Decimal(14,4);      // Sum per-type: tokens * GenAi rate (cache scaled by calibration)
   capacityUnits       : Decimal(14,6);      // genAiTokens * cuFactor
   sapCost             : Decimal(12,6);      // capacityUnits * pricePerCu, in sapCostCurrency
@@ -233,12 +245,18 @@ view ApiKeyUsageStats as select from ApiKeyUsage {
   coalesce(sum(cacheCreationInputCost), 0.0) as totalCacheCreationInputCost : Decimal(12,6),
   coalesce(sum(cacheReadInputCost), 0.0) as totalCacheReadInputCost : Decimal(12,6),
   coalesce(sum(totalCost), 0.0) as totalCost : Decimal(12,6),
+  coalesce(sum(imageOutputCost), 0.0) as totalImageOutputCost : Decimal(12,6),
+  coalesce(sum(audioInputCost), 0.0) as totalAudioInputCost : Decimal(12,6),
+  coalesce(sum(audioOutputCost), 0.0) as totalAudioOutputCost : Decimal(12,6),
   coalesce(avg(responseTime), 0) as avgResponseTime : Integer,
   // SAP-native Capacity-Unit accounting, beside the dollar-estimate columns above. These three
   // are currency-neutral (token/CU counts, not priced amounts) so they sum safely across all of
   // an apiKey's rows regardless of sapCostCurrency. sapCost itself is deliberately NOT summed
   // here — see ApiKeyUsageSapCostStats below for why, and where it lives instead.
   coalesce(sum(imageInputTokens), 0) as totalImageInputTokens : Integer,
+  coalesce(sum(imageOutputTokens), 0) as totalImageOutputTokens : Integer,
+  coalesce(sum(audioInputTokens), 0) as totalAudioInputTokens : Integer,
+  coalesce(sum(audioOutputTokens), 0) as totalAudioOutputTokens : Integer,
   coalesce(sum(genAiTokens), 0) as totalGenAiTokens : Decimal(16,4),
   coalesce(sum(capacityUnits), 0) as totalCapacityUnits : Decimal(16,6)
 }
@@ -296,6 +314,9 @@ entity ModelCosts : cuid, managed {
   outputCost    : Decimal(10,6) not null;  // Output cost per 1000 tokens
   cacheReadInputCost     : Decimal(10,6);  // Cache read input cost per 1000 tokens (SAP: typically 90% discount)
   cacheCreationInputCost : Decimal(10,6);  // Cache creation/write input cost per 1000 tokens (SAP: typically 25% premium)
+  imageOutputCost : Decimal(10,6);  // Generated-image output cost per 1000 tokens (manual only; SAP publishes none)
+  audioInputCost  : Decimal(10,6);  // Realtime audio input cost per 1000 tokens (manual only; SAP Note 3437766, not in the catalogue)
+  audioOutputCost : Decimal(10,6);  // Realtime audio output cost per 1000 tokens (manual only)
   provider      : String(50);              // Model provider (Anthropic, OpenAI, etc.)
   version       : String(50);              // Model version/name
   complexCost   : LargeString;             // JSON cost structure for tiered pricing (null for simple cost models)

@@ -68,7 +68,8 @@
                 "sap.fe.templates": {},
                 "sap.fe.core": {},
                 "sap.fe.macros": {},
-                "sap.f": {}
+                "sap.f": {},
+                "sap.suite.ui.microchart": {}
             }
         },
         "contentDensities": {
@@ -99,7 +100,7 @@
             }
         },
         "resources": {
-            "css": []
+            "css": [{ "uri": "css/style.css" }]
         },
         "routing": {
             "config": {},
@@ -164,6 +165,18 @@
                                             "enabled": true,
                                             "requiresSelection": false,
                                             "icon": "sap-icon://sys-help-2"
+                                        }
+                                    }
+                                },
+                                "body": {
+                                    "sections": {
+                                        "UsageCharts": {
+                                            "template": "admin.users.ext.fragment.UsageCharts",
+                                            "title": "Usage charts",
+                                            "position": {
+                                                "placement": "After",
+                                                "anchor": "Usage"
+                                            }
                                         }
                                     }
                                 }

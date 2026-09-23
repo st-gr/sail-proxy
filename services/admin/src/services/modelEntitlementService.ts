@@ -11,6 +11,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDefaultLogger } from '@libs/logger';
 import { USERS, isServiceKeyEmail, touch } from './usersService';
+import { DEEP_CONTEXT_SUFFIX } from './pricingTwins';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -104,7 +105,10 @@ async function exclusionIds(db: any, catalogId: string): Promise<string[]> {
 export async function effectiveModelIds(db: any, catalog: Catalog): Promise<Set<string>> {
   const { SELECT } = cds.ql;
   if (catalog.isDefault) {
-    const all = await db.run(SELECT.from(LIB).columns('modelId').where({ absent: false }));
+    // A --deep-context row is a pricing-only twin of its parent sap-rpt-*-large model (see
+    // librarySnapshot.deriveDeepContextRows): it is not itself callable, so it never appears as
+    // an offerable model in the default catalog even though it is present and non-absent.
+    const all = await db.run(SELECT.from(LIB).columns('modelId').where({ absent: false }).and('modelId not like', `%${DEEP_CONTEXT_SUFFIX}`));
     const excluded = new Set(await exclusionIds(db, catalog.ID));
     return new Set(all.map((r: any) => r.modelId).filter((id: string) => !excluded.has(id)));
   }

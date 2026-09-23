@@ -398,7 +398,7 @@ export default class OverviewController extends Controller {
                 });
 
             const capacityBinding = oDataModel.bindList("/ApiKeyUsageStats", undefined, undefined, undefined, {
-                $select: "apiKey_ID,totalImageInputTokens,totalGenAiTokens,totalCapacityUnits"
+                $select: "apiKey_ID,totalImageInputTokens,totalImageOutputTokens,totalAudioInputTokens,totalAudioOutputTokens,totalGenAiTokens,totalCapacityUnits"
             });
             const capacityContexts = await capacityBinding.requestContexts();
             const capacityRows = withOwner(capacityContexts.map(context => context.getObject()));
@@ -442,6 +442,9 @@ export default class OverviewController extends Controller {
             const currencies = new Set(merged.filter(r => r.sapCostCurrency).map(r => r.sapCostCurrency));
             viewModel.setProperty("/charts/sapBillingTotals", {
                 totalImageInputTokens: merged.reduce((s, r) => s + (Number(r.totalImageInputTokens) || 0), 0),
+                totalImageOutputTokens: merged.reduce((s, r) => s + (Number(r.totalImageOutputTokens) || 0), 0),
+                totalAudioInputTokens: merged.reduce((s, r) => s + (Number(r.totalAudioInputTokens) || 0), 0),
+                totalAudioOutputTokens: merged.reduce((s, r) => s + (Number(r.totalAudioOutputTokens) || 0), 0),
                 totalGenAiTokens: merged.reduce((s, r) => s + (Number(r.totalGenAiTokens) || 0), 0),
                 totalCapacityUnits: merged.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0),
                 totalSapCost: merged.reduce((s, r) => s + (Number(r.sapCost) || 0), 0),
@@ -506,7 +509,9 @@ export default class OverviewController extends Controller {
         this._prepareChartData(data);
         this._prepareCostData(data);
         this._preparePerformanceData(data);
-        this._prepareModelData(data);
+        void this._prepareModelData(data).catch((error) => {
+            console.error("Failed to prepare model data:", error);
+        });
         
         // Set user-specific usage summary
         if (!userContext.isAdmin) {
@@ -870,9 +875,28 @@ export default class OverviewController extends Controller {
     }
 
     /**
+     * Which models' usage is counted in cells (SAP-RPT) rather than tokens, keyed by model id -
+     * backs the Unit column in the Model Performance Details table. Calls the unbound usageUnits()
+     * function the same way getUsageStatistics/getCurrentUserPreferences are called above.
+     */
+    private async _usageUnitsByModel(): Promise<Map<string, string>> {
+        const oDataModel = this.getView()?.getModel() as ODataModel;
+        if (!oDataModel) return new Map();
+        try {
+            const context = oDataModel.bindContext("/usageUnits(...)", undefined, { $$groupId: "$auto" });
+            await context.execute();
+            const units = (context.getBoundContext()?.getObject() as { value?: { model: string; unit: string }[] })?.value || [];
+            return new Map(units.map(u => [u.model, u.unit]));
+        } catch (error) {
+            console.error("Failed to load usage units:", error);
+            return new Map();
+        }
+    }
+
+    /**
      * Prepare model-specific data for Models Analysis tab
      */
-    private _prepareModelData(data: any): void {
+    private async _prepareModelData(data: any): Promise<void> {
         const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
         const chartModel = this.getView()?.getModel("chartModel") as JSONModel;
         
@@ -887,6 +911,8 @@ export default class OverviewController extends Controller {
             (b.totalRequests || 0) - (a.totalRequests || 0)
         );
         
+        const unitsByModel = await this._usageUnitsByModel();
+
         // Add costPerToken for efficiency column and ensure cache token fields are present
         const modelsWithEfficiency = modelUsage.map((model: any) => {
             const inputTokens = model.totalInputTokens || 0;
@@ -901,7 +927,8 @@ export default class OverviewController extends Controller {
                 cacheReadInputTokens,
                 outputTokens,
                 costPerToken: model.totalCost && totalTokens ? 
-                    (model.totalCost / totalTokens * 1000000) : 0
+                    (model.totalCost / totalTokens * 1000000) : 0,
+                unit: unitsByModel.get(model.modelId) ?? "tokens"
             };
         });
         
@@ -1751,6 +1778,12 @@ export default class OverviewController extends Controller {
     public formatNumber(value: number): string {
         if (!value && value !== 0) return "0";
         return new Intl.NumberFormat('en-US').format(value);
+    }
+
+    // The Model Performance Details table's Unit column: 'cells' for SAP-RPT models (usageUnits()),
+    // 'tokens' for everything else - takes the i18n texts as bound parts, like formatSapCost.
+    public formatUnit(unit: string, cellsText: string, tokensText: string): string {
+        return unit === "cells" ? cellsText : tokensText;
     }
 
     public formatSmartCurrency(value: number): string {

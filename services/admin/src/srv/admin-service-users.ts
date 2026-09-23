@@ -9,7 +9,8 @@ import * as lifecycle from '../services/userLifecycleService';
 import * as quota from '../services/userQuotaService';
 import * as counters from '../services/usageCounters';
 import { usageSummary } from '../services/usageSummaryService';
-import { LIMIT_FIELDS, validateConstraints, defaultText } from '../services/quotaLimits';
+import { LIMIT_FIELDS, validateConstraints, defaultText, effectiveLimitText } from '../services/quotaLimits';
+import { criticality } from '../services/quotaCriticality';
 import { credentialRateLimitsFor, setCredentialRateLimits, RateLimitTarget } from '../services/rateLimitsService';
 import { invalidateForEmails, clearLocalValidationCache } from '../services/credentialInvalidation';
 import { recordAuditEvent } from '../services/auditEventService';
@@ -17,6 +18,7 @@ import { clientContext } from '../utils/clientIp';
 import { isAdminRole } from '../services/modelEntitlementService';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
 import { applyQueryOptions } from './odataInMemory';
+import { policyBlockFor } from '../services/toolPolicyService';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -28,13 +30,14 @@ const WINDOWS = ['Day', 'Week', 'Month'] as const;
 // Every key flatten() (or afterReadUsers itself) writes onto a Users/Users.drafts row: never client
 // input, but draftActivate reads the draft row back through the same READ pipeline that populates
 // them, then resubmits the full row to UPDATE - so the read-only check below must not trip on them.
-// `quotaProfile_ID` is deliberately NOT here: it is not written by the READ pipeline, and
-// assignQuotaProfile/unassignQuotaProfile are its only write path. The users-app annotates it
-// Common.FieldControl: #ReadOnly, so cds already drops it from a draft PATCH payload before this
-// loop runs - the exclusion just keeps the guard from ever accepting it should that annotation move.
+// `quotaProfile_ID` and `toolPolicy_ID` are deliberately NOT here: neither is written by the READ
+// pipeline, and assignQuotaProfile/unassignQuotaProfile (resp. assignToolPolicy/unassignToolPolicy)
+// are their only write path. The users-app annotates quotaProfile_ID Common.FieldControl: #ReadOnly,
+// so cds already drops it from a draft PATCH payload before this loop runs - the exclusion just
+// keeps the guard from ever accepting either should that annotation move or be missing.
 const VIRTUAL_FIELDS = new Set<string>([
   'usedRequestsMinute', 'sapCostCurrency', 'quotaProfileName', 'resetsAtDay', 'resetsAtWeek', 'resetsAtMonth', 'canDeactivate', 'canReactivate', 'statusCriticality',
-  ...WINDOWS.flatMap((w) => [`usedSpend${w}`, `usedTokens${w}`, `remainingSpend${w}`, `remainingTokens${w}`, `effectiveSpendPer${w}Currency`]),
+  ...WINDOWS.flatMap((w) => [`usedSpend${w}`, `usedTokens${w}`, `remainingSpend${w}`, `remainingTokens${w}`, `effectiveSpendPer${w}Currency`, `criticalitySpend${w}`, `criticalityTokens${w}`]),
   ...LIMIT_FIELDS.flatMap((f) => { const F = f[0].toUpperCase() + f.slice(1); return [`effective${F}`, `limitSource${F}`, `${f}DefaultText`]; })
 ]);
 
@@ -79,8 +82,28 @@ function applyStatusVirtuals(row: any, s: quota.QuotaStatus): void {
   // An effective limit's currency is present only with the limit: the users-app renders the
   // currency beside an empty amount, and "USD" alone would read as a value, not as unlimited.
   for (const w of WINDOWS) row[`effectiveSpendPer${w}Currency`] = row[`effectiveSpendPer${w}`] == null ? null : s.sapCostCurrency;
+  // Bullet-chart colours for the users-app (annotations read criticality from a field, spec §2).
+  for (const w of WINDOWS) {
+    row[`criticalitySpend${w}`] = criticality(row[`usedSpend${w}`], row[`effectiveSpendPer${w}`]);
+    row[`criticalityTokens${w}`] = criticality(row[`usedTokens${w}`], row[`effectiveTokensPer${w}`]);
+  }
   // What an EMPTY constraint inherits, named beside the empty field (spec §4.2).
   for (const f of LIMIT_FIELDS) row[`${f}DefaultText`] = defaultText(f, s);
+}
+
+/**
+ * OData V4 serialises Edm.Int64 as a JSON string when the client asks for IEEE754Compatible
+ * (the UI5 V4 model always does); CAP stringifies only what the database returns, so the computed
+ * Integer64 virtuals are coerced here for such clients. UI5's Int64 type throws on a JSON number
+ * when it converts for a float property — the users-app bullet charts' target value.
+ */
+export function wantsIeee754(req: any): boolean {
+  return /IEEE754Compatible=true/i.test(String(req?.headers?.accept || ''));
+}
+function stringifyInt64Virtuals(row: any): void {
+  for (const w of WINDOWS) {
+    for (const k of [`usedTokens${w}`, `effectiveTokensPer${w}`]) if (row[k] !== null && row[k] !== undefined) row[k] = String(row[k]);
+  }
 }
 
 /** The lifecycle flags the list and the object page render; set even when the quota status failed. */
@@ -95,10 +118,11 @@ function applyLifecycleFlags(row: any): void {
  * READ, so the after-READ handler below never sees it: assignQuotaProfile/unassignQuotaProfile
  * (admin-service-quota-profiles.ts) build their answer through here instead.
  */
-export async function userRowWithVirtuals(email: string): Promise<any> {
+export async function userRowWithVirtuals(email: string, ieee754 = false): Promise<any> {
   const row = await cds.run(cds.ql.SELECT.one.from('AdminService.Users').where({ email }));
   if (!row) return row;
   applyStatusVirtuals(row, await quota.status(cds, email));
+  if (ieee754) stringifyInt64Virtuals(row);
   applyLifecycleFlags(row);
   return row;
 }
@@ -202,9 +226,11 @@ export function registerUserHandlers(service: any): void {
     // trip that re-reads it - cannot hold the admin's single SQLite connection for its whole
     // length. A row whose status failed is missing from the map and keeps its stored values.
     const statuses = await quota.statusMany(cds, list.map((row: any) => row.email));
+    const ieee754 = wantsIeee754(req);
     for (const row of list) {
       const s = statuses.get(row.email);
       if (s) applyStatusVirtuals(row, s);
+      if (s && ieee754) stringifyInt64Virtuals(row);
       applyLifecycleFlags(row);
     }
   });
@@ -345,10 +371,17 @@ export function registerUserHandlers(service: any): void {
     // prune keys the return type does not model (Object.assign onto the OData result), so they are
     // stripped here: the caller gets their own effective limits and their profile's NAME, no more.
     const { profileLimits, platformLimits, ...mine } = await quota.status(cds, actor(req));
-    return mine;
+    const block = await policyBlockFor(cds.db, actor(req));
+    return { ...mine, toolPolicy: { name: block.policyName, mode: block.mode } };
   });
   // The home tiles: an administrator sees every user's month, everyone else their own.
   service.on('myUsageSummary', async (req: any) => usageSummary(cds, { email: actor(req), isAdmin: isAdminRole(roles(req)) }));
+  // The models whose usage is counted in cells (SAP-RPT): names models, not usage, so every
+  // signed-in caller (admin or not) may read it - drives the Unit column in Usage Analytics.
+  service.on('usageUnits', async () => {
+    const rows = await cds.run(cds.ql.SELECT.distinct.from('sap.llm.gateway.admin.ApiKeyUsage').columns('model', 'unit').where({ unit: 'cells' }));
+    return rows.map((r: any) => ({ model: r.model, unit: r.unit }));
+  });
 
   // ---- per-credential rate limits ------------------------------------------------------
   const rateLimitAction = (entity: 'ApiKeys' | 'AwsCredentials') => async (req: any) => {
@@ -393,6 +426,27 @@ export function registerUserHandlers(service: any): void {
     for (const row of list) {
       if (!row?.ID) continue;
       Object.assign(row, limits.get(row.ID) ?? empty);
+    }
+    // The owner's user-level per-minute limit, the second layer the gateway checks: one quota
+    // status per distinct owner on the page (statusMany fans out in bounded chunks), rendered with
+    // its source so the credential page shows both layers side by side.
+    // A $select without `email` (a list column, a $select probe) still needs the owner: one
+    // SELECT by ID fills the gap for exactly those rows.
+    const ownerOf = new Map<string, string>(list.filter((r: any) => typeof r?.email === 'string').map((r: any) => [r.ID, r.email]));
+    const withoutEmail = ids.filter((id: string) => !ownerOf.has(id));
+    if (withoutEmail.length) {
+      const entity = isAws ? 'sap.llm.gateway.admin.AwsCredentials' : 'sap.llm.gateway.admin.ApiKeys';
+      for (const r of await cds.run(cds.ql.SELECT.from(entity).columns('ID', 'email').where({ ID: { in: withoutEmail } }))) {
+        if (typeof r.email === 'string') ownerOf.set(r.ID, r.email);
+      }
+    }
+    const owners = [...new Set([...ownerOf.values()].filter((e) => e.length > 0))];
+    const statuses = owners.length ? await quota.statusMany(cds, owners) : new Map();
+    for (const row of list) {
+      if (!row?.ID) continue;
+      const email = ownerOf.get(row.ID);
+      const s = email ? statuses.get(email) : undefined;
+      row.ownerRequestsPerMinuteText = s ? effectiveLimitText('requestsPerMinute', s) : 'unlimited';
     }
   });
 }

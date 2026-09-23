@@ -12,12 +12,14 @@
  * published simply lost it).
  */
 
+const cds = require('@sap/cds');
 import Redis from 'iovalkey';
 import { getDefaultLogger } from '@libs/logger';
 import { SecurityEventService } from './securityEventService';
 import { notificationStreamService } from '../srv/notification-stream';
 import { toSiemEvent } from '../siem/siemEvent';
 import { writeToOutbox } from '../siem/outbox';
+import { recordRejectedTools } from './toolUsageService';
 
 const logger = getDefaultLogger();
 
@@ -246,6 +248,10 @@ class SecurityEventSubscriber {
       //    Skipped for a usage event, which has no domain table — see isUsageEvent.
       if (!isUsageEvent(event)) {
         await this.processSecurityEvent(event);
+        // A refused request emits no usage event, so its tools reach the inventory from here.
+        // Best effort: a failure must not stop the ack and have the event redelivered forever.
+        await this.recordRefusedTools(event).catch((error) => logger.warn('SecurityEventSubscriber',
+          `Refused tools not recorded in the inventory: ${error instanceof Error ? error.message : 'Unknown error'}`));
       }
 
       // 2. Write the durable outbox row so per-sink delivery can proceed independently of
@@ -336,6 +342,28 @@ class SecurityEventSubscriber {
    */
   public stop(): void {
     this.running = false;
+  }
+
+  /**
+   * The tools a `tool_not_entitled` event refused, recorded as attempts in the tool inventory
+   * (toolUsageService.recordRejectedTools): the daily counter of a tool the inventory already knows
+   * is bumped, a tool nobody has used yet appears for the first time. Nothing is written to usage or
+   * billing - the request never reached a model.
+   */
+  private async recordRefusedTools(event: SecurityEventFromGateway): Promise<void> {
+    if (event.eventType !== 'tool_not_entitled' || event.metadata?.mode !== 'reject') return;
+    const db = await cds.connect.to('db');
+    const { SELECT } = cds.ql;
+    const entity = event.authType === 'aws_credential'
+      ? 'sap.llm.gateway.admin.AwsCredentials' : 'sap.llm.gateway.admin.ApiKeys';
+    const owner = await db.run(SELECT.one.from(entity).columns('email').where({ ID: event.credentialId }));
+    const email = owner?.email;
+    if (!email) {
+      logger.warn('SecurityEventSubscriber', 'Refused tools not recorded: credential has no owner e-mail', { eventId: event.eventId });
+      return;
+    }
+    const recorded = await recordRejectedTools(db, event, email);
+    if (recorded > 0) logger.info('SecurityEventSubscriber', `Recorded ${recorded} refused tool attempt(s) for ${email}`);
   }
 
   /**

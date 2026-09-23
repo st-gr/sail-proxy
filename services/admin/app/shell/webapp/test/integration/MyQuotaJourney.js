@@ -14,6 +14,9 @@ sap.ui.define([
 				// the real shell page (its own bootstrap + ushell mock), relative to this test page
 				Given.iStartMyAppInAFrame("../../index.html");
 				Then.onTheShell.iSeeTheProfile(expectations.email, expectations.expect.shell.userRoleLabel);
+				// The popover is open (the fragment renders regardless of the home card's role-driven
+				// visibility): every role has an effective tool policy, monitor/strip/reject.
+				Then.onTheShell.iSeeToolPolicyLine();
 				// roles.js quota.cardVisible drives the card: false asserts it stays hidden. The admin
 				// has no seeded constraints (platform defaults are unlimited), so only the card's
 				// presence is asserted for that role - the row values are checked for the user role,
@@ -21,6 +24,10 @@ sap.ui.define([
 				Then.onTheShell.iCheckTheQuotaCard(bCardVisible, bCardVisible && !expectations.expect.isAdmin
 					? { key: "tokensDay", used: String(oFx.quota.tokens), limit: "1,000" }
 					: null);
+				if (bCardVisible) {
+					Then.onTheShell.iSeeQuotaCharts();
+					Then.onTheShell.iSeeQuotaResetText("tokensDay");
+				}
 				Then.iTeardownMyApp();
 			});
 		}

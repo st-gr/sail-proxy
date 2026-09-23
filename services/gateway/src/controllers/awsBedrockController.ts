@@ -12,6 +12,7 @@ const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { isPayloadLoggingEnabled } from '../utils/payloadLogger';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { recordInvokedTools, bedrockAdapter, tapStreamedTools } from '../toolGovernance';
 
 interface BedrockRequest extends Request {
   params: {
@@ -129,6 +130,7 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
     }
     
     // Process the request through the service
+    if (isStreamingSubpath) tapStreamedTools(req, res, bedrockAdapter);
     const result = await awsBedrockService.processBedrockRequest({
       modelId: substitutedModelName,
       originalModelId: originalModelFromClient,
@@ -169,6 +171,7 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
         provider = 'openai';  
       }
       
+      recordInvokedTools(req, bedrockAdapter.invokedTools(result));
       emitUsageEvent(req, usageMetrics, substitutedModelName, 200);
     }
 

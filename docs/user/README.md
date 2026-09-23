@@ -33,6 +33,8 @@ Whether you're using Claude Code, GitHub Copilot, or building custom AI applicat
 11. [FAQ](chapter-11-faq.md)
 12. [Using with Gemini CLI and the Gemini SDK](chapter-12-google-gemini.md)
 13. [Using with pi](chapter-13-pi.md)
+14. [Using the OpenAI Realtime API](chapter-14-realtime.md)
+15. [Tabular prediction with SAP-RPT](chapter-15-tabular-prediction.md)
 
 ---
 

@@ -50,6 +50,18 @@ describe('default catalog', () => {
     await ent.includeModels(db, def, ['m2']);
     expect([...await ent.effectiveModelIds(db, def)].sort()).toEqual(['m1', 'm2', 'm3']);
   });
+
+  it('never offers a --deep-context pricing row in the default catalog', async () => {
+    const { INSERT } = cds.ql;
+    await db.run(INSERT.into(LIB).entries([
+      model('sap-rpt-1.6-large'),
+      model('sap-rpt-1.6-large--deep-context')
+    ]));
+    const def = await ent.ensureDefaultCatalog(db);
+    const ids = [...await ent.effectiveModelIds(db, def)];
+    expect(ids).toContain('sap-rpt-1.6-large');
+    expect(ids).not.toContain('sap-rpt-1.6-large--deep-context');
+  });
 });
 
 describe('entitlementFor / entitlementBlockFor', () => {

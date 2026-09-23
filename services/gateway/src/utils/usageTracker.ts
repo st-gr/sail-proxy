@@ -5,6 +5,7 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { emitSiemUsageEvent } from '../services/siemUsageEvent';
+import { toolsForEvent } from '../toolGovernance/record';
 
 /**
  * Extract authentication info from request for usage tracking
@@ -50,7 +51,10 @@ export function createUsageMetrics(): UsageMetrics {
     outputTokens: 0,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
-    imageInputTokens: 0
+    imageInputTokens: 0,
+    imageOutputTokens: 0,
+    audioInputTokens: 0,
+    audioOutputTokens: 0
   };
 }
 
@@ -63,19 +67,22 @@ export function updateTokenCounts(
   outputTokens: number,
   cacheCreationInputTokens?: number,
   cacheReadInputTokens?: number,
-  imageInputTokens?: number
+  imageInputTokens?: number,
+  imageOutputTokens?: number
 ): void {
   const safeInputTokens = inputTokens || 0;
   const safeOutputTokens = outputTokens || 0;
   const safeCacheCreationTokens = cacheCreationInputTokens || 0;
   const safeCacheReadTokens = cacheReadInputTokens || 0;
   const safeImageInputTokens = imageInputTokens || 0;
+  const safeImageOutputTokens = imageOutputTokens || 0;
 
   metrics.inputTokens += safeInputTokens;
   metrics.outputTokens += safeOutputTokens;
   metrics.cacheCreationInputTokens = (metrics.cacheCreationInputTokens || 0) + safeCacheCreationTokens;
   metrics.cacheReadInputTokens = (metrics.cacheReadInputTokens || 0) + safeCacheReadTokens;
   metrics.imageInputTokens = (metrics.imageInputTokens || 0) + safeImageInputTokens;
+  metrics.imageOutputTokens = (metrics.imageOutputTokens || 0) + safeImageOutputTokens;
 
   // Add instrumentation logging
   logger.info('UsageTrackingService', 'Token counts updated', {
@@ -84,17 +91,20 @@ export function updateTokenCounts(
     cacheCreationInputTokens: metrics.cacheCreationInputTokens,
     cacheReadInputTokens: metrics.cacheReadInputTokens,
     imageInputTokens: metrics.imageInputTokens,
+    imageOutputTokens: metrics.imageOutputTokens,
     delta: {
       input: safeInputTokens,
       output: safeOutputTokens,
       cacheCreation: safeCacheCreationTokens,
       cacheRead: safeCacheReadTokens,
       image: safeImageInputTokens,
+      imageOutput: safeImageOutputTokens,
       originalInput: inputTokens,
       originalOutput: outputTokens,
       originalCacheCreation: cacheCreationInputTokens,
       originalCacheRead: cacheReadInputTokens,
-      originalImage: imageInputTokens
+      originalImage: imageInputTokens,
+      originalImageOutput: imageOutputTokens
     }
   });
 }
@@ -103,6 +113,12 @@ export function updateTokenCounts(
  * Emit usage event - minimal overhead, fire-and-forget
  * Provider is now resolved from model cache instead of being passed in
  */
+/** The caller's User-Agent, capped at the column width the admin stores it in. */
+function userAgentOf(req: any): string | undefined {
+  const raw = typeof req?.get === 'function' ? req.get('user-agent') : req?.headers?.['user-agent'];
+  return typeof raw === 'string' && raw.length > 0 ? raw.slice(0, 500) : undefined;
+}
+
 export async function emitUsageEvent(
   req: Request,
   metrics: UsageMetrics,
@@ -163,10 +179,16 @@ export async function emitUsageEvent(
       cacheCreationInputTokens: metrics.cacheCreationInputTokens,
       cacheReadInputTokens: metrics.cacheReadInputTokens,
       imageInputTokens: metrics.imageInputTokens,
+      imageOutputTokens: metrics.imageOutputTokens,
+      audioInputTokens: metrics.audioInputTokens,
+      audioOutputTokens: metrics.audioOutputTokens,
       responseTime,
       statusCode,
       endpoint,
-      usageEstimated: metrics.usageEstimated
+      usageEstimated: metrics.usageEstimated,
+      unit: metrics.unit ?? 'tokens',
+      tools: toolsForEvent(req),
+      userAgent: userAgentOf(req)
     };
 
     // Add comprehensive logging before emission
@@ -180,6 +202,7 @@ export async function emitUsageEvent(
         cacheCreation: event.cacheCreationInputTokens,
         cacheRead: event.cacheReadInputTokens,
         image: event.imageInputTokens,
+        imageOutput: event.imageOutputTokens,
         total: event.inputTokens + event.outputTokens + (event.cacheCreationInputTokens || 0) + (event.cacheReadInputTokens || 0)
       },
       authType: event.authType,

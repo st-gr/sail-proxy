@@ -130,6 +130,8 @@ export interface PseudonymizationConfig {
    * @see plugins/pseudonymization/saturationReport.ts
    */
   saturation_warn?: number;
+  /** `withhold` (default) | `report` | `off`: a placeholder the model invented. See plugins/pseudonymization/unknownPlaceholders.ts. */
+  unknown_placeholders?: string;
 }
 
 /**

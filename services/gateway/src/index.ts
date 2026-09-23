@@ -11,10 +11,12 @@ import { getTrustForwardedFor } from './services/configService';
 const logger = getDefaultLogger();
 
 // Route imports
+import { createHealthHandler } from './routes/healthRoutes';
 import modelRoutes from './routes/modelRoutes';
 import chatRoutes from './routes/chatRoutes';
 import embeddingRoutes from './routes/embeddingRoutes';
 import responsesRoutes from './routes/responsesRoutes';
+import imagesRoutes from './routes/imagesRoutes';
 import filesRoutes from './routes/filesRoutes';
 import vectorStoresRoutes from './routes/vectorStoresRoutes';
 import { runMigration } from './fileSearch/db';
@@ -22,6 +24,7 @@ import { startIngestWorker, stopIngestWorker } from './fileSearch/ingestWorker';
 import { startExpirySweeper, stopExpirySweeper } from './fileSearch/expirySweeper';
 import anthropicRoutes from './routes/anthropicRoutes';
 import googleRoutes from './routes/googleRoutes';
+import sapRptRoutes from './routes/sapRptRoutes';
 import awsBedrockRoutes from './routes/awsBedrockRoutes';
 import awsCredentialsRoutes from './routes/awsCredentialsRoutes';
 import apiKeyRoutes from './routes/apiKeyRoutes';
@@ -33,9 +36,15 @@ import openRouterRoutes from './routes/openRouterRoutes';
 import awsSigV4Auth from './middlewares/awsSigV4Auth';
 import errorHandler from './middlewares/errorHandler';
 import { nulByteGuard } from './middlewares/nulByteGuard';
+import { installUnhandledRejectionLogger } from './utils/processGuards';
+import { attachRealtimeUpgrade } from './realtime/realtimeUpgrade';
+import { CLOSE_GOING_AWAY, REASON_SERVER_SHUTDOWN } from './realtime/closeCodes';
 
 const configLoader = new ConfigLoader('gateway');
 const config = configLoader.loadConfig();
+
+// A rejected async handler must not take the process down (see utils/processGuards.ts).
+installUnhandledRejectionLogger(logger);
 
 const app = express();
 
@@ -101,24 +110,7 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
 });
 
 // Health check endpoint
-app.get('/health', async (req: express.Request, res: express.Response) => {
-  const responseWait = parseInt(req.query.response_wait as string);
-  const waitTime = (responseWait > 0 && responseWait <= 660) ? responseWait : 0;
-
-  // Only execute simulated timeout when process.env.DEBUG === 'true'
-  if (waitTime > 0 && process.env.DEBUG === 'true') {
-    await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
-  }
-
-  res.json({
-    status: 'healthy',
-    service: 'gateway',
-    deployTarget: config.deployTarget,
-    timestamp: new Date().toISOString(),
-    message: 'Gateway service is running with all API routes restored',
-    simulatedDelay: waitTime > 0 ? waitTime : undefined
-  });
-});
+app.get('/health', createHealthHandler(config.deployTarget));
 
 // Model Routes
 app.use('/v1/models', modelRoutes);
@@ -135,6 +127,10 @@ app.use('/openai/v1/embeddings', embeddingRoutes);
 // OpenAI Responses Routes
 app.use('/openai/api/v1/responses', responsesRoutes);
 app.use('/openai/v1/responses', responsesRoutes);
+
+// OpenAI Images Routes (generations, edits) — served by Gemini image deployments
+app.use('/openai/api/v1/images', imagesRoutes);
+app.use('/openai/v1/images', imagesRoutes);
 
 // NUL-byte guard (file_search identifiers/cursors only) — mounted ahead of
 // the Files and Vector Store handlers, after body parsing. See
@@ -171,6 +167,9 @@ app.use('/anthropic/v1', anthropicRoutes);
 app.use('/google/v1beta', googleRoutes);
 app.use('/google/v1', googleRoutes);
 
+// SAP-RPT Tabular Prediction Routes
+app.use('/sap/v1/rpt', sapRptRoutes);
+
 // AWS Bedrock Routes
 app.use('/aws-bedrock', awsBedrockRoutes);
 
@@ -180,7 +179,7 @@ app.use('/aws/api-keys', awsCredentialsRoutes);
 // Admin Routes (temporary - will move to admin service later)
 app.use('/api/admin/api-keys', apiKeyRoutes);
 app.use('/api/admin/api-config', configRoutes);
-mountDeploymentRoutes(app);   // skipped in standalone mode - see routes/deploymentRoutes.ts
+const deploymentsMounted = mountDeploymentRoutes(app);   // skipped in standalone mode - see routes/deploymentRoutes.ts
 
 // OpenRouter Routes
 app.use('/openrouter/api/v1', openRouterRoutes);
@@ -426,7 +425,8 @@ async function initializeGatewayService(): Promise<void> {
 const cleanupResources = {
   server: null as any,
   intervals: [] as NodeJS.Timeout[],
-  valkeyClients: [] as any[]
+  valkeyClients: [] as any[],
+  realtime: null as null | { closeAll(code: number, reason: string): void }
 };
 
 // Enhanced graceful shutdown handler
@@ -471,6 +471,11 @@ function gracefulShutdown(signal: string): void {
       logger.warn('Gateway Service', 'Error closing config event Valkey connections:',
         error instanceof Error ? error.message : 'Unknown error');
     }
+
+    // End the open Realtime WebSocket sessions before the quota store goes away: an upgraded
+    // socket also keeps the HTTP server open, so without this server.close() below never calls
+    // back and the shutdown timeout kills the process (clients would see a 1006).
+    cleanupResources.realtime?.closeAll(CLOSE_GOING_AWAY, REASON_SERVER_SHUTDOWN);
 
     // Close Valkey connections
     const valkeyClosePromises = cleanupResources.valkeyClients.map(async (client, index) => {
@@ -523,30 +528,46 @@ initializeGatewayService().then(() => {
     logger.info('Gateway Service', `Server listening on ${config.host}:${config.port} (${config.deployTarget})`);
     logger.info('Gateway Service', `Health check: http://${config.host}:${config.port}/health`);
     logger.info('Gateway Service', `Service info: http://${config.host}:${config.port}/`);
+    // Keep this list in step with the app.use() mounts above — it is what operators read first.
+    const base = `http://${config.host}:${config.port}`;
     logger.info('Gateway Service', 'API endpoints available at:');
-    logger.info('Gateway Service', `- OpenAI Chat: http://${config.host}:${config.port}/openai/api/v1/chat/completions`);
-    logger.info('Gateway Service', `- OpenAI Embeddings: http://${config.host}:${config.port}/openai/api/v1/embeddings`);
-    logger.info('Gateway Service', `- OpenAI Responses: http://${config.host}:${config.port}/openai/v1/responses`);
-    logger.info('Gateway Service', `- Anthropic: http://${config.host}:${config.port}/anthropic/v1/messages`);
-    logger.info('Gateway Service', `- AWS Bedrock Invoke: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/invoke`);
-    logger.info('Gateway Service', `- AWS Bedrock Invoke Stream: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/invoke-with-response-stream`);
-    logger.info('Gateway Service', `- AWS Bedrock Converse: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/converse`);
-    logger.info('Gateway Service', `- AWS Bedrock Converse Stream: http://${config.host}:${config.port}/aws-bedrock/model/{modelId}/converse-stream`);
-    logger.info('Gateway Service', `- AWS Credentials Management: http://${config.host}:${config.port}/aws/api-keys`);
-    logger.info('Gateway Service', `- Available Models: http://${config.host}:${config.port}/v1/models and http://${config.host}:${config.port}/openai/v1/models`);
-    logger.info('Gateway Service', `- Admin API Keys: http://${config.host}:${config.port}/api/admin/api-keys`);
-    logger.info('Gateway Service', `- Admin API Config: http://${config.host}:${config.port}/api/admin/api-config`);
-    logger.info('Gateway Service', `- OpenRouter Chat: http://${config.host}:${config.port}/openrouter/api/v1/chat/completions`);
-    logger.info('Gateway Service', `- OpenRouter Models: http://${config.host}:${config.port}/openrouter/api/v1/models`);
-    logger.info('Gateway Service', `- OpenRouter Responses: http://${config.host}:${config.port}/openrouter/api/v1/responses`);
+    logger.info('Gateway Service', `- Available Models: ${base}/v1/models and ${base}/openai/v1/models`);
+    logger.info('Gateway Service', `- OpenAI Chat Completions: ${base}/openai/v1/chat/completions`);
+    logger.info('Gateway Service', `- OpenAI Embeddings: ${base}/openai/v1/embeddings`);
+    logger.info('Gateway Service', `- OpenAI Responses: ${base}/openai/v1/responses`);
+    logger.info('Gateway Service', `- OpenAI Images: ${base}/openai/v1/images/generations and ${base}/openai/v1/images/edits`);
+    logger.info('Gateway Service', `- OpenAI Files (file_search): ${base}/openai/v1/files`);
+    logger.info('Gateway Service', `- OpenAI Vector Stores (file_search): ${base}/openai/v1/vector_stores`);
+    logger.info('Gateway Service', `- OpenAI Realtime (WebSocket): ws://${config.host}:${config.port}/openai/v1/realtime and ws://${config.host}:${config.port}/v1/realtime`);
+    logger.info('Gateway Service', `  (every HTTP /openai/v1 path is also served under ${base}/openai/api/v1)`);
+    logger.info('Gateway Service', `- Anthropic Messages: ${base}/anthropic/v1/messages (also /messages/count_tokens, /complete)`);
+    logger.info('Gateway Service', `- Google Gemini: ${base}/google/v1beta/models/{model}:{generateContent|streamGenerateContent|embedContent} (also /google/v1)`);
+    logger.info('Gateway Service', `- AWS Bedrock Invoke: ${base}/aws-bedrock/model/{modelId}/invoke`);
+    logger.info('Gateway Service', `- AWS Bedrock Invoke Stream: ${base}/aws-bedrock/model/{modelId}/invoke-with-response-stream`);
+    logger.info('Gateway Service', `- AWS Bedrock Converse: ${base}/aws-bedrock/model/{modelId}/converse`);
+    logger.info('Gateway Service', `- AWS Bedrock Converse Stream: ${base}/aws-bedrock/model/{modelId}/converse-stream`);
+    logger.info('Gateway Service', `- OpenRouter Chat: ${base}/openrouter/api/v1/chat/completions`);
+    logger.info('Gateway Service', `- OpenRouter Completions: ${base}/openrouter/api/v1/completions`);
+    logger.info('Gateway Service', `- OpenRouter Responses: ${base}/openrouter/api/v1/responses`);
+    logger.info('Gateway Service', `- OpenRouter Models: ${base}/openrouter/api/v1/models (also /models/{author}/{slug}/endpoints, /generation, /credits)`);
+    logger.info('Gateway Service', `- OpenRouter Files / Vector Stores: ${base}/openrouter/api/v1/files and ${base}/openrouter/api/v1/vector_stores`);
+    logger.info('Gateway Service', `- AWS Credentials Management: ${base}/aws/api-keys`);
+    logger.info('Gateway Service', `- Admin API Keys: ${base}/api/admin/api-keys`);
+    logger.info('Gateway Service', `- Admin API Config: ${base}/api/admin/api-config`);
+    if (deploymentsMounted) logger.info('Gateway Service', `- Admin Deployments: ${base}/api/admin/deployments`);
     logger.info('Gateway Service', '');
     logger.info('Gateway Service', 'Authentication Methods:');
+    logger.info('Gateway Service', '- Models, OpenAI, Anthropic, Google Gemini, OpenRouter, Realtime: Unified Token Auth (API Key + fallback to legacy)');
     logger.info('Gateway Service', '- AWS Bedrock: AWS SigV4 or Unified Token Auth (API Key + AWS credentials)');
-    logger.info('Gateway Service', '- Anthropic, OpenRouter, Chat, Embeddings: Unified Token Auth (API Key + fallback to legacy)');
-    logger.info('Gateway Service', '- Other endpoints: API Key (x-api-key header)');
+    logger.info('Gateway Service', '- Admin API Keys, AWS Credentials Management: standalone mode only');
+    logger.info('Gateway Service', '- Admin API Config, Admin Deployments: standalone mode or admin service key');
     logger.info('Gateway Service', '');
     logger.info('Gateway Service', '💡 Press Ctrl+C to gracefully shutdown the service');
   });
+
+  // The Realtime API arrives as a WebSocket upgrade, which never enters Express. The handle lets
+  // gracefulShutdown close the live sessions.
+  cleanupResources.realtime = attachRealtimeUpgrade(server);
 
   // Fail loudly if the port is taken: otherwise a stale gateway instance keeps serving
   // requests while this (newer) process dies quietly — old code masquerades as the

@@ -51,6 +51,17 @@ current temporal row and inserts a manual one, which `updatePricingDatabase` nev
 `revertToSapPrice` restores the snapshot's SAP price. Display:
 `capacityUnitsPerMillion(cost, cuFactor)` = cost × 1000 × cuFactor, i.e. capacity units per 1M
 tokens from a per-1K cost, five decimals (SAP shows 1.50404 for 0.00079 at 1.90385).
+`sapCapacityService.computeSapNative`'s `genAiTokens` sum uses the same per-token rate math per
+usage event; a call carrying image or audio tokens replaces the plain `inputTokens ×
+inputGenAiRate + outputTokens × outputGenAiRate` terms with
+`textIn × inputGenAiRate + audioIn × audioInputGenAiRate + textOut × outputGenAiRate + imageOut ×
+imageOutputGenAiRate + audioOut × audioOutputGenAiRate`, where `audioIn = audioInputTokens`,
+`textIn = inputTokens − audioIn`, `imageOut = imageOutputTokens`, `audioOut = audioOutputTokens`
+and `textOut = outputTokens − imageOut − audioOut`; `imageOutputGenAiRate` is
+`ModelCosts.imageOutputCost / 1000` when maintained, else it falls back to the output rate (itself
+falling back to the input rate); `audioInputGenAiRate`/`audioOutputGenAiRate` are
+`ModelCosts.audioInputCost / 1000` and `audioOutputCost / 1000`, falling back to the text rate of
+their direction. SQLite migration: `docs/developer/sqlite-migrations/audio-tokens-sqlite-migration.sql`.
 
 Deployments: `services/gateway/src/services/deploymentManagementService.ts` ports the CLI's calls
 behind `/api/admin/deployments` (service key `ADMIN_TO_GATEWAY`, `deployments:read/write`). The

@@ -15,6 +15,7 @@ import { cuFactor as configuredCuFactor, isProductive, SAP_CU_FACTOR } from '../
 import { clientContext } from '../utils/clientIp';
 import { USERS, backfillUsers } from '../services/usersService';
 import * as profiles from '../services/quotaProfilesService';
+import { ensureDefaultPolicy } from '../services/toolPolicyService';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -370,7 +371,7 @@ export function registerLibraryHandlers(service: any): void {
     const db = await cds.connect.to('db');
     let row: any;
     try {
-      row = await setManualPrice(db, { modelId: modelIdOf(req), inputCost: req.data.inputCost, outputCost: req.data.outputCost, cacheReadInputCost: req.data.cacheReadInputCost, cacheCreationInputCost: req.data.cacheCreationInputCost, actor: email(req) });
+      row = await setManualPrice(db, { modelId: modelIdOf(req), inputCost: req.data.inputCost, outputCost: req.data.outputCost, cacheReadInputCost: req.data.cacheReadInputCost, cacheCreationInputCost: req.data.cacheCreationInputCost, imageOutputCost: req.data.imageOutputCost, audioInputCost: req.data.audioInputCost, audioOutputCost: req.data.audioOutputCost, actor: email(req) });
     } catch (e) { return fail(req, e); }
     await safeAudit({ actorId: email(req), actorType: 'admin_user', action: 'model_price.set', resourceType: 'ModelCosts', resourceId: modelIdOf(req), outcome: 'success', severity: 'medium', ...clientContext(req), details: JSON.stringify(req.data) });
     return row;
@@ -459,6 +460,7 @@ export async function initializeModelLibrary(): Promise<void> {
     const db = await cds.connect.to('db');
     await ent.ensureDefaultCatalog(db);
     await profiles.ensureStarterProfiles(db);
+    await ensureDefaultPolicy(db);
   } catch (e) {
     logger.warn('AdminService/Library', `default catalog / starter profile seed failed: ${e instanceof Error ? e.message : String(e)}`);
   }

@@ -22,6 +22,9 @@ export interface ManualPriceInput {
   outputCost: string | number;
   cacheReadInputCost?: string | number | null;
   cacheCreationInputCost?: string | number | null;
+  imageOutputCost?: string | number | null;
+  audioInputCost?: string | number | null;
+  audioOutputCost?: string | number | null;
   actor: string;
 }
 
@@ -67,13 +70,16 @@ export async function setManualPrice(db: any, input: ManualPriceInput, now: Date
   const outputCost = assertPrice('outputCost', input.outputCost, true)!;
   const cacheReadInputCost = assertPrice('cacheReadInputCost', input.cacheReadInputCost, false);
   const cacheCreationInputCost = assertPrice('cacheCreationInputCost', input.cacheCreationInputCost, false);
+  const imageOutputCost = assertPrice('imageOutputCost', input.imageOutputCost, false);
+  const audioInputCost = assertPrice('audioInputCost', input.audioInputCost, false);
+  const audioOutputCost = assertPrice('audioOutputCost', input.audioOutputCost, false);
   const current = await currentRow(db, input.modelId);
   const row = await closeAndInsert(db, current, {
     model: input.modelId,
     displayName: current?.displayName ?? null,
     provider: current?.provider ?? null,
     version: current?.version ?? null,
-    inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost,
+    inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost,
     source: PRICE_SOURCE_MANUAL,
     createdBy: input.actor
   }, now);
@@ -101,6 +107,9 @@ export async function revertToSapPrice(db: any, modelId: string, actor: string, 
     outputCost: String(snap.sapOutputCost),
     cacheReadInputCost: snap.sapCacheReadCost !== null && snap.sapCacheReadCost !== undefined ? String(snap.sapCacheReadCost) : null,
     cacheCreationInputCost: snap.sapCacheCreationCost !== null && snap.sapCacheCreationCost !== undefined ? String(snap.sapCacheCreationCost) : null,
+    imageOutputCost: null,
+    audioInputCost: null,
+    audioOutputCost: null,
     source: PRICE_SOURCE_SAP,
     createdBy: actor
   }, now);

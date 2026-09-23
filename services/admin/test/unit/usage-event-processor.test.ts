@@ -574,6 +574,61 @@ describe('UsageEventProcessor', () => {
       computeSpy.mockRestore();
     });
 
+    it('stores imageOutputTokens and imageOutputCost and hands the split to both cost computations', async () => {
+      persistSpy.mockRestore();
+      const modelCostService = require('../../src/services/modelCostService').default;
+      const calc = modelCostService.calculateCosts as jest.Mock;
+      calc.mockResolvedValueOnce({ inputCost: 0.01, outputCost: 0.02, imageOutputCost: 0.07, totalCost: 0.1, provider: 'Google', cacheCreationInputCost: 0, cacheReadInputCost: 0 });
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative')
+        .mockResolvedValue({ genAiTokens: 1, capacityUnits: 2, sapCost: 3, sapCostCurrency: 'USD' });
+      const { testDb, getEntries } = setupDbMocks();
+
+      await (processor as any).persistApiKeyUsage(testDb, [
+        {
+          ...baseEvent,
+          model: 'gemini-3.1-flash-image--deployed',
+          inputTokens: 17,
+          outputTokens: 1296,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          imageOutputTokens: 1290
+        } as any
+      ]);
+
+      const entries = getEntries();
+      expect(entries).toHaveLength(1);
+      const row = entries[0];
+      expect(row.imageOutputTokens).toBe(1290);
+      expect(row.imageOutputCost).toBe(0.07);
+      expect(row.totalCost).toBe(0.1);
+      expect(calc).toHaveBeenCalledWith('gemini-3.1-flash-image--deployed', 17, 1296, expect.any(Date), 0, 0, 1290, 0, 0);
+      expect(computeSpy).toHaveBeenCalledWith(expect.objectContaining({ outputTokens: 1296, imageOutputTokens: 1290 }));
+
+      computeSpy.mockRestore();
+    });
+
+    it('stores the audio token split and its costs and hands both to the cost computations', async () => {
+      persistSpy.mockRestore();
+      const modelCostService = require('../../src/services/modelCostService').default;
+      const calc = modelCostService.calculateCosts as jest.Mock;
+      calc.mockResolvedValueOnce({ inputCost: 0.01, outputCost: 0.02, imageOutputCost: 0, audioInputCost: 0.03, audioOutputCost: 0.04, totalCost: 0.1, provider: 'OpenAI', cacheCreationInputCost: 0, cacheReadInputCost: 0 });
+      const computeSpy = jest.spyOn(sapCapacityService, 'computeSapNative')
+        .mockResolvedValue({ genAiTokens: 1, capacityUnits: 2, sapCost: 3, sapCostCurrency: 'USD' });
+      const { testDb, getEntries } = setupDbMocks();
+
+      await (processor as any).persistApiKeyUsage(testDb, [
+        { ...baseEvent, model: 'gpt-realtime--deployed', inputTokens: 95, outputTokens: 30, cacheReadInputTokens: 5, audioInputTokens: 55, audioOutputTokens: 20 },
+      ]);
+      const row = getEntries()[0];
+      expect(row.audioInputTokens).toBe(55);
+      expect(row.audioOutputTokens).toBe(20);
+      expect(row.audioInputCost).toBe(0.03);
+      expect(row.audioOutputCost).toBe(0.04);
+      expect(row.totalCost).toBe(0.1);
+      expect(calc).toHaveBeenCalledWith('gpt-realtime--deployed', 95, 30, expect.any(Date), undefined, 5, 0, 55, 20);
+      expect(computeSpy).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 95, outputTokens: 30, audioInputTokens: 55, audioOutputTokens: 20 }));
+    });
+
     const baseAwsEvent: UsageEvent = {
       requestId: 'sap-aws-test-1',
       timestamp: Math.floor(Date.now() / 1000),
@@ -631,6 +686,56 @@ describe('UsageEventProcessor', () => {
       });
 
       computeSpy.mockRestore();
+    });
+
+    it("AWS-credential tool usage rows carry the credential owner's email, the same owner the quota buckets use - not the legacy userId field", async () => {
+      persistSpy.mockRestore();
+      const cds = require('@sap/cds');
+      const { SELECT, INSERT } = cds.ql;
+      const { TOOL_USAGE } = require('../../src/services/toolUsageService');
+
+      // userId is a documented legacy field distinct from email (AwsCredentials); the two
+      // differ here on purpose so the test fails if the tool row is keyed by the wrong one.
+      const AWS_CRED_ROWS = [{ ID: 'aws-key-456', userId: 'legacy-service', email: 'owner@test.com', name: 'Cred' }];
+      const toolRows: any[] = [];
+
+      // A chainable CQN-like stand-in that just remembers which entity it targets - the
+      // resolution happens in testDb.run below, matching how CAP defers execution to db.run.
+      const query = (entity: string) => {
+        const q: any = { __entity: entity };
+        q.columns = () => q;
+        q.where = () => q;
+        q.orderBy = () => q;
+        q.limit = () => q;
+        return q;
+      };
+      SELECT.from.mockImplementation((entity: string) => query(entity));
+      INSERT.into.mockImplementation((entity: string) => ({
+        entries: (rows: any[]) => ({ __entity: entity, __insert: true, rows })
+      }));
+
+      const testDb: any = {
+        run: jest.fn((q: any, values?: any[]) => {
+          if (typeof q === 'function') return Promise.resolve(q(testDb));
+          if (typeof q === 'string' && /^\s*INSERT/i.test(q)) return Promise.resolve({ changes: 1 });
+          if (q?.__insert) {
+            if (q.__entity === TOOL_USAGE) toolRows.push(...q.rows);
+            return Promise.resolve(q.rows.length);
+          }
+          if (q?.__entity === 'sap.llm.gateway.admin.AwsCredentials') return Promise.resolve(AWS_CRED_ROWS);
+          return Promise.resolve([]); // ModelCosts, ToolUsageDaily existence check, etc. - no rows
+        })
+      };
+
+      await (processor as any).persistAwsCredentialUsage(testDb, [
+        { ...baseAwsEvent, tools: [{ identity: 'function:x', facet: 'declared', count: 1, decision: 'allowed' }] } as any
+      ]);
+
+      expect(toolRows).toHaveLength(1);
+      expect(toolRows[0]).toMatchObject({ email: 'owner@test.com', identity: 'function:x' });
+
+      SELECT.from.mockReset();
+      INSERT.into.mockReset();
     });
   });
 

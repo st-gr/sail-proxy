@@ -61,6 +61,7 @@ The original draw.io file can be found here: docs/assets/sail-proxy-deployment-o
 - **Model Substitution**: Runtime configurable model name substitution to map client model names to SAP AI Core deployed models.
 - **Streaming Support**: Native streaming when supported by SAP AI Core, with configurable emulation for non-streaming models.
 - **Tool Use Support**: Full support for OpenAI function tools and Anthropic tools, leveraging SAP AI Core's orchestration capabilities.
+- **Tool and MCP governance**: allow and deny lists per user and API key, monitor/strip/reject, tool inventory.
 - **Plugin System**: Dynamic plugin loading from the `/plugins` directory with ability to intercept and modify requests and responses. For comprehensive development guide, see [Plugin System Documentation](docs/developer/chapter-13-plugin-system.md).
 - **Unified Authentication**: Token-based authentication system with support for both API keys and AWS SigV4 credentials.
 
@@ -74,21 +75,35 @@ The original draw.io file can be found here: docs/assets/sail-proxy-deployment-o
 | OpenAI      | `/openai/v1/embeddings`                                    | OpenAI embeddings API alias → SAP AI Core          |
 | OpenAI      | `/openai/api/v1/responses`                                 | OpenAI Responses API → deployed GPT-5+ models       |
 | OpenAI      | `/openai/v1/responses`                                     | OpenAI Responses API alias → deployed GPT-5+ models |
+| OpenAI      | `/openai/api/v1/images/generations`                        | OpenAI Images API (JSON) → deployed Gemini image models |
+| OpenAI      | `/openai/v1/images/generations`                            | OpenAI Images API (JSON) alias → deployed Gemini image models |
+| OpenAI      | `/openai/api/v1/images/edits`                              | OpenAI Images API (multipart) → deployed Gemini image models |
+| OpenAI      | `/openai/v1/images/edits`                                  | OpenAI Images API (multipart) alias → deployed Gemini image models |
+| OpenAI      | `/openai/v1/files`                                         | OpenAI Files API (uploads for the hosted `file_search` tool); also `/openai/api/v1/files` |
+| OpenAI      | `/openai/v1/vector_stores`                                 | OpenAI Vector Stores API (hosted `file_search` tool); also `/openai/api/v1/vector_stores` |
+| OpenAI      | `/openai/v1/realtime`                                      | OpenAI Realtime API (WebSocket) → deployed `gpt-realtime`; also `/v1/realtime` |
 | OpenRouter  | `/openrouter/api/v1/responses`                             | OpenAI Responses API via OpenRouter prefix → deployed GPT-5+ models |
 | Anthropic   | `/anthropic/v1/messages`                                   | Anthropic messages API → SAP AI Core               |
 | Anthropic   | `/anthropic/v1/messages/count_tokens`                      | Count tokens for Anthropic Messages API requests   |
+| Anthropic   | `/anthropic/v1/complete`                                   | Alias served by the Messages handler (Messages request shape) |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke`                      | AWS Bedrock InvokeModel API → SAP AI Core          |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke-with-response-stream` | AWS Bedrock InvokeModelWithResponseStream → SAP AI Core |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse`                    | AWS Bedrock Converse API → SAP AI Core             |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse-stream`             | AWS Bedrock ConverseStream API → SAP AI Core       |
 | OpenRouter  | `/openrouter/api/v1/chat/completions`                      | OpenRouter chat completions API → SAP AI Core      |
+| OpenRouter  | `/openrouter/api/v1/completions`                           | OpenRouter legacy completions API → SAP AI Core    |
 | OpenRouter  | `/openrouter/api/v1/models`                                | OpenRouter models list from SAP AI Core            |
+| OpenRouter  | `/openrouter/api/v1/files`, `/openrouter/api/v1/vector_stores` | Files and Vector Stores APIs under the OpenRouter prefix |
 | Ollama      | `see ./services/ollama/README.md`                          | All Ollama endpoints → SAP AI Core (via adapter)   |
-| Google      | `/google/v1beta/models/{model}:{method}`                   | Gemini API (generateContent/streamGenerateContent/embedContent) → SAP AI Core |
-| Common      | `/v1/models`                                               | List available SAP AI Core foundation models       |
+| Google      | `/google/v1beta/models/{model}:{method}`                   | Gemini API (generateContent/streamGenerateContent/embedContent) → SAP AI Core; also `/google/v1/...` |
+| SAP-RPT     | `/sap/v1/rpt/{model}/predict`                               | Tabular prediction (classification, regression); also `/sap/v1/rpt/{model}/predict-parquet` |
+| Common      | `/v1/models`                                               | List available SAP AI Core foundation models; also `/openai/v1/models` |
 | Admin *)    | `/api/admin/api-keys`                                      | API key management for unified authentication      |
 | Admin *)    | `/aws/api-keys`                                            | AWS-style credentials management (for SigV4 auth)  |
 | Admin *)    | `/api/admin/api-config`                                    | API configuration management                        |
+| Admin **)   | `/api/admin/deployments`                                   | SAP AI Core deployments for the Model Library (used by the Admin Cockpit) |
+
+**) Served only when an admin service is configured (Docker and Kyma deployments); a standalone gateway does not mount it.
 
 *) The Admin `api-keys` endpoints on the gateway are only functional when running in standalone mode (e.g., using `sail-proxy run` via npm). For multi-user deployments, use the UI5/Fiori Admin dashboard, which provides a more user-friendly interface along with its integrated OData services for managing API keys and more.
 
@@ -1224,7 +1239,7 @@ you: `sail-proxy gemini` sets both variables, selects the sign-in type and start
 runs (`-p`) need `--skip-trust` or a folder trusted once interactively.
 
 See the [Gemini chapter](docs/user/chapter-12-google-gemini.md) for models, embeddings, masking and
-limits.
+limits. Gemini image models generate images through the same route; see the Gemini chapter.
 
 ### pi coding agent
 
@@ -1257,6 +1272,14 @@ pi --model sail-proxy/gpt-5.6-sol
 The standalone launcher does all of that for you: `sail-proxy pi` reads the Model Library, writes
 the provider block with every chat model, hands pi the key and starts it. See the
 [pi chapter](docs/user/chapter-13-pi.md).
+
+### OpenAI Realtime API
+
+Server-side clients can open Realtime API WebSocket sessions through the gateway against SAP AI
+Core's `gpt-realtime` deployment — `ws://localhost:3000/openai/v1/realtime` locally,
+`wss://<host>/gateway/openai/v1/realtime` behind the Docker ingress — with a gateway API key in
+the `Authorization` header. Text and audio both work; every response is metered and counted
+against the caller's quotas. See the [Realtime chapter](docs/user/chapter-14-realtime.md).
 
 ### VS Code with GitHub Copilot
 

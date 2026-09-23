@@ -53,10 +53,11 @@ annotate AdminService.Users with @(
             { $Type: 'UI.ReferenceFacet', Label: 'Tokens', Target: '@UI.FieldGroup#ConstraintsTokens' },
             { $Type: 'UI.ReferenceFacet', Label: 'Spend', Target: '@UI.FieldGroup#ConstraintsSpend' }
         ] },
-        { $Type: 'UI.ReferenceFacet', Label: 'Usage', Target: '@UI.FieldGroup#Usage' },
+        { $Type: 'UI.ReferenceFacet', ID: 'Usage', Label: 'Usage', Target: '@UI.FieldGroup#Usage' },
         { $Type: 'UI.ReferenceFacet', Label: 'API Keys', Target: 'apiKeys/@UI.LineItem#ForUser' },
         { $Type: 'UI.ReferenceFacet', Label: 'AWS Credentials', Target: 'awsCredentials/@UI.LineItem#ForUser' },
         { $Type: 'UI.ReferenceFacet', Label: 'Entitlement', Target: '@UI.FieldGroup#Entitlement' },
+        { $Type: 'UI.ReferenceFacet', ID: 'ToolsUsed', Label: 'Tools used', Target: 'toolUsageDaily/@UI.LineItem#ForUser' },
         { $Type: 'UI.ReferenceFacet', Label: 'Record', Target: '@UI.FieldGroup#Record' }
     ],
     UI.FieldGroup#ConstraintsRequests: { Data: [
@@ -79,6 +80,23 @@ annotate AdminService.Users with @(
         { $Type: 'UI.DataField', Value: spendPerMonth, Label: 'Spend per Month' },
         { $Type: 'UI.DataField', Value: spendPerMonthDefaultText, Label: 'Default' }
     ] },
+    // Bullet microcharts per budget window, rendered by the "Usage charts" custom section
+    // (webapp/ext/fragment/UsageCharts.fragment.xml): used = bar, effective limit = target, colour
+    // from the server-computed criticality (same 75/90 rule as the shell's quota card). They are
+    // not field-group entries: Fiori Elements templates a UI.Chart only in a header facet or a
+    // table column, so a DataFieldForAnnotation in a form renders nothing.
+    UI.DataPoint#SpendDay:    { Value: usedSpendDay,    TargetValue: effectiveSpendPerDay,    Criticality: criticalitySpendDay,    Title: 'Spend Today' },
+    UI.DataPoint#SpendWeek:   { Value: usedSpendWeek,   TargetValue: effectiveSpendPerWeek,   Criticality: criticalitySpendWeek,   Title: 'Spend This Week' },
+    UI.DataPoint#SpendMonth:  { Value: usedSpendMonth,  TargetValue: effectiveSpendPerMonth,  Criticality: criticalitySpendMonth,  Title: 'Spend This Month' },
+    UI.DataPoint#TokensDay:   { Value: usedTokensDay,   TargetValue: effectiveTokensPerDay,   Criticality: criticalityTokensDay,   Title: 'Tokens Today' },
+    UI.DataPoint#TokensWeek:  { Value: usedTokensWeek,  TargetValue: effectiveTokensPerWeek,  Criticality: criticalityTokensWeek,  Title: 'Tokens This Week' },
+    UI.DataPoint#TokensMonth: { Value: usedTokensMonth, TargetValue: effectiveTokensPerMonth, Criticality: criticalityTokensMonth, Title: 'Tokens This Month' },
+    UI.Chart#SpendDay:    { ChartType: #Bullet, Title: 'Spend Today',      Measures: [usedSpendDay],    MeasureAttributes: [{ Measure: usedSpendDay,    Role: #Axis1, DataPoint: '@UI.DataPoint#SpendDay' }] },
+    UI.Chart#SpendWeek:   { ChartType: #Bullet, Title: 'Spend This Week',  Measures: [usedSpendWeek],   MeasureAttributes: [{ Measure: usedSpendWeek,   Role: #Axis1, DataPoint: '@UI.DataPoint#SpendWeek' }] },
+    UI.Chart#SpendMonth:  { ChartType: #Bullet, Title: 'Spend This Month', Measures: [usedSpendMonth],  MeasureAttributes: [{ Measure: usedSpendMonth,  Role: #Axis1, DataPoint: '@UI.DataPoint#SpendMonth' }] },
+    UI.Chart#TokensDay:   { ChartType: #Bullet, Title: 'Tokens Today',     Measures: [usedTokensDay],   MeasureAttributes: [{ Measure: usedTokensDay,   Role: #Axis1, DataPoint: '@UI.DataPoint#TokensDay' }] },
+    UI.Chart#TokensWeek:  { ChartType: #Bullet, Title: 'Tokens This Week', Measures: [usedTokensWeek],  MeasureAttributes: [{ Measure: usedTokensWeek,  Role: #Axis1, DataPoint: '@UI.DataPoint#TokensWeek' }] },
+    UI.Chart#TokensMonth: { ChartType: #Bullet, Title: 'Tokens This Month', Measures: [usedTokensMonth], MeasureAttributes: [{ Measure: usedTokensMonth, Role: #Axis1, DataPoint: '@UI.DataPoint#TokensMonth' }] },
     UI.FieldGroup#Usage: { Data: [
         { $Type: 'UI.DataField', Value: usedRequestsMinute, Label: 'Requests This Minute' },
         { $Type: 'UI.DataField', Value: effectiveRequestsPerMinute, Label: 'Limit (Requests per Minute)' },
@@ -101,7 +119,8 @@ annotate AdminService.Users with @(
     ] },
     UI.FieldGroup#Entitlement: { Data: [
         { $Type: 'UI.DataField', Value: quotaProfile_ID, Label: 'Quota Profile' },
-        { $Type: 'UI.DataField', Value: entitlementCatalog_ID, Label: 'Entitlement Catalog' }
+        { $Type: 'UI.DataField', Value: entitlementCatalog_ID, Label: 'Entitlement Catalog' },
+        { $Type: 'UI.DataField', Value: toolPolicy_ID, Label: 'Tool Policy' }
     ] },
     UI.FieldGroup#Record: { Data: [
         { $Type: 'UI.DataField', Value: firstSeenAt, Label: 'First Seen' },
@@ -165,6 +184,12 @@ annotate AdminService.Users with {
         Common.Text: entitlementCatalog.name, Common.TextArrangement: #TextOnly,
         Common.QuickInfo: 'The catalog assigned in Entitlements & Quotas (Models > Entitlements & Quotas > Assignments). Empty = the default catalog.'
     );
+    toolPolicy @(
+        Common.Label: 'Tool Policy',
+        Common.FieldControl: #ReadOnly,
+        Common.Text: toolPolicy.name, Common.TextArrangement: #TextOnly,
+        Common.QuickInfo: 'The tool policy assigned in Tool Policies (Assign User). Empty = the default policy.'
+    );
     usedRequestsMinute @(Common.Label: 'Requests This Minute', Common.FieldControl: #ReadOnly);
     // The currency of the spend figures and effective limits (the SAP capacity-unit price's
     // currency). Not fields of their own on the page: each shows beside the amount it measures,
@@ -209,3 +234,18 @@ annotate AdminService.AwsCredentials with @(UI.LineItem #ForUser: [
     { $Type: 'UI.DataField', Value: expiresAt, Label: 'Expires At' },
     { $Type: 'UI.DataField', Value: lastUsed, Label: 'Last Used' }
 ]);
+
+annotate AdminService.ToolUsageDaily with @(
+    UI.LineItem#ForUser: [
+        { $Type: 'UI.DataField', Value: day, Label: 'Day' },
+        { $Type: 'UI.DataField', Value: identity, Label: 'Tool' },
+        { $Type: 'UI.DataField', Value: facet, Label: 'Facet' },
+        { $Type: 'UI.DataField', Value: requests, Label: 'Requests' },
+        { $Type: 'UI.DataField', Value: allowed, Label: 'Allowed' },
+        { $Type: 'UI.DataField', Value: monitored, Label: 'Monitored' },
+        { $Type: 'UI.DataField', Value: stripped, Label: 'Stripped' },
+        { $Type: 'UI.DataField', Value: rejected, Label: 'Rejected' },
+        { $Type: 'UI.DataField', Value: unlisted, Label: 'Unlisted' }
+    ],
+    UI.PresentationVariant#ForUser: { SortOrder: [ { Property: day, Descending: true } ], Visualizations: ['@UI.LineItem#ForUser'] }
+);

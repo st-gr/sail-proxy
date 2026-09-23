@@ -10,7 +10,7 @@ fontsize: 18px
 *Multi-provider AI Gateway for SAP AI Core*
 **Author:** *st-gr*
 
-[<< Previous Chapter](chapter-12-google-gemini.md) | [Content Table](README.md)
+[<< Previous Chapter](chapter-12-google-gemini.md) | [Content Table](README.md) | [Next Chapter >>](chapter-14-realtime.md)
 
 ---
 

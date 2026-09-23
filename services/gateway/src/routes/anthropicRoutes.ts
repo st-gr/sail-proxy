@@ -8,6 +8,7 @@ import unifiedTokenAuth, { createUnifiedTokenAuth } from '../middlewares/unified
 import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
+import { toolGovernance, anthropicAdapter } from '../toolGovernance';
 
 const router: express.Router = express.Router();
 
@@ -28,6 +29,7 @@ router.post('/messages/count_tokens',
 router.post('/messages',
   anthropicAuth,
   anthropicServiceAuth,
+  toolGovernance(anthropicAdapter),
   quotaEnforcement,
   anthropicController.handleMessages
 );
@@ -36,6 +38,7 @@ router.post('/messages',
 router.post('/complete',
   anthropicAuth,
   anthropicServiceAuth,
+  toolGovernance(anthropicAdapter),
   quotaEnforcement,
   anthropicController.handleMessages
 );
@@ -44,6 +47,7 @@ router.post('/complete',
 router.post('/messages-beta',
   anthropicAuth,
   anthropicServiceAuth,
+  toolGovernance(anthropicAdapter),
   quotaEnforcement,
   anthropicController.handleMessages
 );

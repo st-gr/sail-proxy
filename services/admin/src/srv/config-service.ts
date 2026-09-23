@@ -12,6 +12,7 @@ import { invalidateQuotaDefaults } from '../services/quotaLimits';
 import { costRecalculationService } from '../services/costRecalculationService';
 import { republishAll } from '../services/userQuotaService';
 import { invalidateForEmails } from '../services/credentialInvalidation';
+import { invalidateToolRetentionDefaults } from '../services/toolUsageService';
 
 const logger = getDefaultLogger();
 
@@ -439,6 +440,8 @@ class ConfigurationService {
 
       // platform.quotas may have changed: every state document carries the effective limits.
       invalidateQuotaDefaults();
+      // platform.toolGovernance.retention may have changed too: the next nightly purge must use it.
+      invalidateToolRetentionDefaults();
       // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
       costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
       republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
@@ -534,6 +537,8 @@ class ConfigurationService {
 
       // platform.quotas may have changed: every state document carries the effective limits.
       invalidateQuotaDefaults();
+      // platform.toolGovernance.retention may have changed too: the next nightly purge must use it.
+      invalidateToolRetentionDefaults();
       // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
       costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
       republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));

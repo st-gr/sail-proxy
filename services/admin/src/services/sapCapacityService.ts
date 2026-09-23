@@ -1,6 +1,7 @@
 import { getDefaultLogger } from '@libs/logger';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pricingTwins } from './pricingTwins';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -62,11 +63,19 @@ export async function _lookupRate(model: string, at: Date): Promise<any | null> 
   // /v2/lm/scenarios/foundation-models/models into ModelCosts - so they are sourced from
   // there rather than a hand-maintained table. ModelCosts stores per-1,000-token figures;
   // divide by 1,000 for the per-single-model-token rate computeSapNative multiplies by.
-  const rows = await db.run(
+  const query = (id: string) => db.run(
     SELECT.from('sap.llm.gateway.admin.ModelCosts')
-      .where('model =', model, 'and dateFrom <=', iso, 'and dateTo >=', iso)
+      .where('model =', id, 'and dateFrom <=', iso, 'and dateTo >=', iso)
       .orderBy('dateFrom desc')
   );
+  // Try every id this model's price may be maintained under, in the same order as
+  // modelCostService.getModelPricing (pricingTwins), so a deep-context call and the
+  // deployment/bare-model fallback both resolve identically here.
+  let rows: any[] | undefined;
+  for (const id of pricingTwins(model)) {
+    rows = await query(id);
+    if (rows?.[0]) break;
+  }
   const mc = rows?.[0];
   if (!mc) return null;
   const per1k = (v: any) => (v === null || v === undefined ? null : Number(v) / 1000);
@@ -76,6 +85,9 @@ export async function _lookupRate(model: string, at: Date): Promise<any | null> 
     cacheReadGenAiRate: per1k(mc.cacheReadInputCost),
     cacheWriteGenAiRate: per1k(mc.cacheCreationInputCost),
     imageGenAiRate: null, // not published per model; computeSapNative falls back to input
+    imageOutputGenAiRate: per1k(mc.imageOutputCost),
+    audioInputGenAiRate: per1k(mc.audioInputCost),
+    audioOutputGenAiRate: per1k(mc.audioOutputCost),
     cuFactor: cuFactor()
   };
 }
@@ -104,6 +116,9 @@ export async function computeSapNative(input: {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   imageInputTokens: number;
+  imageOutputTokens?: number;
+  audioInputTokens?: number;
+  audioOutputTokens?: number;
   at: Date;
   productive: boolean;
 }): Promise<SapNativeResult | null> {
@@ -119,9 +134,22 @@ export async function computeSapNative(input: {
 
   const f = (module.exports as any)._cacheFactors(input.provider);
 
+  // Modality splits (image spec §3, audio spec §3): image and audio tokens are subsets of the
+  // totals, priced at their manual GenAI rates when maintained, else the text rate of their
+  // direction (itself falling back to input). The totals never change, only the split of their
+  // GenAI-token contribution.
+  const imageOut = Math.max(0, n(input.imageOutputTokens));
+  const audioOut = Math.max(0, n(input.audioOutputTokens));
+  const audioIn = Math.min(Math.max(0, n(input.audioInputTokens)), n(input.inputTokens));
+  const textIn = Math.max(0, n(input.inputTokens) - audioIn);
+  const textOut = Math.max(0, n(input.outputTokens) - imageOut - audioOut);
+  const imgOutR = n(rate.imageOutputGenAiRate ?? rate.outputGenAiRate ?? rate.inputGenAiRate);
+  const audInR = n(rate.audioInputGenAiRate ?? rate.inputGenAiRate);
+  const audOutR = n(rate.audioOutputGenAiRate ?? rate.outputGenAiRate ?? rate.inputGenAiRate);
+
   const genAiTokens =
-    input.inputTokens * inR +
-    input.outputTokens * outR +
+    textIn * inR + audioIn * audInR +
+    textOut * outR + imageOut * imgOutR + audioOut * audOutR +
     (input.cacheReadInputTokens * f.read) * crR +
     (input.cacheCreationInputTokens * f.write) * cwR +
     input.imageInputTokens * imR;

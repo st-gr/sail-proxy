@@ -26,6 +26,7 @@ import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityC
 import { ReplacementMap } from './replacementMap';
 import { detectEntities } from './detectors';
 import { replaceEntities, maskJsonValue, propagateMaskedValues } from './replacer';
+import { propagatableNames } from './detectors/speakerLabelDetector';
 import { applyEntityToggles, buildKnownEntityTypes } from './entityToggles';
 import { DEFAULT_MASKING_CONFIG } from './defaultMaskingConfig';
 import { unmaskText, unmaskJsonValue } from './unmasker';
@@ -52,6 +53,10 @@ import {
   unmaskGeminiOutput,
 } from '../../utils/geminiBodyAdapter';
 import { beginStreamContentCapture } from '../../services/siemUsageEvent';
+import securityEventEmitter from '../../services/securityEventEmitter';
+import { containmentOf, registerContainment } from './containmentRegistry';
+import { placeholdersIn, resolveUnknownPlaceholderMode } from './unknownPlaceholders';
+import type { UnknownPlaceholderMode } from './unknownPlaceholders';
 import { appendStreamContent } from '../../services/siemStreamCapture';
 
 interface PluginContext {
@@ -311,10 +316,13 @@ function resolveConfidenceConfig(req: any): { min_confidence?: number; threshold
  * `resolveSaturationWarn` in saturationReport.ts drops anything that is not an integer of at
  * least 1, so one function decides what a valid bar is.
  */
-function resolveReportingConfig(req: any): { allowlist?: AllowlistConfig; saturation_warn?: number } {
+function resolveReportingConfig(req: any): { allowlist?: AllowlistConfig; saturation_warn?: number; unknown_placeholders?: string } {
   const patterns: string[] = [];
   const terms: string[] = [];
   let saturationWarn: number | undefined;
+  // A scalar like saturation_warn: the last layer that sets one wins. Not validated here -
+  // resolveUnknownPlaceholderMode turns anything unreadable into `withhold`, never into `off`.
+  let unknownPlaceholders: string | undefined;
 
   try {
     for (const layer of pseudonymizationLayers(req)) {
@@ -322,14 +330,16 @@ function resolveReportingConfig(req: any): { allowlist?: AllowlistConfig; satura
       if (Array.isArray(allowlist?.patterns)) patterns.push(...allowlist.patterns);
       if (Array.isArray(allowlist?.terms)) terms.push(...allowlist.terms);
       if (typeof layer?.saturation_warn === 'number') saturationWarn = layer.saturation_warn;
+      if (typeof layer?.unknown_placeholders === 'string') unknownPlaceholders = layer.unknown_placeholders;
     }
   } catch {
     // Fall through to the code defaults, as resolveDefaultEntities does.
   }
 
-  const resolved: { allowlist?: AllowlistConfig; saturation_warn?: number } = {};
+  const resolved: { allowlist?: AllowlistConfig; saturation_warn?: number; unknown_placeholders?: string } = {};
   if (patterns.length > 0 || terms.length > 0) resolved.allowlist = { patterns, terms };
   if (saturationWarn !== undefined) resolved.saturation_warn = saturationWarn;
+  if (unknownPlaceholders !== undefined) resolved.unknown_placeholders = unknownPlaceholders;
   return resolved;
 }
 
@@ -545,8 +555,12 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // value re-mints the identical token). Legacy NUMERIC residue (from the old
     // counter scheme) can never be re-minted; reserve those numbers so anonymization
     // counters cannot collide with them, and log the residue for visibility.
+    // Placeholders the CLIENT sent, read before masking touches the body. The model echoing one of
+    // these is not an invention (see unknownPlaceholders.ts), so they are exempt from containment.
+    let inboundPlaceholders = new Set<string>();
     try {
       const rawBody = JSON.stringify(req.body);
+      inboundPlaceholders = new Set(placeholdersIn(rawBody));
       const residue = new Set<string>(rawBody.match(/MASKED_[A-Z_]+_[0-9a-f]+|(?:https?:\/\/)?masked-url-\d+\.invalid/g) || []);
       if (residue.size > 0) {
         for (const token of residue) {
@@ -558,6 +572,19 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         logger.info(`Request contains ${residue.size} masked token(s) carried in from earlier turns (hash-stable tokens resolve automatically when their value is present): ${sample}${residue.size > 10 ? ', …' : ''}`);
       }
     } catch { /* non-fatal: residue guard is best-effort */ }
+
+    // A model invents placeholders it was never sent - measured at 0.8% of pseudonymized responses
+    // and 2.4% of saturated ones, WITH the instruction below that forbids it. Registered on the map
+    // so every unmask site (these handlers, the SSE interceptor, the hosted-tool engine's
+    // continuation rounds) withholds and reports them the same way.
+    const unknownMode = resolveUnknownPlaceholderMode(maskingConfig.unknown_placeholders);
+    if (maskingConfig.method === 'pseudonymization' && unknownMode !== 'off') {
+      registerContainment(map, {
+        inbound: inboundPlaceholders,
+        withhold: unknownMode === 'withhold',
+        onUnknown: (found) => reportInventedPlaceholders(req, found, unknownMode, logger)
+      });
+    }
 
     // Responses API bodies use `instructions` + `input` instead of `system` +
     // `messages`. Without this the /openai/v1/responses route would bypass
@@ -640,6 +667,16 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // Prevents the model from seeing the raw value alongside its mask.
     const propagated = propagateMaskedValues(req.body, map);
 
+    // A name a transcript's speaker labels vouched for is masked wherever it stands alone, in every
+    // node: "I know Lena, you were going to say", and the model's own later "Lena chaired the
+    // meeting". The 12-character floor above does not apply to these - something else has already
+    // established that the word is a person's name in THIS request - but everyday words that happen
+    // to be names never travel (speakerLabelDetector.ts). Case-sensitive, whole words only.
+    const vouchedNames = propagatableNames(allEntities);
+    const propagatedNames = vouchedNames.size === 0
+      ? 0
+      : propagateMaskedValues(req.body, map, { minLength: 1, only: vouchedNames });
+
     // Tell the model to treat placeholder tokens as opaque and copy them verbatim.
     // A garbled id cannot be unmasked (the value is unrecoverable), so copy fidelity
     // is part of the design; observed in practice: models occasionally rewrite ids
@@ -706,7 +743,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       beginStreamContentCapture(req, res);
     }
 
-    logger.info(`Masked ${allEntities.length} entities (${map.size} unique) across ${messages.length} messages; propagated ${propagated} additional occurrence(s)`);
+    logger.info(`Masked ${allEntities.length} entities (${map.size} unique) across ${messages.length} messages; propagated ${propagated} additional occurrence(s), ${propagatedNames} stand-alone name(s) vouched for by speaker labels`);
 
     // Saturation REPORT. Runs here, after every text has been masked, and reads only the
     // result: it cannot reach a score, a threshold or a detector, and the entities counted
@@ -784,7 +821,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
       // would mean buffering every response in memory whether or not any sink wants it.
       (req as any).__siemMaskedResponse = responseText;
 
-      const unmasked = unmaskText(responseText, map);
+      const unmasked = unmaskText(responseText, map, containmentOf(map));
       setResponseText(upstreamResponse, unmasked);
       logger.debug(`Unmasked response text (${responseText.length} → ${unmasked.length} chars)`);
     }
@@ -792,13 +829,13 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
     unmaskToolBlocks(upstreamResponse, map);
 
     // Responses API output items (message/function_call/reasoning).
-    unmaskResponsesOutput(upstreamResponse, (s: string) => unmaskText(s, map));
+    unmaskResponsesOutput(upstreamResponse, (s: string) => unmaskText(s, map, containmentOf(map)));
 
     // Gemini candidates[].content.parts (text + functionCall.args). Stream frames on
     // /google share this exact shape (no `delta`/`type` field `isStreamingChunk` above
     // recognizes), so a streamed Gemini chunk lands here too — this one site unmasks
     // both the final response and every streamed frame.
-    unmaskGeminiOutput(upstreamResponse, (s: string) => unmaskText(s, map));
+    unmaskGeminiOutput(upstreamResponse, (s: string) => unmaskText(s, map, containmentOf(map)));
 
     // Residue audit (the non-streaming path had none — this is the incident path).
     // Scan the fully-unmasked client-facing body for surviving MASKED_* tokens and
@@ -864,7 +901,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         if (body && typeof body === 'object' && map.reverse.size > 0) {
           const serialized = JSON.stringify(body);
           if (serialized.includes('MASKED_')) {
-            const unmasked = unmaskText(serialized, map);
+            const unmasked = unmaskText(serialized, map, containmentOf(map));
             if (unmasked !== serialized) {
               body = JSON.parse(unmasked);
               logger.debug('Pseudonymization', `Unmasked non-streaming JSON response body (requestId=${(req as any)?.debugRequestId || 'unknown'})`);
@@ -881,7 +918,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   const buffers = new Map<string, StreamUnmaskBuffer>();
   const getBuf = (key: string): StreamUnmaskBuffer => {
     let b = buffers.get(key);
-    if (!b) { b = new StreamUnmaskBuffer(map); buffers.set(key, b); }
+    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map)); buffers.set(key, b); }
     return b;
   };
 
@@ -1218,7 +1255,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     if (carriesPlaceholder) {
       // Assigned, not just mutated: a frame whose JSON is a bare string or number is
       // returned by value, and unmaskJsonValue has nothing to mutate in place.
-      event = unmaskJsonValue(event, map);
+      event = unmaskJsonValue(event, map, containmentOf(map));
       modified = true;
     }
 
@@ -1248,7 +1285,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   const safetyNetUnmask = (s: string): string => {
     if (map.reverse.size === 0) return s;
     if (!s.includes('MASKED_') && !s.includes('masked-url-')) return s;
-    return unmaskText(s, map);
+    return unmaskText(s, map, containmentOf(map));
   };
 
   // Split accumulated data into complete SSE blocks, keep the partial tail pending.
@@ -1323,7 +1360,7 @@ function unmaskToolBlocks(response: any, map: ReplacementMap): void {
   if (Array.isArray(response.content)) {
     for (const block of response.content) {
       if (block?.type === 'tool_use' && block.input) {
-        unmaskJsonValue(block.input, map);
+        unmaskJsonValue(block.input, map, containmentOf(map));
       }
     }
   }
@@ -1333,7 +1370,7 @@ function unmaskToolBlocks(response: any, map: ReplacementMap): void {
   if (Array.isArray(openaiCalls)) {
     for (const call of openaiCalls) {
       if (typeof call?.function?.arguments === 'string') {
-        call.function.arguments = unmaskText(call.function.arguments, map);
+        call.function.arguments = unmaskText(call.function.arguments, map, containmentOf(map));
       }
     }
   }
@@ -1343,7 +1380,7 @@ function unmaskToolBlocks(response: any, map: ReplacementMap): void {
   if (Array.isArray(sapCalls)) {
     for (const call of sapCalls) {
       if (typeof call?.function?.arguments === 'string') {
-        call.function.arguments = unmaskText(call.function.arguments, map);
+        call.function.arguments = unmaskText(call.function.arguments, map, containmentOf(map));
       }
     }
   }
@@ -1364,7 +1401,7 @@ function handleStreamingChunk(
 
   // Initialize text stream buffer on first chunk
   if (!(req as any).__streamBuffer) {
-    (req as any).__streamBuffer = new StreamUnmaskBuffer(map);
+    (req as any).__streamBuffer = new StreamUnmaskBuffer(map, containmentOf(map));
   }
   const buffer: StreamUnmaskBuffer = (req as any).__streamBuffer;
 
@@ -1376,7 +1413,7 @@ function handleStreamingChunk(
   const toolBuffers: Map<string, StreamUnmaskBuffer> = (req as any).__streamToolBuffers;
   const getToolBuf = (key: string): StreamUnmaskBuffer => {
     let b = toolBuffers.get(key);
-    if (!b) { b = new StreamUnmaskBuffer(map); toolBuffers.set(key, b); }
+    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map)); toolBuffers.set(key, b); }
     return b;
   };
 
@@ -1522,6 +1559,43 @@ function maybeAttachMaskingInfo(response: any, state: PseudonymizationState, req
   return attachMaskingInfo(response, state);
 }
 
+/**
+ * Detection for a placeholder the model invented: one grep-stable counter line and one security
+ * event per distinct placeholder per request. The ids are random and name nobody, so logging them
+ * is safe and is what lets an operator find the artifact they ended up in.
+ */
+function reportInventedPlaceholders(req: any, found: string[], mode: UnknownPlaceholderMode, logger: any): void {
+  try {
+    const seen: Set<string> = (req.__pseudoInventedPlaceholders ??= new Set<string>());
+    const fresh = found.filter((p) => !seen.has(p));
+    if (fresh.length === 0) return;
+    for (const p of fresh) seen.add(p);
+
+    const byType: Record<string, number> = {};
+    for (const p of fresh) {
+      const type = p.match(/^(MASKED_[A-Z_]+?)_[0-9a-f]+$/)?.[1] || 'MASKED_URL';
+      byType[type] = (byType[type] || 0) + 1;
+    }
+    const action = mode === 'withhold' ? 'withheld' : 'reported';
+    const requestId = req?.debugRequestId || 'unknown';
+    const byTypeStr = Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(',');
+    logger.warn(`pseudonymization_invented_placeholder_total=${fresh.length} by_type=${byTypeStr} action=${action} placeholders=${fresh.join(',')} requestId=${requestId}`);
+
+    const data = req?.unifiedAuth?.data ?? {};
+    Promise.resolve(securityEventEmitter.emitInventedPlaceholder({
+      credentialId: data.keyId ?? data.credentialId ?? 'unknown',
+      authType: req?.unifiedAuth?.authType ?? 'api_key',
+      placeholders: fresh,
+      action,
+      model: typeof req?.body?.model === 'string' ? req.body.model : undefined,
+      userAgent: typeof req?.get === 'function' ? req.get('user-agent') : undefined,
+      endpoint: req?.originalUrl,
+      method: req?.method,
+      requestId
+    })).catch(() => undefined);
+  } catch { /* detection must never break a response */ }
+}
+
 // Placeholder-residue pattern (hash-hex ids and masked-url hosts), shared by the
 // streaming and non-streaming leak audits.
 const RESIDUE_REGEX = /MASKED_[A-Z_]+_[0-9a-f]+|(?:https?:\/\/)?masked-url-\d+\.invalid/g;
@@ -1549,7 +1623,10 @@ function auditResponseResidue(response: any, map: ReplacementMap, requestId: str
     if (map.reverse.has(token)) {
       logger.error('Pseudonymization', `Unmask miss on response: ${token} was in the replacement map but reached the client masked (requestId=${requestId})`);
     } else {
-      logger.warn('Pseudonymization', `Unresolvable masked residue in response: ${token} is not in this request's map — its value is absent from this request (leaked by an earlier session) (requestId=${requestId})`);
+      // Reached only with `unknown_placeholders: off|report`, or for a token the client itself sent:
+      // an invented one is otherwise withheld before this audit runs. The old wording blamed "an
+      // earlier session"; measured, most of these are invented by the model in THIS response.
+      logger.warn('Pseudonymization', `Unresolvable masked token in response: ${token} is not in this request's map — either the client sent it, or the model invented it (requestId=${requestId})`);
     }
   }
   const byTypeStr = Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(',');

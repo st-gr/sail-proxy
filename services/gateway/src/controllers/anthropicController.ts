@@ -18,6 +18,7 @@ const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { recordInvokedTools, anthropicAdapter } from '../toolGovernance';
 
 // Type definitions
 interface ExtendedRequest extends Request {
@@ -519,6 +520,7 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
           outputTokensType: typeof outputTokens
         });
         
+        recordInvokedTools(req, anthropicAdapter.invokedTools(anthropicResponse));
         updateTokenCounts(usageMetrics, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
       }
     } else {
@@ -936,6 +938,7 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
     }
     
     // Track usage for emulated streaming completion
+    recordInvokedTools(req, anthropicAdapter.invokedTools(responseData.final_result));
     updateTokenCounts(
       options.usageMetrics, 
       usageInfo.input_tokens, 
@@ -1087,7 +1090,8 @@ async function handleNativeStreaming(options: NativeStreamingOptions): Promise<v
             // Send the event to the client
             const eventStr = JSON.stringify(event);
             sseWriter.writeEventStream(res, event.type, eventStr);
-          
+            recordInvokedTools(req, anthropicAdapter.invokedToolsFromChunk(event));
+
             // Log the event if debug is enabled
             if (shouldLogEvents) {
               clientNativeStreamLog.push(`event: ${event.type}\ndata: ${eventStr}\n`);

@@ -315,6 +315,18 @@
                                                         <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalImageInputTokens', formatter: '.formatNumber'}" /></footer>
                                                     </Column>
                                                     <Column hAlign="End">
+                                                        <Text text="Image Output Tokens" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalImageOutputTokens', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="Audio Input Tokens" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalAudioInputTokens', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
+                                                        <Text text="Audio Output Tokens" />
+                                                        <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalAudioOutputTokens', formatter: '.formatNumber'}" /></footer>
+                                                    </Column>
+                                                    <Column hAlign="End">
                                                         <Text text="GenAI Tokens" />
                                                         <footer><Text text="{path: 'viewModel>/charts/sapBillingTotals/totalGenAiTokens', formatter: '.formatNumber'}" /></footer>
                                                     </Column>
@@ -338,6 +350,9 @@
                                                             <Text text="{viewModel>apiKeyEmail}" visible="{= !!${viewModel>apiKeyEmail}}" class="sapUiContentLabelColor" />
                                                         </VBox>
                                                         <Text text="{path: 'viewModel>totalImageInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{path: 'viewModel>totalImageOutputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{path: 'viewModel>totalAudioInputTokens', formatter: '.formatNumber'}" textAlign="End" />
+                                                        <Text text="{path: 'viewModel>totalAudioOutputTokens', formatter: '.formatNumber'}" textAlign="End" />
                                                         <Text text="{path: 'viewModel>totalGenAiTokens', formatter: '.formatNumber'}" textAlign="End" />
                                                         <Text text="{path: 'viewModel>totalCapacityUnits', formatter: '.formatNumber'}" textAlign="End" />
                                                         <Text text="{parts: [{path: 'viewModel>pricePerCu'}, {path: 'viewModel>sapCostCurrency'}], formatter: '.formatSapCost'}" textAlign="End" />
@@ -613,6 +628,7 @@
                                         <Column hAlign="End"><Text text="Output Tokens" /></Column>
                                         <Column hAlign="End"><Text text="Avg Response Time" /></Column>
                                         <Column hAlign="End"><Text text="Total Cost" /></Column>
+                                        <Column><Text text="{i18n>unitColumn}" /></Column>
                                     </columns>
                                     <items>
                                         <ColumnListItem>
@@ -625,6 +641,7 @@
                                             <Text text="{path: 'viewModel>outputTokens', formatter: '.formatNumber'}" textAlign="End" />
                                             <Text text="{path: 'viewModel>avgResponseTime', formatter: '.formatDuration'}" textAlign="End" />
                                             <Text text="{path: 'viewModel>totalCost', formatter: '.formatSmartCurrency'}" textAlign="End" />
+                                            <Text text="{parts: ['viewModel>unit', 'i18n>unitCells', 'i18n>unitTokens'], formatter: '.formatUnit'}" />
                                         </ColumnListItem>
                                     </items>
                                 </Table>

@@ -155,6 +155,15 @@ and no spend/token admission.
 A refusal raises `quota_exceeded` (`securityEventEmitter.emitQuotaExceeded`), whose `metadata`
 carries `ownerEmail`, `scope`, `dimension`, `window`, `limit` and `used`.
 
+**Two request-rate layers, one page.** `checkRequests` runs the user's per-minute limit (from the
+user block: own constraint, else quota profile, else `platform.quotas`) and then the credential's
+own minute/hour/day limits (`RateLimits` row, set through `setRateLimits`). The cockpit shows both
+on a credential: the credential's three fields, and `ownerRequestsPerMinuteText` — a virtual the
+credential after-READ fills from `userQuotaService.statusMany` for the page's distinct owners,
+rendered by `quotaLimits.effectiveLimitText` ("60 (Standard profile)"). The `setRateLimits`
+parameters carry `UI.ParameterDefaultValue` paths (`in/requestsPerMinute`, …), which Fiori Elements
+resolves against the bound row, so the dialog opens with the current values.
+
 ### Authentication System
 
 #### Token Validation and User Resolution
@@ -487,6 +496,15 @@ router.use('/model/:modelId/*', async (req: Request, res: Response, next: NextFu
 });
 ```
 
+**The real middleware chain** (`services/gateway/src/routes/awsBedrockRoutes.ts`):
+`conditionalUnifiedAuth` (unified token auth, skipped when SigV4 already authenticated the request) →
+`bedrockServiceAuth` → `toolGovernance(bedrockAdapter)` → `quotaEnforcement` →
+`awsBedrockController.handleBedrockRequest`. Tool governance now sits between service authentication
+and quota enforcement — the same position the other REST families use; see
+[tool-governance.md](tool-governance.md#middleware-mount-points) for the adapter itself (shape
+detection, the Converse/Anthropic-invoke split, the `stripRefusal`/`rejectionHeaders` additions, and
+the stream tap that records tools from Bedrock's own passthrough stream).
+
 #### Google Gemini route
 
 `/google` lets any Gemini-shaped client — Gemini CLI, `@google/genai`, anything building
@@ -681,6 +699,271 @@ pass-through this same code IS the masking boundary — the text arriving here i
 is what this interceptor unmasks before it reaches the client — so a capture added there would be
 correct. Wiring it correctly therefore needs a path-aware gate — capture only on the native
 pass-through, never on the bridge — and is left as follow-up work.
+
+#### SAP-RPT tabular prediction route
+
+`/sap/v1/rpt` relays SAP's relational pretrained transformer (RPT) models — a tabular contract
+(rows in, predictions out), not a chat contract. The route is a pass-through: the gateway adds
+authentication, entitlement, quota, deployment resolution, usage and cost, and re-validates nothing
+SAP validates itself. It runs **no hook chain** — masking of tabular cells was judged feasible and
+deliberately declined (spec §2) — and has no streaming and no tool governance, so nothing else in
+this chapter's middleware stack applies to it. The measured request/response/error shapes this
+route relays live in `docs/superpowers/specs/2026-09-22-sap-rpt-tabular-route-design.md` §3; this
+section covers only the gateway side.
+
+**Module map** (`services/gateway/src/`):
+
+| File | Role |
+|---|---|
+| `routes/sapRptRoutes.ts` | mounts `POST /:model/predict` and `POST /:model/predict-parquet`; `shapeMiddlewareErrors` first, then `createUnifiedTokenAuth()`, then `quotaEnforcement` — no hook middleware, no tool governance |
+| `controllers/sapRptController.ts` | resolves the model, checks entitlement, forwards the body verbatim, folds usage, relays SAP's response |
+| `sapRpt/usage.ts` | `cellsFromResponse` (cells from the response's `metadata`), `accountedModel` (the `--deep-context` id) |
+| `sapRpt/errors.ts` | `rptError` — the gateway's own refusals in SAP's `{detail:[{loc,msg,type}], status:{code,message}}` shape |
+| `sapRpt/shapeMiddlewareErrors.ts` | reshapes `createUnifiedTokenAuth()`'s 401 and `quotaEnforcement`'s 429 from the OpenAI `{error:{...}}` envelope into the SAP shape above, so a client of this route parses one error shape throughout |
+| `utils/deployedTwin.ts` | `resolveDeployedTwin` — the bare-model / `--deployed` twin resolver this route shares with `/google` and the OpenAI Realtime route |
+
+**Errors in the SAP shape throughout.** `createUnifiedTokenAuth()` and `quotaEnforcement` answer
+401/429 in the OpenAI envelope everywhere else in the gateway; this route must not. `router.use(
+shapeMiddlewareErrors)` is mounted before both, patching `res.json` for the request so a 401 from
+auth or a 429 from quota is rewritten through `rptError` before it reaches the client; every other
+status, including SAP's own relayed body, passes through untouched.
+
+**The controller** (`sapRptController.ts`), for both `predict` and `predict-parquet`: resolve the
+model through `resolveDeployedTwin` (substituted via `configService.getSubstitutedModel('sap-rpt',
+...)` first); a `null` twin is 404 `model_not_found` in the SAP shape. Check entitlement on BOTH
+the requested id and the resolved twin id (`isModelEntitled`), naming whichever fails in the 403
+`model_not_entitled` message and the `model_not_entitled` security event — the same both-ids rule
+`/google` and the realtime route apply when routing can move the request onto a different
+catalogue entry. POST to `${twin.deploymentUrl}/predict` (or `/predict-parquet`) with
+`Authorization: Bearer <AI Core token>` and `AI-Resource-Group`, `configService.getTimeout(false)`
+as the timeout, and `validateStatus: () => true` so SAP's 4xx/5xx bodies reach the fold logic
+instead of throwing. An unreachable upstream is 502 `upstream_unavailable`. On any response,
+`RELAYED_HEADERS` (`content-type`, `ai-inference-id`, `x-request-id`, `x-upstream-service-time`)
+and the body are relayed exactly as SAP sent them — string bodies via `res.send`, everything else
+via `res.json`, so SAP's own JSON is never re-serialized. `predictParquet` forwards the raw
+multipart request stream (`req` itself, with its `content-type`) rather than `req.body`; JSON
+parsing never runs for that subpath. Body size is the gateway's global JSON limit
+(`bodyParser.json({ limit: config.maxRequestSize })` in `src/index.ts`); there is no per-route
+override. `config.maxRequestSize` comes from `ConfigLoader.loadConfig()` (`libs/config/index.ts`):
+`'10mb'` from `loadBaseConfig()`, overridable per deploy target only by adding a `maxRequestSize`
+key to `services/<service>/config/<DEPLOY_TARGET>.json` — no target's config file in this repo
+does, and no environment variable reaches it, so every deployment runs at the 10 MB default.
+
+**Usage and cost** (`sapRpt/usage.ts`). `cellsFromResponse(body)` reads only `body.metadata`
+(present on a 200, absent on an error) and returns `null` if any of `num_rows`, `num_columns`,
+`num_predictions` is missing or not a non-negative number: `inputCells = num_rows × num_columns`
+(every cell sent, index and target columns included) and `predictCells = num_predictions` (query
+rows × target columns). The controller sets `usage.unit = 'cells'` before folding these into the
+existing `inputTokens`/`outputTokens` fields via `updateTokenCounts`, so the whole cost, quota and
+analytics pipeline applies unchanged — `UsageEvent` gained `unit?: 'tokens' | 'cells'` (default
+`'tokens'`) for exactly this. A rejected call (`cellsFromResponse` returns `null`) emits no usage
+event at all, so it bills nothing. `accountedModel(model, contextMode)` records a `context_mode:
+"deep"` response against `<bare model>--deep-context` — stripping a trailing `--deployed` first,
+since the admin's Deep Context row is keyed on the bare id — and returns `model` unchanged for
+every other call.
+
+**Admin-side pricing** mirrors the gateway's `DEEP_CONTEXT_SUFFIX` ('`--deep-context`') with its
+own copy in `services/admin/src/services/pricingTwins.ts`, kept separate from
+`modelCostService.ts` on purpose: that module does `const { ... } = cds.ql` at top level, and
+`sapCapacityService.ts` importing it just for this helper would drag that eager destructure into
+suites that mock `@sap/cds` without a `.ql`. `pricingTwins(modelId)` returns the ids a price may be
+maintained under, in lookup order (itself, then its bare model if it's a `--deep-context` id, then
+each `--deployed` twin) — used identically by `modelCostService.getModelPricing` and
+`sapCapacityService._lookupRate`. `deriveDeepContextRows` (`librarySnapshot.ts`) derives one
+pricing-only `LibraryModels` row per snapshot row matching `/^sap-rpt-.*-large$/`, named `"<model>
+(Deep Context)"`, with `deployment: null` and mirroring the parent's `absent` flag; it is excluded
+from the default entitlement catalog (`modelEntitlementService.effectiveModelIds`) so it never
+appears as an offerable or callable model — only as something a price can be maintained on. Usage
+Analytics and the API-key billing breakdown read a `unit` per model (`ApiKeyUsage.unit` /
+`AwsCredentialUsage.unit`, the `usageUnits()` function on `AdminService`) to label these rows in
+cells rather than tokens.
+
+**No hooks by design, and a test that pins it.** `sapRptRoutes.ts` never calls `getHookConfig` or
+`executeBeforePlugins`/`executeAfterPlugins`, and `hooks.defaults` in `api_config.json` has no
+`sap-rpt` key — unlike every chat/completion route, this one has no plugin pipeline to opt out of.
+`test/sap-rpt-controller.test.ts` pins this by spying on `executeBeforePlugins` and
+`executeAfterPlugins` and asserting neither is called; `test/sap-rpt-routes.test.ts` pins the
+companion fact that tool governance — which has nothing to govern in a tabular request — is never
+mounted on the router at all.
+
+**Configuration.** The six models each carry a `models.overrides` entry keyed on their
+`--deployed` published id (the same convention `resolveDeployedTwin` resolves against), declaring
+the subpaths this route needs and no streaming:
+
+```json
+"sap-rpt-1.6--deployed": { "streamingSupported": false, "subpaths_emulated": [], "subpaths_native": ["predict", "predict-parquet"] }
+```
+
+Kept in sync across `services/gateway/api_config.json`, `services/admin/api_config.json` and
+`npm-dist/sail-proxy/src/templates/api_config.template.json` by `cli-tools/sync-api-config.js`, as
+every override is.
+
+#### Image generation
+
+Gemini image models are served two ways: natively through `/google` (unchanged relay — the Google
+route section above already covers `responseModalities`/`imageConfig` passing through unmodified,
+and the `chooseRoute` refusal below), and through an OpenAI-shaped surface,
+`POST /openai/v1/images/generations` (JSON) and `POST /openai/v1/images/edits` (multipart), also
+mounted at `/openai/api/v1/images/...`.
+
+**Usage split** (`services/gateway/src/services/googleGeminiService.ts`, `usageFromGemini`, and the
+streaming last-frame fold). `promptTokensDetails`/`candidatesTokensDetails` modality `IMAGE` are
+read into `imageInputTokens`/`imageOutputTokens`; `outputTokens` keeps the full
+`candidatesTokenCount + thoughtsTokenCount`, so `imageOutputTokens` is a subset, not an addition. A
+missing details array yields `0` for both. This is unconditional on `/google` — a text-only Gemini
+call simply reports `0`.
+
+**Orchestration refusal** (`googleController.ts`). `requestsImageOutput(req.body)` checks
+`generationConfig.responseModalities` for `IMAGE` (case-insensitive). When the resolved route is
+`chooseRoute`'s `image-unavailable` kind (the model has no Google deployment), the controller
+answers the Gemini error envelope with HTTP 400 `INVALID_ARGUMENT` and the message `Model <model>
+has no deployment; image output (responseModalities IMAGE) needs a deployment of the model on SAP AI
+Core.` A model `chooseRoute` cannot route at all (`null` — typically a deployment-only image model
+with no deployment, which the catalogue therefore never lists) gets the same message with HTTP 404
+`NOT_FOUND` instead of the generic "not available" text. A model without the `image-generation`
+capability is not second-guessed — the request goes to its deployment and SAP's own error is relayed.
+
+**Images controller** (`controllers/imagesController.ts`, routes in `routes/imagesRoutes.ts`,
+mounted with the standard chain — unified auth → `serviceConfigurations.openai` →
+`quotaEnforcement`, same as `responsesRoutes.ts`/`filesRoutes.ts`). The pure mapping lives in
+`controllers/imagesMapping.ts` (`mapImageRequest`, `openAiUsageFromGemini`, `sumUsages`,
+`extractImages`, `assembleImagesResponse`) so it is unit-tested without Express or a live
+deployment. `generateImage`/`editImage` resolve the requested model to its deployment
+(`resolveDeployedTwin`), then loop `n` times (1–4) issuing one `generateContent` call per image on
+that deployment (`geminiUrl`), reusing `headersForSap` and `isGoogleProvider` — both now exported
+from `googleController.ts` rather than kept private to the Google route. Each call emits its own
+usage event (`createUsageMetrics`/`emitUsageEvent`) against the deployment id, exactly like the
+`/google` native path; a failure partway through an `n > 1` loop answers the error after the usage
+events for the images already produced were emitted (SAP billed them, so the gateway does not
+pretend otherwise). Uploads for `/edits` go through `extractBoundary`/`parseMultipartFields` in
+`utils/multipart.ts` — `MultipartParser` and `parsePartHeaders` moved there from the files
+controller (`filesController.ts` keeps importing them from the new location, so its own multipart
+tests stay green with no behavior change). Three caps, all enforced WHILE the body streams so
+nothing over-sized is ever buffered whole: `maxFileBytes` (20 MB) over each single `image`/`mask`
+part — the part that breaks it finishes the parse with `tooLarge`/`tooLargeField` and destroys the
+request; `maxBytes` (4 x 20 MB + 64 KB) over the whole body, since at most four input images are
+accepted, mirroring `n`'s maximum (a fifth `image` part is a 400 on `param: image`); and
+`maxTextFieldBytes`, raised from the shared default of 1 KB to 32 KB for this endpoint because
+`prompt` IS the instruction — an over-budget text field is reported in `truncated` and answered
+400 rather than served shortened. The files endpoint drives the parser through its own
+`parseMultipartUpload` and is unaffected by all three.
+
+**No masking on images.** The pseudonymization plugin rewrites text; it does not touch image
+bytes, and neither the Images endpoints nor the `/google` image path run a prompt or an upload
+through it — an `inlineData` part and an image prompt reach SAP AI Core as sent. Documented in the
+user chapters too (features, Gemini) so nobody infers coverage from the text path's.
+
+**Admin side.** `ModelCosts.imageOutputCost` (per 1000 tokens, `Decimal(10,6)`, null = not
+maintained) is set through the Model Library price dialog's fifth field, *Image output cost per 1K
+tokens*, and the `setPrice` action's fifth parameter. The same rule — text output tokens =
+`outputTokens − imageOutputTokens`; image rate = `imageOutputCost` when maintained, else the model's
+output rate — is applied independently in three places: `modelCostService.calculateCosts` (USD),
+`sapCapacityService.computeSapNative` (capacity units — see
+[model-library-entitlements.md](model-library-entitlements.md)), and
+`costRecalculationService.buildUpdateSQL` (Postgres and SQLite, so a rate entered later reprices
+history — the Postgres reprice gate carries an image disjunct in BOTH its eligibility and its drift
+clause, because an image row can hold no input and no cache tokens at all and its rate is the
+manual `imageOutputCost` that neither the input nor the cache drift terms look at; the SQLite
+variant has no drift clause, only the activity gate, which gained the same disjunct). A manual rate
+resolves across the `--deployed` twin in both directions (`modelCostService.getModelPricing` tries
+the id, then `<id>--deployed`, then — for a `--deployed` id — the bare model), since usage is
+accounted against the deployment id while the price may have been entered on the bare entry. The
+dev SQLite database needs the hand-applied migration for the new columns on `ApiKeyUsage`,
+`AwsCredentialUsage` and `ModelCosts` — `cds deploy --to sqlite` alone recreates the file empty; the
+DDL delta is parked at [docs/developer/sqlite-migrations/image-output-sqlite-migration.sql](sqlite-migrations/image-output-sqlite-migration.sql).
+
+**Tests**: `test/images-mapping.test.ts` (every `size`/`quality` mapping, `n` range, every refused
+parameter, edits' part order, usage summing), `test/images-routes.test.ts` (the routes through the
+real router against a fake deployment server), `test/multipart-fields.test.ts` (the shared module
+leaves the files endpoint green), `test/google-usage-split.test.ts` (details present/absent,
+text-only, streaming); admin: `test/unit/services/model-cost-image-output.test.ts`,
+`test/unit/sap-capacity-service.test.ts`, `test/unit/services/cost-recalculation-sqlite.test.ts`,
+`test/integration/http/model-library-odata.test.ts`,
+`app/model-library-app/test/costDisplay.test.ts`, `test/unit/usage-analytics-sap-native.test.ts`.
+
+#### OpenAI Realtime route
+
+`/openai/v1/realtime` and `/v1/realtime` (GET + WebSocket upgrade) relay the OpenAI Realtime API to
+SAP AI Core's `gpt-realtime` deployment. A WebSocket upgrade never enters Express, so the route is a
+handler on the HTTP server's `upgrade` event (`attachRealtimeUpgrade(server)` in `src/index.ts`,
+right after `app.listen`).
+
+**Module map** (`services/gateway/src/`):
+
+| File | Role |
+|---|---|
+| `realtime/realtimeUpgrade.ts` | path match, admission chain, twin resolution, entitlement, upstream connect, client handshake, observer wiring; `RealtimeDeps` for tests |
+| `realtime/admission.ts` | `prepareUpgradeRequest` (what the Express middlewares read), the recording response shim, `runMiddleware`, `writeRefusal` (a recorded refusal as one raw HTTP/1.1 response) |
+| `realtime/relay.ts` | frames forwarded unchanged both ways; observer hook after forwarding; close propagation |
+| `realtime/realtimeObserver.ts` | pure: `classifyFrame`, `usageMetricsFromResponseDone` |
+| `realtime/closeCodes.ts` | pure: close codes/reasons, `propagatedClose` (1005 → 1000, 1006 → 1011) |
+| `utils/deployedTwin.ts` | `resolveDeployedTwin` — the bare-model / `--deployed` twin resolver shared with `/google` |
+
+**Admission (everything before the 101).** Unified auth → service auth (`serviceConfigurations.openai`)
+→ entitlement on both the requested id and the resolved twin (`model_not_entitled` security event
+as on `/google`) → `quotaEnforcement` (the connect counts as one request). The middlewares are the
+route's own, unchanged: `runMiddleware` hands them the upgrade `IncomingMessage` extended with
+`originalUrl`, `path`, `query`, `get()`, `ip`, `debugRequestId`, and a response shim that records
+`status/set/setHeader/json/send/end`; `next()` means admitted, a recorded response is written to the
+raw socket as HTTP/1.1 (status line, headers incl. `Retry-After`/`X-RateLimit-*`, the JSON body) and
+the socket ended. Only when the upstream socket is open is the client handshake completed
+(`WebSocketServer({ noServer: true }).handleUpgrade`), so an upstream refusal is a plain HTTP
+answer too (502/503; the AI Core token fetch and the upstream WebSocket handshake are each bounded
+by 15 s). Node emits `upgrade` for any request carrying `Connection: Upgrade`, so a request that is
+not an RFC 6455 handshake (not `GET`, `Upgrade` other than `websocket`, no `Sec-WebSocket-Key`,
+`Sec-WebSocket-Version` other than `13`) is refused 400 `bad_request` right after the path match —
+before auth, and before a billable upstream session is opened.
+
+**Upstream.** `<deploymentUrl>/v1/realtime` with `Authorization: Bearer <AI Core token>`
+(`modelService.getAuthToken`, cached) and `AI-Resource-Group`; the `deploymentUrl` of a realtime
+deployment is already `wss://…` on SAP's dedicated realtime host — the generic inference host
+refuses upgrades. A resolved URL that is not `wss://` is refused 502.
+
+**Metering.** The observer parses upstream text frames only: `response.created` counts one request
+(auth + quota run again through the shim; a refusal sends the client
+`{"type":"error","error":{"type":"quota_exceeded",…}}`, `response.cancel` upstream, and closes both
+sides 1008 `quota_exceeded` — or 1008 `unauthorized`); `response.done` emits one
+`emitUsageEvent(req, metrics, '<twin id>', 200)` with `inputTokens = input_tokens − cached_tokens`
+(the full-rate share, matching `noteExtraUsage` on the chat routes — before 2026-09-15 the relay
+emitted the inclusive figure and cached tokens were priced twice), `cacheReadInputTokens =
+cached_tokens`, `audioInputTokens = audio_tokens − cached_tokens_details.audio_tokens` clamped to
+`[0, inputTokens]`, and `audioOutputTokens = output_token_details.audio_tokens` clamped to
+`[0, outputTokens]` — cached audio counts as cached; `error` is logged. Frames are never delayed
+by the observer. Each response gets its own request id (`<connection id>-<response id>`), because
+the admin's usage idempotency signature begins with the request id and would otherwise drop the
+second of two identical-looking responses.
+
+**Backpressure.** A peer that stops reading would let the gateway buffer a whole session's audio:
+once a destination socket's `bufferedAmount` passes `RELAY_HIGH_WATER_BYTES` (8 MiB) the relay
+pauses the *source* socket, and resumes it from the `send` callback once the destination is back at
+or below `RELAY_LOW_WATER_BYTES` (1 MiB). Frames are never dropped or reordered — they wait in the
+source's receive buffer — and each direction keeps its own paused flag (`onBackpressure(side,
+paused)` is logged at `info`).
+
+**Shutdown.** `attachRealtimeUpgrade` returns a handle whose `closeAll(code, reason)` closes every
+tracked client socket (the relay's close propagation then ends each upstream). `gracefulShutdown`
+calls it with 1001 `server_shutdown` before the Valkey clients are disconnected — a session must
+not outlive its quota store — and before `server.close()`, which would otherwise never call back
+while an upgraded socket keeps the server alive.
+
+**Ingress.** Docker nginx: an `http`-level `map $http_upgrade $connection_upgrade` and
+`location ~ ^/gateway/(openai/)?v1/realtime$` ahead of `location /gateway/` (same `auth_request`,
+`proxy_http_version 1.1`, `Upgrade`/`Connection` forwarded, 3600 s timeouts). Kyma: the nginx pod
+runs the same `sail-proxy-nginx` image in `CONFIG_MODE=template`, so it renders the same Docker
+template and needs no manifest change; the `gw.conf` generator in `kyma/scripts/setup-kyma.js` (the
+entrypoint's `configmap` mode) carries the same `map` and location in both auth modes. The APIRule
+sends `/*` to nginx unchanged. Standalone (npm-dist): the gateway listens directly.
+
+**Tests** (`services/gateway/test/realtime/`): pure suites for the observer and close codes; the
+admission shim and refusal writer; the relay over real loopback sockets; and
+`realtime-upgrade.test.ts`, which runs the handler against a fake upstream `ws` server with auth,
+quota and the catalogue injected through `RealtimeDeps` — 101 and a relayed turn, binary
+pass-through, one usage event per `response.done`, the 1008 quota close with `response.cancel`,
+HTTP refusals 401/403/429/404/502, upstream 503/502, 1011 on abnormal upstream closure, client
+close → upstream 1000, the 400 `bad_request` refusals of non-handshake upgrades, per-response
+request ids, a `response.done` arriving after the client closed, and `closeAll`. The relay suite
+also drives the high/low-water pause and resume over real sockets. `realtime-wiring.test.ts` pins
+the `index.ts` attachment and the `closeAll` call in `gracefulShutdown`.
 
 ### Streaming Implementation
 
@@ -1051,6 +1334,14 @@ class UsageTracker {
   }
 }
 ```
+
+`UsageMetrics`/`UsageEvent` (`services/gateway/src/types/usage.ts`) carry an optional
+`imageOutputTokens`, set by the Google route and the images controller (section above) for any call
+that returned image output, and left unset by every other route. It is a modality split of
+`outputTokens`, never an addition to it, so a client counting total output tokens sees no change —
+only a consumer that cares which tokens were image versus text needs the new field.
+`audioInputTokens`/`audioOutputTokens` follow the same rule — subsets of `inputTokens`/
+`outputTokens`, set only by the realtime relay.
 
 #### Token Counting and Cost Calculation
 

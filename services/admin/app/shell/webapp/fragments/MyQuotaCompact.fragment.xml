@@ -3,6 +3,10 @@
         <Title text="My quota" class="sapUiTinyMarginBottom"/>
         <MessageStrip id="myQuotaCompactDeactivated" text="{quota>/statusText}" type="Error" showIcon="true" visible="{quota>/deactivated}" class="sapUiTinyMarginBottom"/>
         <MessageStrip id="myQuotaCompactUnavailable" text="{quota>/statusText}" type="Information" showIcon="true" visible="{= !${quota>/available} }" class="sapUiTinyMarginBottom"/>
+        <!-- The per-minute rate guard has no bar (it is not a budget window), so the popover keeps
+             it as one line of text above the windows. -->
+        <Text id="myQuotaCompactMinute" text="{quota>/minuteText}" class="sapUiTinyMarginBottom" visible="{= !!${quota>/minuteText} }"/>
+        <Text id="myQuotaCompactToolPolicy" text="{quota>/toolPolicyText}" class="sapUiTinyMarginBottom" visible="{= !!${quota>/toolPolicyText} }"/>
         <List id="myQuotaCompactList" items="{quota>/rows}" showSeparators="None" visible="{quota>/available}">
             <CustomListItem>
                 <Text text="{quota>label}: {quota>used} / {quota>limit}" class="sapUiTinyMargin"/>

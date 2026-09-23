@@ -2134,8 +2134,22 @@ data:
     // NGINX ConfigMap - different config per auth provider
     let nginxConfig;
     if (config.provider === 'local') {
-      nginxConfig = `server {
+      nginxConfig = `map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+server {
   listen 8080;
+  location ~ ^/(openai/)?v1/realtime$ {
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_set_header Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_pass http://gateway:8080;
+  }
   location / {
     proxy_set_header Host $host;
     proxy_set_header Authorization $http_authorization;
@@ -2143,11 +2157,29 @@ data:
   }
 }`;
     } else {
-      nginxConfig = `server {
+      nginxConfig = `map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+server {
   listen 8080;
   location /auth {
     proxy_set_header Host $host;
     proxy_pass http://oauth2-proxy:4180;
+  }
+  location ~ ^/(openai/)?v1/realtime$ {
+    auth_request /auth;
+    auth_request_set $user $upstream_http_x_auth_request_user;
+    auth_request_set $groups $upstream_http_x_auth_request_groups;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Auth-Request-User $user;
+    proxy_set_header X-Auth-Request-Groups $groups;
+    proxy_pass http://gateway:8080;
   }
   location / {
     auth_request /auth;

@@ -6,6 +6,7 @@ import XMLView from "sap/ui/core/mvc/XMLView";
 import Fragment from "sap/ui/core/Fragment";
 import JSONModel from "sap/ui/model/json/JSONModel";
 import NumberFormat from "sap/ui/core/format/NumberFormat";
+import DateFormat from "sap/ui/core/format/DateFormat";
 import Log from "sap/base/Log";
 import Text from "sap/m/Text";
 import Title from "sap/m/Title";
@@ -100,6 +101,12 @@ export default class App extends BaseController {
 			manifest: true,
 			title: "Users & Quotas",
 			route: "#users"
+		},
+		"toolPolicies": {
+			componentName: "admin.toolpolicies.Component",
+			manifest: true,
+			title: "Tool Governance",
+			route: "#tool-policies"
 		}
 	};
 
@@ -154,7 +161,8 @@ export default class App extends BaseController {
 				'config': '/admin/app/config-app/',
 				'modelLibrary': '/admin/app/model-library-app/',
 				'catalogs': '/admin/app/model-library-app/',
-				'users': '/admin/app/users-app/'
+				'users': '/admin/app/users-app/',
+				'toolPolicies': '/admin/app/tool-policies-app/'
 			};
 			return appPathMap[appKey] || '/admin/app/api-keys-app/';
 		} else {
@@ -168,7 +176,8 @@ export default class App extends BaseController {
 				'config': '/config/',
 				'modelLibrary': '/model-library/',
 				'catalogs': '/model-library/',
-				'users': '/users/'
+				'users': '/users/',
+				'toolPolicies': '/tool-policies/'
 			};
 			return appPathMap[appKey] || '/api-keys/';
 		}
@@ -264,7 +273,7 @@ export default class App extends BaseController {
 		this.getView().setModel(uiModel, "ui");
 
 		// Initialize the "My quota" view model with the "unavailable" state until _loadMyQuota resolves
-		this.getView().setModel(new JSONModel(toQuotaView(null, this.money)), "quota");
+		this.getView().setModel(new JSONModel(toQuotaView(null, this.money, this.formatDate)), "quota");
 		// The home tiles likewise start "unavailable" until _loadHomeSummary resolves
 		this.getView().setModel(new JSONModel(toHomeView(null)), "home");
 	}
@@ -563,7 +572,7 @@ export default class App extends BaseController {
 		const navKey = key === "config" ? "settings" : key;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users", "toolPolicies"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -587,7 +596,8 @@ export default class App extends BaseController {
 					'home': 'Home',
 					'usage': 'Usage Analytics',
 					'securityEvents': 'Security Events',
-					'settings': 'System Settings'
+					'settings': 'System Settings',
+					'toolPolicies': 'Tool Governance'
 				};
 				contentTitle.setText(titleMap[key] || 'Administration');
 			}
@@ -682,6 +692,13 @@ export default class App extends BaseController {
 					manifest: true,
 					async: true
 				};
+			} else if (appKey === "toolPolicies") {
+				componentConfig = {
+					name: "admin.toolpolicies",
+					url: componentUrl,
+					manifest: true,
+					async: true
+				};
 			} else {
 				// Default to API Keys for other cases
 				const defaultUrl = this.getComponentUrl('apiKeys');
@@ -729,7 +746,7 @@ export default class App extends BaseController {
 				// Ensure side navigation is updated before navigation
 				const sideNav = this.getView().byId("sideNavigation") as SideNavigation;
 				const navKey = appKey === "config" ? "settings" : appKey;
-				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
+				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users", "toolPolicies"].includes(navKey)) {
 					sideNav.setSelectedKey(navKey);
 				}
 				
@@ -760,8 +777,11 @@ export default class App extends BaseController {
 				} else if (appKey === "users") {
 					router.navTo("UsersList");
 					this.updateBreadcrumb("users");
+				} else if (appKey === "toolPolicies") {
+					router.navTo("ToolPoliciesList");
+					this.updateBreadcrumb("toolPolicies");
 				}
-				
+
 				// Apply the simple height fix for floating footer positioning
 				this.fixMainContentHeight();
 			}
@@ -1017,6 +1037,9 @@ export default class App extends BaseController {
 				} else if (this.currentAppKey === "users") {
 					console.log("Navigating back to UsersList");
 					this.feRouter.navTo("UsersList");
+				} else if (this.currentAppKey === "toolPolicies") {
+					console.log("Navigating back to ToolPoliciesList");
+					this.feRouter.navTo("ToolPoliciesList");
 				}
 				return;
 			}
@@ -1046,7 +1069,7 @@ export default class App extends BaseController {
 		const navKey = appKey === "config" ? "settings" : appKey;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "users", "toolPolicies"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -1071,6 +1094,8 @@ export default class App extends BaseController {
 				this.updateBreadcrumb("catalogs");
 			} else if (appKey === "users") {
 				this.feRouter.navTo("UsersList");
+			} else if (appKey === "toolPolicies") {
+				this.feRouter.navTo("ToolPoliciesList");
 			}
 		}
 	}
@@ -1163,6 +1188,15 @@ export default class App extends BaseController {
 					const objectTitle = this.getObjectPageTitle();
 					this.updateBreadcrumb("users", objectTitle || "Details");
 				}, 100);
+			} else if (routeName === "ToolPoliciesList") {
+				this.updateBreadcrumb("toolPolicies");
+			} else if (routeName === "ToolPoliciesObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("toolPolicies", objectTitle || "Details");
+				}, 100);
+			} else if (routeName === "ToolInventoryList") {
+				this.updateBreadcrumb("toolPolicies", "Tool Inventory");
 			} else if (routeName === "MySecurityNotificationsList") {
 				this.updateBreadcrumb("securityEvents");
 			} else if (routeName === "MySecurityNotificationsObjectPage") {
@@ -1357,10 +1391,10 @@ export default class App extends BaseController {
 		try {
 			const response = await fetch('/odata/v4/admin/myQuotaStatus()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
 			const status = response.ok ? await response.json() : null;
-			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(status, this.money));
+			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(status, this.money, this.formatDate));
 		} catch (error) {
 			Log.warning(`myQuotaStatus failed: ${(error as Error).message}`, "", "App.controller");
-			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(null, this.money));
+			(this.getView().getModel("quota") as JSONModel).setData(toQuotaView(null, this.money, this.formatDate));
 		}
 	}
 
@@ -1387,6 +1421,10 @@ export default class App extends BaseController {
 	 */
 	private readonly money = (amount: number, currency: string): string =>
 		NumberFormat.getCurrencyInstance({ currencyCode: true }).format(amount, currency);
+
+	/** Reset times for the quota card: medium date + short time in the viewer's locale and zone ("17 Sep 2026, 5:00 PM"). */
+	private readonly formatDate = (iso: string): string =>
+		DateFormat.getDateTimeInstance({ style: "medium/short" }).format(new Date(iso));
 
 	/**
 	 * Load user preferences and apply sidepanel state via model binding

@@ -28,7 +28,7 @@ module.exports = {
   users: { admin: 'admin@test.com', user: 'user@test.com', other: 'other@test.com' },
   // Quotas: the user fixture carries minimal limits so an accidental real request is refused
   // (spec §6), and the seed posts synthetic usage for it through processUsageEvents.
-  quota: { tokensPerDay: 1000, spendPerDay: 0.01, seededTokens: 400, seededRequests: 2, profileName: 'Standard' },
+  quota: { tokensPerDay: 1000, spendPerDay: 0.01, seededTokens: 400, seededRequests: 2, profileName: 'Standard', keyRequestsPerMinute: 30 },
   // Security Notifications: one failed_auth event logged for the user's active key.
   securityEvent: { clientIP: '203.0.113.7', userAgent: 'ui-journeys/1.0', endpoint: '/v1/messages', requestId: prefix + 'request' }
 };

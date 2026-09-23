@@ -19,6 +19,13 @@ export interface EntityMatch {
    * that instead.
    */
   confidence: number;
+  /**
+   * This value is a name vouched for by STRUCTURE (a transcript speaker label), so it may be
+   * masked wherever it stands alone in the request - "I know Lena, you were going to say". Set by
+   * the speaker-label detector only. A capitalised run never sets it: `Visual Studio` and
+   * `New York` are runs too, and their parts must never travel.
+   */
+  propagate?: boolean;
 }
 
 export interface MaskingConfig {
@@ -62,6 +69,14 @@ export interface MaskingConfig {
    * scorer. Absent → 40 (DEFAULT_SATURATION_WARN).
    */
   saturation_warn?: number;
+  /**
+   * What happens to a placeholder in a response that the model was never sent - it invented one,
+   * which it does in about 1 of 125 pseudonymized responses despite the instruction forbidding it.
+   * `withhold` (default) replaces it with a plain "[name withheld]" and reports it; `report` only
+   * reports; `off` passes it through as before. Anything unreadable means `withhold`. See
+   * unknownPlaceholders.ts.
+   */
+  unknown_placeholders?: string;
 }
 
 /**

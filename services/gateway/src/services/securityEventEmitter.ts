@@ -277,6 +277,75 @@ class SecurityEventEmitter {
     });
   }
 
+  /** A request declared tools outside the caller's tool policy and the policy strips or rejects (tool governance). */
+  public async emitToolNotEntitled(data: {
+    credentialId: string; authType: 'api_key' | 'aws_credential'; identities: string[]; policy: string; policyId?: string;
+    mode: 'strip' | 'reject'; clientIP?: string; userAgent?: string; endpoint?: string; method?: string; requestId?: string;
+    /** On a REJECT only: the refused identities, so the admin can record them as attempts in the tool
+     *  inventory. A rejected request emits no usage event (it never reached a model), so this event is
+     *  the only carrier — and it must stay out of usage and billing. */
+    tools?: { identity: string; facet: 'declared' | 'invoked'; decision: 'rejected'; reason?: 'policy' | 'trust_chain' }[]; model?: string;
+    /** Why the identities were denied: the policy alone, the trust chain (2026-09-22 §3), or a mix. */
+    reason?: 'policy' | 'trust_chain' | 'mixed';
+    /** The untrusted sources whose output was in the conversation, when `reason` names the trust chain. */
+    sources?: string[];
+  }): Promise<void> {
+    const verb = data.mode === 'reject' ? 'refused' : 'stripped';
+    const why = data.reason === 'trust_chain'
+      ? `the conversation contains content from ${(data.sources ?? []).join(', ')} (tool policy "${data.policy}")`
+      : data.reason === 'mixed'
+        ? `not permitted by tool policy "${data.policy}", some because the conversation contains content from ${(data.sources ?? []).join(', ')}`
+        : `not permitted by tool policy "${data.policy}"`;
+    await this.emit({
+      eventId: uuidv4(),
+      credentialId: data.credentialId,
+      authType: data.authType,
+      eventType: SecurityEventType.TOOL_NOT_ENTITLED,
+      severity: SecurityEventSeverity.MEDIUM,
+      description: `Tools ${data.identities.join(', ')} ${verb}: ${why}`,
+      timestamp: new Date().toISOString(),
+      clientIP: data.clientIP,
+      userAgent: data.userAgent,
+      endpoint: data.endpoint,
+      method: data.method,
+      requestId: data.requestId,
+      statusCode: data.mode === 'reject' ? 403 : 200,
+      actionTaken: SecurityEventAction.BLOCKED,
+      source: 'gateway',
+      metadata: { identities: data.identities, policy: data.policy, policyId: data.policyId, mode: data.mode, tools: data.tools, model: data.model, reason: data.reason ?? 'policy', sources: data.sources ?? [] }
+    });
+  }
+
+  /**
+   * A response carried a pseudonymization placeholder the model had never been sent: it invented
+   * one. The placeholder names nobody and can never be resolved, so it is withheld from the client
+   * (or only reported, by configuration). LOW severity: nothing was exposed - the value of this
+   * event is the rate, and knowing which response to look at when an artifact reads oddly.
+   */
+  public async emitInventedPlaceholder(data: {
+    credentialId: string; authType: 'api_key' | 'aws_credential'; placeholders: string[];
+    action: 'withheld' | 'reported'; model?: string;
+    userAgent?: string; endpoint?: string; method?: string; requestId?: string;
+  }): Promise<void> {
+    await this.emit({
+      eventId: uuidv4(),
+      credentialId: data.credentialId,
+      authType: data.authType,
+      eventType: SecurityEventType.PLACEHOLDER_INVENTED,
+      severity: SecurityEventSeverity.LOW,
+      description: `The model returned ${data.placeholders.length} pseudonymization placeholder(s) it was never sent (${data.placeholders.join(', ')}); ${data.action === 'withheld' ? 'withheld from the client' : 'reported only'}`,
+      timestamp: new Date().toISOString(),
+      userAgent: data.userAgent,
+      endpoint: data.endpoint,
+      method: data.method,
+      requestId: data.requestId,
+      statusCode: 200,
+      actionTaken: data.action === 'withheld' ? SecurityEventAction.BLOCKED : SecurityEventAction.LOGGED,
+      source: 'gateway',
+      metadata: { placeholders: data.placeholders, action: data.action, model: data.model }
+    });
+  }
+
   /** A deployment was created through the gateway's admin endpoint (Task 11). */
   public async emitDeploymentCreated(data: {
     credentialId: string; model: string; deploymentId: string; configurationId: string; reusedConfiguration: boolean;

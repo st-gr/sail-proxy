@@ -1046,6 +1046,37 @@ describe('Pseudonymization Plugin', () => {
       expect(blocks['text:0']).toBe('- John Smith: done');
     });
 
+    /**
+     * Incident 2026-09-21, request k80nbbxr6 (claude-opus-4-8, streamed over this very path). The
+     * model listed three presenters: one name it had in clear, one placeholder it had been sent,
+     * and one it INVENTED for a name it also had in clear - tokenising a plain name by imitation.
+     * The delta boundaries below are the ones SAP sent. The real placeholder is split across two
+     * deltas and was always unmasked; the invented one is split across three, opening with a lone
+     * "M", and reached the client, an artifact and the next 27 requests. Both the prose and the
+     * file the model writes (the artifact) must come out clean.
+     */
+    it('withholds a placeholder the model invented, in prose and in the file it writes (incident k80nbbxr6)', async () => {
+      const { res, written, map } = await setup('John Smith presents with a colleague');
+      const real = map.forward.get('John Smith');
+      const invented = 'MASKED_PERSON_23935247';
+      expect(map.reverse.has(invented)).toBe(false);
+
+      const cut = (t: string) => [`, ${t.slice(0, 10)}`, `${t.slice(10)}, M`, invented.slice(1, 13), `${invented.slice(13)}. Corre`, 'ct any titles.'];
+      res.write(textDelta(0, 'I have Pat Example'));
+      for (const d of cut(real)) res.write(textDelta(0, d));
+      res.write(blockStop(0));
+
+      res.write(toolDelta(1, `{"content":"Presenters: ${real}, ${invented.slice(0, 9)}`));
+      res.write(toolDelta(1, `${invented.slice(9)}"}`));
+      res.write(blockStop(1));
+      res.write(messageStop());
+
+      const blocks = reassemble(written);
+      expect(blocks['text:0']).toBe('I have Pat Example, John Smith, [name withheld]. Correct any titles.');
+      expect(blocks['tool:1']).toBe('{"content":"Presenters: John Smith, [name withheld]"}');
+      expect(written.join('')).not.toContain('MASKED');
+    });
+
     it('unmasks input_json_delta split across events', async () => {
       const { res, written, map } = await setup('Jane Doe and John Smith met');
       const p = map.forward.get('Jane Doe');
@@ -1150,7 +1181,7 @@ describe('Pseudonymization Plugin', () => {
       expect(s).not.toContain('MASKED_');
     });
 
-    it('leaves unknown (residue) tokens in a res.json body untouched', async () => {
+    it('withholds a token the model invented in a res.json body, without inventing a name for it', async () => {
       const jsonBodies: any[] = [];
       const res: any = { write: () => true, end: () => {}, json: (b: any) => { jsonBodies.push(b); return res; } };
       const req: any = {
@@ -1161,8 +1192,9 @@ describe('Pseudonymization Plugin', () => {
       };
       await beforeHandler({ req, res, utils: { logger: mockLogger } });
       res.json({ type: 'message', content: [{ type: 'text', text: 'earlier: MASKED_PERSON_999' }] });
-      // Not in this request's map → must remain (cannot invent a name)
-      expect(JSON.stringify(jsonBodies[0])).toContain('MASKED_PERSON_999');
+      // Not in this request's map and never sent by the client: the gateway cannot know whose
+      // name it would be, so it says so instead of passing a dead token on.
+      expect(jsonBodies[0].content[0].text).toBe('earlier: [name withheld]');
     });
 
     it('safety-net unmasks a raw data: block the structured path does not recognize (BedrockStreamParser fallback leak repro)', async () => {
@@ -1510,7 +1542,15 @@ describe('Pseudonymization Plugin', () => {
     const beforeHandler = beforeRule?.handler;
     const afterHandler = afterRule?.handler;
 
-    it('emits a residue counter and passes an unmapped MASKED token through unchanged', async () => {
+    /**
+     * The contract changed on 2026-09-21. The July incident this test was written for (411e91cd)
+     * chose pass-through plus a log line, on the non-streaming path only, and an instruction to the
+     * model. Measured since: the model still invents a placeholder in 0.8% of pseudonymized
+     * responses, the token reaches the client, lands in artifacts and returns with every later
+     * request. An invented placeholder is now WITHHELD - never resolved to a name, which would be
+     * inventing one - and reported. See pseudonymization-unknown-placeholders.test.ts.
+     */
+    it('withholds a MASKED token the model invented, leaves the rest of the output intact, and counts it', async () => {
       const req: any = {
         debugRequestId: 'req-residue-1',
         body: {
@@ -1526,11 +1566,42 @@ describe('Pseudonymization Plugin', () => {
       };
       const result = await afterHandler({ req, upstreamResponse, utils: { logger: mockLogger } });
 
-      // Unmappable residue passes through unchanged (must not corrupt output)
-      expect(result.final_result.choices[0].message.content).toContain('MASKED_USER_PASSWORD_28551619');
-      // A grep-stable counter line was logged
+      // The invented token is withheld; everything around it is untouched
+      expect(result.final_result.choices[0].message.content).toBe('run [value withheld] now');
+      // A grep-stable counter line was logged, naming the placeholder so the artifact can be found
       const warnCalls = (mockLogger.warn as any).mock.calls.map((c: any[]) => c.join(' '));
-      expect(warnCalls.some((s: string) => s.includes('pseudonymization_residue_unresolved_total='))).toBe(true);
+      expect(warnCalls.some((s: string) => s.includes('pseudonymization_invented_placeholder_total=1')
+        && s.includes('MASKED_USER_PASSWORD_28551619') && s.includes('action=withheld'))).toBe(true);
+    });
+
+    it('only reports it when the deployment asks for report mode', async () => {
+      const req: any = {
+        debugRequestId: 'req-residue-2',
+        body: {
+          messages: [{ role: 'user', content: 'Email john@example.com' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-email' }], unknown_placeholders: 'report' },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      const upstreamResponse = { final_result: { choices: [{ message: { content: 'run MASKED_USER_PASSWORD_28551619 now' } }] } };
+      const result = await afterHandler({ req, upstreamResponse, utils: { logger: mockLogger } });
+      expect(result.final_result.choices[0].message.content).toBe('run MASKED_USER_PASSWORD_28551619 now');
+      const warnCalls = (mockLogger.warn as any).mock.calls.map((c: any[]) => c.join(' '));
+      expect(warnCalls.some((s: string) => s.includes('pseudonymization_invented_placeholder_total=1') && s.includes('action=reported'))).toBe(true);
+    });
+
+    it('leaves alone a MASKED token the client itself sent: echoing it is not an invention', async () => {
+      const req: any = {
+        debugRequestId: 'req-residue-3',
+        body: {
+          messages: [{ role: 'user', content: 'Email john@example.com about the test that expects MASKED_PERSON_11' }],
+          masking: { method: 'pseudonymization', entities: [{ type: 'profile-email' }] },
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      const upstreamResponse = { final_result: { choices: [{ message: { content: "expect(out).toContain('MASKED_PERSON_11')" } }] } };
+      const result = await afterHandler({ req, upstreamResponse, utils: { logger: mockLogger } });
+      expect(result.final_result.choices[0].message.content).toBe("expect(out).toContain('MASKED_PERSON_11')");
     });
   });
 

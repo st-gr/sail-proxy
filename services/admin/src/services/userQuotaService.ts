@@ -44,6 +44,8 @@ export interface QuotaStatus {
   used: { minuteRequests: number } & Record<WindowName, WindowUsage>;
   remaining: { spendDay: number | null; spendWeek: number | null; spendMonth: number | null; tokensDay: number | null; tokensWeek: number | null; tokensMonth: number | null };
   resetsAt: Record<WindowName, Date>; quotaResetAt: string | null; lastSeenAt: string | null;
+  /** The caller's effective tool policy (myQuotaStatus only): its name and mode. */
+  toolPolicy?: { name: string; mode: string };
 }
 
 // Memoised for 60 s like platformQuotaDefaults' cache below: every fan-out (a page of

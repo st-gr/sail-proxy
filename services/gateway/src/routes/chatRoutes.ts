@@ -6,6 +6,7 @@ import * as openaiController from '../controllers/openaiController';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
+import { toolGovernance, openaiChatAdapter } from '../toolGovernance';
 
 const router: express.Router = express.Router();
 
@@ -16,6 +17,6 @@ const chatAuth = createUnifiedTokenAuth();
 const chatServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.openai);
 
 // Ensure all requests include valid authentication and pass quota enforcement
-router.post('/', chatAuth, chatServiceAuth, quotaEnforcement, openaiController.handleChatCompletion);
+router.post('/', chatAuth, chatServiceAuth, toolGovernance(openaiChatAdapter), quotaEnforcement, openaiController.handleChatCompletion);
 
 export default router;

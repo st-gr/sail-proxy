@@ -72,6 +72,28 @@ sap.ui.define(["sap/fe/test/ObjectPage", "sap/ui/test/Opa5"], function (ObjectPa
 					errorMessage: "Field " + sProperty + " in field group " + sFieldGroup +
 						" never reached editable=" + bEditable + " (last edit mode: '" + sLastMode + "')"
 				});
+			},
+			// The "Usage charts" custom section draws one macros:MicroChart per UI.Chart #Bullet
+			// qualifier, each of which ends up as a sap.suite.ui.microchart.BulletMicroChart.
+			// One bullet chart per budget window that has an effective limit (the "Usage charts"
+			// section draws nothing for an unlimited window); the expected count comes from the
+			// page's own binding context unless the caller pins a number.
+			iSeeBulletCharts: function (nExpected) {
+				var aLimits = ["effectiveSpendPerDay", "effectiveSpendPerWeek", "effectiveSpendPerMonth", "effectiveTokensPerDay", "effectiveTokensPerWeek", "effectiveTokensPerMonth"];
+				var nWanted = nExpected;
+				return this.waitFor({
+					controlType: "sap.uxap.ObjectPageLayout",
+					check: function (aLayouts) {
+						if (nExpected === undefined) {
+							nWanted = aLimits.filter(function (sProperty) { var v = readStored(aLayouts[0], sProperty); return v !== null && v !== undefined; }).length;
+						}
+						return aLayouts[0].findAggregatedObjects(true, function (oControl) {
+							return oControl.isA("sap.suite.ui.microchart.BulletMicroChart") && oControl.getVisible() && oControl.getDomRef();
+						}).length === nWanted;
+					},
+					success: function () { Opa5.assert.ok(true, nWanted + " bullet chart(s) rendered, one per limited window"); },
+					errorMessage: "The number of bullet charts does not match the user's limited windows"
+				});
 			}
 		}
 	});

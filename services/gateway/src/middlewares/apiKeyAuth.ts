@@ -6,6 +6,7 @@ import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
+import { queryString } from '../utils/queryParam';
 const logger = getDefaultLogger();
 
 interface AuthenticatedRequest extends Request {
@@ -24,13 +25,11 @@ interface AuthenticatedRequest extends Request {
  */
 const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // Get API key from header or query param
-    let apiKey = req.headers['x-api-key'] || req.headers['x-stainless-key'] || req.query.api_key;
-    
-    // Handle array values from headers
-    if (Array.isArray(apiKey)) {
-      apiKey = apiKey[0];
-    }
+    // Get API key from header or query param. Headers are string | string[]; a query
+    // value can also be a null-prototype object (`?api_key[a]=1`, express >= 4.22) -
+    // queryString narrows all of them to a string or null, so a non-string key is
+    // simply "no key" and never reaches the validation service or credentialIdentity.
+    let apiKey: string | null = queryString(req.headers['x-api-key']) || queryString(req.headers['x-stainless-key']) || queryString(req.query.api_key);
     
     // Debug mode: show more extensive header information for troubleshooting
     if (process.env.DEBUG === 'true') {

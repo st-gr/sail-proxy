@@ -36,15 +36,19 @@ const WORD_CHAR = /[A-Za-z0-9_]/;
 export function propagateMaskedValues(
   body: any,
   map: ReplacementMap,
-  opts: { minLength?: number } = {}
+  opts: { minLength?: number; only?: ReadonlySet<string> } = {}
 ): number {
   const minLength = opts.minLength ?? MIN_PROPAGATION_LENGTH;
 
   // Build (needle → placeholder) pairs. Include the JSON-escaped form of any value
   // containing escapable characters so it also matches inside JSON-in-string blobs.
+  // `only` narrows the pass to named values: the length floor exists because a short value
+  // masked everywhere carpet-masks common strings, and the one exception is a short value
+  // something else has vouched for - a name taken from a transcript's speaker labels.
   const needles: Array<{ text: string; placeholder: string }> = [];
   for (const [value, placeholder] of map.forward) {
     if (typeof value !== 'string' || value.length < minLength) continue;
+    if (opts.only && !opts.only.has(value)) continue;
     needles.push({ text: value, placeholder });
     const escaped = JSON.stringify(value).slice(1, -1);
     if (escaped !== value && escaped.length >= minLength) {

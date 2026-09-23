@@ -293,6 +293,23 @@ describe('chooseRoute (spec §5.4)', () => {
   it('embedContent on a model that can embed nowhere → null', async () => {
     expect(await chooseRoute('gpt-realtime', 'embedContent', getDetails)).toBeNull();
   });
+
+  it('image output on a bare Gemini name with a Google twin → native on the twin', async () => {
+    const r = await chooseRoute('gemini-3.5-flash', 'generateContent', getDetails, true);
+    expect(r).toMatchObject({ kind: 'native', deployment: { id: 'gemini-3.5-flash--deployed' } });
+  });
+  it('image output on an undeployed Gemini model → image-unavailable, not bridge', async () => {
+    expect(await chooseRoute('gemini-2.0-legacy', 'generateContent', getDetails, true)).toEqual({ kind: 'image-unavailable', modelName: 'gemini-2.0-legacy' });
+  });
+  it('image output on a non-Google --deployed model → image-unavailable under the base name', async () => {
+    expect(await chooseRoute('anthropic--claude-4.5-sonnet--deployed', 'generateContent', getDetails, true)).toEqual({ kind: 'image-unavailable', modelName: 'anthropic--claude-4.5-sonnet' });
+  });
+  it('image output on an unknown model → null (404)', async () => {
+    expect(await chooseRoute('nope', 'generateContent', getDetails, true)).toBeNull();
+  });
+  it('without IMAGE in responseModalities routing is unchanged', async () => {
+    expect(await chooseRoute('gemini-2.0-legacy', 'generateContent', getDetails, false)).toMatchObject({ kind: 'bridge' });
+  });
 });
 
 describe('handleGemini: refusals', () => {
@@ -314,6 +331,43 @@ describe('handleGemini: refusals', () => {
     expect(res.body).toEqual({
       error: { code: 404, message: 'Model no-such-model is not available through this gateway', status: 'NOT_FOUND' },
     });
+  });
+
+  it('400s an image request on an undeployed model in the Gemini envelope without emitting usage', async () => {
+    const res = mockRes();
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: 'draw a cat' }] }],
+      generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+    };
+    await handleGemini(mockReq('gemini-2.0-legacy:generateContent', body), res, jest.fn() as any);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.status).toBe('INVALID_ARGUMENT');
+    expect(res.body.error.message).toBe(
+      'Model gemini-2.0-legacy has no deployment; image output (responseModalities IMAGE) needs a '
+      + 'deployment of the model on SAP AI Core.');
+    expect(usageEvents).toHaveLength(0);
+    expect(posted).toHaveLength(0);
+    expect(orchestrationCalls).toHaveLength(0);
+  });
+
+  it('404s an image request on a model the gateway cannot route at all, with the same deployment hint', async () => {
+    // Image models without a deployment have no orchestration scenario, so they are absent from
+    // the routable catalogue altogether: the status stays 404, the message still says what to do.
+    const res = mockRes();
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: 'draw a cat' }] }],
+      generationConfig: { responseModalities: ['IMAGE'] },
+    };
+    await handleGemini(mockReq('gemini-3-pro-image:generateContent', body), res, jest.fn() as any);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.status).toBe('NOT_FOUND');
+    expect(res.body.error.message).toBe(
+      'Model gemini-3-pro-image has no deployment; image output (responseModalities IMAGE) needs a '
+      + 'deployment of the model on SAP AI Core.');
+    expect(usageEvents).toHaveLength(0);
+    expect(posted).toHaveLength(0);
   });
 
   it('404s embedContent on a model that can embed nowhere', async () => {
@@ -476,6 +530,47 @@ describe('handleGemini: metering per transport', () => {
     expect(metrics.inputTokens).toBe(5);
     expect(metrics.outputTokens).toBe(8);
     expect(metrics.cacheReadInputTokens).toBe(2);
+  });
+
+  it('native image generateContent: generationConfig relayed byte-for-byte, IMAGE modality metered', async () => {
+    // The end-to-end shape of an image request on /google: the relay must not touch
+    // responseModalities/imageConfig (SAP is the only thing that validates them), and the
+    // modality split has to reach the usage event — outputTokens inclusive, image tokens beside it.
+    const generationConfig = { responseModalities: ['IMAGE', 'TEXT'], imageConfig: { aspectRatio: '16:9', imageSize: '1K' } };
+    nativeResponse = {
+      candidates: [{
+        content: { role: 'model', parts: [{ text: 'Here it is' }, { inlineData: { mimeType: 'image/png', data: 'AAECAw==' } }] },
+        finishReason: 'STOP', index: 0,
+      }],
+      usageMetadata: {
+        promptTokenCount: 17, candidatesTokenCount: 1296, totalTokenCount: 1313,
+        promptTokensDetails: [{ modality: 'TEXT', tokenCount: 17 }],
+        candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1290 }, { modality: 'TEXT', tokenCount: 6 }],
+      },
+    };
+    const res = mockRes();
+    await handleGemini(mockReq('gemini-3.5-flash:generateContent', {
+      contents: [{ role: 'user', parts: [{ text: 'draw a cat, wide' }] }],
+      generationConfig: JSON.parse(JSON.stringify(generationConfig)),
+    }), res, jest.fn() as any);
+
+    expect(res.statusCode).toBe(200);
+    expect(posted[0].url).toBe('http://mock-sap/v2/inference/deployments/d-flash/models/gemini-3.5-flash:generateContent');
+    expect(posted[0].body.generationConfig).toEqual(generationConfig);
+    // Byte-for-byte, not merely deep-equal: no key reordered, added or dropped on the way out.
+    expect(JSON.stringify(posted[0].body.generationConfig)).toBe(JSON.stringify(generationConfig));
+    // The image part comes back to the client untouched too.
+    expect(res.body.candidates[0].content.parts[1].inlineData.data).toBe('AAECAw==');
+
+    const [, metrics, model, status] = usageEvents[0];
+    expect(model).toBe('gemini-3.5-flash--deployed');
+    expect(status).toBe(200);
+    expect(metrics.inputTokens).toBe(17);
+    // INCLUSIVE: the 1290 image tokens are a subset of outputTokens, never an addition, so
+    // token quotas and every existing total are unchanged by the split.
+    expect(metrics.outputTokens).toBe(1296);
+    expect(metrics.imageOutputTokens).toBe(1290);
+    expect(metrics.imageInputTokens).toBe(0);
   });
 
   it('bridge generateContent: orchestration usage with cached tokens, accounted on the bare model', async () => {

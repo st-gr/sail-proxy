@@ -51,6 +51,25 @@ services/gateway/test/
 └── usage-tracking*.test.ts    # Usage tracking tests
 ```
 
+- `test/tool-governance-identity.test.ts` — the identity strings and the pattern regex (`^(function|hosted|mcp):([^*\s]+\*?|\*)$`), including the bare namespace wildcard `function:*`
+- `test/tool-governance-evaluate.test.ts` — pure evaluation: allow/deny precedence, the two-policy merge (most restrictive wins), a `tool_choice` forcing a stripped tool, fail-open with no policy block
+- `test/tool-governance-adapters-anthropic-openai.test.ts`, `test/tool-governance-adapters-responses-gemini.test.ts` — one suite per pair of adapters: declared tools, the forced tool, strip leaving the rest of the body intact, invoked tools from a non-streaming response and from an accumulated stream
+- `test/tool-governance-scoped-allow.test.ts` — the scoped-vs-global pattern rule, `deniedBy` with scoped allows (a server-limited policy leaves the rest of the caller's tools alone, `mcp:<server>/*` is unlimited, deny still wins), and `serverLimit`/`evaluate` narrowing a bare server declaration to `monitored`/`stripped`/`rejected` per mode and per a prefix vs. named-tools scoped allow
+- `test/tool-governance-narrowing.test.ts` — the Responses and Anthropic adapters rendering `EvaluationResult.narrow` into a bare server declaration (`allowed_tools`, and the Anthropic `mcp_toolset`'s `default_config`/`configs`), including the client-already-narrowed intersection, the deprecated no-toolset shape left untouched, and the middleware narrowing a bare declaration end to end
+- `test/tool-governance-middleware.test.ts` — monitor leaves the request untouched, strip mutates `req.body`, reject returns each family's own 403 shape, a malformed policy block or an adapter throw fails open
+- `test/tool-governance-wiring.test.ts` — the middleware is mounted on all four routes, after authentication and before quota enforcement; the Bedrock router governs tools after both authentications (unified/SigV4, then service auth) and before quota enforcement, and its controller records invoked tools for both a complete and a streamed response
+- `test/tool-governance-result-sources.test.ts` — each adapter's `resultSources`: pairing a result with the call that produced it per family (OpenAI chat `tool`/legacy `function` messages, Responses `function_call_output`/`custom_tool_call_output`/`mcp_call`/hosted `*_call`, Anthropic `tool_result`/`mcp_tool_result`/hosted `*_tool_result`, Gemini `functionResponse`), and a result whose call is missing from the body falling back to `UNKNOWN_SOURCE`
+- `test/tool-governance-trust-chain.test.ts` — the trust step in `evaluate()`: no taint changes nothing, strip/monitor/reject each denying the sensitive tools with reason `trust_chain`, a mixed refusal naming both reasons, label union across the user and key blocks, a forced tool_choice on a withheld tool turning strip into reject, an older admin's block (no labels) never tainting, an ordinary policy denial still carrying reason `policy`, the strip notice naming the sources, and `policyBlocksFromRequest` keeping label lists
+- `test/tool-governance-trust-wiring.test.ts` — the middleware and the call gate end to end: strip removes the sensitive tool after an untrusted result and names the source in the notice and the event; the usage fold records `reason` and the `source` entries; a mixed reject names both reasons; no untrusted result taints nothing; a nested call inside a replayed container call counts as a source and the gate then refuses a nested sensitive call; the same call passes without the taint; under Monitor (trust chain or a plain policy deny) the gate passes the nested call but still records it `detected`
+- `test/tool-governance-bedrock-adapter.test.ts` — the Bedrock adapter (2026-09-22 §4): Converse declares/forces/strips/notes and pairs `toolResult`↔`toolUse` for `resultSources`; an Anthropic-shaped invoke body delegates to the Anthropic adapter and any other invoke body declares nothing; invoked tools read from a Converse response and from native stream events, with the stream parser's placeholder tool ignored; a strip that would empty an already-tool-using Converse conversation is refused instead of stripped; a reject through the middleware answers with Bedrock's own 403 `AccessDeniedException` shape
+- `test/tool-governance-stream-tap.test.ts` — `tapStreamedTools`: tool-start frames are recorded from written chunks and every write still reaches the client unaltered; an ungoverned request or a scan error leaves the write alone; a native and an Anthropic-shaped tool-start frame are reassembled correctly when split across two or three writes, including a split inside the `data:` prefix; a frame that arrives whole is not double-counted when the following write starts a new line; 70 KiB with no newline never throws, and a following tool-start frame is still recorded
+- `test/realtime/relay-transform.test.ts` — the relay's client hook as a transform (spec 2026-09-22 §5.1): forwarding a replacement instead of the original, dropping a frame with a reply to the client and nothing forwarded upstream, sending a `thenUpstream` frame after the forwarded one in order, a throwing hook forwarding the original, binary frames passing untouched when the hook returns nothing, and the handle's own `sendUpstream`/`sendClient`
+- `test/realtime/realtime-tool-gate.test.ts` — `createRealtimeToolGate` (spec 2026-09-22 §5.2–§5.3): declarations — strip removes a denied tool and appends the notice to the frame's own `instructions` (and leaves them untouched when the frame carries none), reject drops the frame and answers with the Realtime error event, `response.create` is judged the same way as `session.update`, monitor and non-tool frames are left alone; the trust chain in a session — strip forwards the result and follows it with a corrective `session.update` that withholds the sensitive tool, reject refuses the result, monitor changes nothing but still records the source, and a result for an unknown call counts as `<unknown>`
+- `test/realtime/realtime-tools.test.ts` — the realtime relay's frame parsing: declared tools read off `session.update`, invoked tools off `response.done`
+- `test/sap-rpt-controller.test.ts` — the SAP-RPT controller: a 200 relayed byte-for-byte with headers (marking `res.locals.sapRelay`), a `--deployed` request resolved identically to its bare twin, cells billed against the resolved twin, a deep-context call accounted on the `--deep-context` id, SAP's 422/400 relayed verbatim and billing nothing, 404/403 in the SAP shape for an unknown or unentitled model (without marking it a SAP relay), 502 when the deployment cannot be reached, and `executeBeforePlugins`/`executeAfterPlugins` never called
+- `test/sap-rpt-usage.test.ts` — the cell fold from `metadata` (`cellsFromResponse`), the `--deep-context` id `accountedModel` produces only for a `context_mode: "deep"` response (stripped of `--deployed` first), and `rptError`'s envelope shape
+- `test/sap-rpt-routes.test.ts` — auth then quota then the controller, an OpenAI-shaped 401 from auth and the real `quotaEnforcement` 429 (no `message`) both reshaped into the SAP shape (the 429's `msg` composed from its fields, the original fields preserved on `detail[0].quota`), a relayed upstream 401 from SAP itself left untouched via `res.locals.sapRelay`, `predict-parquet` routed to its own handler, and tool governance never mounted on this route
+
 #### Admin Service Tests (`services/admin/test/`)
 
 ```
@@ -88,6 +107,14 @@ services/admin/test/
 - `test/unit/usage-event-processor-counters.test.ts` — the processor's buckets land with the rows in one transaction (real SQLite)
 - `test/unit/services/cost-recalculation-rebuild.test.ts` — the daily recalculation rebuilds the buckets and republishes on every run, and a rebuild failure leaves its own counts intact
 - `test/unit/services/cost-recalculation-schedule.test.ts` — when that run happens: 5 minutes after startup and every 24 hours from then, or at `platform.maintenance.dailyRunAtUtc` each day, re-armed on a configuration activation
+- `test/unit/services/tool-policy-service.test.ts` — admin: pattern validation, the single default policy, the effective block a validation response carries for a user and for a key
+- `test/unit/services/tool-trust-labels.test.ts` — admin: `validatePolicyWrite` accepting valid sensitive/untrusted patterns and rejecting malformed ones, and `recordToolUsage` writing `reason` on the raw row and rolling trust-chain hits into `ToolUsageDaily.trustChained`
+- `test/unit/services/tool-usage-service.test.ts` — admin: the daily aggregate upsert arithmetic and the retention boundaries read from `platform.toolGovernance.retention`
+- `test/integration/http/tool-policy-validation.test.ts` — admin, cds.test HTTP: the pattern syntax and mode rejected with 400, the default policy's `isDefault` fixed
+- `test/integration/http/tool-policies-odata.test.ts` — admin, cds.test HTTP: the ToolPolicies OData surface, the assignment actions, the ToolInventory day-range projection, and creating a policy with sensitive tools and untrusted sources (refusing a malformed untrusted pattern, cascading their deletion with the policy)
+- `test/unit/services/sap-rpt-pricing.test.ts` — admin: `pricingTwins` tries the exact id, then a deep-context id's bare model, then the `--deployed` twins; `deriveDeepContextRows` adds one pricing-only row per large SAP-RPT model (none for the small ones), always as `accessType: 'deployment'` regardless of the parent's own accessType, clamps the derived `displayName` to 100 characters, and mirrors the parent's `absent` flag
+- `test/integration/http/users-odata.test.ts` (`usageUnits` describe block) — admin, cds.test HTTP: `usageUnits()` lists the models whose usage is counted in cells, from a seeded `unit: 'cells'` `ApiKeyUsage` row
+- `services/admin/app/model-library-app/test/costDisplay.test.ts` — Model Library detail's cost math and display: `capacityUnitsPerMillion`, `operandsBracket`, `costRows` (including the manual-price and image/audio cost factor rows), and `costUnitLabel`, which labels SAP-RPT models' cost per 1K cells and everything else per 1K tokens
 
 ### Shared Test Utilities (`libs/test-utils/`)
 
@@ -562,9 +589,10 @@ shell (navigation entries and profile per role, the home page's key-metric tiles
 card), the
 API-keys app and the AWS-credentials app (list visibility, object page, edit, create), the
 Model Library (entitled models, filters, model detail, manual prices, catalogs), Users & Quotas
-(admin only: list, object page, edit, deactivate/reactivate lifecycle, reset quota) and Security
-Notifications (client IP on the list and the object page) as `admin@test.com` and
-`user@test.com`.
+(admin only: list, object page, edit, deactivate/reactivate lifecycle, reset quota), Security
+Notifications (client IP on the list and the object page) and Tool Policies (admin only: the
+seeded Default policy in monitor mode, creating a policy with an inline allow and a deny entry) as
+`admin@test.com` and `user@test.com`.
 
 **Where things live**
 
@@ -573,11 +601,13 @@ Notifications (client IP on the list and the object page) as `admin@test.com` an
 | `ci/scripts/ui-journeys/roles.js` | the role matrix — what each role must and must not see or edit |
 | `ci/scripts/ui-journeys/fixtures.js` | fixture names (`UI Fixture — …`) and dev user emails, plus a `quota` block (minimal limits so an accidental real request is refused, and the seeded usage figures) and a `securityEvent` block (client IP, user agent, endpoint, request ID of the seeded notification) |
 | `ci/scripts/ui-journeys/seed.js` | deletes every draft, API key, AWS credential and non-default model catalog, then creates the fixtures over OData (as the admin); posts synthetic usage for the quota fixtures through the admin's `processUsageEvents` action and a security event through `logSecurityEvent` |
-| `ci/scripts/ui-journeys/run.js` | runs `ui5-test-runner` per role × app, writes `ci/reports/ui-journeys/<app>-<role>/` (HTML report, `junit.xml`, screenshots); an `APPS` entry can restrict itself to certain roles via `roles` — `users-app` is `roles: ['admin']`, since it is an admin-only app |
+| `ci/scripts/ui-journeys/run.js` | runs `ui5-test-runner` per role × app, writes `ci/reports/ui-journeys/<app>-<role>/` (HTML report, `junit.xml`, screenshots); an `APPS` entry can restrict itself to certain roles via `roles` — `users-app` and `tool-policies-app` are `roles: ['admin']`, since both are admin-only apps |
 | `services/admin/app/<app>/webapp/test/integration/` | the OPA5 pages and journeys of each app (`opaTests.qunit.html` is the entry) |
+| `services/admin/app/shell/webapp/test/integration/` | Shell journeys: navigation entries and profile per role, home page key-metric tiles, and the My quota card's bullet charts and reset text |
 | `services/admin/app/model-library-app/webapp/test/integration/` | Model Library journeys: grid count per role, filters, leaderboard/chart (admin), detail cost operands and role-gated actions, manual price round trip (admin), catalogs create / stage and save members / discard a staged removal / the unsaved-changes guard / admin tabs / delete, and (`ProfilesJourney.js`, admin only) quota profiles create / edit the limits / the unsaved-profile guard / assign and unassign / delete refused while assigned — `minTests: 7` in `run.js` covers the added journey |
-| `services/admin/app/users-app/webapp/test/integration/` | Users & Quotas journeys (admin only): list sort/status/seeded usage, object page constraints/usage/API Keys/Entitlement (including the assigned quota-profile field), edit field control, deactivate/reactivate lifecycle with locked credentials, reset quota |
+| `services/admin/app/users-app/webapp/test/integration/` | Users & Quotas journeys (admin only): list sort/status/seeded usage, object page constraints/usage/API Keys/Entitlement (including the assigned quota-profile field), Usage bullet charts, edit field control, deactivate/reactivate lifecycle with locked credentials, reset quota |
 | `services/admin/app/security-notifications-app/webapp/test/integration/` | Security Notifications journeys: list Client IP column, object page notification details (Client IP, User Agent, Endpoint, Request ID) |
+| `services/admin/app/tool-policies-app/webapp/test/integration/` | Tool Policies journeys (admin only, `minTests: 4`): the list shows the seeded Default policy in monitor mode, creating a policy with an inline allow entry, an inline deny entry and an inline Sensitive-Tools entry, the Tool Inventory page and back, and assigning then unassigning a user from the policy's own Assigned Users table. The API key side of the assignment actions is covered by `test/integration/http/tool-policies-odata.test.ts`; `PoliciesJourney.js`'s own comments carry why the earlier, header-based shape of those actions could not be driven from OPA at all |
 
 `run.js` injects the selected role's expectations into the page URL (`?role=…&expect=<base64url JSON>`);
 journeys read them from `expectations.js` and never assert against literals. **To add a role
@@ -596,10 +626,30 @@ standalone run, start a throwaway admin on a scratch database first:
 ```bash
 cd services/admin
 npx cds deploy --to sqlite:/tmp/ui-journeys.db
-CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"/tmp/ui-journeys.db"}}}}' PORT=4014 pnpm run dev:ts:mock
+CDS_CONFIG='{"[development]":{"requires":{"db":{"kind":"sqlite","impl":"@cap-js/sqlite","credentials":{"url":"/tmp/ui-journeys.db","database":"/tmp/ui-journeys.db"}}}}}' PORT=4014 pnpm run dev:ts:mock
 # in another terminal, from the repository root
 ADMIN_SERVICE_URL=http://localhost:4014 pnpm run ui:journeys
 ```
+
+**The `[development]` key and the `database` entry are both load-bearing.** A top-level
+`CDS_CONFIG` block is overridden by the profile the dev server runs under, and
+`credentials.database` beats `credentials.url` — so the shorter spelling starts a throwaway that
+serves the DEV database instead of the scratch file, and the seed then purges the dev API keys and
+AWS credentials.
+
+**Check the running service, not its log.** The log line
+`connect to db > sqlite { url: '/tmp/ui-journeys.db', database: '/tmp/ui-journeys.db' }` is printed
+by a process that may then lose the port to another admin (`EADDRINUSE`, further down the same log)
+and exit, leaving the seed pointed at whatever owns the port. `pnpm run dev:ts:mock` is a nodemon
+supervisor that respawns `cds serve` after every kill and every file change, so an old throwaway
+can come back and hold the port long after you think it is gone: stop one by killing the
+`pnpm run dev:ts:mock` process, not the listener. Ask the service which database it serves —
+`curl -u admin@test.com:x http://localhost:<port>/odata/v4/admin/ToolPolicies?\$select=name` on a
+scratch database answers with `Default` alone.
+
+`seed.js` enforces the same rule from its side: it refuses any target holding an API key or AWS
+credential whose owner is neither a mocked fixture user nor a `*.service.key`, naming what it found.
+The CI pipeline restores its database afterwards and opts out with `UI_JOURNEYS_IN_PIPELINE=1`.
 
 The Model Library journeys need the gateway the pipeline starts in Phase 5
 (`refreshModelLibrary` reads the model list; it spends no tokens). Locally, either restrict a run to

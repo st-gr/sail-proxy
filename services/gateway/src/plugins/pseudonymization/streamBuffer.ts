@@ -12,6 +12,8 @@
  */
 
 import { ReplacementMap } from './replacementMap';
+import { containUnknownPlaceholders, openPlaceholderStart } from './unknownPlaceholders';
+import type { ContainmentOptions } from './unknownPlaceholders';
 
 export class StreamUnmaskBuffer {
   private buffer = '';
@@ -19,9 +21,16 @@ export class StreamUnmaskBuffer {
   private knownPrefixes: string[];
   private placeholderRegex: RegExp;
   private maxPrefixLength: number;
+  private containment?: ContainmentOptions;
 
-  constructor(map: ReplacementMap) {
+  /**
+   * `containment` turns on the handling of placeholders the model invented: they are held until
+   * their id is complete, exactly as a known one is, then withheld and reported instead of being
+   * passed through. Without it the buffer behaves as it always has.
+   */
+  constructor(map: ReplacementMap, containment?: ContainmentOptions) {
     this.reverseMap = map.reverse;
+    this.containment = containment;
 
     // Collect all unique prefixes from the reverse map
     const prefixes = new Set<string>();
@@ -80,16 +89,33 @@ export class StreamUnmaskBuffer {
     // couldBePartialPlaceholder retains a complete placeholder that is a strict
     // prefix of a longer one, so the ambiguous tail stays buffered until the
     // next chunk (or flush) disambiguates it.
-    const safePoint = this.findSafeFlushPoint();
-    let flushed = this.buffer.slice(0, safePoint);
+    let safePoint = this.findSafeFlushPoint();
+    // An INVENTED placeholder is a prefix of nothing in the map, so the rule above lets it go
+    // mid-id: `MASKED_PERSON_2393` would be withheld and `5247` left behind as stray text. With
+    // containment on, anything that still reads as an open placeholder is held as well.
+    // A tail that is a complete KNOWN placeholder is left to the rule above, which already holds it
+    // only when a longer key could still follow - holding it here too would delay every placeholder
+    // that happens to end a delta.
+    if (this.containment) {
+      const open = openPlaceholderStart(this.buffer);
+      if (open !== -1 && open < safePoint && !this.reverseMap.has(this.buffer.slice(open))) safePoint = open;
+    }
+    const flushed = this.buffer.slice(0, safePoint);
     this.buffer = this.buffer.slice(safePoint);
 
-    this.placeholderRegex.lastIndex = 0;
-    flushed = flushed.replace(this.placeholderRegex, (match) =>
-      this.reverseMap.get(match) || match
-    );
+    return this.resolve(flushed);
+  }
 
-    return flushed;
+  /** Withhold what the model invented, then restore what the map knows. */
+  private resolve(text: string): string {
+    let source = text;
+    if (this.containment) {
+      const contained = containUnknownPlaceholders(text, this.reverseMap, this.containment.inbound, this.containment.withhold !== false);
+      if (contained.unknown.length > 0) this.containment.onUnknown(contained.unknown);
+      source = contained.text;
+    }
+    this.placeholderRegex.lastIndex = 0;
+    return source.replace(this.placeholderRegex, (match) => this.reverseMap.get(match) || match);
   }
 
   /**
@@ -97,10 +123,7 @@ export class StreamUnmaskBuffer {
    */
   flush(): string {
     // Final unmask attempt on whatever is left
-    this.placeholderRegex.lastIndex = 0;
-    const result = this.buffer.replace(this.placeholderRegex, (match) =>
-      this.reverseMap.get(match) || match
-    );
+    const result = this.resolve(this.buffer);
     this.buffer = '';
     return result;
   }

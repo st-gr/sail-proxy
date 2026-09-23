@@ -4,7 +4,8 @@
 // Purge + seed the UI-journey fixtures over OData as the dev admin user.
 //   ADMIN_SERVICE_URL=http://localhost:4014 node ci/scripts/ui-journeys/seed.js
 // Safety: refuses any target whose whoami is not the dev-mode admin test user. It then
-// deletes EVERY draft, API key, AWS credential and non-default model catalog — in the
+// deletes EVERY draft, API key, AWS credential, non-default tool policy and non-default model
+// catalog — in the
 // pipeline this runs after the last phase that reads the CI database (Phase 6.5);
 // standalone it must only ever see a throwaway admin (see run.js).
 
@@ -15,7 +16,7 @@ const fixtures = require('./fixtures');
 const roles = require('./roles');
 
 const REPORT_DIR = path.resolve(__dirname, '../../reports/ui-journeys');
-const SETS = ['ApiKeys', 'AwsCredentials'];
+const SETS = ['ApiKeys', 'AwsCredentials', 'ToolPolicies'];
 
 // run.js's UI_JOURNEYS_APPS filter has to reach the seed as well: a fixture whose journeys are
 // not in this run is not seeded. The model-library fixtures cannot even be seeded without a
@@ -36,6 +37,37 @@ async function guard(client) {
   }
 }
 
+/**
+ * Refuses a target that holds credentials belonging to a real person.
+ *
+ * The port guard above is not enough: a throwaway admin that lost the race for its port (EADDRINUSE)
+ * still logs its own scratch database and still answers `whoami` as the dev admin, while a stray
+ * admin on that same port serves the maintainer's development database. Two runs deleted the dev
+ * API keys exactly that way. An API key or AWS credential whose owner is neither a mocked fixture
+ * user nor a platform service key means the target is somebody's real database, so nothing is
+ * purged. The pipeline restores its database afterwards and opts out with UI_JOURNEYS_IN_PIPELINE.
+ */
+const FIXTURE_EMAILS = new Set(Object.values(fixtures.users));
+
+async function refuseForeignCredentials(client) {
+  if (process.env.UI_JOURNEYS_IN_PIPELINE === '1') return;
+  const foreign = [];
+  for (const set of ['ApiKeys', 'AwsCredentials']) {
+    const page = await client.get(`/${set}?$select=ID,name,email&$top=100&$filter=${encodeURIComponent('IsActiveEntity eq true')}`);
+    for (const row of page.value) {
+      const email = String(row.email || '');
+      if (email.endsWith('.service.key') || FIXTURE_EMAILS.has(email)) continue;
+      if (String(row.name || '').startsWith(fixtures.prefix)) continue;
+      foreign.push(`${set}: ${row.name} (${email})`);
+    }
+  }
+  if (foreign.length > 0) {
+    throw new Error('refusing to seed: this admin serves a database with credentials that are not journey fixtures —\n  '
+      + foreign.join('\n  ')
+      + '\nStart the throwaway admin on a free port and check that IT owns the port (lsof -ti:<port>) before seeding.');
+  }
+}
+
 async function purge(client) {
   let deleted = 0;
   for (const set of SETS) {
@@ -44,8 +76,11 @@ async function purge(client) {
       for (;;) {
         // Platform service keys (email *.service.key, e.g. the admin's own gateway key) are not
         // fixtures: deleting them would break the admin's calls to the gateway while its cached
-        // key is still in memory (refreshModelLibrary -> 401).
-        const keep = set === 'ApiKeys' ? " and not endswith(email,'.service.key')" : '';
+        // key is still in memory (refreshModelLibrary -> 401). The default tool policy cannot be
+        // deleted (assertDeletable rejects it) and must survive every run.
+        const keep = set === 'ApiKeys' ? " and not endswith(email,'.service.key')"
+          : set === 'ToolPolicies' ? ' and isDefault eq false'
+          : '';
         const filter = encodeURIComponent(`IsActiveEntity eq ${active}${keep}`);
         const page = await client.get(`/${set}?$select=ID&$filter=${filter}&$top=50`);
         if (page.value.length === 0) break;
@@ -127,16 +162,19 @@ async function seedQuotas(client, apiKeys) {
   await client.post('/processUsageEvents', { events });
   // Quota profile: the seeded Standard profile (services/admin startup) assigned to the fixture
   // user, so the object page's Entitlement section has a profile to show.
-  const profiles = await client.get(`/QuotaProfiles?$select=ID,tokensPerDay,spendPerDay&$filter=${encodeURIComponent(`name eq '${quota.profileName}'`)}&$top=1`);
+  const profiles = await client.get(`/QuotaProfiles?$select=ID,requestsPerMinute,tokensPerDay,spendPerDay&$filter=${encodeURIComponent(`name eq '${quota.profileName}'`)}&$top=1`);
   const profile = profiles.value[0];
   if (!profile) throw new Error(`no QuotaProfiles row named '${quota.profileName}' — the admin has never run its quota-profile seed`);
   const assigned = await client.post('/assignQuotaProfile', { email: users.user, profileId: profile.ID });
-  // The profile's figures and the billing currency ride along so the object-page journey can
-  // derive the "Default" line it expects instead of pinning the starter profile's numbers.
+  // The user's active key carries a per-credential limit of its own, so the credential journeys
+  // can check that "Set Rate Limits" opens with the current value beside the owner's limit.
+  await client.post(`/ApiKeys(ID=${apiKeys[names.userActiveKey]},IsActiveEntity=true)/AdminService.setRateLimits`, { requestsPerMinute: quota.keyRequestsPerMinute });
+  // The profile's figures and the billing currency ride along so the object-page journeys can
+  // derive the "Default" and "Owner's Limit" lines they expect instead of pinning the starter's numbers.
   return {
     user: users.user, other: users.other, tokens: quota.seededTokens, tokensPerDay: quota.tokensPerDay,
-    profileName: quota.profileName, profileTokensPerDay: profile.tokensPerDay, profileSpendPerDay: profile.spendPerDay,
-    currency: assigned.sapCostCurrency
+    profileName: quota.profileName, profileRequestsPerMinute: profile.requestsPerMinute, profileTokensPerDay: profile.tokensPerDay, profileSpendPerDay: profile.spendPerDay,
+    currency: assigned.sapCostCurrency, keyRequestsPerMinute: quota.keyRequestsPerMinute
   };
 }
 
@@ -250,9 +288,10 @@ async function main() {
   }
   const client = createClient(adminUrl, roles.admin.credentials);
   await guard(client);
+  await refuseForeignCredentials(client);
   const deleted = await purge(client);
   const created = await seed(client);
-  if (inThisRun('shell', 'users-app')) created.quota = await seedQuotas(client, created.apiKeys);
+  if (inThisRun('shell', 'users-app', 'api-keys-app')) created.quota = await seedQuotas(client, created.apiKeys);
   if (inThisRun('security-notifications-app')) created.securityEvent = await seedSecurityEvent(client, created.apiKeys);
   if (inThisRun('model-library-app')) {
     const defaultId = await purgeLibrary(client);

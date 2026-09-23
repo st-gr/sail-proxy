@@ -41,6 +41,12 @@ export const DETECTOR_CONFIDENCE = {
   ner: 0.7,
   dictionary: 0.5,
   propnRun: 0.5,
+  /**
+   * `Surname, Given:` heading a line of a text that shows it is a transcript (the label repeats,
+   * or the line carries a cue). Scored like an anchored rule: the structure around the words is
+   * the evidence, the words alone would be none. See detectors/speakerLabelDetector.ts.
+   */
+  speakerLabel: 0.85,
 } as const;
 
 /**

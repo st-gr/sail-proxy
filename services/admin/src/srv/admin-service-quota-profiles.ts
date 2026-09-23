@@ -22,7 +22,7 @@ import { LIMIT_FIELDS, validateConstraints } from '../services/quotaLimits';
 import { invalidateForEmails } from '../services/credentialInvalidation';
 import { recordAuditEvent, AuditEventInput } from '../services/auditEventService';
 import { clientContext } from '../utils/clientIp';
-import { userRowWithVirtuals } from './admin-service-users';
+import { userRowWithVirtuals, wantsIeee754 } from './admin-service-users';
 
 const cds = require('@sap/cds');
 
@@ -57,7 +57,7 @@ async function setProfile(req: any, email: string, profileId: string | null): Pr
     ...audit(req, profileId ? 'quota_profile.assign' : 'quota_profile.unassign', email),
     resourceType: 'User', details: JSON.stringify({ profileId })
   });
-  return userRowWithVirtuals(email);
+  return userRowWithVirtuals(email, wantsIeee754(req));
 }
 
 /** SQLite: "UNIQUE constraint failed: <table>.name"; Postgres: SQLSTATE 23505 "duplicate key value violates unique constraint". */

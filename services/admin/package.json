@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.js\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../..",
+    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.js\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../tool-policies-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../..",
     "start": "node server.js",
     "start:cds": "cds-serve",
     "start:docker": "DEPLOY_TARGET=docker node server.js",
@@ -60,7 +60,7 @@
     "@sap/xssec": "^4.8.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
-    "axios": "^1.15.1",
+    "axios": "^1.18.0",
     "bcrypt": "^5.1.1",
     "chokidar": "^4.0.3",
     "cookie-parser": "^1.4.7",
@@ -89,7 +89,7 @@
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.44.1",
     "@typescript-eslint/parser": "^8.44.1",
-    "axios": "^1.15.1",
+    "axios": "^1.18.0",
     "cds-plugin-ui5": "^0.13.4",
     "cpy-cli": "^5.0.0",
     "cross-env": "^7.0.3",
@@ -281,6 +281,12 @@
           "mountPath": "/security-notifications",
           "versionOverride": "1.136.0"
         },
+        "tool-policies-app": {
+          "path": "app/tool-policies-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/tool-policies",
+          "versionOverride": "1.136.0"
+        },
         "config-app": {
           "path": "app/config-app",
           "configFile": "ui5.yaml",
@@ -314,6 +320,7 @@
     "app/aws-credentials-app",
     "app/usage-analytics-app",
     "app/security-notifications-app",
+    "app/tool-policies-app",
     "app/config-app",
     "app/sap-rates-app",
     "app/users-app"

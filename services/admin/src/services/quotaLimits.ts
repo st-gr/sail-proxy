@@ -116,6 +116,31 @@ export type DefaultTextSource = {
  * field the assigned profile leaves null still names the platform default rather than reading
  * "unlimited" because a profile happens to be assigned.
  */
+/** What a resolved quota status carries for one limit and its source (spec 2026-09-08 §2). */
+export interface EffectiveLimitSource {
+  limits: Limits;
+  limitSource: LimitSource;
+  quotaProfileName: string | null;
+  sapCostCurrency: string;
+}
+
+/**
+ * The limit that applies to a user for one field, with where it comes from: "200 (own
+ * constraint)", "60 (Standard profile)", "30 (platform)" or "unlimited"; spend carries two
+ * decimals and the billing currency. A credential's page shows this for its owner beside the
+ * credential's own limits - the two layers the gateway checks in turn.
+ */
+export function effectiveLimitText(f: LimitField, s: EffectiveLimitSource): string {
+  const value = s.limits[f];
+  if (value === null || value === undefined) return 'unlimited';
+  const figure = f.startsWith('spend') ? `${Number(value).toFixed(2)} ${s.sapCostCurrency}` : Number(value).toLocaleString('en-US');
+  switch (s.limitSource[f]) {
+    case 'user': return `${figure} (own constraint)`;
+    case 'profile': return `${figure} (${s.quotaProfileName} profile)`;
+    default: return `${figure} (platform)`;
+  }
+}
+
 export function defaultText(f: LimitField, s: DefaultTextSource): string {
   const { limits, limitSource } = effectiveLimits(null, s.profileLimits ?? null, s.platformLimits);
   const value = limits[f];

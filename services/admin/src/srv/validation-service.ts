@@ -8,6 +8,7 @@ import { credentialExpired } from '../services/credentialLifecycle';
 import { entitlementBlockFor, EntitlementBlock } from '../services/modelEntitlementService';
 import { credentialRateLimits } from '../services/rateLimitsService';
 import { wireBlock, UserBlock } from '../services/usersService';
+import { policyBlockFor, keyPolicyBlockFor, ToolPolicyBlock } from '../services/toolPolicyService';
 
 // Import file config service
 const FileConfigService = require('./file-config-service');
@@ -42,6 +43,8 @@ interface ApiKeyValidationResult {
     lastUsed?: Date;
     entitlement?: EntitlementBlock;
     user?: UserBlock;
+    toolPolicy?: ToolPolicyBlock;
+    keyToolPolicy?: ToolPolicyBlock;
   };
   cacheHit: boolean;
   validationTime: number;
@@ -145,6 +148,10 @@ interface ApiKeyValidationData {
   entitlement?: EntitlementBlock;
   /** The owner's status, roles and effective quota limits; absent when the lookup failed. */
   user?: UserBlock;
+  /** The caller's effective tool policy (assigned or default); absent when the lookup failed. */
+  toolPolicy?: ToolPolicyBlock;
+  /** The key's own narrowing policy, when it names one; absent otherwise or when the lookup failed. */
+  keyToolPolicy?: ToolPolicyBlock;
 }
 
 interface AwsCredentialValidationData {
@@ -173,6 +180,8 @@ interface AwsCredentialValidationData {
   entitlement?: EntitlementBlock;
   /** The owner's status, roles and effective quota limits; absent when the lookup failed. */
   user?: UserBlock;
+  /** The caller's effective tool policy (assigned or default); absent when the lookup failed. */
+  toolPolicy?: ToolPolicyBlock;
 }
 
 interface ValidationRequest {
@@ -390,7 +399,9 @@ class ValidationService {
           email: keyRecord.email,
           lastUsed: keyRecord.lastUsed,
           entitlement: await this.entitlementBlock(keyRecord.email),
-          user: await this.userBlock(keyRecord.email)
+          user: await this.userBlock(keyRecord.email),
+          toolPolicy: await this.toolPolicyBlock(keyRecord.email),
+          keyToolPolicy: await this.keyToolPolicyBlock(keyRecord.ID)
         },
         cacheHit: false,
         validationTime: performance.now() - startTime
@@ -1122,6 +1133,27 @@ class ValidationService {
     }
   }
 
+  /** Tool governance blocks (spec 2026-09-16 §5); fail open like the entitlement block. */
+  private async toolPolicyBlock(email?: string): Promise<ToolPolicyBlock | undefined> {
+    if (!email) return undefined;
+    try {
+      return await policyBlockFor(cds.db, email);
+    } catch (e) {
+      logger.warn('validation-service', `tool policy lookup failed for ${email}: ${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
+  }
+
+  private async keyToolPolicyBlock(keyId?: string): Promise<ToolPolicyBlock | undefined> {
+    if (!keyId) return undefined;
+    try {
+      return (await keyPolicyBlockFor(cds.db, keyId)) ?? undefined;
+    } catch (e) {
+      logger.warn('validation-service', `key tool policy lookup failed for ${keyId}: ${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
+  }
+
   private updateLastUsed(entity: string, id: string): void {
     // Asynchronous update to avoid blocking validation
     setTimeout(async () => {
@@ -1371,6 +1403,7 @@ class ValidationService {
       // The SigV4 gateway path reads credentialMetadata, not the unified data block
       const entitlement = await this.entitlementBlock(credential.email || credential.userId);
       const user = await this.userBlock(credential.email || credential.userId);
+      const toolPolicy = await this.toolPolicyBlock(credential.email || credential.userId);
 
       // Return validation result
       const result = {
@@ -1383,6 +1416,7 @@ class ValidationService {
           userId: credential.userId,
           entitlement,
           user,
+          toolPolicy,
           rateLimits: await credentialRateLimits(cds.db, { awsCredentialId: credential.ID })
         },
         validationToken: token,
@@ -1749,7 +1783,9 @@ class ValidationService {
       // Cached with the rest of the data, so the cache-hit response carries it too; the gateway's
       // cache invalidation on a catalog change is what keeps it fresh.
       entitlement: await this.entitlementBlock(keyData.email),
-      user: await this.userBlock(keyData.email)
+      user: await this.userBlock(keyData.email),
+      toolPolicy: await this.toolPolicyBlock(keyData.email),
+      keyToolPolicy: await this.keyToolPolicyBlock(keyData.ID)
     };
     
     // Cache the result
@@ -1880,7 +1916,8 @@ class ValidationService {
         expiresAt: credential.expiresAt
       },
       entitlement: await this.entitlementBlock(credential.email || credential.userId),
-      user: await this.userBlock(credential.email || credential.userId)
+      user: await this.userBlock(credential.email || credential.userId),
+      toolPolicy: await this.toolPolicyBlock(credential.email || credential.userId)
     };
     
     // Cache the result (without the secret for security)

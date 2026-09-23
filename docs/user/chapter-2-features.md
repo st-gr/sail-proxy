@@ -21,7 +21,8 @@ fontsize: 18px
 SAIL-PROXY supports multiple AI API formats, allowing you to use existing tools and code without modification:
 
 #### OpenAI API Format
-- **Endpoints**: `/openai/v1/chat/completions`, `/v1/models`
+- **Endpoints**: `/openai/v1/chat/completions`, `/openai/v1/embeddings`, `/v1/models` (also
+  `/openai/v1/models`). Every HTTP `/openai/v1/...` path is also served under `/openai/api/v1/...`.
 - **Compatible with**: OpenAI SDK, ChatGPT plugins, most AI tools
 - **Example**:
 ```bash
@@ -40,6 +41,9 @@ curl -X POST http://localhost:3000/openai/v1/chat/completions \
 - **Models**: deployed GPT-5+ / o-series only (e.g. `gpt-5.3-codex--deployed`). Other models return HTTP 400 `model_not_supported` — use `/openai/v1/chat/completions` for those.
 - **Supported**: streaming, function tools, `reasoning`, `instructions`, `store: false`.
 - **Hosted web search**: a hosted `{"type":"web_search"}` tool is emulated gateway-side through Perplexity `sonar-pro`. The gateway runs the search itself and then calls the model again with the results, so the turn ends with the model's OWN answer written from what the search found: the client receives a `web_search_call` item recording the search, followed by the assistant's message. Streaming works the same way — the second call's frames are spliced into the same SSE stream, so the client still sees exactly one `response.created` and one `response.completed`. The number of searches per request is capped by `api_config.capabilities.web_search.max_searches_per_request` (default 3, clamped to 1–10). Only when no follow-up call is possible (the cap is exhausted, or the call itself fails) does the gateway fall back to delivering the formatted results as the assistant's message.
+- **Hosted file search**: upload documents through `/openai/v1/files`, group them in
+  `/openai/v1/vector_stores`, and attach a `{"type":"file_search"}` tool naming the vector store;
+  the gateway retrieves the matching passages itself before calling the model.
 - **Client**: Codex CLI (see below)
 - **Upgrading a distributed install**: an admin-activated configuration *replaces* the shipped `api_config.json` wholesale, so a configuration activated before this endpoint existed has no `responses` / `responses-stream` hook keys under `hooks.defaults.openai`. Because pseudonymization is force-enabled for the `openai` endpoint, the route then refuses requests with HTTP 503 `pseudonymization_hook_missing` rather than sending unmasked data upstream. Activate a configuration containing those keys before using the route.
 
@@ -84,8 +88,75 @@ Verified end to end against Codex CLI **0.145.0 and 0.146.0** — both send the 
 
 **Older Codex versions:** releases prior to mid-2025 spoke Chat Completions and were configured through `~/.codex/config.json` with a `providers` block pointing at `/openai/v1`. That still works against the chat-completions route, but the Responses route above is the supported path.
 
+#### OpenAI Images API
+
+- **Endpoints**: `POST /openai/v1/images/generations` (JSON) and `POST /openai/v1/images/edits`
+  (multipart form data), also mounted at `/openai/api/v1/images/generations` and `.../edits`.
+- **Models**: a Gemini image model with a deployment (see the [Gemini
+  chapter](chapter-12-google-gemini.md#image-generation)), e.g. `gemini-3.1-flash-image`, bare or
+  as its `--deployed` id. There is no default model.
+- **Responses are always base64 PNG**: `response_format` accepts only `b64_json` and
+  `output_format` only `png`; the image comes back as `data[0].b64_json`.
+
+```bash
+curl -X POST http://localhost:3000/openai/v1/images/generations \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image",
+    "prompt": "A watercolor painting of a lighthouse at sunset",
+    "size": "1024x1024"
+  }'
+
+curl -X POST http://localhost:3000/openai/v1/images/edits \
+  -H "Authorization: Bearer your-api-key" \
+  -F "model=gemini-3.1-flash-image" \
+  -F "prompt=Add a small sailboat near the horizon" \
+  -F "image[]=@lighthouse.png"
+```
+
+```javascript
+const response = await client.images.generate({
+  model: 'gemini-3.1-flash-image',
+  prompt: 'A watercolor painting of a lighthouse at sunset',
+  size: '1024x1024',
+});
+
+const imageBase64 = response.data[0].b64_json;
+```
+
+| Field | Accepted | Notes |
+|---|---|---|
+| `model` | a Google image model with a deployment | no default |
+| `prompt` | required | for edits, follows the uploaded image(s) |
+| `n` | 1–4 (default 1) | one Gemini call per image, each counted as a request |
+| `size` | `1024x1024`, `1536x1024`, `1024x1536`, `auto` | any other size (including DALL-E sizes) is refused with 400 |
+| `quality` | `standard`, `low`, `medium`, `high`, `xhigh`, `max`, `auto` | `high` renders at 2K, `max` at 4K; the rest are accepted and ignored; `hd` is refused with 400 |
+| `response_format` | `b64_json` only | `url` is refused with 400 — the gateway stores no images |
+| `output_format` | `png` only | `jpeg`/`webp` refused with 400 |
+| `image` / `image[]` (edits) | PNG, JPEG or WebP, ≤ 20 MB each | placed before the prompt, in upload order |
+| `user` | accepted | ignored |
+| `stream`, `partial_images`, `background`, `moderation` | only absent or at their default (`stream=false`, `partial_images=0`, `background=auto`, `moderation=auto`) | any other value is refused with 400 |
+| `mask`, `style`, `input_fidelity`, `output_compression` | not supported | refused with 400 |
+
+`n` issues one Gemini call per image, and each call is metered as its own request. An edit accepts
+at most four `image` parts, each up to 20 MB, and a prompt of up to 32 KB.
+
+**Data masking does not apply to images.** Pseudonymization rewrites text prompts; it is not
+applied to image prompts or to uploaded images, which reach SAP AI Core as you sent them. Do not
+put personal data in an image prompt or upload an image containing it.
+
+A pricing note: generated-image tokens are priced from an image output rate an administrator enters
+in the Admin Cockpit — see [Manage Access & Monitor Usage with Admin
+Cockpit](chapter-8-admin-cockpit.md).
+
+#### OpenAI Realtime API
+- **Endpoint**: `ws://<gateway>/openai/v1/realtime` (WebSocket; also `/v1/realtime`)
+- **Models**: SAP AI Core's deployed `gpt-realtime`; text and audio both work, every response is
+  metered — see the [Realtime chapter](chapter-14-realtime.md)
+
 #### Anthropic API Format
-- **Endpoints**: `/anthropic/v1/messages`, `/anthropic/v1/messages/count_tokens`
+- **Endpoints**: `/anthropic/v1/messages`, `/anthropic/v1/messages/count_tokens`, `/anthropic/v1/complete` (alias, Messages request shape)
 - **Compatible with**: Anthropic SDK, Claude applications, Claude Code
 - **Token Counting**: Local token estimation without API calls for pre-flight validation
 - **Example**:
@@ -100,12 +171,12 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 ```
 
 #### AWS Bedrock Format
-- **Endpoints**: `/aws-bedrock/model/{modelId}/invoke`
+- **Endpoints**: `/aws-bedrock/model/{modelId}/invoke`, `.../invoke-with-response-stream`, `.../converse`, `.../converse-stream`
 - **Authentication**: AWS SigV4 or API keys
 - **Compatible with**: AWS CLI, Boto3, AWS SDKs
 
 #### OpenRouter Format
-- **Endpoints**: `/openrouter/api/v1/chat/completions`
+- **Endpoints**: `/openrouter/api/v1/chat/completions`, `/openrouter/api/v1/completions`, `/openrouter/api/v1/responses`, `/openrouter/api/v1/models`, plus `/openrouter/api/v1/files` and `/openrouter/api/v1/vector_stores` for the hosted file search
 - **Special feature**: GitHub Copilot compatibility (with patching)
 - **Use case**: Connecting tools that expect OpenRouter's extended model list
 
@@ -162,11 +233,36 @@ once, no new credentials can be created for it, and reactivation restores exactl
 were locked. Each user sees their own consumption on the Admin Cockpit's home page and in the
 profile menu.
 
+#### Tool Governance
+
+An administrator can decide which tools — function tools, a provider's own hosted tools, and tools
+reached through an MCP server — a user or one of their API keys may declare and invoke when calling
+the gateway, including through the AWS Bedrock-compatible route and in a realtime voice session, and
+can browse a live inventory of every tool the gateway has seen. A policy can now
+limit a single MCP server to named tools without affecting any other tool. A policy can also defend
+against prompt injection: once a request carries output from a tool the policy calls an untrusted
+source — a web search, a browser — the tools it calls sensitive, the ones that act on the world, are
+withheld for the rest of the conversation, so content the assistant merely read cannot talk it into
+running a shell or sending mail. See [Tool
+Governance](chapter-8-admin-cockpit.md#tool-governance) in the Admin Cockpit chapter for policies,
+modes and the inventory.
+
 #### PII Masking (Pseudonymization)
 - **Detection and masking**: Personal data in an outgoing request is replaced with placeholder tokens and restored in the response; per-category toggles decide what is looked for
 - **Precision tuning**: `min_confidence` sets how much evidence a value needs before it is masked (0.5 by default), and `thresholds` overrides that for one noisy category without touching the rest
 - **Allow-list**: `allowlist.terms` (case-sensitive literals) and `allowlist.patterns` (regular expressions matched against the whole value) name what this deployment must never mask — a product, a system, a report title that reads like a person's name. A listed value is exempt whatever the confidence score says
 - **Saturation warning**: above `saturation_warn` distinct masked values (40 by default) a request logs one warning naming the counts per category and the value *shapes* — letters as `X`, digits as `9`, never a value — and its usage SIEM event carries `saturated: true`. It is a report and nothing else: a request that trips it still masks every value it found
+
+#### Tabular Prediction (SAP-RPT)
+- **Endpoint**: `POST /sap/v1/rpt/{model}/predict` — classification and regression over your own
+  tabular data (rows in, predictions out), in-context, with no training step; see the [Tabular
+  prediction chapter](chapter-15-tabular-prediction.md)
+- **Models**: SAP's `sap-rpt-*` family, bare or as the `--deployed` id, each needing its own
+  deployment and entitlement
+- **No masking**: this route carries no PII masking or any other request/response hook — the
+  request and response pass through to SAP unchanged
+- **Metered in cells**, not tokens — every cell sent plus every value predicted, shown as cells in
+  the Admin Cockpit
 
 #### Enterprise Authentication (Docker deployment)
 - **OAuth2 Integration**: GitHub, Okta, LDAP/Active Directory

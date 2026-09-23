@@ -11,6 +11,7 @@ import { getDefaultLogger } from '@libs/logger';
 import * as deployments from '../services/deploymentManagementService';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getClientIp } from '../utils/clientIp';
+import { queryString } from '../utils/queryParam';
 import { getTrustForwardedFor } from '../services/configService';
 
 const logger = getDefaultLogger();
@@ -23,7 +24,9 @@ function fail(res: Response, e: any): void {
 }
 
 export const list = async (req: Request, res: Response): Promise<void> => {
-  const model = String(req.query.model || '').trim();
+  // queryString, not String(): a bracketed `?model[x]=1` is a null-prototype
+  // object on express 4.22 and coercing one throws outside this handler's try.
+  const model = (queryString(req.query.model) ?? '').trim();
   if (!model) { res.status(400).json({ error: 'missing_model', message: 'query parameter model is required' }); return; }
   try { res.json({ model, deployments: await deployments.listDeploymentsForModel(model) }); } catch (e) { fail(res, e); }
 };

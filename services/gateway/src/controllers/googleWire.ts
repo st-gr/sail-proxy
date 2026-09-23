@@ -165,4 +165,8 @@ export function foldOrchestrationUsage(metrics: any, usage: any): void {
 export function foldNativeGeminiUsage(metrics: any, usageMetadata: any): void {
   const counted = usageFromGemini(usageMetadata);
   foldInclusiveUsage(metrics, counted.inputTokens, counted.outputTokens, 0, counted.cacheReadTokens);
+  // The modality split rides beside the inclusive totals: image input is what the
+  // admin already prices at the image rate, image output is priced at its own rate.
+  metrics.imageInputTokens = (metrics.imageInputTokens || 0) + counted.imageInputTokens;
+  metrics.imageOutputTokens = (metrics.imageOutputTokens || 0) + counted.imageOutputTokens;
 }

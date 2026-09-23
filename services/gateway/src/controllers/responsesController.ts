@@ -40,6 +40,7 @@ import { awaitResponsesStreamIdle, abortResponsesStreamContinuation } from '../u
 // of exactly this set is what the extraction into sseFraming existed to stop.
 import { TERMINAL_RESPONSE_TYPES } from '../utils/sseFraming';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { recordInvokedTools, recordNestedTools, gateContext, gateResponseBody, createCallGate, responsesAdapter } from '../toolGovernance';
 
 function badRequest(res: Response, message: string, code = 'model_not_supported'): void {
   res.status(400).json({ error: { message, type: 'invalid_request_error', code } });
@@ -841,9 +842,24 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     }
 
     applyResponsesUsage(usageMetrics, upstream.data?.usage);
+    recordInvokedTools(req, responsesAdapter.invokedTools(upstream.data));
 
-    let finalBody = upstream.data;
-    if (hookConfig) finalBody = await executeAfterPlugins(req, res, upstream.data, hookConfig);
+    // A client that hosts its own MCP servers reaches them INSIDE its container tool, so the tool
+    // is in no request and strip cannot remove it. The call, though, is in this response: record
+    // what it reached, and refuse the call itself when the policy forbids it (callGate.ts).
+    let gated = upstream.data;
+    const gate = gateContext(req);
+    if (gate) {
+      recordNestedTools(req, responsesAdapter.nestedInvokedTools(upstream.data, gate.convention));
+      const result = gateResponseBody(upstream.data, gate.convention, gate.blocks);
+      if (result.suppressed.length > 0) {
+        logger.info('responsesController', `tool policy refused a container call reaching ${result.suppressed.join(', ')}`);
+      }
+      gated = result.body;
+    }
+
+    let finalBody = gated;
+    if (hookConfig) finalBody = await executeAfterPlugins(req, res, gated, hookConfig);
 
     // The web-search continuation plugin accumulates its extra deployment call's
     // usage here while executeAfterPlugins runs above, so the fold — and the usage
@@ -918,10 +934,26 @@ async function forwardStream(
   }
 
   let captured = '';
+  // The call gate sits between the upstream bytes and the client: a container call's frames are
+  // held until its arguments are complete, then forwarded untouched or replaced by a refusal
+  // message (callGate.ts). Without a governed request, or for a client with no container tools, it
+  // is a pass-through. `captured` keeps the ORIGINAL bytes, so usage and the recorded tools still
+  // describe what the model actually did.
+  const gate = gateContext(req);
+  const callGate = gate ? createCallGate(gate.convention, gate.blocks) : null;
   upstream.data.on('data', (chunk: Buffer) => {
     const s = chunk.toString('utf8');
     captured += s;
-    res.write(s);
+    res.write(callGate ? callGate.push(s) : s);
+  });
+  upstream.data.on('end', () => {
+    if (!callGate) return;
+    const tail = callGate.flush();
+    if (tail) res.write(tail);
+    const suppressed = callGate.suppressed();
+    if (suppressed.length > 0) {
+      logger.info('responsesController', `tool policy refused a container call reaching ${suppressed.join(', ')}`);
+    }
   });
 
   // Measured on Node 20 + Express 4 (bodyParser.json): `req` is destroyed within ~5ms of
@@ -979,6 +1011,9 @@ async function forwardStream(
         // tokens arrive through __responsesExtraUsage instead.
         try {
           applyResponsesUsage(usageMetrics, extractStreamUsage(captured));
+          recordInvokedTools(req, responsesAdapter.invokedToolsFromStream(captured));
+          const streamGate = gateContext(req);
+          if (streamGate) recordNestedTools(req, responsesAdapter.nestedInvokedTools(captured, streamGate.convention));
         } catch { /* usage is best-effort */ }
 
         // The upstream stream ending is NOT the end of the response when the web-search

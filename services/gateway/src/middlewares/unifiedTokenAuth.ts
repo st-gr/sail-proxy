@@ -15,6 +15,7 @@ import { credentialIdentity, CredentialIdentity } from '../utils/credentialIdent
 import { getDefaultLogger } from '@libs/logger';
 import { getClientIp as deriveClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
+import { queryString } from '../utils/queryParam';
 const logger = getDefaultLogger();
 
 interface UnifiedAuthRequest extends Request {
@@ -306,12 +307,13 @@ function extractAwsCredentials(req: Request): {
  */
 function extractApiKey(req: Request): string | null {
   // Check standard API key headers
-  let apiKey = req.headers['x-api-key'] || req.headers['x-stainless-key'] || req.headers['x-goog-api-key'] || req.query.api_key || req.query.key;
-  
-  // Handle array values
-  if (Array.isArray(apiKey)) {
-    apiKey = apiKey[0];
-  }
+  // Headers are string | string[]; a query value can also be a null-prototype object
+  // (`?api_key[a]=1`, express >= 4.22). queryString narrows every source to a string or
+  // null, so a non-string key is "no key" - it never reaches the validation service,
+  // the cache-key hash or credentialIdentity.
+  let apiKey: string | null =
+    queryString(req.headers['x-api-key']) || queryString(req.headers['x-stainless-key']) || queryString(req.headers['x-goog-api-key']) ||
+    queryString(req.query.api_key) || queryString(req.query.key);
 
   // Check Authorization header for Bearer tokens that look like API keys
   if (!apiKey && req.headers['authorization']) {
@@ -324,7 +326,7 @@ function extractApiKey(req: Request): string | null {
     }
   }
 
-  return apiKey as string || null;
+  return apiKey;
 }
 
 /**

@@ -13,6 +13,7 @@ import { computeSapNative, isProductive } from './sapCapacityService';
 import { touch as touchUser } from './usersService';
 import { publishMany } from './userQuotaService';
 import { foldIncrements, applyIncrements, OWNER_EMAIL_FALLBACKS } from './usageCounters';
+import { recordToolUsage, ToolEntryLike, UNKNOWN_TOOL_OWNER } from './toolUsageService';
 
 const logger = getDefaultLogger();
 const cds = require('@sap/cds');
@@ -65,6 +66,8 @@ export interface UsageEvent {
   // mid-stream abort's already-streamed text) rather than read off a
   // provider-reported usage object. Absent/false means provider-reported.
   usageEstimated?: boolean;
+  /** Tools the request declared and the response invoked, with policy decisions (tool governance); absent when none. */
+  tools?: ToolEntryLike[];
 }
 
 interface UsageProcessorConfig {
@@ -343,21 +346,27 @@ class UsageEventProcessor {
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const keyDetail = keyDetailsMap.get(event.credentialId) as any;
       
+      const imageOutputTokens = (event as any).imageOutputTokens || 0;
+      const audioInputTokens = (event as any).audioInputTokens || 0;
+      const audioOutputTokens = (event as any).audioOutputTokens || 0;
       // Calculate costs using model cost service with separate cache token handling
-      const costs = this.config.enableCostCalculation ? 
+      const costs = this.config.enableCostCalculation ?
         await modelCostService.calculateCosts(
-          event.model, 
-          event.inputTokens, 
-          event.outputTokens, 
+          event.model,
+          event.inputTokens,
+          event.outputTokens,
           new Date(event.timestamp * 1000),
           event.cacheCreationInputTokens,
-          event.cacheReadInputTokens
+          event.cacheReadInputTokens,
+          imageOutputTokens,
+          audioInputTokens,
+          audioOutputTokens
         ) :
-        { inputCost: 0, outputCost: 0, totalCost: 0, provider: modelCostService.getModelProvider(event.model), cacheCreationInputCost: 0, cacheReadInputCost: 0 };
-      
+        { inputCost: 0, outputCost: 0, totalCost: 0, provider: modelCostService.getModelProvider(event.model), cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0 };
+
       // Resolve provider from model data instead of using event.provider (which is now 'unknown')
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
-      
+
       const imageInputTokens = (event as any).imageInputTokens || 0;
       const sap = await computeSapNative({
         model: event.model,
@@ -367,6 +376,9 @@ class UsageEventProcessor {
         cacheReadInputTokens: event.cacheReadInputTokens || 0,
         cacheCreationInputTokens: event.cacheCreationInputTokens || 0,
         imageInputTokens,
+        imageOutputTokens,
+        audioInputTokens,
+        audioOutputTokens,
         at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
         productive
       });
@@ -399,7 +411,14 @@ class UsageEventProcessor {
         validFrom: new Date(event.timestamp * 1000),
         validTo: new Date('9999-12-31T23:59:59.999Z'),
         usageEstimated: event.usageEstimated ?? null,
+        unit: (event as any).unit === 'cells' ? 'cells' : 'tokens',
         imageInputTokens,
+        imageOutputTokens,
+        imageOutputCost: costs.imageOutputCost || 0,
+        audioInputTokens,
+        audioOutputTokens,
+        audioInputCost: costs.audioInputCost || 0,
+        audioOutputCost: costs.audioOutputCost || 0,
         genAiTokens: sap?.genAiTokens ?? null,
         capacityUnits: sap?.capacityUnits ?? null,
         sapCost: sap?.sapCost ?? null,
@@ -417,6 +436,8 @@ class UsageEventProcessor {
       const flags = await this.insertIgnoringDuplicateSignature(tx, 'sap_llm_gateway_admin_ApiKeyUsage', usageRecords);
       await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_ApiKeys', validEvents.filter((_, i) => flags[i]));
       await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]), (r) => r.email));
+      const emailByRequest = new Map(usageRecords.map((r) => [r.requestId, r.email]));
+      await recordToolUsage(tx, validEvents.filter((_, i) => flags[i]), (e) => emailByRequest.get(e.requestId ?? '') ?? UNKNOWN_TOOL_OWNER);
       return flags;
     });
     const insertedEvents = validEvents.filter((_, i) => inserted[i]);
@@ -459,21 +480,27 @@ class UsageEventProcessor {
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const credentialDetail = credentialDetailsMap.get(event.credentialId) as any;
       
+      const imageOutputTokens = (event as any).imageOutputTokens || 0;
+      const audioInputTokens = (event as any).audioInputTokens || 0;
+      const audioOutputTokens = (event as any).audioOutputTokens || 0;
       // Calculate costs using model cost service with separate cache token handling
-      const costs = this.config.enableCostCalculation ? 
+      const costs = this.config.enableCostCalculation ?
         await modelCostService.calculateCosts(
-          event.model, 
-          event.inputTokens, 
-          event.outputTokens, 
+          event.model,
+          event.inputTokens,
+          event.outputTokens,
           new Date(event.timestamp * 1000),
           event.cacheCreationInputTokens,
-          event.cacheReadInputTokens
+          event.cacheReadInputTokens,
+          imageOutputTokens,
+          audioInputTokens,
+          audioOutputTokens
         ) :
-        { inputCost: 0, outputCost: 0, totalCost: 0, provider: modelCostService.getModelProvider(event.model), cacheCreationInputCost: 0, cacheReadInputCost: 0 };
-      
+        { inputCost: 0, outputCost: 0, totalCost: 0, provider: modelCostService.getModelProvider(event.model), cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0 };
+
       // Resolve provider from model data instead of using event.provider (which is now 'unknown')
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
-      
+
       const imageInputTokens = (event as any).imageInputTokens || 0;
       const sap = await computeSapNative({
         model: event.model,
@@ -483,6 +510,9 @@ class UsageEventProcessor {
         cacheReadInputTokens: event.cacheReadInputTokens || 0,
         cacheCreationInputTokens: event.cacheCreationInputTokens || 0,
         imageInputTokens,
+        imageOutputTokens,
+        audioInputTokens,
+        audioOutputTokens,
         at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
         productive
       });
@@ -516,7 +546,14 @@ class UsageEventProcessor {
         validFrom: new Date(event.timestamp * 1000),
         validTo: new Date('9999-12-31T23:59:59.999Z'),
         usageEstimated: event.usageEstimated ?? null,
+        unit: (event as any).unit === 'cells' ? 'cells' : 'tokens',
         imageInputTokens,
+        imageOutputTokens,
+        imageOutputCost: costs.imageOutputCost || 0,
+        audioInputTokens,
+        audioOutputTokens,
+        audioInputCost: costs.audioInputCost || 0,
+        audioOutputCost: costs.audioOutputCost || 0,
         genAiTokens: sap?.genAiTokens ?? null,
         capacityUnits: sap?.capacityUnits ?? null,
         sapCost: sap?.sapCost ?? null,
@@ -532,6 +569,10 @@ class UsageEventProcessor {
       await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_AwsCredentials', validEvents.filter((_, i) => flags[i]));
       await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]),
         (r) => (credentialDetailsMap.get(r.credential_ID) as any)?.email ?? null));
+      // The tool rows must carry the same owner the quota buckets above just folded by - not
+      // usageRecords[i].userId, a documented legacy field distinct from email (AwsCredentials).
+      const emailByRequest = new Map(usageRecords.map((r) => [r.requestId, (credentialDetailsMap.get(r.credential_ID) as any)?.email]));
+      await recordToolUsage(tx, validEvents.filter((_, i) => flags[i]), (e) => emailByRequest.get(e.requestId ?? '') ?? UNKNOWN_TOOL_OWNER);
       return flags;
     });
     const insertedEvents = validEvents.filter((_, i) => inserted[i]);

@@ -89,7 +89,7 @@
               <columns>
                 <Column><Text text="Direction"/></Column>
                 <Column><Text text="{= ${viewModel>/detail/hasManualPrice} ? ${i18n>yourPrice} : 'Capacity Units'}"/></Column>
-                <Column><Text text="{i18n>costFactorHeader}"/></Column>
+                <Column><Text text="{parts: ['i18n>costFactorHeader', 'i18n>costFactorHeaderCells', 'viewModel>/detail/modelId'], formatter: '.formatCostFactorHeader'}"/></Column>
               </columns>
               <items>
                 <ColumnListItem>

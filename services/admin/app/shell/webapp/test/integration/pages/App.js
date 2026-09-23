@@ -1,4 +1,4 @@
-sap.ui.define(["sap/ui/test/Opa5"], function (Opa5) {
+sap.ui.define(["sap/ui/test/Opa5", "sap/ui/test/matchers/PropertyStrictEquals"], function (Opa5, PropertyStrictEquals) {
 	"use strict";
 
 	var sViewName = "App"; // admin.shell.view.App (viewNamespace is set in opaTests.qunit.js)
@@ -127,6 +127,57 @@ sap.ui.define(["sap/ui/test/Opa5"], function (Opa5) {
 								(oRow ? " row '" + oRow.key + "' as used=" + oRow.used + "/limit=" + oRow.limit +
 									" (last seen: " + JSON.stringify(mLastRow) + ")" : "")
 							: "The My quota card was visible although the role matrix expects it hidden"
+					});
+				},
+				// One BulletMicroChart per quota row — the card is a VBox of rows, each carrying a chart.
+				// A chart is drawn only under a window that has a limit: the expected count comes from the
+				// card's own model (rows with a limit) unless the caller pins a number.
+				iSeeQuotaCharts: function (nExpected) {
+					var nWanted = nExpected;
+					return this.waitFor({
+						id: "myQuotaRows",
+						viewName: sViewName,
+						check: function (oRows) {
+							if (nExpected === undefined) {
+								nWanted = (oRows.getModel("quota").getProperty("/rows") || []).filter(function (r) { return !r.unlimited; }).length;
+							}
+							return oRows.findAggregatedObjects(true, function (oControl) {
+								return oControl.isA("sap.suite.ui.microchart.BulletMicroChart");
+							}).length === nWanted;
+						},
+						success: function () {
+							Opa5.assert.ok(true, nWanted + " quota bullet chart(s) rendered, one per limited window");
+						},
+						errorMessage: "The number of quota bullet charts does not match the limited windows"
+					});
+				},
+				// The row's reset text ("Resets …") is rendered for a window that has a reset time.
+				iSeeQuotaResetText: function (sKey) {
+					return this.waitFor({
+						id: "myQuotaCard",
+						viewName: sViewName,
+						check: function (oCard) {
+							var oRow = (oCard.getModel("quota").getProperty("/rows") || []).filter(function (r) { return r.key === sKey; })[0];
+							return !!oRow && /^Resets /.test(oRow.resetText);
+						},
+						success: function () {
+							Opa5.assert.ok(true, "Quota row '" + sKey + "' shows its reset time");
+						},
+						errorMessage: "Quota row '" + sKey + "' has no reset text"
+					});
+				},
+				// The profile popover's tool-policy line names the caller's effective policy and its
+				// mode, once myQuotaStatus resolves (quota>/toolPolicyText).
+				iSeeToolPolicyLine: function () {
+					return this.waitFor({
+						id: "myQuotaCompactToolPolicy",
+						viewName: sViewName,
+						visible: false,
+						matchers: new PropertyStrictEquals({ name: "visible", value: true }),
+						success: function (oText) {
+							Opa5.assert.ok(/^Tool policy: .+ \((monitor|strip|reject)\)$/.test(oText.getText()), "tool policy line: " + oText.getText());
+						},
+						errorMessage: "The tool policy line never appeared"
 					});
 				},
 				// The tiles render once _loadHomeSummary resolves (home>/available), so visible:false and

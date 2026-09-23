@@ -234,11 +234,17 @@ async function startProgrammatically(port: number, authMode: string) {
           webappPath: path.join(appBasePath, 'config-app/webapp'),
           distPath: path.join(appBasePath, 'config-app/dist')
         },
-        { 
+        {
           name: 'security-notifications-app',
-          route: `${routePrefix}/security-notifications-app`, 
+          route: `${routePrefix}/security-notifications-app`,
           webappPath: path.join(appBasePath, 'security-notifications-app/webapp'),
           distPath: path.join(appBasePath, 'security-notifications-app/dist')
+        },
+        {
+          name: 'tool-policies-app',
+          route: `${routePrefix}/tool-policies-app`,
+          webappPath: path.join(appBasePath, 'tool-policies-app/webapp'),
+          distPath: path.join(appBasePath, 'tool-policies-app/dist')
         },
         {
           name: 'usage-analytics-app',

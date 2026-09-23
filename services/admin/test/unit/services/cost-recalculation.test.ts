@@ -186,6 +186,74 @@ describe('CostRecalculationService', () => {
       expect(apiKeyCall[0]).toContain('u.cacheCreationInputCost IS NULL');
     });
 
+    it('should price generated-image output tokens with imageOutputTokens and imageOutputCost', async () => {
+      await service.runRecalculation();
+
+      const calls = mockDb.run.mock.calls;
+      const apiKeyCall = calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('ApiKeyUsage')
+      );
+
+      expect(apiKeyCall[0]).toContain('imageOutputTokens');
+      expect(apiKeyCall[0]).toContain('imageOutputCost');
+    });
+
+    it('should admit and reprice an image row whose stored image cost drifted from the rate', async () => {
+      await service.runRecalculation();
+
+      const calls = mockDb.run.mock.calls;
+      const apiKeyCall = calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('ApiKeyUsage')
+      );
+
+      // An image row can carry no input and no cache tokens at all (one short prompt, 1290
+      // image tokens), and its rate is the manual imageOutputCost, which neither the input nor
+      // the cache drift terms look at. Both halves of the gate therefore need an image
+      // disjunct, or entering the rate later reprices nothing.
+      const where = apiKeyCall[0].slice(apiKeyCall[0].indexOf('WHERE'));
+      expect(where).toContain('imageOutputTokens');
+      // Eligibility: the row is selected on image tokens alone.
+      expect(where).toContain(
+        '((u.inputTokens > 1 OR COALESCE(u.cacheReadInputTokens, 0) > 0 OR COALESCE(u.cacheCreationInputTokens, 0) > 0) OR COALESCE(u.imageOutputTokens, 0)::numeric > 0)'
+      );
+      // Drift: stored imageOutputCost vs the per-1K image rate (imageOutputCost, else outputCost).
+      expect(where).toContain('u.imageOutputCost IS NULL');
+      expect(where).toContain('u.imageOutputCost::numeric / GREATEST(COALESCE(u.imageOutputTokens, 0), 1) * 1000');
+      expect(where).toContain('COALESCE(mc.imageOutputCost, mc.outputCost)::numeric, 0.000001) > 0.05');
+    });
+
+    it('should price realtime audio tokens with audioInputTokens/audioOutputTokens and both audio costs', async () => {
+      await service.runRecalculation();
+      const apiKeyCall = mockDb.run.mock.calls.find((c: any[]) => typeof c[0] === 'string' && c[0].includes('sap_llm_gateway_admin_ApiKeyUsage') && c[0].includes('UPDATE'));
+      for (const s of ['audioInputTokens', 'audioOutputTokens', 'audioInputCost = ROUND', 'audioOutputCost = ROUND']) expect(apiKeyCall[0]).toContain(s);
+      const where = apiKeyCall[0].slice(apiKeyCall[0].indexOf('WHERE'));
+      expect(where).toContain('u.audioInputCost IS NULL');
+      expect(where).toContain('u.audioOutputCost IS NULL');
+    });
+
+    it('should only evaluate the input drift term when the text share is positive', async () => {
+      await service.runRecalculation();
+
+      const calls = mockDb.run.mock.calls;
+      const apiKeyCall = calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('ApiKeyUsage') && c[0].includes('UPDATE')
+      );
+
+      // A realtime row whose input is all audio (audioInputTokens = inputTokens, so textIn = 0
+      // and inputCost = 0) must not re-drift forever: |0 - inputRate| / inputRate is always 1,
+      // which would always exceed 0.05. Gating the term on textIn > 0 keeps such rows out of
+      // this disjunct; they stay repriceable through the audio disjuncts instead.
+      const where = apiKeyCall[0].slice(apiKeyCall[0].indexOf('WHERE'));
+      const guardIdx = where.indexOf(
+        'GREATEST(u.inputTokens::numeric - LEAST(COALESCE(u.audioInputTokens, 0)::numeric, u.inputTokens::numeric), 0) > 0 AND ('
+      );
+      expect(guardIdx).toBeGreaterThan(-1);
+      const guardedClause = where.slice(guardIdx, guardIdx + 600);
+      expect(guardedClause).toContain('u.inputCost::numeric / GREATEST(');
+      expect(guardedClause).toContain('- mc.inputCost::numeric');
+      expect(guardedClause).toContain('> 0.05');
+    });
+
     it('should log results with record counts', async () => {
       mockDb.run.mockResolvedValue({ rowCount: 5 });
 

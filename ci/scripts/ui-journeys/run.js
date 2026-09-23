@@ -24,7 +24,8 @@ const APPS = [
   { name: 'aws-credentials-app', mount: '/aws-credentials', minTests: 5 },
   { name: 'model-library-app', mount: '/model-library', minTests: 7 },
   { name: 'security-notifications-app', mount: '/security-notifications', minTests: 3 },
-  { name: 'users-app', mount: '/users', minTests: 6, roles: ['admin'] }   // admin-only app (plan B ruling 1)
+  { name: 'users-app', mount: '/users', minTests: 6, roles: ['admin'] },  // admin-only app (plan B ruling 1)
+  { name: 'tool-policies-app', mount: '/tool-policies', minTests: 4, roles: ['admin'] }   // admin-only app (plan B ruling 1)
 ];
 
 // UI_JOURNEYS_APPS=<name>[,<name>…] restricts a run to those apps. seed.js honours the same
@@ -51,7 +52,7 @@ the full pipeline (pnpm run ci).`;
 function encodeExpectations(role) {
   const { credentials, ...expect } = roles[role];
   expect.email = credentials.split(':')[0];
-  expect.fixtures = { ...fixtures.names };
+  expect.fixtures = { ...fixtures.names, users: { ...fixtures.users } };
   const seeded = path.join(ROOT, REPORT_ROOT, 'fixtures.json');
   if (fs.existsSync(seeded)) {
     const seededFixtures = JSON.parse(fs.readFileSync(seeded, 'utf8'));

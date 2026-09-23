@@ -68,6 +68,9 @@ export interface EntitlementBlock {
   include?: string[];
 }
 
+/** Tool governance policy (spec 2026-09-16 §5): the user's policy, and optionally the key's, ride the validation response. */
+export type { ToolPolicyBlock } from '../toolGovernance/identity';
+
 /** The owner's status, roles and effective quota limits, computed by the admin (spec §2). null = unlimited. */
 export interface UserBlock {
   email: string;
@@ -95,6 +98,8 @@ export interface ApiKeyValidationData {
   };
   entitlement?: EntitlementBlock;
   user?: UserBlock;
+  toolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
+  keyToolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
 }
 
 export interface AwsCredentialValidationData {
@@ -116,6 +121,7 @@ export interface AwsCredentialValidationData {
   };
   entitlement?: EntitlementBlock;
   user?: UserBlock;
+  toolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
 }
 
 export interface AdminServiceHealthResponse {

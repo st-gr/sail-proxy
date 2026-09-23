@@ -6,7 +6,7 @@ const logger = getDefaultLogger();
 
 export interface SecurityEventData {
   credentialId: string;
-  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'credential_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
+  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'credential_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced' | 'tool_not_entitled' | 'placeholder_invented';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
   clientIP?: string;
@@ -19,7 +19,7 @@ export interface SecurityEventData {
 
 export interface ApiKeySecurityEventData {
   keyId: string;
-  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'key_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
+  eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'key_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced' | 'tool_not_entitled' | 'placeholder_invented';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
   clientIP?: string;
@@ -622,7 +622,9 @@ export class SecurityEventService {
       'model_not_entitled': `Model request refused for AWS credential ${credentialName}: not in entitlement`,
       'deployment_created': `Deployment created via AWS credential ${credentialName}`,
       'quota_exceeded': `Quota exceeded for AWS credential ${credentialName}`,
-      'quota_unenforced': 'Quota enforcement degraded on the gateway'
+      'quota_unenforced': 'Quota enforcement degraded on the gateway',
+      'tool_not_entitled': `Tool request refused for AWS credential ${credentialName}: not permitted by tool policy`,
+      'placeholder_invented': `The model invented a masked placeholder in a response for AWS credential ${credentialName}`
     };
 
     return titles[eventType] || `Security event for ${credentialName}`;
@@ -638,7 +640,9 @@ export class SecurityEventService {
       'model_not_entitled': `Model request refused for API key ${keyName}: not in entitlement`,
       'deployment_created': `Deployment created via API key ${keyName}`,
       'quota_exceeded': `Quota exceeded for API key ${keyName}`,
-      'quota_unenforced': 'Quota enforcement degraded on the gateway'
+      'quota_unenforced': 'Quota enforcement degraded on the gateway',
+      'tool_not_entitled': `Tool request refused for API key ${keyName}: not permitted by tool policy`,
+      'placeholder_invented': `The model invented a masked placeholder in a response for API key ${keyName}`
     };
 
     return titles[eventType] || `Security event for API key ${keyName}`;
@@ -655,7 +659,9 @@ export class SecurityEventService {
       'model_not_entitled': 'sap-icon://locked',
       'deployment_created': 'sap-icon://cloud',
       'quota_exceeded': 'sap-icon://measuring-point',
-      'quota_unenforced': 'sap-icon://disconnected'
+      'quota_unenforced': 'sap-icon://disconnected',
+      'tool_not_entitled': 'sap-icon://locked',
+      'placeholder_invented': 'sap-icon://hide'
     };
 
     return icons[eventType] || 'sap-icon://information';
@@ -667,7 +673,8 @@ export class SecurityEventService {
       'suspicious_activity',
       'unauthorized_access',
       'model_not_entitled',
-      'quota_unenforced'
+      'quota_unenforced',
+      'tool_not_entitled'
     ];
 
     return actionableEvents.includes(eventType);
@@ -679,7 +686,8 @@ export class SecurityEventService {
       'suspicious_activity': 'Investigate',
       'unauthorized_access': 'Secure Account',
       'model_not_entitled': 'Review entitlement',
-      'quota_unenforced': 'Check Valkey'
+      'quota_unenforced': 'Check Valkey',
+      'tool_not_entitled': 'Review tool policy'
     };
 
     return actionTexts[eventType] || null;

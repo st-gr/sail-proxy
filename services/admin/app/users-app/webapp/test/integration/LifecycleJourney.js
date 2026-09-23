@@ -23,11 +23,15 @@ sap.ui.define([
 				When.onTheObjectPage.onDialog().iChangeDialogField({ property: "reason" }, "journey").and.iConfirm();
 				Then.onTheObjectPage.iSeeStoredValue("status", "deactivated");
 				Then.onTheObjectPage.onHeader().iCheckAction("Reactivate", { visible: true, enabled: true });
+				// the API Keys section sits below the fold since "Usage charts" joined the page: scroll it into view so its table loads
+				When.onTheObjectPage.iGoToSection("API Keys");
 				Then.onTheObjectPage.onTable({ property: "apiKeys", qualifier: "ForUser" })
 					.iCheckRows({ "Name": oFx.otherUserKey, "Locked by Deactivation": "Yes" }, 1);
 				When.onTheObjectPage.onHeader().iExecuteAction("Reactivate");
 				Then.onTheObjectPage.iSeeStoredValue("status", "active");
 				Then.onTheObjectPage.onHeader().iCheckAction("Deactivate", { visible: true, enabled: true });
+				// the API Keys section sits below the fold since "Usage charts" joined the page: scroll it into view so its table loads
+				When.onTheObjectPage.iGoToSection("API Keys");
 				Then.onTheObjectPage.onTable({ property: "apiKeys", qualifier: "ForUser" })
 					.iCheckRows({ "Name": oFx.otherUserKey, "Locked by Deactivation": "No" }, 1);
 				Given.iTearDownMyApp();

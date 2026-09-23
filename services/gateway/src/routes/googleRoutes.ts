@@ -12,6 +12,7 @@ import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { geminiError } from '../services/googleGeminiService';
+import { toolGovernance, geminiAdapter } from '../toolGovernance';
 
 const router: express.Router = express.Router();
 
@@ -21,6 +22,7 @@ const googleServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(se
 router.post('/models/:modelAndMethod',
   googleAuth,
   googleServiceAuth,
+  toolGovernance(geminiAdapter),
   quotaEnforcement,
   googleController.handleGemini
 );

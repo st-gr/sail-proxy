@@ -229,6 +229,7 @@ annotate AdminService.AwsCredentials with @(
         { $Type: 'UI.DataField', Value: requestsPerMinute, Label: 'Requests per Minute' },
         { $Type: 'UI.DataField', Value: requestsPerHour, Label: 'Requests per Hour' },
         { $Type: 'UI.DataField', Value: requestsPerDay, Label: 'Requests per Day' },
+        { $Type: 'UI.DataField', Value: ownerRequestsPerMinuteText, Label: 'Owner''s Limit per Minute' },
         { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: 'Set Rate Limits' }
     ] },
     
@@ -342,9 +343,10 @@ annotate AdminService.AwsCredentials with {
     lockedByUserDeactivation @(Common.Label: 'Locked by Deactivation', Common.FieldControl: #ReadOnly);
 
     // Per-credential rate limits (spec §4), enforced by the gateway alongside the user-level limit.
-    requestsPerMinute @(Common.Label: 'Requests per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
-    requestsPerHour @(Common.Label: 'Requests per Hour', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
-    requestsPerDay @(Common.Label: 'Requests per Day', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; a user-level limit applies as well. Empty = no per-credential limit.');
+    requestsPerMinute @(Common.Label: 'Requests per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; the owner''s user-level limit (below) applies as well. Empty = no per-credential limit. Change with Set Rate Limits.');
+    requestsPerHour @(Common.Label: 'Requests per Hour', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
+    requestsPerDay @(Common.Label: 'Requests per Day', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
+    ownerRequestsPerMinuteText @(Common.Label: 'Owner''s Limit per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'The requests-per-minute limit of the credential''s owner, applied on top of this credential''s own limits: their own constraint, else their quota profile, else the platform default. Change it in Users & Quotas or Entitlements & Quotas.');
 
     // Status - field control handled in TypeScript handlers
     isActive @(

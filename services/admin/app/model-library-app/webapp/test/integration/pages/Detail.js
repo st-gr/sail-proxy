@@ -34,13 +34,40 @@ sap.ui.define([
 				},
 				// The price dialog is loaded with the view as owner (Fragment.load({ id: view.getId() })),
 				// so its controls answer to the view-relative ids used here.
-				iEnterPrices: function (sIn, sOut) {
+				iEnterPrices: function (sIn, sOut, sImageOut, sAudioIn, sAudioOut) {
 					return this.waitFor({
 						id: "priceInput",
 						viewName: sView,
 						actions: new EnterText({ text: sIn }),
 						success: function () {
-							this.waitFor({ id: "priceOutput", viewName: sView, actions: new EnterText({ text: sOut }) });
+							this.waitFor({
+								id: "priceOutput",
+								viewName: sView,
+								actions: new EnterText({ text: sOut }),
+								success: function () {
+									if (sImageOut !== undefined) {
+										this.waitFor({
+											id: "priceImageOutput",
+											viewName: sView,
+											actions: new EnterText({ text: sImageOut }),
+											success: function () {
+												if (sAudioIn !== undefined) {
+													this.waitFor({
+														id: "priceAudioInput",
+														viewName: sView,
+														actions: new EnterText({ text: sAudioIn }),
+														success: function () {
+															if (sAudioOut !== undefined) {
+																this.waitFor({ id: "priceAudioOutput", viewName: sView, actions: new EnterText({ text: sAudioOut }) });
+															}
+														}
+													});
+												}
+											}
+										});
+									}
+								}
+							});
 						}
 					});
 				},
@@ -122,6 +149,22 @@ sap.ui.define([
 							});
 						},
 						errorMessage: "Edit price visibility never became " + bExpected + " for this role"
+					});
+				},
+				// Waits for a costTable row whose direction label (cell 0, a sap.m.Text) equals sLabel.
+				iSeeCostRow: function (sLabel) {
+					return this.waitFor({
+						id: "costTable",
+						viewName: sView,
+						check: function (oTable) {
+							return oTable.getItems().some(function (oItem) {
+								return oItem.getCells()[0].getText() === sLabel;
+							});
+						},
+						success: function () {
+							Opa5.assert.ok(true, "cost row shown: " + sLabel);
+						},
+						errorMessage: "no cost row labelled " + sLabel
 					});
 				},
 				iSeeManualPrice: function (bExpected) {

@@ -10,7 +10,7 @@ import Dialog from "sap/m/Dialog";
 import ResponsivePopover from "sap/m/ResponsivePopover";
 import * as session from "../model/session";
 import { parseScores, BENCHMARK_LABELS, SAFETY_KEYS } from "../model/benchmarks";
-import { costRows } from "../model/costDisplay";
+import { costRows, costUnitLabel } from "../model/costDisplay";
 import { pollUntilSettled, messageFor } from "../model/deploymentPoll";
 import { ownCatalogsFilter, catalogPickSearch, catalogPickCancel } from "../model/catalogPicker";
 
@@ -160,7 +160,10 @@ export default class DetailController extends Controller {
       inputCost: current?.inputCost ?? m.sapInputCost ?? "",
       outputCost: current?.outputCost ?? m.sapOutputCost ?? "",
       cacheReadInputCost: current?.cacheReadInputCost ?? m.sapCacheReadCost ?? "",
-      cacheCreationInputCost: current?.cacheCreationInputCost ?? m.sapCacheCreationCost ?? ""
+      cacheCreationInputCost: current?.cacheCreationInputCost ?? m.sapCacheCreationCost ?? "",
+      imageOutputCost: current?.imageOutputCost ?? "",
+      audioInputCost: current?.audioInputCost ?? "",
+      audioOutputCost: current?.audioOutputCost ?? ""
     });
     if (!this.priceDialog) {
       try {
@@ -183,6 +186,9 @@ export default class DetailController extends Controller {
     b.setParameter("outputCost", e.outputCost);
     b.setParameter("cacheReadInputCost", e.cacheReadInputCost === "" ? null : e.cacheReadInputCost);
     b.setParameter("cacheCreationInputCost", e.cacheCreationInputCost === "" ? null : e.cacheCreationInputCost);
+    b.setParameter("imageOutputCost", e.imageOutputCost === "" ? null : e.imageOutputCost);
+    b.setParameter("audioInputCost", e.audioInputCost === "" ? null : e.audioInputCost);
+    b.setParameter("audioOutputCost", e.audioOutputCost === "" ? null : e.audioOutputCost);
     b.invoke().then(() => {
       MessageToast.show("Price saved");
       this.priceDialog?.close();
@@ -230,6 +236,11 @@ export default class DetailController extends Controller {
   public formatDeploymentsTitle(pattern: string, deployments: any[]): string {
     const n = Array.isArray(deployments) ? deployments.length : 0;
     return (pattern || "Model Deployments ({0})").replace("{0}", String(n));
+  }
+
+  /** SAP-RPT models price per 1K cells; everything else per 1K tokens (costUnitLabel). */
+  public formatCostFactorHeader(tokensText: string, cellsText: string, modelId: string): string {
+    return costUnitLabel(modelId || "") === "cells" ? cellsText : tokensText;
   }
 
   /** The i18n model's bundle is loaded asynchronously here, so getResourceBundle() is a promise. */

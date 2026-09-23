@@ -1,4 +1,4 @@
-<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.f">
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.f" xmlns:mc="sap.suite.ui.microchart">
     <f:Card id="myQuotaCard" width="28rem" class="sapUiMediumMarginTop" visible="{quota>/available}">
         <f:header>
             <card:Header xmlns:card="sap.f.cards" title="My quota" subtitle="Consumption against your limits (UTC calendar windows)" iconSrc="sap-icon://measuring-point"/>
@@ -7,18 +7,34 @@
             <!-- The card content is a flex row, so a VBox without a width shrinks to its longest row. -->
             <VBox width="100%" class="sapUiSmallMargin">
                 <MessageStrip id="myQuotaDeactivated" text="{quota>/statusText}" type="Error" showIcon="true" visible="{quota>/deactivated}" class="sapUiSmallMarginBottom"/>
-                <VBox id="myQuotaRows" items="{quota>/rows}">
-                    <VBox class="sapUiTinyMarginBottom">
-                        <!-- K: without a width the box shrinks to its content, so SpaceBetween has
-                             nothing to space and the value ends up against the label
-                             ("Requests this minute0 / unlimited"). -->
-                        <HBox width="100%" justifyContent="SpaceBetween">
-                            <Label text="{quota>label}"/>
-                            <Text text="{quota>used} / {quota>limit}"/>
-                        </HBox>
-                        <ProgressIndicator percentValue="{quota>percent}" state="{quota>state}" showValue="false" visible="{= !${quota>unlimited} }" height="0.75rem"/>
+                <VBox id="myQuotaRows" items="{quota>/groups}">
+                    <VBox class="adminShellQuotaGroup">
+                        <!-- One unit per group: its name, a line with the three windows, then a bar only where a limit exists. -->
+                        <Label text="{quota>label}" design="Bold"/>
+                        <Text text="{quota>summary}" class="adminShellQuotaSummary"/>
+                        <Text text="{quota>noLimitText}" class="adminShellQuotaReset" visible="{= !!${quota>noLimitText} }"/>
+                        <VBox items="{path: 'quota>rows', templateShareable: false}">
+                            <VBox class="sapUiSmallMarginTop">
+                                <HBox width="100%" justifyContent="SpaceBetween">
+                                    <Text text="{quota>label}"/>
+                                    <Text text="{quota>used} / {quota>limit} · {quota>percentText}"/>
+                                </HBox>
+                                <mc:BulletMicroChart size="Responsive" width="100%" minValue="0" maxValue="{quota>max}"
+                                    targetValue="{quota>target}" showTargetValue="false" showActualValue="false"
+                                    showValueMarker="false" showThresholds="true" thresholds="{path: 'quota>thresholds', templateShareable: false}"
+                                    class="sapUiTinyMarginTop adminShellQuotaChart">
+                                    <mc:actual>
+                                        <mc:BulletMicroChartData value="{quota>actual}" color="{quota>color}"/>
+                                    </mc:actual>
+                                    <mc:thresholds>
+                                        <mc:BulletMicroChartData value="{quota>value}" color="{quota>color}"/>
+                                    </mc:thresholds>
+                                </mc:BulletMicroChart>
+                            </VBox>
+                        </VBox>
                     </VBox>
                 </VBox>
+                <Text text="{quota>/resetText}" class="adminShellQuotaReset sapUiSmallMarginTop" visible="{= !!${quota>/resetText} }"/>
             </VBox>
         </f:content>
     </f:Card>

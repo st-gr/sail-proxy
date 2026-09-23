@@ -64,6 +64,11 @@ http {
     upstream admin_service   { server ${ADMIN_SERVICE_HOST}:${ADMIN_SERVICE_PORT};        }
     upstream gateway_service { server ${GATEWAY_SERVICE_HOST}:${GATEWAY_SERVICE_PORT};      }
 
+    # WebSocket upgrades (Realtime API): "Connection: upgrade" only when the client asked for one
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
 
     #######################################################################
     # 4.  Server block                                                    #
@@ -415,7 +420,7 @@ http {
         }
 
         # Handle UI5 app resources directories specifically
-        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app)/(resources|webapp|images)/ {
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|tool-policies-app)/(resources|webapp|images)/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -474,7 +479,7 @@ http {
         }
 
         # Handle UI5 resource paths that apps expect at root level
-        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app)/resources/ {
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|tool-policies-app)/resources/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
             
@@ -501,7 +506,7 @@ http {
         }
 
         # Handle cross-app webapp references (e.g., usage-analytics from shell)
-        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users)/webapp/ {
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users|tool-policies)/webapp/ {
             error_page 401 = @auth_required;
             auth_request /_bearer_or_cookie_auth;
 
@@ -514,6 +519,7 @@ http {
             rewrite ^/sap-rates/webapp/(.*)$ /app/sap-rates-app/webapp/$1 break;
             rewrite ^/model-library/webapp/(.*)$ /app/model-library-app/webapp/$1 break;
             rewrite ^/users/webapp/(.*)$ /app/users-app/webapp/$1 break;
+            rewrite ^/tool-policies/webapp/(.*)$ /app/tool-policies-app/webapp/$1 break;
             
             proxy_pass http://admin_service;
             include proxy_params;
@@ -587,6 +593,36 @@ http {
             proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $xfp;
             proxy_set_header Host              $host;
+        }
+
+        # OpenAI Realtime API — a WebSocket. Same authentication as /gateway/, but HTTP/1.1 with
+        # the Upgrade/Connection headers forwarded and hour-long idle timeouts; the plain
+        # /gateway/ location below speaks HTTP/1.0 to the gateway and would drop the upgrade.
+        location ~ ^/gateway/(openai/)?v1/realtime$ {
+            error_page 401 = @gateway_auth_required;
+            auth_request /_gateway_auth_check;
+
+            auth_request_set $user $upstream_http_x_auth_request_user;
+            auth_request_set $email $upstream_http_x_auth_request_email;
+            auth_request_set $groups $upstream_http_x_auth_request_groups;
+            auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
+
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
+
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade    $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            rewrite ^/gateway/(.*)$ /$1 break;
+            proxy_pass http://gateway_service;
+            include proxy_params;
         }
 
         # Gateway endpoints that support API keys, AWS SigV4, and OAuth2

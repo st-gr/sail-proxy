@@ -12,6 +12,7 @@ import { detectRegexEntities } from './regexDetectors';
 import { detectNerEntities } from './nerDetector';
 import { detectDictionaryEntities } from './dictionaryDetector';
 import { detectOrgLocationEntities } from './orgLocationDetector';
+import { detectSpeakerLabels } from './speakerLabelDetector';
 import { isTechnicalSpan, EXEMPT_FROM_SUPPRESSION } from './technicalContext';
 import {
   isCapsPersonCandidate,
@@ -102,6 +103,10 @@ export function detectEntities(text: string, config: MaskingConfig): EntityMatch
   // Same priority as structural regex: this must outrank the NER person heuristic,
   // which otherwise labels configured locations as `profile-person`.
   allMatches.push(...detectOrgLocationEntities(text, config));
+
+  // Tier 1: transcript speaker labels (`Surname, Given:`). The comma splits the capitalised run
+  // the NER tier depends on, so without this a transcript's speakers are never masked at all.
+  allMatches.push(...detectSpeakerLabels(text, config.entities));
 
   // Tier 2: NER
   allMatches.push(...detectNerEntities(text, config.entities));

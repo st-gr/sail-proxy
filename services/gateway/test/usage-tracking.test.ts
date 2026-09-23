@@ -195,7 +195,8 @@ describe('Usage Tracking System', () => {
             valid: true,
             authType: 'api_key' as const,
             data: { id: 'test-key-id' }
-          }
+          },
+          get: (h: string) => (h.toLowerCase() === 'user-agent' ? 'claude-cli/2.0.1 (external)' : undefined)
         } as any;
 
         const metrics = createUsageMetrics();
@@ -212,6 +213,7 @@ describe('Usage Tracking System', () => {
             authType: 'api_key',
             credentialId: 'test-key-id',
             provider: 'unknown',
+            userAgent: 'claude-cli/2.0.1 (external)',
             model: 'claude-3-5-sonnet',
             inputTokens: 150,
             outputTokens: 250,
@@ -253,6 +255,51 @@ describe('Usage Tracking System', () => {
         // Should not throw
         await expect(emitUsageEvent(req, metrics, 'claude-3-5-sonnet', 200))
           .resolves.toBeUndefined();
+
+        emitSpy.mockRestore();
+      });
+
+      it('folds the tools carried on toolGovernance state into the event, and omits them without state', async () => {
+        const baseReq = {
+          debugRequestId: 'test-request-tools',
+          unifiedAuth: {
+            valid: true,
+            authType: 'api_key' as const,
+            data: { id: 'test-key-id' }
+          }
+        };
+
+        const reqWithState = {
+          ...baseReq,
+          toolGovernance: {
+            result: { mode: 'monitor' as const, decisions: new Map([['function:a', 'allowed' as const]]), blocked: [], reject: false, policyNames: [] },
+            declared: ['function:a'],
+            invoked: new Map(),
+            family: 'anthropic' as const
+          }
+        } as any;
+
+        const metrics = createUsageMetrics();
+        const emitSpy = jest.spyOn(usageEmitter, 'emit').mockResolvedValue();
+
+        await emitUsageEvent(reqWithState, metrics, 'claude-3-5-sonnet', 200);
+
+        expect(emitSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tools: [{ identity: 'function:a', facet: 'declared', count: 1, decision: 'allowed' }]
+          })
+        );
+
+        emitSpy.mockClear();
+
+        const reqWithoutState = { ...baseReq } as any;
+        const metrics2 = createUsageMetrics();
+
+        await emitUsageEvent(reqWithoutState, metrics2, 'claude-3-5-sonnet', 200);
+
+        expect(emitSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ tools: undefined })
+        );
 
         emitSpy.mockRestore();
       });

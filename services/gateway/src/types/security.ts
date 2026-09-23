@@ -20,7 +20,7 @@ export interface SecurityEvent {
   authType: 'api_key' | 'aws_credential';
   
   // Event classification
-  eventType: 'failed_auth' | 'credential_rotation' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced';
+  eventType: 'failed_auth' | 'credential_rotation' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced' | 'tool_not_entitled' | 'placeholder_invented';
   severity: 'low' | 'medium' | 'high' | 'critical';
   
   // Event details
@@ -194,7 +194,10 @@ export enum SecurityEventType {
   MODEL_NOT_ENTITLED = 'model_not_entitled',
   DEPLOYMENT_CREATED = 'deployment_created',
   QUOTA_EXCEEDED = 'quota_exceeded',
-  QUOTA_UNENFORCED = 'quota_unenforced'
+  QUOTA_UNENFORCED = 'quota_unenforced',
+  TOOL_NOT_ENTITLED = 'tool_not_entitled',
+  /** A response carried a pseudonymization placeholder the model was never sent (it invented one). */
+  PLACEHOLDER_INVENTED = 'placeholder_invented'
 }
 
 // Event actions

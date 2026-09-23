@@ -1,0 +1,55 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:macros="sap.fe.macros">
+	<!--
+		"Usage charts": one bullet microchart per budget window, below the Usage section (which keeps
+		the exact used and limit figures). Fiori Elements templates a UI.Chart only in a header facet
+		or a table column, so the charts cannot live in the Usage field group; this custom section
+		draws them with the sap.fe.macros MicroChart building block, one per UI.Chart#<window>
+		qualifier (bar = used, target line = effective limit, colour = the server's criticality).
+
+		The section's binding context is the Users row, so no contextPath is needed. showOnlyChart
+		keeps the building block from rendering the UI.Chart's own title and description - the Label
+		beside each chart is ours, so that the reset time can follow the chart it belongs to.
+	-->
+	<VBox class="adminUsersUsageCharts">
+		<!-- A chart is drawn only for a window that has a limit; the Usage form above keeps every figure. -->
+		<Text text="No limits apply to this user; the Usage section shows the figures." class="sapUiSmallMargin" visible="{= (${path: 'effectiveSpendPerDay', targetType: 'any'} === null || ${path: 'effectiveSpendPerDay', targetType: 'any'} === undefined) &amp;&amp; (${path: 'effectiveSpendPerWeek', targetType: 'any'} === null || ${path: 'effectiveSpendPerWeek', targetType: 'any'} === undefined) &amp;&amp; (${path: 'effectiveSpendPerMonth', targetType: 'any'} === null || ${path: 'effectiveSpendPerMonth', targetType: 'any'} === undefined) &amp;&amp; (${path: 'effectiveTokensPerDay', targetType: 'any'} === null || ${path: 'effectiveTokensPerDay', targetType: 'any'} === undefined) &amp;&amp; (${path: 'effectiveTokensPerWeek', targetType: 'any'} === null || ${path: 'effectiveTokensPerWeek', targetType: 'any'} === undefined) &amp;&amp; (${path: 'effectiveTokensPerMonth', targetType: 'any'} === null || ${path: 'effectiveTokensPerMonth', targetType: 'any'} === undefined) }"/>
+	<FlexBox wrap="Wrap" renderType="Bare" class="sapUiSmallMargin">
+		<VBox width="20rem" visible="{= ${path: 'effectiveSpendPerDay', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveSpendPerDay', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Spend Today"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#SpendDay" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedSpendDay', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} / { path: 'effectiveSpendPerDay', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} · {= ${path: 'effectiveSpendPerDay', targetType: 'any'} > 0 ? Math.round(${path: 'usedSpendDay', targetType: 'any'} / ${path: 'effectiveSpendPerDay', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtDay', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+		<VBox width="20rem" visible="{= ${path: 'effectiveSpendPerWeek', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveSpendPerWeek', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Spend This Week"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#SpendWeek" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedSpendWeek', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} / { path: 'effectiveSpendPerWeek', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} · {= ${path: 'effectiveSpendPerWeek', targetType: 'any'} > 0 ? Math.round(${path: 'usedSpendWeek', targetType: 'any'} / ${path: 'effectiveSpendPerWeek', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtWeek', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+		<VBox width="20rem" visible="{= ${path: 'effectiveSpendPerMonth', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveSpendPerMonth', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Spend This Month"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#SpendMonth" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedSpendMonth', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} / { path: 'effectiveSpendPerMonth', type: 'sap.ui.model.odata.type.Decimal', constraints: { scale: 6 }, formatOptions: { maxFractionDigits: 2, minFractionDigits: 2 } } {sapCostCurrency} · {= ${path: 'effectiveSpendPerMonth', targetType: 'any'} > 0 ? Math.round(${path: 'usedSpendMonth', targetType: 'any'} / ${path: 'effectiveSpendPerMonth', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtMonth', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+		<VBox width="20rem" visible="{= ${path: 'effectiveTokensPerDay', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveTokensPerDay', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Tokens Today"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#TokensDay" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedTokensDay', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } / { path: 'effectiveTokensPerDay', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } · {= ${path: 'effectiveTokensPerDay', targetType: 'any'} > 0 ? Math.round(${path: 'usedTokensDay', targetType: 'any'} / ${path: 'effectiveTokensPerDay', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtDay', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+		<VBox width="20rem" visible="{= ${path: 'effectiveTokensPerWeek', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveTokensPerWeek', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Tokens This Week"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#TokensWeek" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedTokensWeek', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } / { path: 'effectiveTokensPerWeek', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } · {= ${path: 'effectiveTokensPerWeek', targetType: 'any'} > 0 ? Math.round(${path: 'usedTokensWeek', targetType: 'any'} / ${path: 'effectiveTokensPerWeek', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtWeek', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+		<VBox width="20rem" visible="{= ${path: 'effectiveTokensPerMonth', targetType: 'any'} !== null &amp;&amp; ${path: 'effectiveTokensPerMonth', targetType: 'any'} !== undefined }" class="sapUiMediumMarginEnd sapUiSmallMarginBottom">
+			<Label text="Tokens This Month"/>
+			<macros:MicroChart metaPath="@com.sap.vocabularies.UI.v1.Chart#TokensMonth" size="Responsive" showOnlyChart="true"/>
+			<Text text="{ path: 'usedTokensMonth', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } / { path: 'effectiveTokensPerMonth', type: 'sap.ui.model.odata.type.Int64', formatOptions: { groupingEnabled: true } } · {= ${path: 'effectiveTokensPerMonth', targetType: 'any'} > 0 ? Math.round(${path: 'usedTokensMonth', targetType: 'any'} / ${path: 'effectiveTokensPerMonth', targetType: 'any'} * 100) + ' %' : '' }" class="sapUiTinyMarginTop"/>
+			<Text text="Resets { path: 'resetsAtMonth', type: 'sap.ui.model.odata.type.DateTimeOffset', constraints: { V4: true, precision: 7 }, formatOptions: { style: 'medium/short' } }" class="sapUiTinyMarginTop"/>
+		</VBox>
+	</FlexBox>
+	</VBox>
+</core:FragmentDefinition>

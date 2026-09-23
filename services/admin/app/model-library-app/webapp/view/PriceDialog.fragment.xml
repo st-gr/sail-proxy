@@ -5,6 +5,9 @@
       <Label text="Output cost per 1K tokens" required="true"/><Input id="priceOutput" value="{viewModel>/detail/priceEdit/outputCost}" type="Number"/>
       <Label text="Cache read cost per 1K"/><Input id="priceCacheRead" value="{viewModel>/detail/priceEdit/cacheReadInputCost}" type="Number"/>
       <Label text="Cache creation cost per 1K"/><Input id="priceCacheCreation" value="{viewModel>/detail/priceEdit/cacheCreationInputCost}" type="Number"/>
+      <Label text="Image output cost per 1K tokens"/><Input id="priceImageOutput" value="{viewModel>/detail/priceEdit/imageOutputCost}" type="Number"/>
+      <Label text="Audio input cost per 1K tokens"/><Input id="priceAudioInput" value="{viewModel>/detail/priceEdit/audioInputCost}" type="Number"/>
+      <Label text="Audio output cost per 1K tokens"/><Input id="priceAudioOutput" value="{viewModel>/detail/priceEdit/audioOutputCost}" type="Number"/>
     </f:SimpleForm>
     <beginButton><Button id="priceSave" text="Save" type="Emphasized" press=".onSavePrice"/></beginButton>
     <endButton><Button text="Cancel" press=".onCancelPrice"/></endButton>

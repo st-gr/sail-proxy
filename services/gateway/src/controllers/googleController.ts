@@ -25,7 +25,7 @@ import { emitNotEntitled, entitlementFromRequest, isModelEntitled, logEntitlemen
 import { sseBlock } from '../utils/sseFraming';
 import { geminiFailure, refuse } from './googleWire';
 import {
-  GEMINI_METHODS, GeminiDeployment, GeminiMethod, geminiError, parseModelMethod, resolveGeminiDeployment,
+  GEMINI_METHODS, GeminiDeployment, GeminiMethod, geminiError, parseModelMethod, requestsImageOutput, resolveGeminiDeployment,
 } from '../services/googleGeminiService';
 import { validateGeminiRequest } from '../google/orchestrationBridge/requestTranslator';
 import { GeminiDispatchContext, dispatchBridge, dispatchEmbeddings, dispatchNative } from './googleDispatch';
@@ -41,10 +41,12 @@ export type GeminiRoute =
   | { kind: 'native'; deployment: GeminiDeployment }
   | { kind: 'bridge'; modelName: string }
   | { kind: 'embeddings-orchestration'; modelName: string }
-  | { kind: 'embeddings-native'; deployment: GeminiDeployment };
+  | { kind: 'embeddings-native'; deployment: GeminiDeployment }
+  // image output asked for, but only orchestration could serve the model — refused, never bridged
+  | { kind: 'image-unavailable'; modelName: string };
 
 /** A deployment counts as "Google" when SAP labels its provider so. */
-function isGoogleProvider(details: any): boolean {
+export function isGoogleProvider(details: any): boolean {
   return /google|gemini/i.test(details?.provider || details?.owned_by || '');
 }
 
@@ -71,6 +73,7 @@ export async function chooseRoute(
   model: string,
   method: GeminiMethod,
   getDetails: (id: string) => Promise<any>,
+  wantsImageOutput = false,
 ): Promise<GeminiRoute | null> {
   const baseModel = model.endsWith(DEPLOYED_SUFFIX) ? model.slice(0, -DEPLOYED_SUFFIX.length) : model;
   const deployment = await resolveGeminiDeployment(model, getDetails);
@@ -93,6 +96,16 @@ export async function chooseRoute(
   }
 
   if (googleDeployment) return { kind: 'native', deployment: googleDeployment };
+
+  if (wantsImageOutput) {
+    // Orchestration is a text API: it drops responseModalities and its response
+    // translator knows no image parts, so an image request can only be served by a
+    // Google deployment. A known model without one is refused honestly (400, see
+    // handleGemini); an unknown model stays a 404.
+    const known = deployment || (await getDetails(model));
+    return known ? { kind: 'image-unavailable', modelName: baseModel } : null;
+  }
+
   // An explicitly named deployment that is NOT Google's — a Claude chat
   // deployment asked for in Gemini shape — is served by orchestration under its
   // base name, not refused.
@@ -105,7 +118,9 @@ export async function chooseRoute(
 
 /** The model id usage, entitlement and hooks are recorded against. */
 export function accountedModelId(route: GeminiRoute): string {
-  return route.kind === 'native' || route.kind === 'embeddings-native' ? route.deployment.id : route.modelName;
+  return route.kind === 'native' || route.kind === 'embeddings-native'
+    ? route.deployment.id
+    : route.modelName;
 }
 
 /** One per-request memo, so the route table's repeated catalogue reads cost one lookup each. */
@@ -121,7 +136,7 @@ function catalogueReader(): (id: string) => Promise<any> {
   };
 }
 
-async function headersForSap(): Promise<Record<string, string>> {
+export async function headersForSap(): Promise<Record<string, string>> {
   const authToken = await (modelService as any).getAuthToken();
   return {
     Authorization: `Bearer ${authToken}`,
@@ -165,12 +180,20 @@ export const handleGemini = async (req: Request, res: Response, _next: NextFunct
 
     const { method } = parsed;
     const model = configService.getSubstitutedModel('google', parsed.model);
-    const route = await chooseRoute(model, method, catalogueReader());
+    const wantsImageOutput = requestsImageOutput(req.body);
+    const route = await chooseRoute(model, method, catalogueReader(), wantsImageOutput);
+    const imageHint = `Model ${model} has no deployment; image output (responseModalities IMAGE) needs a deployment of the model on SAP AI Core.`;
     if (!route) {
+      // An image request on a model the catalogue does not list at all (e.g. an image model SAP
+      // offers only as a deployment, none created) gets the same hint as the undeployed case.
       refuse(res, 404, method === 'embedContent'
         ? `Model ${model} does not support embedContent through this gateway. It has neither an `
           + 'orchestration embedding scenario nor a Google embedding deployment.'
-        : `Model ${model} is not available through this gateway`);
+        : wantsImageOutput ? imageHint : `Model ${model} is not available through this gateway`);
+      return;
+    }
+    if (route.kind === 'image-unavailable') {
+      refuse(res, 400, imageHint);
       return;
     }
     accountedId = accountedModelId(route);

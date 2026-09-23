@@ -169,6 +169,7 @@ The proxy provides the following API endpoints:
 | OpenAI | `/openai/v1/responses` | OpenAI Responses alias |
 | Anthropic | `/anthropic/v1/messages` | Anthropic messages API |
 | Google | `/google/v1beta/models/{model}:{method}` | Gemini generateContent/streamGenerateContent/embedContent |
+| SAP-RPT | `/sap/v1/rpt/{model}/predict` | Tabular prediction (classification, regression) |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke` | Bedrock invoke API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/invoke-with-response-stream` | Bedrock streaming API |
 | AWS Bedrock | `/aws-bedrock/model/{modelId}/converse` | Bedrock converse API |

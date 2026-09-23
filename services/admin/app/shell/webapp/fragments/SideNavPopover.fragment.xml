@@ -42,6 +42,7 @@
 						<tnt:NavigationListItem key="settings" text="Configuration Management" />
 						<tnt:NavigationListItem key="sapRates" text="SAP Capacity Unit Prices" visible="{appView>/isAdmin}" />
 						<tnt:NavigationListItem key="users" text="Users &amp; Quotas" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="toolPolicies" text="Tool Governance" visible="{appView>/isAdmin}" />
 					</tnt:NavigationListItem>
 				</tnt:NavigationList>
 			</tnt:fixedItem>

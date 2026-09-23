@@ -1152,6 +1152,60 @@ const apiConfigSchema: ApiConfigSchema =
             "tokensPerMonth": { "type": ["integer", "null"], "title": "Tokens per Month", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per calendar month; cache reads are not counted." }
           }
         },
+        "toolGovernance": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Tool governance: how long the per-request tool usage rows and their daily aggregates are kept, and how each client program spells the MCP tools it hosts itself.",
+          "properties": {
+            "mcpNaming": {
+              "type": "object",
+              "additionalProperties": false,
+              "title": "MCP naming",
+              "description": "A client that runs its own MCP servers sends no MCP tool type: Claude Code declares each tool as mcp__server__tool, while codex reaches them inside its own exec tool. These conventions turn such a name into the mcp:server/tool identity a policy pattern can match, so a client nobody has measured yet is a configuration change rather than a release.",
+              "properties": {
+                "namePattern": {
+                  "type": "string",
+                  "title": "Tool name pattern",
+                  "default": "^mcp__(.+?)__(.+)$",
+                  "description": "Regular expression matched against a declared tool name; the first group is the MCP server, the second the tool. The default reads mcp__codex_apps__sites_create_site as server codex_apps and tool sites_create_site."
+                },
+                "clients": {
+                  "type": "array",
+                  "title": "Client programs",
+                  "description": "One entry per client program. The first whose User Agent text appears in the request's own applies; a request that matches none is still governed by what it declares.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "userAgent", "containerTools"],
+                    "properties": {
+                      "name": { "type": "string", "title": "Name", "description": "How this client is referred to in the cockpit and the logs, for example claude-code." },
+                      "userAgent": { "type": "string", "title": "User Agent", "description": "Text that identifies the client in the request's User Agent header, for example claude-cli. Matched case-insensitively anywhere in the header." },
+                      "containerTools": {
+                        "type": "array",
+                        "title": "Container tools",
+                        "description": "Tools whose call body may reach nested MCP tools, such as codex's exec. Empty for a client that declares its MCP tools directly, which is the common case.",
+                        "items": { "type": "string" }
+                      },
+                      "nestedCallPattern": {
+                        "type": "string",
+                        "title": "Nested call pattern",
+                        "description": "Regular expression finding a nested tool's name inside a container tool's call body; the first group is the name. Only the names are read, never the arguments."
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "retention": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "rawDays": { "type": "integer", "title": "Tool usage retention (days)", "minimum": 1, "default": 30, "description": "Days a per-request tool usage row is kept before the nightly purge removes it. The daily aggregates keep the totals." },
+                "dailyDays": { "type": "integer", "title": "Tool usage aggregate retention (days)", "minimum": 1, "default": 400, "description": "Days a daily tool usage aggregate (per user, tool and day) is kept. The inventory and the user page read these." }
+              }
+            }
+          }
+        },
         "maintenance": {
           "type": "object",
           "additionalProperties": false,
@@ -1267,6 +1321,13 @@ const apiConfigSchema: ApiConfigSchema =
           "minimum": 1,
           "default": 40,
           "description": "How many DISTINCT masked values one request may carry before it is reported as saturated (default 40). Reporting only - it never changes what is masked. Above the number the gateway logs one warning per request with per-category counts and the most common value SHAPES (letters as X, digits as 9); no masked value ever appears. The request's usage SIEM event carries the same counts with a `saturated` flag - counts, not text. Reading the report: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization.md#reading-the-saturation-report"
+        },
+        "unknown_placeholders": {
+          "type": "string",
+          "enum": ["withhold", "report", "off"],
+          "default": "withhold",
+          "title": "Invented placeholders",
+          "description": "What happens when a response contains a masked placeholder the model was never sent. Models invent one in roughly 1 of 125 pseudonymized responses, and more often the more values a request masks; such a placeholder names nobody and can never be resolved. withhold (default): it is replaced with a plain marker such as [name withheld] and reported as a security event. report: it is only reported and reaches the client unchanged, for a deployment whose own developers write new placeholders into test fixtures through the gateway. off: neither. A placeholder the client itself sent in the same request is never treated as invented."
         }
       },
       "additionalProperties": false

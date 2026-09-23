@@ -325,6 +325,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.0075,  // (500/1000) * 0.015
         cacheCreationInputCost: 0,
         cacheReadInputCost: 0,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.0105,   // 0.003 + 0.0075
         provider: 'anthropic'
       });
@@ -346,6 +349,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.001,   // (500/1000) * 0.002 = 0.001
         cacheCreationInputCost: 0,
         cacheReadInputCost: 0,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.002,    // 0.001 + 0.001
         provider: 'unknown'
       });
@@ -359,6 +365,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0,
         cacheCreationInputCost: 0,
         cacheReadInputCost: 0,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0
       });
     });
@@ -459,6 +468,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.06,    // (1000/1000) * 0.06
         cacheCreationInputCost: 0,
         cacheReadInputCost: 0,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.12,     // 0.06 + 0.06
         provider: 'OpenAI'
       });
@@ -576,7 +588,10 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.2588,
         cacheCreationInputCost: 0.00435,
         cacheReadInputCost: 0.00435,
-        totalCost: 0.3545, 
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
+        totalCost: 0.3545,
         provider: 'Google'
       });
     });
@@ -614,6 +629,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.2588,
         cacheCreationInputCost: 0.00835,
         cacheReadInputCost: 0.0167,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.60115,
         provider: 'Google'
       });
@@ -640,9 +658,12 @@ describe('ModelCostService End-to-End Tests', () => {
       // Should fall back to simple pricing
       expect(result).toEqual({
         inputCost: 0.003,    // (1000/1000) * 0.003
-        outputCost: 0.0075,  // (500/1000) * 0.015  
+        outputCost: 0.0075,  // (500/1000) * 0.015
         cacheCreationInputCost: 0,
         cacheReadInputCost: 0,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.0105,
         provider: 'Google'
       });
@@ -841,6 +862,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.0075,
         cacheCreationInputCost: 0.0003, // (100/1000) * 0.003 * 1.00
         cacheReadInputCost: 0.0006,     // (200/1000) * 0.003 * 1.00
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.0114,
         provider: 'Anthropic'
       });
@@ -878,6 +902,9 @@ describe('ModelCostService End-to-End Tests', () => {
         outputCost: 0.00494,
         cacheCreationInputCost: 0.00254,
         cacheReadInputCost: 0.0002,
+        imageOutputCost: 0,
+        audioInputCost: 0,
+        audioOutputCost: 0,
         totalCost: 0.00972,
         provider: 'Anthropic'
       });

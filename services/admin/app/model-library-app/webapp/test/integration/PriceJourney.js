@@ -17,9 +17,11 @@ sap.ui.define([
 				Then.onTheDetail.iSeeTheObjectPage();
 				if (oLib.canEditPrice) {
 					When.onTheDetail.iPressEditPrice();
-					When.onTheDetail.iEnterPrices("0.000001", "0.000002");
+					When.onTheDetail.iEnterPrices("0.000001", "0.000002", "0.00006", "0.00003", "0.00004");
 					When.onTheDetail.iSavePrice();
 					Then.onTheDetail.iSeeManualPrice(true);
+					Then.onTheDetail.iSeeCostRow("Image Output Cost Factor");
+					Then.onTheDetail.iSeeCostRow("Audio Output Cost Factor");
 					When.onTheDetail.iPressRevert();
 					Then.onTheDetail.iSeeManualPrice(false);
 				} else {

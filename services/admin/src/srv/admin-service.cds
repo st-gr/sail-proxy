@@ -40,6 +40,7 @@ service AdminService {
     deletedAt,
     expiresAt,
     neverExpires,
+    toolPolicy,
     lockedByUserDeactivation @readonly,
     isActiveFC,
     expiresAtFC,
@@ -47,6 +48,7 @@ service AdminService {
     requestsPerMinute,
     requestsPerHour,
     requestsPerDay,
+    ownerRequestsPerMinuteText,
     createdAt,
     createdBy,
     modifiedAt,
@@ -64,8 +66,13 @@ service AdminService {
 
     // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
     // return what is stored, the gateway enforces it on the next request after cache invalidation.
-    action setRateLimits(requestsPerMinute : Integer, requestsPerHour : Integer, requestsPerDay : Integer)
-      returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
+    // The parameter dialog opens with the credential's current limits: Fiori Elements resolves a
+    // path-valued UI.ParameterDefaultValue against the bound row (the binding parameter is `in`).
+    action setRateLimits(
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerMinute' } } requestsPerMinute : Integer,
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerHour' } }   requestsPerHour : Integer,
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerDay' } }    requestsPerDay : Integer
+    ) returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
   };
 
   
@@ -162,8 +169,13 @@ service AdminService {
 
     // Owner or admin (entity @restrict). Each value optional, integer >= 1; the validation actions
     // return what is stored, the gateway enforces it on the next request after cache invalidation.
-    action setRateLimits(requestsPerMinute : Integer, requestsPerHour : Integer, requestsPerDay : Integer)
-      returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
+    // The parameter dialog opens with the credential's current limits: Fiori Elements resolves a
+    // path-valued UI.ParameterDefaultValue against the bound row (the binding parameter is `in`).
+    action setRateLimits(
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerMinute' } } requestsPerMinute : Integer,
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerHour' } }   requestsPerHour : Integer,
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/requestsPerDay' } }    requestsPerDay : Integer
+    ) returns { requestsPerMinute : Integer; requestsPerHour : Integer; requestsPerDay : Integer; };
   };
   
   // Computed fields are added by service handlers, not in projection
@@ -1228,7 +1240,8 @@ service AdminService {
   @readonly
   entity ModelPrices as projection on admin.ModelCosts {
     ID, model, displayName, dateFrom, dateTo, inputCost, outputCost,
-    cacheReadInputCost, cacheCreationInputCost, provider, version, source, createdAt, createdBy
+    cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost,
+    provider, version, source, createdAt, createdBy
   };
 
   type PruneResult { prunedFromChildren : Integer; }
@@ -1242,13 +1255,17 @@ service AdminService {
   type ManualPriceResult {
     ID : UUID; model : String(100); inputCost : Decimal(10,6); outputCost : Decimal(10,6);
     cacheReadInputCost : Decimal(10,6); cacheCreationInputCost : Decimal(10,6);
+    imageOutputCost : Decimal(10,6);
+    audioInputCost : Decimal(10,6); audioOutputCost : Decimal(10,6);
     source : String(8); dateFrom : Timestamp;
   }
 
   extend entity AdminService.LibraryModels with actions {
     @(requires: 'admin')
     action setPrice(inputCost : Decimal(10,6), outputCost : Decimal(10,6),
-                    cacheReadInputCost : Decimal(10,6), cacheCreationInputCost : Decimal(10,6)) returns ManualPriceResult;
+                    cacheReadInputCost : Decimal(10,6), cacheCreationInputCost : Decimal(10,6),
+                    imageOutputCost : Decimal(10,6),
+                    audioInputCost : Decimal(10,6), audioOutputCost : Decimal(10,6)) returns ManualPriceResult;
     @(requires: 'admin')
     action revertToSapPrice() returns ManualPriceResult;
     function configContext() returns ConfigContext;
@@ -1309,6 +1326,7 @@ service AdminService {
                   tokensDay : Integer64; tokensWeek : Integer64; tokensMonth : Integer64; };
     resetsAt : { day : Timestamp; week : Timestamp; month : Timestamp; };
     quotaResetAt : Timestamp; lastSeenAt : Timestamp;
+    toolPolicy : { name : String(100); mode : String(10); };
   }
   // The home screen's key-metric tiles (usageSummaryService): this calendar month, UTC. `sapCost` is
   // the total in `sapCostCurrency` only; other currencies with cost this month are named, not summed.
@@ -1380,6 +1398,12 @@ service AdminService {
     virtual null as resetsAtDay : Timestamp @Core.Computed,
     virtual null as resetsAtWeek : Timestamp @Core.Computed,
     virtual null as resetsAtMonth : Timestamp @Core.Computed,
+    virtual null as criticalitySpendDay : Integer @Core.Computed,
+    virtual null as criticalitySpendWeek : Integer @Core.Computed,
+    virtual null as criticalitySpendMonth : Integer @Core.Computed,
+    virtual null as criticalityTokensDay : Integer @Core.Computed,
+    virtual null as criticalityTokensWeek : Integer @Core.Computed,
+    virtual null as criticalityTokensMonth : Integer @Core.Computed,
     virtual null as canDeactivate : Boolean @Core.Computed,
     virtual null as canReactivate : Boolean @Core.Computed,
     // Plan B (the Fiori app) criticality for the status field: 3 = active (positive), 1 = deactivated
@@ -1437,6 +1461,127 @@ service AdminService {
   function myQuotaStatus() returns QuotaStatus;
   /** This month's usage: the caller's own, or every user's for an administrator (the home tiles). */
   function myUsageSummary() returns UsageSummary;
+
+  type UsageUnit { model : String(200); unit : String(6); }
+  /** The models whose usage is counted in cells (SAP-RPT), not tokens - names models, not usage, so
+   *  every signed-in caller may read it. */
+  function usageUnits() returns array of UsageUnit;
+
+  // ========================================
+  // Tool governance (spec 2026-09-16 §4/§5)
+  // ========================================
+  @(restrict: [
+    { grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' },
+    // Bound action authorization: an entity @restrict is a deny-by-default allow-list, so the
+    // four assignment actions extended onto ToolPolicies below need their own grants here too.
+    { grant: ['assignUser', 'unassignUser', 'assignApiKey', 'unassignApiKey'], to: 'admin' }
+  ])
+  @odata.draft.enabled
+  entity ToolPolicies as projection on admin.ToolPolicies;
+  // The draft root is the only write path that is meant to be used, but these two cannot be
+  // @readonly: the Fiori list creates an entry inline by POSTing onto the DRAFT root's
+  // `allows`/`denies` navigation, and lean-draft's onNew answers that with 405 as soon as the
+  // active entity is @readonly (proven by test/integration/http/tool-policies-odata.test.ts).
+  // Over HTTP nothing reaches these sets anyway — a write addressed at a draft-enabled entity
+  // becomes a NEW/PATCH on its draft and is refused with "A draft-enabled entity can only be
+  // modified via its root entity" — and admin-service-tool-policies.ts registers before
+  // CREATE/UPDATE/DELETE handlers on both so a programmatic service-level write cannot bypass
+  // the pattern validation or the credential-cache invalidation either.
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }])
+  entity ToolPolicyAllows as projection on admin.ToolPolicyAllows;
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }])
+  entity ToolPolicyDenies as projection on admin.ToolPolicyDenies;
+  // Same reasoning as ToolPolicyAllows/ToolPolicyDenies above: writable so the inline creation on
+  // the draft's navigation works, guarded by admin-service-tool-policies.ts against a direct write.
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }])
+  entity ToolPolicySensitive as projection on admin.ToolPolicySensitive;
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE'], to: 'admin' }])
+  entity ToolPolicyUntrusted as projection on admin.ToolPolicyUntrusted;
+  @readonly
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ToolUsageDaily as projection on admin.ToolUsageDaily;
+
+  /** Value help for ToolPolicies.mode, served by an on-READ handler. */
+  @readonly
+  @cds.persistence.skip
+  entity ToolPolicyModes {
+    key code : String(10);
+    text     : String(40);
+  }
+
+  /** Value help for the inventory's facet filter, served by an on-READ handler. */
+  @readonly
+  @cds.persistence.skip
+  entity ToolFacets {
+    key code : String(10);
+    text     : String(40);
+  }
+
+  /** Value help for the inventory's Requested By filter: the client programs actually recorded. */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ToolAgents {
+    key agent : String(60);
+    tools     : Integer;
+    requests  : Integer;
+    lastSeen  : Timestamp;
+  }
+
+  /**
+   * Tool inventory (spec §8): aggregates of ToolUsageDaily over a day range, served by an on-READ
+   * handler. `day` is a filter, not a column: the rows are per tool, not per day, and the filter's
+   * range decides the period that is aggregated (default: the last 30 days).
+   *
+   * AllowedExpressions 'SingleRange' is what turns it into a date control in the filter bar. A Date
+   * property without it gets the generic "Define Conditions" dialog, where the calendar is two
+   * clicks deep; with it, Fiori Elements renders the date range picker AND the semantic operators
+   * ("Last X Days", "This Month"), which is how the period is meant to be chosen.
+   */
+  @readonly
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  @cds.persistence.skip
+  @(Capabilities.FilterRestrictions: { FilterExpressionRestrictions: [
+      { Property: day, AllowedExpressions: 'SingleRange' }
+  ] })
+  entity ToolInventory {
+    key identity : String(220);
+    key facet    : String(10);
+    users        : Integer;
+    requests     : Integer;
+    allowed      : Integer;
+    monitored    : Integer;
+    stripped     : Integer;
+    rejected     : Integer;
+    unlisted     : Integer;
+    detected     : Integer;      // denied and used without being prevented (a nested MCP call)
+    trustChained : Integer;      // denials caused by the trust chain
+    lastSeen     : Timestamp;
+    agents       : String(400);   // which client programs asked for it in the range, comma separated
+    day          : Date;          // filter only; every row carries the last day of the aggregated range
+  }
+
+  /** Recorded tool identities, the value help behind a policy's allow and deny patterns. */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ToolIdentities {
+    key identity : String(220);
+    users        : Integer;
+    requests     : Integer;
+    lastSeen     : Timestamp;
+  }
+
+  extend entity AdminService.ToolPolicies with actions {
+    @(requires: 'admin') action assignUser(email : String(255)) returns ToolPolicies;
+    @(requires: 'admin') action unassignUser(email : String(255)) returns ToolPolicies;
+    @(requires: 'admin') action assignApiKey(keyId : UUID) returns ToolPolicies;
+    @(requires: 'admin') action unassignApiKey(keyId : UUID) returns ToolPolicies;
+  };
+  // The ONLY write paths for Users.toolPolicy_ID and ApiKeys.toolPolicy_ID: both invalidate the credential cache.
+  @(requires: 'admin') action assignToolPolicy(email : String(255), policyId : UUID) returns Users;
+  @(requires: 'admin') action unassignToolPolicy(email : String(255)) returns Users;
+  @(requires: 'admin') action setApiKeyToolPolicy(keyId : UUID, policyId : UUID) returns ApiKeys;
 }
 
 // ========================================

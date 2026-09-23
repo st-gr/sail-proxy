@@ -114,3 +114,17 @@ ui5-avatar-ui5[size="XS"],
 	min-height: 2rem !important;
 }
 
+/* The reset line under each bullet chart on the "My quota" card: a caption under a chart, not a
+   value (UI5 has no small-text class of its own). */
+.adminShellQuotaReset {
+	font-size: 0.75rem;
+}
+
+/* The quota card is 28rem wide; the responsive bullet chart caps itself at 20rem, so let it fill the row. */
+.adminShellQuotaChart .sapSuiteBMCVerticalAlignmentContainer { max-width: none; }
+
+/* My quota card: each unit (Spend, Tokens) is a group — a bold name, a muted line with its three
+   windows, then a chart per limited window. Groups are separated by a hairline and breathing room. */
+.adminShellQuotaGroup { padding: 0.75rem 0; }
+.adminShellQuotaGroup + .adminShellQuotaGroup { border-top: 1px solid var(--sapList_BorderColor, #e5e5e5); }
+.adminShellQuotaSummary { color: var(--sapContent_LabelColor, #556b82); font-size: 0.875rem; margin-top: 0.125rem; }

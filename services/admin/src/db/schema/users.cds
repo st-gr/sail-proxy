@@ -2,6 +2,7 @@ namespace sap.llm.gateway.admin;
 
 using { cuid, managed } from '@sap/cds/common';
 using { sap.llm.gateway.admin.ModelCatalogs as ModelCatalogs } from './model-library';
+using { sap.llm.gateway.admin.ToolPolicies as ToolPolicies, sap.llm.gateway.admin.ToolUsageDaily as ToolUsageDaily } from './tool-governance';
 
 /**
  * One row per person the platform knows (spec §1). Created lazily by usersService.touch (whoami,
@@ -29,6 +30,8 @@ entity Users : managed {
   quotaResetAt          : Timestamp;          // watermark: usage before it does not count
   entitlementCatalog    : Association to ModelCatalogs;   // null = the default catalog (spec §7.2 item 1)
   quotaProfile          : Association to QuotaProfiles;   // null = no profile: platform.quotas applies (spec §2)
+  toolPolicy            : Association to ToolPolicies;    // null = the default tool policy (tool governance spec §4)
+  toolUsageDaily        : Association to many ToolUsageDaily on toolUsageDaily.email = $self.email;
 }
 
 /** A named set of the seven quota limits an administrator assigns per user (spec 2026-09-08). A null limit says nothing: the platform default applies. */

@@ -110,6 +110,58 @@ as for a chat call, with one exception: an embedding model that exists **only** 
 (for example `gemini-embedding-2`) reports no usage at all for `embedContent`, so the gateway
 estimates the input token count from the request text instead of billing an exact figure.
 
+### Image generation
+
+Some Gemini models generate images as well as text. The Model Library marks them with the
+**image-generation** capability: `gemini-3.1-flash-image` (recommended), `gemini-3-pro-image` and
+`gemini-2.5-flash-image`. **`gemini-2.5-flash-image` is deprecated by Google and scheduled for
+shutdown on 2 October 2026** — use `gemini-3.1-flash-image` for new work.
+
+Image output only works on a model's **own deployment** on SAP AI Core (marked *Deployed* in the
+Model Library) — it is never available through the platform route. Asking an undeployed model for
+image output gets HTTP 400 in the usual Gemini error shape (HTTP 404 when the model is not listed
+in the Model Library at all), with the message:
+
+```
+Model <model> has no deployment; image output (responseModalities IMAGE) needs a deployment of the
+model on SAP AI Core.
+```
+
+Ask for an image by setting `responseModalities` and, optionally, `imageConfig` in
+`generationConfig`:
+
+```javascript
+const response = await ai.models.generateContent({
+  model: 'gemini-3.1-flash-image',
+  contents: 'A watercolor painting of a lighthouse at sunset',
+  config: {
+    responseModalities: ['IMAGE', 'TEXT'],
+    imageConfig: { aspectRatio: '1:1' },
+  },
+});
+
+for (const part of response.candidates[0].content.parts) {
+  if (part.inlineData) {
+    // part.inlineData.data is base64-encoded image bytes; part.inlineData.mimeType is e.g. image/png
+  }
+}
+```
+
+`imageConfig.aspectRatio` accepts `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
+`5:4`, `8:1`, `9:16`, `16:9` and `21:9`; `imageConfig.imageSize` accepts `512`, `1K`, `2K` and `4K`.
+Images come back as `inlineData` parts alongside any text parts. `streamGenerateContent` works the
+same way — the image arrives in the stream's last event.
+
+**Data masking does not apply to images.** Pseudonymization rewrites text prompts; it is not
+applied to image prompts or to uploaded (`inlineData`) images, which reach SAP AI Core as you sent
+them. Do not put personal data in an image prompt or upload an image containing it.
+
+**Pricing:** SAP publishes no rate for image models, so generated-image tokens are priced from an
+image output rate an administrator enters in the Model Library (see [Admin
+Cockpit](chapter-8-admin-cockpit.md#model-library-and-entitlements--quotas)); Google's own list
+price is a starting point until SAP publishes one. Without a rate, image tokens are priced like
+ordinary output tokens.
+
 ### Hooks and PII masking
 
 Everything configured for your other gateway routes — [PII masking / pseudonymization](chapter-2-features.md#pii-masking-pseudonymization)
@@ -139,6 +191,9 @@ routes — the same API keys, entitlement catalogs, quotas and cost accounting a
   directly as inline image data instead.
 - **Non-image inline data is refused.** Inline data parts (`inlineData`) are accepted for images
   only — audio, video and other inline mime types are rejected.
+- **Image output needs a deployment of the model.** A model without its own SAP AI Core deployment
+  cannot return `responseModalities: ["IMAGE"]`, even when it is otherwise reachable through the
+  platform route — see [Image generation](#image-generation) above.
 - **`candidateCount` above 1 is refused.** The gateway always returns exactly one candidate.
 - **Safety settings and a few sampling parameters depend on the model.** `safetySettings`, `topK`,
   `seed`, `presencePenalty` and `frequencyPenalty` reach the model only when a **Gemini model served
@@ -164,6 +219,10 @@ Gemini CLI and the SDK display these directly:
 - **`Model <model> is not available through this gateway`** — the model has neither a deployment
   nor a platform route. Check the spelling against the [Model Library](chapter-8-admin-cockpit.md#model-library-and-entitlements--quotas),
   or ask an administrator to deploy it.
+- **`Model <model> has no deployment; image output (responseModalities IMAGE) needs a deployment
+  of the model on SAP AI Core.`** — you asked for an image from a model that has no deployment
+  (HTTP 400, or 404 when the model is not listed at all). Ask an administrator to deploy the
+  model; see [Image generation](#image-generation).
 - **`Model <model> does not support embedContent through this gateway. It has neither an
   orchestration embedding scenario nor a Google embedding deployment.`** — you called
   `embedContent` on a model that isn't an embedding model. Pick a model the Model Library marks

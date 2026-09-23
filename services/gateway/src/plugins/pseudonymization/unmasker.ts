@@ -5,6 +5,8 @@
  */
 
 import { ReplacementMap } from './replacementMap';
+import { containUnknownPlaceholders } from './unknownPlaceholders';
+import type { ContainmentOptions } from './unknownPlaceholders';
 
 /**
  * The alternation regex over a map's placeholders, cached per map.
@@ -54,16 +56,26 @@ function placeholderRegex(map: ReplacementMap): RegExp | null {
 /**
  * Unmask all placeholder tokens in text using the reverse map
  */
-export function unmaskText(text: string, map: ReplacementMap): string {
+export function unmaskText(text: string, map: ReplacementMap, containment?: ContainmentOptions): string {
   if (map.size === 0) return text;
 
+  // A placeholder the model INVENTED is in no map and can never be resolved. It is withheld
+  // BEFORE the known ones are resolved, so a restored original is never itself scanned for
+  // placeholder shapes (see unknownPlaceholders.ts for the incident and the measurements).
+  let source = text;
+  if (containment) {
+    const contained = containUnknownPlaceholders(text, map.reverse, containment.inbound, containment.withhold !== false);
+    if (contained.unknown.length > 0) containment.onUnknown(contained.unknown);
+    source = contained.text;
+  }
+
   const regex = placeholderRegex(map);
-  if (!regex) return text;
+  if (!regex) return source;
 
   // The regex is shared across calls now; String.replace resets lastIndex itself, but
   // being explicit keeps that independent of how the cached object got here.
   regex.lastIndex = 0;
-  return text.replace(regex, (match) => map.reverse.get(match) || match);
+  return source.replace(regex, (match) => map.reverse.get(match) || match);
 }
 
 /**
@@ -71,14 +83,14 @@ export function unmaskText(text: string, map: ReplacementMap): string {
  * Used for tool_use.input objects (Anthropic) where placeholders may appear at any depth.
  * Mutates arrays/objects in-place; returns primitives unchanged.
  */
-export function unmaskJsonValue(value: any, map: ReplacementMap): any {
-  if (typeof value === 'string') return unmaskText(value, map);
+export function unmaskJsonValue(value: any, map: ReplacementMap, containment?: ContainmentOptions): any {
+  if (typeof value === 'string') return unmaskText(value, map, containment);
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = unmaskJsonValue(value[i], map);
+    for (let i = 0; i < value.length; i++) value[i] = unmaskJsonValue(value[i], map, containment);
     return value;
   }
   if (value && typeof value === 'object') {
-    for (const k of Object.keys(value)) value[k] = unmaskJsonValue(value[k], map);
+    for (const k of Object.keys(value)) value[k] = unmaskJsonValue(value[k], map, containment);
     return value;
   }
   return value;

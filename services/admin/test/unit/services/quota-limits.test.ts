@@ -4,7 +4,7 @@ export {};
  * platform default if not null, else unlimited; the source is reported beside it. Constraint edits
  * are validated the same way the before-UPDATE handler will (non-negative, integers where typed).
  */
-import { effectiveLimits, validateConstraints, defaultText, maintenanceRunAtUtc, UNLIMITED, LIMIT_FIELDS } from '../../../src/services/quotaLimits';
+import { effectiveLimits, validateConstraints, defaultText, effectiveLimitText, maintenanceRunAtUtc, UNLIMITED, LIMIT_FIELDS } from '../../../src/services/quotaLimits';
 
 describe('effectiveLimits', () => {
   it('resolves user > platform > unlimited per field and reports the source', () => {
@@ -39,6 +39,21 @@ describe('effectiveLimits', () => {
  * the profile's figure where the profile carries one, else the platform default, else unlimited -
  * so a profile that leaves one window null still names the platform default for it.
  */
+describe('effectiveLimitText', () => {
+  // What a credential page shows for its owner's user-level limit: the resolved value and where
+  // it comes from, in the same shapes the Default line under a constraint uses.
+  const base = { sapCostCurrency: 'USD', quotaProfileName: null as string | null };
+  it('names the source of the resolved limit: own constraint, profile, platform', () => {
+    expect(effectiveLimitText('requestsPerMinute', { ...base, limits: { ...UNLIMITED, requestsPerMinute: 200 }, limitSource: { ...Object.fromEntries(LIMIT_FIELDS.map((f) => [f, 'unlimited'])), requestsPerMinute: 'user' } as any })).toBe('200 (own constraint)');
+    expect(effectiveLimitText('requestsPerMinute', { ...base, quotaProfileName: 'Standard', limits: { ...UNLIMITED, requestsPerMinute: 60 }, limitSource: { ...Object.fromEntries(LIMIT_FIELDS.map((f) => [f, 'unlimited'])), requestsPerMinute: 'profile' } as any })).toBe('60 (Standard profile)');
+    expect(effectiveLimitText('requestsPerMinute', { ...base, limits: { ...UNLIMITED, requestsPerMinute: 30 }, limitSource: { ...Object.fromEntries(LIMIT_FIELDS.map((f) => [f, 'unlimited'])), requestsPerMinute: 'platform' } as any })).toBe('30 (platform)');
+  });
+  it('says unlimited when nothing applies, and formats spend with the currency', () => {
+    expect(effectiveLimitText('requestsPerMinute', { ...base, limits: UNLIMITED, limitSource: Object.fromEntries(LIMIT_FIELDS.map((f) => [f, 'unlimited'])) as any })).toBe('unlimited');
+    expect(effectiveLimitText('spendPerDay', { ...base, quotaProfileName: 'Light', limits: { ...UNLIMITED, spendPerDay: 25 }, limitSource: { ...Object.fromEntries(LIMIT_FIELDS.map((f) => [f, 'unlimited'])), spendPerDay: 'profile' } as any })).toBe('25.00 USD (Light profile)');
+  });
+});
+
 describe('defaultText', () => {
   const status = (over: Record<string, any> = {}) =>
     ({ quotaProfileName: null, sapCostCurrency: 'USD', profileLimits: null, platformLimits: { ...UNLIMITED }, ...over }) as any;

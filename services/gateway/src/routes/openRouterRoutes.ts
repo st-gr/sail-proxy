@@ -8,6 +8,7 @@ import { registerVectorStoreRoutes } from './vectorStoreRouteTable';
 import { registerFileRoutes } from './fileRouteTable';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import quotaEnforcement from '../middlewares/quotaEnforcement';
+import { toolGovernance, openaiChatAdapter, responsesAdapter } from '../toolGovernance';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import { getDefaultLogger } from '@libs/logger';
@@ -34,8 +35,8 @@ const openRouterAuth = createUnifiedTokenAuth();
 // Service-specific middleware for OpenRouter
 const openRouterServiceAuth = unifiedAuthProxyService.createServiceAuthMiddleware(serviceConfigurations.openrouter);
 
-// Apply unified authentication and quota enforcement to all routes
-router.use(openRouterAuth, openRouterServiceAuth, quotaEnforcement);
+// Apply unified authentication to all routes
+router.use(openRouterAuth, openRouterServiceAuth);
 
 // Log all requests to OpenRouter routes
 router.use((req, _res, next) => {
@@ -43,10 +44,22 @@ router.use((req, _res, next) => {
   next();
 });
 
-// Core endpoints
-router.post('/chat/completions', openRouterController.handleChatCompletions);
-router.post('/completions', openRouterController.handleCompletions);
-router.post('/responses', handleResponses);
+// Core endpoints.
+//
+// The three tool-carrying endpoints name their guards per route, the way chatRoutes.ts and
+// responsesRoutes.ts do, so tool governance runs between the service auth above and quota
+// enforcement — a request whose tools the policy refuses must not consume a quota slot first.
+// Each family needs its own adapter: the OpenRouter chat/completions bodies are OpenAI chat
+// shaped, /responses is not. Declared BEFORE the router-level quota mount below, so each runs
+// quotaEnforcement exactly once, from its own chain.
+router.post('/chat/completions', toolGovernance(openaiChatAdapter), quotaEnforcement, openRouterController.handleChatCompletions);
+router.post('/completions', toolGovernance(openaiChatAdapter), quotaEnforcement, openRouterController.handleCompletions);
+router.post('/responses', toolGovernance(responsesAdapter), quotaEnforcement, handleResponses);
+
+// Quota enforcement for every remaining endpoint of this router — one mount, as before, so an
+// endpoint added below cannot miss it.
+router.use(quotaEnforcement);
+
 router.get('/models', openRouterController.listModels);
 
 // Files (file_search)

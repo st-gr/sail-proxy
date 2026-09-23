@@ -13,6 +13,7 @@ import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
+import { queryString } from '../utils/queryParam';
 import type { EntitlementBlock, UserBlock } from '../clients/adminServiceClient';
 const logger = getDefaultLogger();
 
@@ -359,7 +360,14 @@ class TokenBasedAwsAuth {
   } {
     const method = req.method.toUpperCase();
     const path = req.path;
-    const query = new URLSearchParams(req.query as any).toString();
+    // Only string-valued parameters can be part of a SigV4 canonical query; a
+    // bracketed parameter arrives as a null-prototype object since express 4.22 and
+    // would make URLSearchParams throw. Such a request cannot carry a valid
+    // signature anyway, so its parameter is dropped from the canonical form here and
+    // the signature check answers 401 instead of a 500.
+    const query = new URLSearchParams(
+      Object.entries(req.query).flatMap(([name, value]) => { const s = queryString(value); return s === null ? [] : [[name, s] as [string, string]]; })
+    ).toString();
     const payloadHash = req.headers['x-amz-content-sha256'] as string || 'UNSIGNED-PAYLOAD';
     
     // Create canonical request

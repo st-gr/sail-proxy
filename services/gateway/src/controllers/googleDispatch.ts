@@ -18,6 +18,7 @@ import configService from '../services/configService';
 import sapAIService from '../services/sapAIService';
 import { executeAfterPlugins } from '../services/pluginExecutor';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { recordInvokedTools, geminiAdapter } from '../toolGovernance';
 import { splitBlocks, sseBlock } from '../utils/sseFraming';
 import { foldNativeGeminiUsage, foldOrchestrationUsage, onClientClose, openSseStream, pluginFrame } from './googleWire';
 import {
@@ -61,6 +62,7 @@ export async function dispatchNative(ctx: GeminiDispatchContext): Promise<void> 
 
   const upstream: AxiosResponse = await axios.post(url, body, { headers, timeout: configService.getTimeout(false) });
   foldNativeGeminiUsage(usage, upstream.data?.usageMetadata);
+  recordInvokedTools(req, geminiAdapter.invokedTools(upstream.data));
 
   let finalBody = upstream.data;
   if (hookConfig) finalBody = await executeAfterPlugins(req, res, finalBody, hookConfig);
@@ -97,7 +99,10 @@ async function pipeNativeStream(ctx: GeminiDispatchContext, url: string, headers
     pending += text;
     const { blocks, tail } = splitBlocks(pending);
     pending = tail;
-    for (const block of blocks) usageMetadata = usageFromSse(block, usageMetadata);
+    for (const block of blocks) {
+      usageMetadata = usageFromSse(block, usageMetadata);
+      recordInvokedTools(req, geminiAdapter.invokedToolsFromStream(block));
+    }
     if (!res.writableEnded) res.write(text);
   });
 
@@ -144,6 +149,7 @@ export async function dispatchBridge(ctx: GeminiDispatchContext): Promise<void> 
   foldOrchestrationUsage(usage, (envelope?.final_result ?? envelope ?? {})?.usage);
 
   let finalBody = orchestrationToGeminiResponse(envelope, { modelName });
+  recordInvokedTools(req, geminiAdapter.invokedTools(finalBody));
   if (hookConfig) finalBody = await executeAfterPlugins(req, res, finalBody, hookConfig);
 
   emitUsageEvent(req, usage, modelName, 200);
@@ -170,6 +176,7 @@ async function bridgeStream(ctx: GeminiDispatchContext, payload: any): Promise<v
     writes = writes.then(async () => {
       for (const block of blocks) {
         if (res.writableEnded) return;
+        recordInvokedTools(req, geminiAdapter.invokedToolsFromStream(block));
         res.write(hookConfig ? await pluginFrame(req, res, hookConfig, block) : block);
       }
     }).catch((error: any) => {
