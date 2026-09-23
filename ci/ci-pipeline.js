@@ -1749,6 +1749,14 @@ async function runCIPipeline() {
       description: 'Running packaged sail-proxy E2E smoke (pack + install + run + inference + stop)...'
     });
 
+    // The package's own tests (launcher adapters, bundled plugin registration, the
+    // production package.json the bundled services install from). After the E2E
+    // on purpose: it leaves bundled/ in place, which bundled-plugins.test.js needs.
+    await executeCommand('npm test', {
+      cwd: 'npm-dist/sail-proxy',
+      description: 'Running sail-proxy package tests...'
+    });
+
     // Phase 6.6: UI journeys
     // Role-based OPA5 journeys (shell, api-keys-app, aws-credentials-app) run by
     // ui5-test-runner against the admin started in Phase 5. The pipeline owns the
