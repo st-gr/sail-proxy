@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "SAP AI Core Multi-Provider LLM Gateway Service",
   "private": true,
   "main": "dist/index.js",
