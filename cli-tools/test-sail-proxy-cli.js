@@ -157,7 +157,11 @@ try {
 
   log('sail-proxy --version');
   const ver = run(cliBin, ['--version'], { env: cliEnv });
-  if (!ver.stdout.includes('0.9')) throw new Error(`Unexpected version output: ${ver.stdout}`);
+  // The version the tarball was packed with; a hardcoded "0.9" failed the first minor bump.
+  const expectedVersion = JSON.parse(fs.readFileSync(path.join(NPM_DIST_DIR, 'package.json'), 'utf8')).version;
+  if (!ver.stdout.includes(expectedVersion)) {
+    throw new Error(`Unexpected version output: ${ver.stdout} (expected ${expectedVersion})`);
+  }
 
   log('sail-proxy --help');
   run(cliBin, ['--help'], { env: cliEnv });
