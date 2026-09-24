@@ -519,7 +519,7 @@ docker compose --env-file .env.docker config | Select-String "image:" | Select-O
 Get-Content .env.docker
 
 # Manual environment variable test (PowerShell)
-$env:DOCKER_REGISTRY = "ghcr.io"; $env:DOCKER_TAG = "0.9.0"; docker compose config | Select-String "image:"
+$env:DOCKER_REGISTRY = "ghcr.io"; $env:DOCKER_TAG = "<version>"; docker compose config | Select-String "image:"
 ```
 
 ## Security

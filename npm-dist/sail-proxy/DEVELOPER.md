@@ -57,16 +57,16 @@ npm run unlink:dev
 
 **⚠️ CRITICAL: Never commit `package.json` after running `npm run link:dev`!**
 
-This package uses pnpm's `workspace:*` protocol for internal dependencies. The committed version MUST always have `workspace:*`, not concrete versions like `0.9.1`.
+This package uses pnpm's `workspace:*` protocol for internal dependencies. The committed version MUST always have `workspace:*`, not concrete versions like `X.Y.Z`.
 
 **What happens during builds:**
-- `npm run link:dev` → Temporarily replaces `workspace:*` with `0.9.1` for npm compatibility
+- `npm run link:dev` → Temporarily replaces `workspace:*` with `X.Y.Z` for npm compatibility
 - `npm run unlink:dev` → Automatically restores `workspace:*` via surgical replacement
 - `npm pack`/`npm publish` → `prepack` hook replaces. There is deliberately **no `postpack` hook**: npm re-reads `package.json` from disk after packing, so a postpack restore would poison the registry manifest with `workspace:*`. Restoration is handled by the publish wrapper (`pnpm publish:npm` from the repo root); after a bare `npm pack`, restore manually with `npm run restore-workspace`.
 
 **Surgical Restoration:**
 The `restore-workspace` script surgically replaces ONLY the dependency protocol, preserving:
-- ✅ Version numbers (keeps 0.9.1)
+- ✅ Version numbers (keeps X.Y.Z)
 - ✅ Other dependencies (axios, chalk, etc.)
 - ✅ Any other package.json fields
 - ✅ Any uncommitted changes you made
@@ -90,7 +90,7 @@ npm run restore-workspace
 **Never commit:**
 ```json
 "dependencies": {
-  "@sap-llm-gateway/service-key-parser": "0.9.1"  // ❌ Wrong!
+  "@sap-llm-gateway/service-key-parser": "X.Y.Z"  // ❌ Wrong!
 }
 ```
 
@@ -100,10 +100,10 @@ npm run restore-workspace
 
 All package versions in this monorepo are synchronized from the root `package.json`:
 
-- **Root package.json**: `0.9.1` (single source of truth)
-- **libs/service-key-parser**: Must be `0.9.1`
-- **libs/test-utils**: Must be `0.9.1`
-- **npm-dist/sail-proxy**: Must be `0.9.1`
+- **Root package.json**: `X.Y.Z` (single source of truth)
+- **libs/service-key-parser**: Must be `X.Y.Z`
+- **libs/test-utils**: Must be `X.Y.Z`
+- **npm-dist/sail-proxy**: Must be `X.Y.Z`
 
 ### Sync Version Script
 
@@ -118,7 +118,7 @@ npm run sync-version
 ```
 
 **What it does:**
-1. Reads version from root `package.json` (e.g., `0.9.1`)
+1. Reads version from root `package.json` (e.g., `X.Y.Z`)
 2. Updates all lib packages to match
 3. Replaces `workspace:*` with concrete version in npm-dist
 4. Creates `.backup` files (which are gitignored)
@@ -301,12 +301,12 @@ For the full release sequence (version bump → npm publish → Docker build/pus
 # Create a tarball without publishing
 npm pack
 
-# This creates st-gr-sail-proxy-0.9.1.tgz
+# This creates st-gr-sail-proxy-X.Y.Z.tgz
 # Verify contents:
-tar -tzf st-gr-sail-proxy-0.9.1.tgz | grep package.json
-tar -xzf st-gr-sail-proxy-0.9.1.tgz
+tar -tzf st-gr-sail-proxy-X.Y.Z.tgz | grep package.json
+tar -xzf st-gr-sail-proxy-X.Y.Z.tgz
 cat package/package.json | grep service-key-parser
-# Should show: "0.9.1" (not workspace:*)
+# Should show: "X.Y.Z" (not workspace:*)
 
 # After testing, restore workspace:* yourself — a bare `npm pack` leaves
 # concrete versions in package.json (there is deliberately no postpack hook)

@@ -428,7 +428,7 @@ Examples:
   pnpm docker:buildx -- --build-only         # Build locally without pushing
   pnpm docker:buildx -- --service gateway    # Build and push gateway only
   pnpm docker:buildx -- --no-cache           # Force rebuild without cache
-  DOCKER_TAG=0.9.0 pnpm docker:buildx       # Use specific version tag
+  DOCKER_TAG=1.2.3 pnpm docker:buildx       # Use specific version tag
 `);
       process.exit(0);
     }
