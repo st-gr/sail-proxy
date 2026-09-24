@@ -6,6 +6,7 @@
  * 2. All service packages (services/{gateway,admin,ollama})
  * 3. docker/package.json
  * 4. npm-dist/sail-proxy package
+ * 5. services/{gateway,admin}/package.docker.json (the Docker image manifests)
  *
  * NOTE: This does NOT touch workspace:* protocols - those are for development
  * and should only be replaced during packaging (see prepare-for-pack.js).
@@ -69,6 +70,13 @@ function collectTargetPackages() {
   // docker/package.json
   const dockerPkg = path.join(projectRoot, 'docker', 'package.json');
   if (fs.existsSync(dockerPkg)) targets.push(dockerPkg);
+
+  // services/{gateway,admin}/package.docker.json - the manifests the images are
+  // built from; left out, every image reported 1.0.0 whatever the release was.
+  for (const svc of ['gateway', 'admin']) {
+    const p = path.join(projectRoot, 'services', svc, 'package.docker.json');
+    if (fs.existsSync(p)) targets.push(p);
+  }
 
   return targets;
 }

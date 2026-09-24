@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "version": "1.0.0",
+  "version": "0.10.0",
   "description": "SAP AI Core Multi-Provider LLM Gateway Service - Docker Optimized",
   "private": true,
   "main": "dist/index.js",
