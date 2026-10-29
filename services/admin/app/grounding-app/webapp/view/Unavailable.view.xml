@@ -1,0 +1,19 @@
+<mvc:View
+    controllerName="admin.grounding.controller.Unavailable"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m">
+    <Page id="unavailablePage" showHeader="false">
+        <content>
+            <IllustratedMessage
+                id="unavailableMessage"
+                illustrationType="sapIllus-UnableToLoad"
+                enableVerticalResponsiveness="true"
+                title="{i18n>unavailableTitle}"
+                description="{view>/reasonText}">
+                <additionalContent>
+                    <Button id="retryButton" text="{i18n>retry}" press=".onRetry"/>
+                </additionalContent>
+            </IllustratedMessage>
+        </content>
+    </Page>
+</mvc:View>

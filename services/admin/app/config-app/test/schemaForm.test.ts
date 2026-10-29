@@ -256,7 +256,7 @@ describe('schemaForm', () => {
   });
 
   // `hooks.definitions`' `equals` is the schema's one union: a `header` rule compares against a
-  // string, a `json-path` rule against whatever the body carries (the shipped `payload:maxTokens512`
+  // string, a `json-path` rule against whatever the body carries (a rule on `$.max_tokens`
   // compares against the number 512). Before this, a union `type` matched none of the single-type
   // rendering rules and every `equals` in the document - twelve of them - became a JSON blob.
   it('renders a union type by the member the data actually is, not as raw', () => {

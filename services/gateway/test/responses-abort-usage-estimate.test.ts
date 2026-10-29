@@ -63,7 +63,6 @@ jest.mock('../src/services/configService', () => ({
     getParamRenames: () => ({}),
     getTimeout: () => 1000,
     getHookConfig: () => undefined,
-    isPseudonymizationForced: () => false,
     getConfig: () => ({}),
   },
 }));

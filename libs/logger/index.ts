@@ -83,16 +83,24 @@ export interface LogTransport {
 }
 
 // Configuration interface for api_config.json compatibility
+interface LoggingSection {
+  defaultLevel?: string;
+  components?: Record<string, string>;
+  log_folder_path?: string;
+  payload_logging_enabled?: boolean;
+}
+
 interface ApiLogConfig {
   api_config?: {
-    logging?: {
-      defaultLevel?: string;
-      components?: Record<string, string>;
-      log_folder_path?: string;
-      payload_logging_enabled?: boolean;
-    };
+    platform?: { logging?: LoggingSection };
+    /** Pre-restructure location; still honoured, with a one-time deprecation warning. */
+    logging?: LoggingSection;
   };
 }
+
+// One-time warnings (the logger reloads its configuration on every config change)
+let warnedLegacyLogging = false;
+let warnedIgnoredLegacyLogging = false;
 
 class EnhancedServiceLogger implements Logger {
   private config: LogConfig;
@@ -100,6 +108,7 @@ class EnhancedServiceLogger implements Logger {
   private componentLevels: Record<string, LogLevel> = {};
   private logDir: string = '';
   private logFiles: Set<fs.WriteStream> = new Set();
+  private baseLevel: LogLevel = 'info';
 
   constructor(config: Partial<LogConfig> = {}) {
     // Check if file logging should be disabled
@@ -128,6 +137,8 @@ class EnhancedServiceLogger implements Logger {
       this.config.enableFileLogging = config.enableFileLogging;
     }
 
+    this.baseLevel = this.config.level;
+
     // Load dynamic configuration from file
     this.loadConfigurationFromFile();
     
@@ -151,33 +162,45 @@ class EnhancedServiceLogger implements Logger {
   }
 
   private loadConfigurationFromFile(): void {
+    // LOG_LEVEL (when recognized) outranks defaultLevel from the file
+    const envLevel = process.env.LOG_LEVEL?.toLowerCase() as LogLevel;
+    const envLevelValid = !!envLevel && Object.keys(LOG_LEVELS).includes(envLevel);
+    // Without LOG_LEVEL, a reload starts from the constructed level (info by default), so a removed defaultLevel does not linger
+    this.config.level = envLevelValid ? envLevel : this.baseLevel;
     try {
       if (this.config.configFilePath && fs.existsSync(this.config.configFilePath)) {
         const fileConfig: ApiLogConfig = JSON.parse(fs.readFileSync(this.config.configFilePath, 'utf8'));
-        
-        if (fileConfig.api_config?.logging) {
-          const loggingConfig = fileConfig.api_config.logging;
-          
-          // Set default level (environment variable takes priority)
-          const envLevel = process.env.LOG_LEVEL?.toLowerCase() as LogLevel;
+        const platformLogging = fileConfig.api_config?.platform?.logging;
+        const legacyLogging = fileConfig.api_config?.logging;
+
+        if (platformLogging && legacyLogging && !warnedIgnoredLegacyLogging) {
+          warnedIgnoredLegacyLogging = true;
+          console.warn('api_config.logging is deprecated and ignored because api_config.platform.logging is present; remove the top-level logging block.');
+        } else if (!platformLogging && legacyLogging && !warnedLegacyLogging) {
+          warnedLegacyLogging = true;
+          console.warn('api_config.logging is deprecated; move it to api_config.platform.logging.');
+        }
+
+        const loggingConfig = platformLogging ?? legacyLogging;
+        // A reload replaces the overrides rather than accumulating them
+        this.componentLevels = {};
+
+        if (loggingConfig) {
           const configLevel = loggingConfig.defaultLevel?.toLowerCase() as LogLevel;
-          
-          if (envLevel && Object.keys(LOG_LEVELS).includes(envLevel)) {
-            this.config.level = envLevel;
-          } else if (configLevel && Object.keys(LOG_LEVELS).includes(configLevel)) {
+          if (!envLevelValid && configLevel && Object.keys(LOG_LEVELS).includes(configLevel)) {
             this.config.level = configLevel;
           }
-          
+
           // Set component-specific levels
           if (loggingConfig.components) {
             Object.entries(loggingConfig.components).forEach(([component, level]) => {
-              const normalizedLevel = level.toLowerCase() as LogLevel;
+              const normalizedLevel = String(level).toLowerCase() as LogLevel;
               if (Object.keys(LOG_LEVELS).includes(normalizedLevel)) {
                 this.componentLevels[component] = normalizedLevel;
               }
             });
           }
-          
+
           // Set log folder path
           if (loggingConfig.log_folder_path) {
             this.config.logFolderPath = loggingConfig.log_folder_path;
@@ -185,11 +208,7 @@ class EnhancedServiceLogger implements Logger {
         }
       }
     } catch (error) {
-      // Fallback to environment variables and defaults
-      const envLevel = process.env.LOG_LEVEL?.toLowerCase() as LogLevel;
-      if (envLevel && Object.keys(LOG_LEVELS).includes(envLevel)) {
-        this.config.level = envLevel;
-      }
+      // Unreadable or malformed config: keep the environment level and defaults
     }
   }
 
@@ -292,19 +311,63 @@ class EnhancedServiceLogger implements Logger {
   private formatMetadata(level: LogLevel, metadata?: any): any {
     if (!metadata) return undefined;
 
+    // Redact credential headers wherever they appear in metadata (top-level
+    // `headers` and nested), and make the result cycle-safe so it can never
+    // throw when serialized below.
+    const sanitized = this.sanitizeMetadata(metadata, new Set());
+
     // Special formatting for TRACE level
     if (level === 'trace') {
-      return this.formatMetaForTrace(metadata);
+      return this.formatMetaForTrace(sanitized);
     }
 
-    // Handle headers specially for all levels
-    if (metadata && typeof metadata === 'object' && metadata.headers) {
-      const formatted = { ...metadata };
-      formatted.headers = this.formatHeaders(metadata.headers);
-      return formatted;
+    return sanitized;
+  }
+
+  // Walks metadata recursively, replacing any `headers` object (at any depth)
+  // with its redacted form, and replacing a revisited ancestor object with
+  // '[Circular]' instead of following the cycle. `ancestors` tracks the
+  // current path only (not every object seen), so a value referenced twice
+  // without a cycle is not mistaken for one.
+  //
+  // Only plain objects (`{}` / `Object.create(null)`) and arrays are walked.
+  // Anything else - Error, Date, RegExp, Map, Set, Buffer, a custom class
+  // instance, etc. - passes through unchanged, so JSON.stringify's own
+  // handling (e.g. Date#toJSON) applies later instead of the value being
+  // flattened to `{}` by Object.entries.
+  private sanitizeMetadata(value: any, ancestors: Set<any>): any {
+    if (value === null || typeof value !== 'object') {
+      return value;
     }
 
-    return metadata;
+    const isArray = Array.isArray(value);
+    const proto = isArray ? null : Object.getPrototypeOf(value);
+    const isPlainObject = !isArray && (proto === Object.prototype || proto === null);
+
+    if (!isArray && !isPlainObject) {
+      return value;
+    }
+
+    if (ancestors.has(value)) {
+      return '[Circular]';
+    }
+
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(value);
+
+    if (isArray) {
+      return value.map(item => this.sanitizeMetadata(item, nextAncestors));
+    }
+
+    const result: any = {};
+    Object.entries(value).forEach(([key, val]) => {
+      if (key.toLowerCase() === 'headers' && val && typeof val === 'object' && !Array.isArray(val)) {
+        result[key] = this.formatHeaders(val);
+      } else {
+        result[key] = this.sanitizeMetadata(val, nextAncestors);
+      }
+    });
+    return result;
   }
 
   private formatMetaForTrace(meta: any): any {
@@ -315,9 +378,7 @@ class EnhancedServiceLogger implements Logger {
     const formatted: any = {};
     
     Object.entries(meta).forEach(([key, value]) => {
-      if (key === 'headers' && typeof value === 'object') {
-        formatted[key] = this.formatHeaders(value);
-      } else if (Array.isArray(value)) {
+      if (Array.isArray(value)) {
         try {
           formatted[key] = JSON.stringify(value, null, 2);
         } catch (err) {
@@ -337,12 +398,19 @@ class EnhancedServiceLogger implements Logger {
     return formatted;
   }
 
+  // Redact credential header values by name (case-insensitive), same
+  // deny-list and hashing scheme as `createHeadersPreview`. Keys are kept,
+  // non-sensitive values pass through unchanged (arrays joined for display).
   private formatHeaders(headers: any): any {
     if (!headers || typeof headers !== 'object') return headers;
     
     const formatted: any = {};
     Object.entries(headers).forEach(([key, value]) => {
-      if (Array.isArray(value)) {
+      const lowerKey = key.toLowerCase();
+      if (isSensitiveHeaderName(lowerKey)) {
+        const preserveScheme = lowerKey === 'authorization' || lowerKey === 'proxy-authorization';
+        formatted[key] = redactHeaderValue(value, preserveScheme);
+      } else if (Array.isArray(value)) {
         formatted[key] = value.map(v => String(v)).join(', ');
       } else {
         formatted[key] = value;

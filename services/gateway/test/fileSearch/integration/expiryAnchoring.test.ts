@@ -10,10 +10,10 @@
 // that site's own anchor — a value that could only be produced by the
 // fixed code, never by the reverted (pre-Task-12) behaviour at that same
 // site:
-//   - attachFile (repository.ts) previously touched ONLY last_active_at
+//   - attachFile (storeFiles.ts) previously touched ONLY last_active_at
 //     and never recomputed expires_at at all — reverting it leaves
 //     expires_at frozen at its stale pre-attach value.
-//   - deleteStoreFile (repository.ts) had the identical defect.
+//   - deleteStoreFile (storeFiles.ts) had the identical defect.
 //   - modifyVectorStore (vectorStoresController.ts) previously computed
 //     expires_at from Date.now() rather than the store's OWN
 //     last_active_at — reverting it produces a DIFFERENT (later, by

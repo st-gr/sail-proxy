@@ -15,6 +15,7 @@ import { newFileId } from '../../../src/fileSearch/ids';
 import * as ctrl from '../../../src/controllers/vectorStoresController';
 import * as filesCtrl from '../../../src/controllers/filesController';
 import * as repo from '../../../src/fileSearch/repository';
+import { createBatch } from '../../../src/fileSearch/batches';
 import { createIsolatedSchema, IsolatedSchema } from './schemaFixture';
 
 const DSN = process.env.FILE_SEARCH_TEST_DSN;
@@ -272,38 +273,91 @@ d('vectorStoresController against a real Postgres database (requires FILE_SEARCH
   });
 
   // ---------------------------------------------------------------------
-  // DELETE /files/{id} while still attached -- the only path that removes
-  // an fs_files row and a blob, and it must refuse rather than orphan a
-  // vector store's chunks pointing at a file that no longer exists.
+  // DELETE /files/{id} of an attached file follows OpenAI ("Delete a file and
+  // remove it from all vector stores"): detached from every store of the caller
+  // and deleted in one transaction, never leaving chunks of a deleted file.
   // ---------------------------------------------------------------------
-  it('DELETE /files/{id} refuses with 409 while the file is still attached to a vector store, then succeeds once detached', async () => {
+  it('DELETE /files/{id} detaches an attached file from every store of the caller and deletes it', async () => {
     const owner = 'still-attached-owner@example.com';
-    const file = await seedFile(owner, 'attached.txt', Buffer.from('cannot be deleted out from under a store'));
-    const store = await repo.createStore({ ownerEmail: owner, name: 's' });
-    await repo.attachFile(store.id, file.id, {});
-
-    const blockedRes = makeRes();
-    await filesCtrl.deleteFile(baseReq(owner, { params: { id: file.id } }), blockedRes, throwOnError);
-    expect(blockedRes.statusCode).toBe(409);
-    expect(blockedRes.body.error.code).toBe('file_in_use');
-
-    // Nothing was touched by the refused attempt.
-    const { rows: stillThere } = await pool.query('SELECT 1 FROM fs_files WHERE id=$1', [file.id]);
-    expect(stillThere.length).toBe(1);
-    const { rows: blobStillThere } = await pool.query('SELECT ref_count FROM file_blobs WHERE sha256=$1', [file.sha]);
-    expect(blobStillThere[0].ref_count).toBe(1);
-
-    const detachRes = makeRes();
-    await ctrl.deleteVectorStoreFile(baseReq(owner, { params: { id: store.id, file_id: file.id } }), detachRes, throwOnError);
-    expect(detachRes.statusCode).toBe(200);
+    const file = await seedFile(owner, 'attached.txt', Buffer.from('removed from every store with the file'));
+    const other = await seedFile(owner, 'other.txt', Buffer.from('a neighbour that stays'));
+    const storeA = await repo.createStore({ ownerEmail: owner, name: 'a' });
+    const storeB = await repo.createStore({ ownerEmail: owner, name: 'b' });
+    await repo.attachFile(storeA.id, file.id, {});
+    await repo.attachFile(storeB.id, file.id, {});
+    await repo.attachFile(storeA.id, other.id, {});
+    await seedChunk(storeA.id, file.id, 0, 'chunk in a');
+    await seedChunk(storeB.id, file.id, 0, 'chunk in b');
+    await seedChunk(storeA.id, other.id, 0, 'neighbour chunk');
 
     const deleteRes = makeRes();
     await filesCtrl.deleteFile(baseReq(owner, { params: { id: file.id } }), deleteRes, throwOnError);
     expect(deleteRes.statusCode).toBe(200);
-    const { rows: gone } = await pool.query('SELECT 1 FROM fs_files WHERE id=$1', [file.id]);
-    expect(gone.length).toBe(0);
-    const { rows: blobGone } = await pool.query('SELECT 1 FROM file_blobs WHERE sha256=$1', [file.sha]);
-    expect(blobGone.length).toBe(0);
+    expect(deleteRes.body).toEqual({ id: file.id, object: 'file', deleted: true });
+
+    expect((await pool.query('SELECT 1 FROM fs_files WHERE id=$1', [file.id])).rowCount).toBe(0);
+    expect((await pool.query('SELECT 1 FROM vector_store_files WHERE file_id=$1', [file.id])).rowCount).toBe(0);
+    expect((await pool.query('SELECT 1 FROM vector_store_chunks WHERE file_id=$1', [file.id])).rowCount).toBe(0);
+    // The last reference turns the blob pending delete (the sweeper removes it after the grace).
+    const { rows: blobPending } = await pool.query(
+      'SELECT ref_count, delete_after IS NOT NULL AS pending FROM file_blobs WHERE sha256=$1', [file.sha]);
+    expect(blobPending).toEqual([{ ref_count: 0, pending: true }]);
+    // The stores and the neighbour are untouched.
+    expect((await pool.query('SELECT 1 FROM vector_stores WHERE id = ANY($1)', [[storeA.id, storeB.id]])).rowCount).toBe(2);
+    expect((await pool.query('SELECT 1 FROM vector_store_chunks WHERE file_id=$1', [other.id])).rowCount).toBe(1);
+    expect((await pool.query('SELECT 1 FROM vector_store_files WHERE file_id=$1', [other.id])).rowCount).toBe(1);
+    // The store's own file list no longer shows it.
+    const listRes = makeRes();
+    await ctrl.listVectorStoreFiles(baseReq(owner, { params: { id: storeA.id } }), listRes, throwOnError);
+    expect(listRes.body.data.map((f: any) => f.id)).toEqual([other.id]);
+  });
+
+  it('DELETE /files/{id} of a member of an in-progress batch removes it from the batch: counts follow the remaining members', async () => {
+    const owner = 'batch-delete-owner@example.com';
+    const a = await seedFile(owner, 'a.txt', Buffer.from('batch member a'));
+    const b = await seedFile(owner, 'b.txt', Buffer.from('batch member b'));
+    const store = await repo.createStore({ ownerEmail: owner, name: 's' });
+    const batch = await createBatch(store.id, [a.id, b.id], null);
+    const readBatch = async (): Promise<any> => {
+      const res = makeRes();
+      await ctrl.retrieveVectorStoreFileBatch(baseReq(owner, { params: { id: store.id, batch_id: batch.id } }), res, throwOnError);
+      expect(res.statusCode).toBe(200);
+      return res.body;
+    };
+    expect((await readBatch()).file_counts).toMatchObject({ in_progress: 2, total: 2 });
+
+    const del = makeRes();
+    await filesCtrl.deleteFile(baseReq(owner, { params: { id: a.id } }), del, throwOnError);
+    expect(del.statusCode).toBe(200);
+    const afterOne = await readBatch();
+    expect(afterOne.status).toBe('in_progress');
+    expect(afterOne.file_counts).toEqual({ in_progress: 1, completed: 0, failed: 0, cancelled: 0, total: 1 });
+    // The batch's job stays: its state is derived from the same members.
+    expect((await pool.query('SELECT 1 FROM fs_jobs WHERE batch_id=$1', [batch.id])).rowCount).toBe(1);
+
+    // The last member gone, the batch is an empty batch: completed with nothing counted.
+    const del2 = makeRes();
+    await filesCtrl.deleteFile(baseReq(owner, { params: { id: b.id } }), del2, throwOnError);
+    const empty = await readBatch();
+    expect(empty.status).toBe('completed');
+    expect(empty.file_counts.total).toBe(0);
+  });
+
+  it('DELETE /files/{id} still answers 409 file_in_use when ANOTHER owner\'s store references the file, and changes nothing', async () => {
+    const owner = 'owner-in-use@example.com';
+    const file = await seedFile(owner, 'x.txt', Buffer.from('referenced from a foreign store'));
+    const mine = await repo.createStore({ ownerEmail: owner, name: 'mine' });
+    const foreign = await repo.createStore({ ownerEmail: 'someone-else@example.com', name: 'foreign' });
+    await repo.attachFile(mine.id, file.id, {});
+    await repo.attachFile(foreign.id, file.id, {}); // low-level primitive: no ownership check (an admin-made state)
+
+    const res = makeRes();
+    await filesCtrl.deleteFile(baseReq(owner, { params: { id: file.id } }), res, throwOnError);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('file_in_use');
+    // Rolled back as one: still attached to the caller's own store too.
+    expect((await pool.query('SELECT 1 FROM vector_store_files WHERE file_id=$1', [file.id])).rowCount).toBe(2);
+    expect((await pool.query('SELECT ref_count FROM file_blobs WHERE sha256=$1', [file.sha])).rows[0].ref_count).toBe(1);
   });
 
   // ---------------------------------------------------------------------

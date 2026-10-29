@@ -67,6 +67,18 @@ function hit(text: string, overrides: Partial<SearchHit> = {}): SearchHit {
 
 describe('fileSearch citations', () => {
   describe('buildCitations', () => {
+    it('carries the hit\'s pages as an extension when its file has pages, and nothing otherwise', () => {
+      const message = 'The rollout finished in March. Costs fell by a third.';
+      const { annotations } = buildCitations(message, [
+        hit('The rollout finished in March.', { pages: { first: 4, last: 5 } }),
+        hit('Costs fell by a third.', { fileId: 'file_b' }),
+      ], undefined);
+      expect(annotations).toHaveLength(2);
+      expect(annotations[0].pages).toEqual({ first: 4, last: 5 });
+      expect('pages' in annotations[1]).toBe(false);
+      expect(Object.keys(annotations[1]).sort()).toEqual(['end_index', 'file_id', 'filename', 'index', 'start_index', 'type']);
+    });
+
     it('computes annotation indices against the UNMASKED text', () => {
       // The fixture MUST make masked and unmasked lengths differ, or the test passes
       // whether or not any remapping exists. `MASKED_PERSON_1` is 15 chars, `Jo` is 2.

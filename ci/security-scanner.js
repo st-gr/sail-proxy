@@ -16,7 +16,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, spawnSync } = require('child_process');
 const { promisify } = require('util');
 
 const execAsync = promisify(exec);
@@ -578,50 +578,21 @@ async function runDependencyAudit() {
   // First check for known vulnerable versions
   const vulnPackageCount = await checkVulnerablePackages();
   
-  try {
-    const { stdout } = await execAsync('pnpm audit --audit-level high');
-    
-    // Parse audit results to check for critical issues only
-    if (stdout.includes('critical')) {
-      logger.error('CRITICAL vulnerabilities found in dependencies:');
-      console.log(stdout);
-      return 1 + vulnPackageCount;
-    } else if (stdout.includes('high') || stdout.includes('moderate')) {
-      logger.warning('Some vulnerabilities found - consider running "pnpm audit --fix"');
-      
-      // Count vulnerabilities for summary
-      const lines = stdout.split('\n');
-      const summaryLine = lines.find(line => line.includes('vulnerabilities found'));
-      if (summaryLine) {
-        logger.info(`Vulnerability summary: ${summaryLine.trim()}`);
-      }
-      
-      if (vulnPackageCount > 0) {
-        logger.error(`Found ${vulnPackageCount} known vulnerable package(s) in Docker files`);
-        return vulnPackageCount;
-      }
-      
-      logger.success('No critical vulnerabilities (warnings noted)');
-      return 0;
-    } else {
-      if (vulnPackageCount > 0) {
-        logger.error(`Found ${vulnPackageCount} known vulnerable package(s) in Docker files`);
-        return vulnPackageCount;
-      }
-      
-      logger.success('No vulnerabilities found');
-      return 0;
-    }
-  } catch (error) {
-    // If the command fails, still check for known vulnerabilities
-    if (vulnPackageCount > 0) {
-      logger.error(`Found ${vulnPackageCount} known vulnerable package(s) in Docker files`);
-      return vulnPackageCount;
-    }
-    
-    logger.success('No vulnerabilities found');
-    return 0;
+  // Delegates to ci/audit-gate.js. This used to read `pnpm audit`'s exit code, which is 1 exactly
+  // when findings exist, and its catch then reported "No vulnerabilities found".
+  const gate = spawnSync(process.execPath, [path.join(__dirname, 'audit-gate.js')], { encoding: 'utf8' });
+  process.stdout.write(gate.stdout || '');
+  process.stderr.write(gate.stderr || '');
+  if (gate.status !== 0) {
+    logger.error('Dependency gate failed (see ci/audit-allowlist.json for accepted findings)');
+    return 1 + vulnPackageCount;
   }
+  if (vulnPackageCount > 0) {
+    logger.error(`Found ${vulnPackageCount} known vulnerable package(s) in Docker files`);
+    return vulnPackageCount;
+  }
+  logger.success('Dependency gate passed');
+  return 0;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
     PluginResolver,
     resolveRefsDeep
 } from "../model/schemaForm";
+import { SchemaTexts, mapEntryTexts, schemaTexts, textPathOfPointer } from "../model/schemaTexts";
 
 /**
  * Everything the tab shell needs from its host to render every group of one configuration
@@ -228,7 +229,7 @@ function buildSectionPanel(
     controlOptions: DescriptorControlOptions
 ): Panel {
     const panel = new Panel({
-        headerText: labelFor(section.key),
+        headerText: textsOf(opts).label(textPathOfPointer(section.pointer), (typeof section.schema.title === 'string' && section.schema.title) || labelFor(section.key)),
         expandable: true,
         expanded: true,
         content: buildSectionContent(section.schema, groupDataObj[section.key], section.pointer, opts, controlOptions)
@@ -272,7 +273,7 @@ function buildSectionContent(
     if (marker) {
         return buildMapSectionContent({ schema, marker, data, pointer }, opts, controlOptions);
     }
-    const descriptors = buildDescriptors(schema as object, data, pointer, opts.resolvePlugin);
+    const descriptors = buildDescriptors(schema as object, data, pointer, opts.resolvePlugin, { texts: textsOf(opts) });
     if (descriptors.length === 1 && descriptors[0].kind === "section" && descriptors[0].absent === true) {
         return buildAbsentContent(descriptors[0], controlOptions);
     }
@@ -302,7 +303,10 @@ function buildMapSectionContent(
     opts: BuildTabsOptions,
     controlOptions: DescriptorControlOptions
 ): Control[] {
-    const label = labelFor(lastSegment(container.pointer));
+    // A top-level map is a group or a section - declared all the way down - so its pointer is its path.
+    const texts = textsOf(opts);
+    const containerPath = textPathOfPointer(container.pointer);
+    const label = texts.label(containerPath, labelFor(lastSegment(container.pointer)));
     if (!isPlainObject(container.data)) {
         // The container itself is not in the document. Spec 2 stopped here, with a notice and no way
         // forward; **Add section** now writes the empty container at this pointer.
@@ -313,17 +317,30 @@ function buildMapSectionContent(
     }
 
     const spec = mapSpecOf(container.pointer, container.marker);
+    const text = opts.text;
+    const onOff = { on: text("formOn"), off: text("formOff") };
     const children = mapSectionEntries({
         spec,
         containerSchema: container.schema,
         containerData: container.data as Record<string, unknown>,
         declared: container.declared
-    }).map(entry => mapEntryDescriptor(entry, rootSchema(opts), opts.resolvePlugin));
+    }).map(entry => mapEntryDescriptor(
+        entry,
+        rootSchema(opts),
+        opts.resolvePlugin,
+        onOff,
+        mapEntryTexts(texts, containerPath, container.schema, entry.key)
+    ));
 
     return buildMapContent(
         { kind: "section", pointer: container.pointer, label, mapEntries: container.marker, children },
         controlOptions
     );
+}
+
+/** The form's field texts, read from the app's bundle with the schema's English as the fallback. */
+function textsOf(opts: BuildTabsOptions): SchemaTexts {
+    return schemaTexts(opts.text);
 }
 
 /** The whole api-config schema, as the node type every `$ref` in it is written against. */

@@ -11,7 +11,7 @@ export default UIComponent.extend("admin.modellibrary.Component", {
   metadata: { manifest: "json" },
 
   init: function () {
-    UIComponent.prototype.init.apply(this, arguments);
+    UIComponent.prototype.init.call(this);
     this.setModel(createDeviceModel(), "device");
     this.setModel(new JSONModel(initialViewState()), "viewModel");
     this.getRouter().initialize();

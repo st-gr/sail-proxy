@@ -2,7 +2,9 @@
  * Valkey Distributed Cache Adapter for Unified Validation Cache
  * 
  * Provides Valkey-backed distributed caching for unified token validation responses.
- * Supports encryption, serialization, TTL management, and connection pooling.
+ * Supports serialization, TTL management, and connection pooling. Entries are stored exactly as
+ * UnifiedValidationCache hands them over: it encrypts the payload itself, with a key derived from
+ * the credential, before an entry reaches this adapter.
  */
 
 import Redis, { RedisOptions } from 'iovalkey';
@@ -11,7 +13,6 @@ import Redis, { RedisOptions } from 'iovalkey';
 type ValkeyClient = any;
 import { UnifiedValidationResponse } from '../clients/adminServiceClient';
 import { UnifiedCacheEntry, UnifiedCacheConfiguration } from './unifiedValidationCache';
-import { secureMetadataExchange, CredentialMetadata } from '../../../../libs/aws-token-validation/secure-metadata-exchange';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
@@ -19,7 +20,6 @@ export interface ValkeyAdapterConfiguration {
   valkeyUrl: string;
   keyPrefix: string;
   defaultTTL: number;
-  enableEncryption: boolean;
   connectionTimeout: number;
   retryAttempts: number;
   retryDelay: number;
@@ -50,7 +50,6 @@ export class ValkeyDistributedCacheAdapter {
       valkeyUrl: config.valkeyUrl || process.env.VALKEY_URL || 'redis://localhost:6379',
       keyPrefix: config.keyPrefix || 'unified-cache:',
       defaultTTL: config.defaultTTL || 300, // 5 minutes in seconds
-      enableEncryption: config.enableEncryption ?? true,
       connectionTimeout: config.connectionTimeout || 5000,
       retryAttempts: config.retryAttempts || 3,
       retryDelay: config.retryDelay || 1000,
@@ -69,8 +68,7 @@ export class ValkeyDistributedCacheAdapter {
 
     logger.info('ValkeyDistributedCacheAdapter', 'Valkey adapter initialized', {
       valkeyUrl: this.config.valkeyUrl.replace(/\/\/.*@/, '//***@'), // Hide credentials
-      keyPrefix: this.config.keyPrefix,
-      encryptionEnabled: this.config.enableEncryption
+      keyPrefix: this.config.keyPrefix
     });
   }
 
@@ -153,15 +151,9 @@ export class ValkeyDistributedCacheAdapter {
       const valkeyKey = this.buildValkeyKey(key);
       const ttl = ttlSeconds || this.config.defaultTTL;
       
-      let serializedEntry: string;
-      
-      if (this.config.enableEncryption && this.shouldEncryptEntry(entry)) {
-        // Encrypt the entry before storing
-        const encryptedEntry = await this.encryptEntry(entry, key);
-        serializedEntry = JSON.stringify(encryptedEntry);
+      const serializedEntry = JSON.stringify(entry);
+      if (entry.encrypted) {
         this.metrics.encryptedOperations++;
-      } else {
-        serializedEntry = JSON.stringify(entry);
       }
       
       await this.client!.setex(valkeyKey, ttl, serializedEntry);
@@ -171,7 +163,7 @@ export class ValkeyDistributedCacheAdapter {
       logger.trace('ValkeyDistributedCacheAdapter', 'Entry stored in Valkey', {
         key: valkeyKey,
         ttl,
-        encrypted: this.config.enableEncryption && this.shouldEncryptEntry(entry),
+        encrypted: entry.encrypted,
         size: serializedEntry.length
       });
 
@@ -206,14 +198,9 @@ export class ValkeyDistributedCacheAdapter {
       let entry: UnifiedCacheEntry;
       
       try {
-        const parsedEntry = JSON.parse(serializedEntry);
-        
-        if (this.isEncryptedEntry(parsedEntry)) {
-          // Decrypt the entry
-          entry = await this.decryptEntry(parsedEntry, key);
+        entry = JSON.parse(serializedEntry);
+        if (entry.encrypted) {
           this.metrics.encryptedOperations++;
-        } else {
-          entry = parsedEntry;
         }
       } catch (parseError) {
         logger.warn('ValkeyDistributedCacheAdapter', 'Failed to parse entry from Valkey', {
@@ -236,7 +223,7 @@ export class ValkeyDistributedCacheAdapter {
       
       logger.trace('ValkeyDistributedCacheAdapter', 'Entry retrieved from Valkey', {
         key: valkeyKey,
-        encrypted: this.isEncryptedEntry(entry),
+        encrypted: entry.encrypted,
         authType: entry.authType
       });
       
@@ -389,81 +376,6 @@ export class ValkeyDistributedCacheAdapter {
     if (!this.isConnected) {
       await this.connect();
     }
-  }
-
-  private shouldEncryptEntry(entry: UnifiedCacheEntry): boolean {
-    // Encrypt if contains sensitive data
-    try {
-      const entryStr = JSON.stringify(entry.data).toLowerCase();
-      const sensitiveFields = ['secretkey', 'secretaccesskey', 'credentials', 'token', 'password'];
-      return sensitiveFields.some(field => entryStr.includes(field));
-    } catch {
-      return false;
-    }
-  }
-
-  private async encryptEntry(entry: UnifiedCacheEntry, key: string): Promise<any> {
-    try {
-      // Convert entry to CredentialMetadata format for encryption
-      const metadataForEncryption: CredentialMetadata = {
-        credentialId: `valkey-${entry.authType || 'unknown'}`,
-        permissions: [{
-          service: 'unified-cache',
-          action: 'valkey-store',
-          resource: entry.authType || '*',
-          effect: 'allow'
-        }],
-        region: 'valkey',
-        sapAiRegion: 'valkey',
-        userId: 'valkey-user',
-        rateLimits: { requestsPerMinute: 0, requestsPerHour: 0, requestsPerDay: 0 }
-      };
-
-      const salt = `valkey-${key}-salt`;
-      const encryptedData = await secureMetadataExchange.encryptMetadata(metadataForEncryption, key, salt);
-      
-      return {
-        ...entry,
-        __valkeyEncrypted: true,
-        __encryptedData: encryptedData,
-        __originalEntry: JSON.stringify(entry)
-      };
-    } catch (error) {
-      logger.warn('ValkeyDistributedCacheAdapter', 'Failed to encrypt entry, storing unencrypted', {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return entry;
-    }
-  }
-
-  private async decryptEntry(encryptedEntry: any, key: string): Promise<UnifiedCacheEntry> {
-    try {
-      if (encryptedEntry.__valkeyEncrypted && encryptedEntry.__encryptedData) {
-        // Try to use original entry if available
-        if (encryptedEntry.__originalEntry) {
-          return JSON.parse(encryptedEntry.__originalEntry);
-        }
-        
-        // Fallback to decryption (though we don't store much useful data in the metadata)
-        const salt = `valkey-${key}-salt`;
-        await secureMetadataExchange.decryptMetadata(encryptedEntry.__encryptedData, key, salt);
-        
-        // Return the entry without encryption markers
-        const { __valkeyEncrypted, __encryptedData, __originalEntry, ...cleanEntry } = encryptedEntry;
-        return cleanEntry;
-      }
-      
-      return encryptedEntry;
-    } catch (error) {
-      logger.warn('ValkeyDistributedCacheAdapter', 'Failed to decrypt entry', {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
-  }
-
-  private isEncryptedEntry(entry: any): boolean {
-    return entry && typeof entry === 'object' && entry.__valkeyEncrypted === true;
   }
 
   private updateMetrics(startTime: number, success: boolean): void {

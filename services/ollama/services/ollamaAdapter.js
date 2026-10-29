@@ -5,11 +5,10 @@
  * and communicates with the main proxy server.
  */
 
-const axios = require('axios');
 const crypto = require('crypto');
 const shared = require('./shared');
-
-const MAIN_PROXY_URL = process.env.MAIN_PROXY_URL || 'http://localhost:3000';
+const { describeError } = require('./logSafe');
+const { statusFor, messageFor } = require('./upstreamError');
 
 /**
  * Generate SHA256 digest for a model name
@@ -341,25 +340,8 @@ function mapCapabilitiesToOllama(openaiCapabilities, inputTypes) {
  */
 async function fetchModelMetadata(modelName) {
   try {
-    // Load environment variables if not already loaded
-    require('dotenv').config();
-      const headers = {
-      'Content-Type': 'application/json'
-    };
-    
-    const apiKey = process.env.MAIN_PROXY_API_KEY;
-    
-    if (!apiKey) {
-      console.log('[fetchModelMetadata] No API key found in environment variable MAIN_PROXY_API_KEY');
-      return null;
-    }
-    
-    // Use the same header format as shared.js for consistency
-    headers['x-api-key'] = apiKey;
-    console.log(`[fetchModelMetadata] Making request to ${MAIN_PROXY_URL}/v1/models with API key`);
-    
-    const response = await axios.get(`${MAIN_PROXY_URL}/v1/models`, { headers });
-    const modelsData = response.data;
+    // The shared lookup sends the same key as every other gateway call (MAIN_PROXY_API_KEY, else OPENAI_API_KEY).
+    const modelsData = await shared.callMainProxy('/v1/models', {}, 'GET');
     
     if (modelsData && modelsData.data) {
       // Find the specific model
@@ -402,40 +384,66 @@ exports.handleStreamingChat = async (ollamaRequest, res) => {
     let isFirst = true;
     let chunksEmitted = 0;
     let buffer = '';
+    let pending = '';
+    let done = false;
+
+    // Parses one carried-complete SSE line (the "data: ..." prefix already
+    // known to be present). Shared by the per-chunk loop and the end-of-stream
+    // flush, so a line is handled the same way regardless of which chunk
+    // boundary it fell on.
+    const processLine = (line) => {
+      const data = line.slice(6).trim();
+
+      if (data === '[DONE]') {
+        // Send final chunk
+        const finalChunk = transformStreamingChatResponse(null, model, false, true);
+        res.write(JSON.stringify(finalChunk) + '\n');
+        res.end();
+        done = true;
+        return;
+      }
+
+      try {
+        const openaiChunk = JSON.parse(data);
+        const ollamaChunk = transformStreamingChatResponse(openaiChunk, model, isFirst);
+        res.write(JSON.stringify(ollamaChunk) + '\n');
+        chunksEmitted++;
+        isFirst = false;
+      } catch (parseError) {
+        console.error('Error parsing OpenAI chunk:', parseError);
+      }
+    };
 
     response.data.on('data', (chunk) => {
       if (res.writableEnded) return;
       const text = chunk.toString();
       buffer += text;
-      const lines = text.split('\n');
+      pending += text;
+
+      // Carry the last, possibly incomplete, line over to the next chunk
+      // instead of dropping it: an SSE event split across TCP chunks must
+      // still be parsed as one line.
+      const lines = pending.split('\n');
+      pending = lines.pop();
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-
-          if (data === '[DONE]') {
-            // Send final chunk
-            const finalChunk = transformStreamingChatResponse(null, model, false, true);
-            res.write(JSON.stringify(finalChunk) + '\n');
-            res.end();
-            return;
-          }
-
-          try {
-            const openaiChunk = JSON.parse(data);
-            const ollamaChunk = transformStreamingChatResponse(openaiChunk, model, isFirst);
-            res.write(JSON.stringify(ollamaChunk) + '\n');
-            chunksEmitted++;
-            isFirst = false;
-          } catch (parseError) {
-            console.error('Error parsing OpenAI chunk:', parseError);
-          }
+          processLine(line);
+          if (done) return;
         }
       }
     });
 
     response.data.on('end', () => {
       if (res.writableEnded) return;
+
+      // Flush a remaining complete line that never got a trailing newline
+      // before the stream ended.
+      if (!done && pending.startsWith('data: ')) {
+        processLine(pending);
+        pending = '';
+      }
+      if (done || res.writableEnded) return;
 
       // Fallback: gateway returned a complete chat.completion (not SSE chunks)
       // because the upstream deployment doesn't natively stream. Translate the
@@ -461,18 +469,18 @@ exports.handleStreamingChat = async (ollamaRequest, res) => {
     });
 
     response.data.on('error', (error) => {
-      console.error('Streaming error:', error);
+      console.error('Streaming error:', describeError(error));
       if (!res.writableEnded) {
         res.status(500).end();
       }
     });
 
   } catch (error) {
-    console.error('Error in streaming chat:', error);
+    console.error('Error in streaming chat:', describeError(error));
     if (!res.writableEnded) {
-      res.status(500).json({
+      res.status(statusFor(error)).json({
         error: {
-          message: error.message,
+          message: messageFor(error),
           type: 'api_error',
           code: 'streaming_error'
         }
@@ -506,39 +514,63 @@ exports.handleStreamingGenerate = async (ollamaRequest, res) => {
     let isFirst = true;
     let chunksEmitted = 0;
     let buffer = '';
+    let pending = '';
+    let done = false;
+
+    // See handleStreamingChat's processLine for why this is shared between
+    // the per-chunk loop and the end-of-stream flush.
+    const processLine = (line) => {
+      const data = line.slice(6).trim();
+
+      if (data === '[DONE]') {
+        const finalChunk = transformStreamingGenerateResponse(null, model, false, true);
+        res.write(JSON.stringify(finalChunk) + '\n');
+        res.end();
+        done = true;
+        return;
+      }
+
+      try {
+        const openaiChunk = JSON.parse(data);
+        const ollamaChunk = transformStreamingGenerateResponse(openaiChunk, model, isFirst);
+        res.write(JSON.stringify(ollamaChunk) + '\n');
+        chunksEmitted++;
+        isFirst = false;
+      } catch (parseError) {
+        console.error('Error parsing OpenAI chunk:', parseError);
+      }
+    };
 
     response.data.on('data', (chunk) => {
       if (res.writableEnded) return;
       const text = chunk.toString();
       buffer += text;
-      const lines = text.split('\n');
+      pending += text;
+
+      // Carry the last, possibly incomplete, line over to the next chunk
+      // instead of dropping it: an SSE event split across TCP chunks must
+      // still be parsed as one line.
+      const lines = pending.split('\n');
+      pending = lines.pop();
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-
-          if (data === '[DONE]') {
-            const finalChunk = transformStreamingGenerateResponse(null, model, false, true);
-            res.write(JSON.stringify(finalChunk) + '\n');
-            res.end();
-            return;
-          }
-
-          try {
-            const openaiChunk = JSON.parse(data);
-            const ollamaChunk = transformStreamingGenerateResponse(openaiChunk, model, isFirst);
-            res.write(JSON.stringify(ollamaChunk) + '\n');
-            chunksEmitted++;
-            isFirst = false;
-          } catch (parseError) {
-            console.error('Error parsing OpenAI chunk:', parseError);
-          }
+          processLine(line);
+          if (done) return;
         }
       }
     });
 
     response.data.on('end', () => {
       if (res.writableEnded) return;
+
+      // Flush a remaining complete line that never got a trailing newline
+      // before the stream ended.
+      if (!done && pending.startsWith('data: ')) {
+        processLine(pending);
+        pending = '';
+      }
+      if (done || res.writableEnded) return;
 
       // Fallback: gateway returned a complete chat.completion (not SSE chunks).
       // Translate the single JSON body into one Ollama NDJSON line so the
@@ -563,18 +595,18 @@ exports.handleStreamingGenerate = async (ollamaRequest, res) => {
     });
 
     response.data.on('error', (error) => {
-      console.error('Streaming error:', error);
+      console.error('Streaming error:', describeError(error));
       if (!res.writableEnded) {
         res.status(500).end();
       }
     });
 
   } catch (error) {
-    console.error('Error in streaming generate:', error);
+    console.error('Error in streaming generate:', describeError(error));
     if (!res.writableEnded) {
-      res.status(500).json({
+      res.status(statusFor(error)).json({
         error: {
-          message: error.message,
+          message: messageFor(error),
           type: 'api_error',
           code: 'streaming_error'
         }
@@ -607,24 +639,19 @@ exports.handleEmbeddings = async (ollamaRequest) => {
     input: input
   };
   
-  try {
-    // Check if main proxy has embeddings endpoint
-    const openaiResponse = await shared.callMainProxy('/openai/v1/embeddings', openaiRequest);
-    
-    // Transform response to Ollama format
-    const embeddings = openaiResponse.data ? openaiResponse.data.map(item => item.embedding) : [];
-    
-    return {
-      model: model,
-      embeddings: embeddings,
-      total_duration: 0,
-      load_duration: 0,
-      prompt_eval_count: openaiResponse.usage?.prompt_tokens || 0
-    };
-  } catch (error) {
-    // If embeddings endpoint doesn't exist, return a polite error
-    throw new Error('Embeddings endpoint not available in the main proxy');
-  }
+  // A gateway failure propagates with its status and message; the controller answers it.
+  const openaiResponse = await shared.callMainProxy('/openai/v1/embeddings', openaiRequest);
+  
+  // Transform response to Ollama format
+  const embeddings = openaiResponse.data ? openaiResponse.data.map(item => item.embedding) : [];
+  
+  return {
+    model: model,
+    embeddings: embeddings,
+    total_duration: 0,
+    load_duration: 0,
+    prompt_eval_count: openaiResponse.usage?.prompt_tokens || 0
+  };
 };
 
 /**
@@ -643,7 +670,9 @@ exports.listModels = async () => {
     
     if (!Array.isArray(models)) {
       console.error('[Ollama Adapter] ERROR: models is not an array:', typeof models, models);
-      throw new Error('Models response is not an array');
+      const malformed = new Error('Models response is not an array');
+      malformed.upstream = true;
+      throw malformed;
     }
       const transformedModels = models
       .filter((model, index) => {
@@ -760,31 +789,9 @@ exports.listModels = async () => {
     return result;
     
   } catch (error) {
-    console.error('[Ollama Adapter] Error listing models:', error);
-    console.error('[Ollama Adapter] Error stack:', error.stack);
-      // Return a default model list if the main proxy is not available
-    const fallbackResult = {
-      models: [
-        {
-          name: 'gpt-3.5-turbo:latest',
-          model: 'gpt-3.5-turbo:latest',
-          modified_at: new Date().toISOString(),
-          size: 0,
-          digest: 'unknown',
-          details: {
-            parent_model: '',
-            format: 'gguf',
-            family: 'gpt',
-            families: ['gpt'],
-            parameter_size: '175B',
-            quantization_level: 'Q4_0'
-          }
-        }
-      ]
-    };
-    
-    console.log('[Ollama Adapter] Returning fallback response:', JSON.stringify(fallbackResult, null, 2));
-    return fallbackResult;
+    // No invented model list: the controller answers 502 (or the gateway's own 4xx).
+    console.error('[Ollama Adapter] Error listing models:', error.message);
+    throw error;
   }
 };
 

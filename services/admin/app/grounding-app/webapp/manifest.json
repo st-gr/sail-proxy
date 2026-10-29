@@ -1,0 +1,55 @@
+{
+  "_version": "1.12.0",
+  "sap.app": {
+    "id": "admin.grounding",
+    "type": "application",
+    "i18n": { "bundleUrl": "i18n/i18n.properties", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en" },
+    "title": "Grounding",
+    "description": "Files and vector stores for the file_search tool",
+    "applicationVersion": { "version": "1.0.0" }
+  },
+  "sap.ui": { "technology": "UI5", "icons": {}, "deviceTypes": { "desktop": true, "tablet": true, "phone": true } },
+  "sap.ui5": {
+    "flexEnabled": false,
+    "resources": { "css": [{ "uri": "css/style.css" }] },
+    "rootView": { "viewName": "admin.grounding.view.App", "type": "XML", "id": "app" },
+    "dependencies": {
+      "minUI5Version": "1.136.0",
+      "libs": { "sap.ui.core": {}, "sap.m": {}, "sap.ui.unified": {}, "sap.ui.layout": {} }
+    },
+    "handleValidation": true,
+    "routing": {
+      "config": {
+        "routerClass": "sap.m.routing.Router",
+        "viewType": "XML",
+        "async": true,
+        "viewPath": "admin.grounding.view",
+        "controlAggregation": "pages",
+        "controlId": "app",
+        "bypassed": { "target": ["stores"] }
+      },
+      "routes": [
+        { "name": "groundingStores", "pattern": "", "target": ["stores"] },
+        { "name": "groundingStoreDetail", "pattern": "stores/{storeId}", "target": ["storeDetail"] },
+        { "name": "groundingFiles", "pattern": "files", "target": ["files"] },
+        { "name": "groundingJobs", "pattern": "jobs", "target": ["jobs"] },
+        { "name": "groundingJobDetail", "pattern": "jobs/{jobId}", "target": ["jobDetail"] },
+        { "name": "groundingAdmin", "pattern": "admin/:tab:", "target": ["admin"] },
+        { "name": "groundingUnavailable", "pattern": "unavailable", "target": ["unavailable"] }
+      ],
+      "targets": {
+        "stores": { "viewType": "XML", "viewName": "Stores", "viewId": "stores", "viewLevel": 1 },
+        "storeDetail": { "viewType": "XML", "viewName": "StoreDetail", "viewId": "storeDetail", "viewLevel": 2 },
+        "files": { "viewType": "XML", "viewName": "Files", "viewId": "files", "viewLevel": 1 },
+        "jobs": { "viewType": "XML", "viewName": "Jobs", "viewId": "jobs", "viewLevel": 1 },
+        "jobDetail": { "viewType": "XML", "viewName": "JobDetail", "viewId": "jobDetail", "viewLevel": 2 },
+        "admin": { "viewType": "XML", "viewName": "Admin", "viewId": "admin", "viewLevel": 1 },
+        "unavailable": { "viewType": "XML", "viewName": "Unavailable", "viewId": "unavailable", "viewLevel": 1 }
+      }
+    },
+    "models": {
+      "i18n": { "type": "sap.ui.model.resource.ResourceModel", "settings": { "bundleName": "admin.grounding.i18n.i18n", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en", "async": true } },
+      "viewModel": { "type": "sap.ui.model.json.JSONModel" }
+    }
+  }
+}

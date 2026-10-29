@@ -7,14 +7,20 @@
             "bundleUrl": "i18n/i18n.properties",
             "supportedLocales": [
                 "",
-                "en"
+                "en",
+                "de",
+                "es",
+                "fr",
+                "it",
+                "nl",
+                "pt"
             ],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "Users & Quotas",
+        "title": "{{appTitle}}",
         "description": "Administrator view of users, their constraints, usage and account status",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -80,10 +86,16 @@
             "i18n": {
                 "type": "sap.ui.model.resource.ResourceModel",
                 "settings": {
-                    "bundleUrl": "i18n/i18n.properties",
+                    "bundleName": "admin.users.i18n.i18n",
                     "supportedLocales": [
                         "",
-                        "en"
+                        "en",
+                        "de",
+                        "es",
+                        "fr",
+                        "it",
+                        "nl",
+                        "pt"
                     ],
                     "fallbackLocale": "en",
                     "async": true
@@ -160,7 +172,7 @@
                                     "actions": {
                                         "FieldHelp": {
                                             "press": "admin.users.ext.FieldHelp.onFieldHelp",
-                                            "text": "Field Help",
+                                            "text": "{{fieldHelpTitle}}",
                                             "visible": true,
                                             "enabled": true,
                                             "requiresSelection": false,
@@ -172,7 +184,7 @@
                                     "sections": {
                                         "UsageCharts": {
                                             "template": "admin.users.ext.fragment.UsageCharts",
-                                            "title": "Usage charts",
+                                            "title": "{{usageCharts}}",
                                             "position": {
                                                 "placement": "After",
                                                 "anchor": "Usage"
@@ -190,6 +202,13 @@
                                     }
                                 },
                                 "awsCredentials/@com.sap.vocabularies.UI.v1.LineItem#ForUser": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "personalization": false
+                                    }
+                                },
+                                "memberships/@com.sap.vocabularies.UI.v1.LineItem#ForUser": {
                                     "tableSettings": {
                                         "enableAddCardToInsights": false,
                                         "p13nMode": [],

@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "SAP AI Core Multi-Provider LLM Gateway Service",
   "private": true,
   "main": "dist/index.js",
@@ -8,7 +8,7 @@
     "node": ">=20.9.0"
   },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && node ../../cli-tools/copy-api-docs.js --ui=swagger-ui-bundle.js,swagger-ui.css dist/api-docs ../../openapi/gateway.yaml",
     "start": "node dist/index.js",
     "dev": "nodemon --ignore logs/ --ignore api_config.json --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
     "pretest": "pnpm --filter @sap-llm-gateway/test-utils build",
@@ -25,6 +25,8 @@
     "test:coverage": "cross-env NODE_ENV=test jest --config jest.config.json --coverage",
     "test:pseudonymization": "cross-env NODE_ENV=test jest --config jest.config.json --testPathPattern=pseudonymization",
     "test:pseudonymization:integration": "ts-node -r tsconfig-paths/register --transpile-only test/test-pseudonymization.ts",
+    "eval:file-search": "ts-node -r tsconfig-paths/register --transpile-only scripts/file-search-eval.ts",
+    "bench:file-search-scale": "ts-node -r tsconfig-paths/register --transpile-only scripts/file-search-scale.ts",
     "clean": "rimraf dist"
   },
   "dependencies": {
@@ -39,7 +41,7 @@
     "morgan": "^1.10.0",
     "pg": "^8.22.0",
     "qs": "^6.11.2",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "uuid": "^11.1.0",
     "wink-eng-lite-web-model": "^1.8.1",
     "wink-nlp": "^2.4.0",
@@ -57,6 +59,7 @@
     "@types/supertest": "^2.0.12",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.0",
+    "ajv": "^8.20.0",
     "cross-env": "^7.0.3",
     "jest": "^29.0.0",
     "nodemon": "^3.0.1",
@@ -65,6 +68,7 @@
     "ts-jest": "^29.0.0",
     "ts-node": "^10.9.1",
     "tsconfig-paths": "^4.2.0",
+    "swagger-ui-dist": "5.33.1",
     "typescript": "^5.8.3"
   },
   "optionalDependencies": {

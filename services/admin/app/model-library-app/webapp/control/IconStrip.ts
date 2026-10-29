@@ -1,6 +1,7 @@
 import Control from "sap/ui/core/Control";
 import Icon from "sap/ui/core/Icon";
 import RenderManager from "sap/ui/core/RenderManager";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
 import formatter from "../model/formatter";
 
 /**
@@ -32,7 +33,10 @@ export default class IconStrip extends Control {
 
   onBeforeRendering(): void {
     this.destroyAggregation("_icons");
-    formatter.capabilityIcons(this.getCapabilities(), this.getInputTypes())
+    // The tooltips follow the cockpit language through the app's bundle (English until it has loaded).
+    const i18n = this.getModel("i18n") as ResourceModel | undefined;
+    const t = (key: string): string => (i18n?.getProperty(key) as string | null | undefined) ?? key;
+    formatter.capabilityIcons(this.getCapabilities(), this.getInputTypes(), t)
       .forEach((item) => this.addAggregation("_icons", new Icon({ src: item.icon, tooltip: item.tooltip, size: "0.75rem" }).addStyleClass("mlIconChip")));
   }
 

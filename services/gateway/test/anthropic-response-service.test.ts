@@ -287,3 +287,46 @@ describe('mapSapFinishReasonToAnthropic', () => {
     expect(mapSapFinishReasonToAnthropic('content_filter')).toBe('content_filter');
   });
 });
+
+/**
+ * The cache regime comes from the model SAP was asked for (sapModelName), else the request's model
+ * — never from SAP's own `final_result.model`, which is unreliable (stream chunks come back
+ * labelled "gpt-4" whatever the model; cache-probe-result.md). The raw numbers (1978 prompt, 1792
+ * cached) are valid under both readings, so the prompt-smaller-than-cache net cannot decide them:
+ * only the model name does. Exclusive → input_tokens 1978; inclusive → 1978 − 1792 = 186.
+ */
+describe('transformSAPResponseToAnthropic — the regime ignores SAP\'s reported model', () => {
+  const respondingAs = (model: string) => ({
+    final_result: {
+      id: 'chatcmpl-regime', model,
+      choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 1978, completion_tokens: 1, total_tokens: 1979,
+        prompt_tokens_details: { cached_tokens: 1792 },
+      },
+    },
+  }) as any;
+
+  it('a Claude sapModelName folds exclusive even when SAP reports gpt-4.1-nano', async () => {
+    const result: any = await anthropicResponseService.transformSAPResponseToAnthropic(
+      respondingAs('gpt-4.1-nano'), false, 'claude-sonnet-4-5', 'string', 5, 'anthropic--claude-4.5-sonnet'
+    );
+    expect(result.usage).toMatchObject({ input_tokens: 1978, cache_read_input_tokens: 1792 });
+  });
+
+  it('a gpt-4.1-nano sapModelName folds inclusive even when SAP reports a Claude model', async () => {
+    const result: any = await anthropicResponseService.transformSAPResponseToAnthropic(
+      respondingAs('claude-opus-4-8'), false, 'gpt-4.1-nano', 'string', 5, 'gpt-4.1-nano'
+    );
+    expect(result.usage).toMatchObject({ input_tokens: 186, cache_read_input_tokens: 1792 });
+  });
+
+  it('without a sapModelName the request model decides, not SAP\'s reported model', async () => {
+    // The only case where the removed `?? final_result.model` fallback could act: with it back,
+    // SAP's "gpt-4.1-nano" would win over the Claude request model and input_tokens would be 186.
+    const result: any = await anthropicResponseService.transformSAPResponseToAnthropic(
+      respondingAs('gpt-4.1-nano'), false, 'anthropic--claude-4.5-sonnet'
+    );
+    expect(result.usage).toMatchObject({ input_tokens: 1978, cache_read_input_tokens: 1792 });
+  });
+});

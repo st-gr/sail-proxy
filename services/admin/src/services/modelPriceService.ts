@@ -52,7 +52,8 @@ function assertPrice(name: string, value: string | number | null | undefined, re
 async function currentRow(db: any, modelId: string): Promise<any | null> {
   const { SELECT } = cds.ql;
   const rows = await db.run(SELECT.from(MODEL_COSTS).where({ model: modelId, dateTo: OPEN_ENDED }));
-  return rows[0] ?? null;
+  // A Connection model's list price is set and closed by setListPrice only, never by the Library's actions.
+  return rows.find((r: any) => r.pricingKind !== 'list_price') ?? null;
 }
 
 async function closeAndInsert(db: any, current: any | null, entry: Record<string, any>, now: Date): Promise<any> {

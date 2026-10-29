@@ -927,8 +927,8 @@ Examples:
   # Check deployment status for GPT-5
   node sail-model-deploy.js --status gpt-5
 
-  # Create a new deployment for Claude 3 Haiku
-  node sail-model-deploy.js --create anthropic--claude-3-haiku
+  # Create a new deployment for Claude 4.5 Haiku
+  node sail-model-deploy.js --create anthropic--claude-4.5-haiku
   
   # Clear cached access token
   node sail-model-deploy.js --clear-cache

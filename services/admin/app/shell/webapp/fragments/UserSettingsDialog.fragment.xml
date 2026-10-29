@@ -1,116 +1,36 @@
 <core:FragmentDefinition
 	xmlns="sap.m"
-	xmlns:core="sap.ui.core"
-	xmlns:l="sap.ui.layout">
+	xmlns:core="sap.ui.core">
 
-	<Dialog id="settings" title="Settings" contentWidth="600px" contentHeight="500px">
+	<Dialog id="settings" title="{i18n>settings.title}" contentWidth="28rem">
 		<content>
-			<IconTabBar id="settingsTabs" expanded="true" expandable="false">
-				<items>
-					<IconTabFilter key="userInfo" icon="sap-icon://user-settings" text="User Information">
-						<VBox class="sapUiMediumMargin">
-							<FlexBox direction="Column" alignItems="Center" justifyContent="SpaceBetween"
-								gap="0.625rem">
-								<Avatar size="L" displayShape="Circle" initials="JD" />
-								<FlexBox direction="Column" alignItems="Center" justifyContent="SpaceBetween">
-									<Title text="Jane Doe" />
-									<Label text="CZ0303" />
-									<Label text="Delivery Manager" />
-								</FlexBox>
-								<Button class="sapUiSmallMargin" icon="sap-icon://user-settings" type="Emphasized"
-									text="Manage Account" />
-							</FlexBox>
-
-							<FlexBox>
-								<core:Icon color="#556b82" src="sap-icon://message-information" />
-								<Label textAlign="Center" wrapping="true"
-									text="Same personal information, like your name and email address, may be provided by your company. If you want to update there details, contact your administrator." />
-							</FlexBox>
-
-							<FlexBox direction="Column" class="sapUiSmallMargin">
-								<Label text="Full name:" />
-								<Text text="Jane Doe" />
-							</FlexBox>
-
-							<FlexBox direction="Column" class="sapUiSmallMargin">
-								<Label text="Email:" />
-								<Text text="jane.doe@example.com" />
-							</FlexBox>
-						</VBox>
-					</IconTabFilter>
-
-					<IconTabFilter key="appearance" icon="sap-icon://palette" text="Appearance">
-						<VBox class="sapUiMediumMargin">
-							<Title text="Themes" class="sapUiMediumMarginBottom" />
-							<List>
-								<StandardListItem icon="sap-icon://palette" title="SAP Morning Horizon" />
-								<StandardListItem icon="sap-icon://palette" title="SAP Evening Horizon" />
-								<StandardListItem icon="sap-icon://palette" title="SAP High Contrast Black (SAP Horizon)" />
-								<StandardListItem icon="sap-icon://palette" title="SAP High Contrast White (SAP Horizon)" />
-							</List>
-							
-							<Title text="Display settings" class="sapUiMediumMarginTop sapUiMediumMarginBottom" />
-							<CheckBox selected="true" text="Optimized for Touch Input" />
-							<Panel>
-								<Label wrapping="true"
-									text="Increases the size and spacing of controls to allow you to interact with them more easily using your fingertip.
-									This is useful for hybrid devices that combine touch and mouse events." />
-							</Panel>
-						</VBox>
-					</IconTabFilter>
-
-					<IconTabFilter key="language" icon="sap-icon://world" text="Language &amp; Region">
-						<VBox class="sapUiMediumMargin">
-							<FlexBox direction="Column" alignItems="Start" justifyContent="SpaceBetween"
-								gap="0.625rem">
-								<FlexBox alignItems="Center">
-									<Label class="sapUiSmallMargin" text="Language and Region:" />
-									<ComboBox selectedKey="1">
-										<core:Item key="1" text="Browse Language" />
-										<core:Item key="2" text="English" />
-										<core:Item key="3" text="European Spanish" />
-										<core:Item key="4" text="French (France)" />
-										<core:Item key="5" text="Germany" />
-									</ComboBox>
-								</FlexBox>
-
-								<FlexBox alignItems="Center">
-									<Label class="sapUiSmallMargin" text="Date Format:" />
-									<Text text="MMM d, y" />
-								</FlexBox>
-								<FlexBox class="sapUiSmallMargin">
-									<Panel>
-										<Label wrapping="true"
-											text="The time zone will not be applied in UI5 apps.
-											If you don't know the type of an app, you can check it in the 'About' dialog in the 'ID of the Application Framework' field." />
-									</Panel>
-								</FlexBox>
-
-								<FlexBox alignItems="Center">
-									<Label class="sapUiSmallMargin" labelFor="timeFormat" text="Time Format:" />
-									<RadioButtonGroup id="timeFormat" columns="2">
-										<RadioButton text="12h" selected="true" />
-										<RadioButton text="24h" />
-									</RadioButtonGroup>
-								</FlexBox>
-								<Panel>
-									<Label wrapping="true"
-										text="After you save your settings, the browser will refresh for the new settings to take effect." />
-								</Panel>
-							</FlexBox>
-						</VBox>
-					</IconTabFilter>
-
-					<IconTabFilter key="notifications" icon="sap-icon://bell" text="Notifications">
-						<VBox class="sapUiMediumMargin">
-							<CheckBox selected="true" text="Show High-Priority Notification Alerts" />
-						</VBox>
-					</IconTabFilter>
-				</items>
-			</IconTabBar>
+			<VBox class="sapUiMediumMargin">
+				<Label text="{i18n>settings.language}" labelFor="settingsLanguage" />
+				<!-- The native names stay untranslated so every user finds their own language -->
+				<Select id="settingsLanguage" width="100%" selectedKey="{settings>/language}">
+					<core:Item key="" text="{i18n>settings.language.browserDefault}" />
+					<core:Item key="en" text="English" />
+					<core:Item key="de" text="Deutsch" />
+					<core:Item key="es" text="Español" />
+					<core:Item key="fr" text="Français" />
+					<core:Item key="it" text="Italiano" />
+					<core:Item key="nl" text="Nederlands" />
+					<core:Item key="pt" text="Português" />
+				</Select>
+				<Text class="sapUiSmallMarginTop" text="{i18n>settings.language.reloadHint}" />
+				<Label class="sapUiMediumMarginTop" text="{i18n>settings.theme}" labelFor="settingsTheme" />
+				<Select id="settingsTheme" width="100%" selectedKey="{settings>/theme}">
+					<core:Item key="sap_horizon" text="{i18n>settings.theme.light}" />
+					<core:Item key="sap_horizon_dark" text="{i18n>settings.theme.dark}" />
+					<core:Item key="system" text="{i18n>settings.theme.system}" />
+				</Select>
+			</VBox>
 		</content>
-		<buttons>
-			<Button text="Close" press=".onSettingsClose" />
-		</buttons>
+		<beginButton>
+			<Button id="settingsSave" type="Emphasized" text="{i18n>settings.save}" press=".onSettingsSave" />
+		</beginButton>
+		<endButton>
+			<Button id="settingsCancel" text="{i18n>settings.cancel}" press=".onSettingsCancel" />
+		</endButton>
 	</Dialog>
 </core:FragmentDefinition>

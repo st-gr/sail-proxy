@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: sail-proxy
+  name: __NAMESPACE__
   labels:
     app: sail-proxy
     # Istio injection is disabled due to compatibility issues with network policies

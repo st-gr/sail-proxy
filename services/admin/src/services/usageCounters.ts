@@ -20,7 +20,7 @@ export const RETENTION_DAYS = 62;
 export const OWNER_EMAIL_FALLBACKS = new Set(['unknown@example.com', 'unknown-user']);
 const WINDOWS: WindowName[] = ['day', 'week', 'month'];
 
-export interface Increment { email: string; day: string; currency: string; requests: number; tokens: number; sapCost: number; }   // tokens: fresh tokens (input + output + cache writes)
+export interface Increment { email: string; day: string; currency: string; requests: number; tokens: number; sapCost: number; externalCost: number; }   // tokens: fresh tokens (input + output + cache writes); externalCost: Connection list cost
 export type BucketRow = Increment;
 export interface WindowUsage { requests: number; tokens: number; sapCost: number; sapCostByCurrency: Record<string, number>; }   // tokens: fresh tokens (input + output + cache writes)
 
@@ -51,14 +51,15 @@ export function foldIncrements(records: Array<Record<string, any>>, ownerOf: (r:
     const email = ownerOf(r);
     if (!email || OWNER_EMAIL_FALLBACKS.has(email)) continue;
     const day = utcDay(r.validFrom);
-    const currency = r.sapCostCurrency ?? '';
+    const currency = r.sapCostCurrency ?? r.listCostCurrency ?? '';
     const key = bucketKey(email, day, currency);
-    const inc = out.get(key) ?? { email, day, currency, requests: 0, tokens: 0, sapCost: 0 };
+    const inc = out.get(key) ?? { email, day, currency, requests: 0, tokens: 0, sapCost: 0, externalCost: 0 };
     inc.requests += r.requests !== undefined ? Number(r.requests) || 0 : 1;
     inc.tokens += r.tokens !== undefined
       ? Number(r.tokens) || 0
       : (r.inputTokens ?? 0) + (r.outputTokens ?? 0) + (r.cacheCreationInputTokens ?? 0);   // fresh tokens: cache reads are priced, not counted
     inc.sapCost = round(inc.sapCost + (Number(r.sapCost) || 0));
+    inc.externalCost = round(inc.externalCost + (Number(r.externalCost ?? r.listCost) || 0));
     out.set(key, inc);
   }
   return [...out.values()];
@@ -68,12 +69,13 @@ export function foldIncrements(records: Array<Record<string, any>>, ownerOf: (r:
 export async function applyIncrements(db: any, increments: Increment[], now: Date = new Date()): Promise<number> {
   if (increments.length === 0) return 0;
   const pg = isPostgres(db);
-  const values = pg ? '($1, $2, $3, $4, $5, $6, $7)' : '(?, ?, ?, ?, ?, ?, ?)';
-  const sql = `INSERT INTO ${BUCKETS_TABLE} (email, day, currency, requests, tokens, sapCost, updatedAt) VALUES ${values}
+  const values = pg ? '($1, $2, $3, $4, $5, $6, $7, $8)' : '(?, ?, ?, ?, ?, ?, ?, ?)';
+  const sql = `INSERT INTO ${BUCKETS_TABLE} (email, day, currency, requests, tokens, sapCost, externalCost, updatedAt) VALUES ${values}
     ON CONFLICT (email, day, currency) DO UPDATE SET requests = ${BUCKETS_TABLE}.requests + excluded.requests,
-    tokens = ${BUCKETS_TABLE}.tokens + excluded.tokens, sapCost = ${BUCKETS_TABLE}.sapCost + excluded.sapCost, updatedAt = excluded.updatedAt`;
+    tokens = ${BUCKETS_TABLE}.tokens + excluded.tokens, sapCost = ${BUCKETS_TABLE}.sapCost + excluded.sapCost,
+    externalCost = ${BUCKETS_TABLE}.externalCost + excluded.externalCost, updatedAt = excluded.updatedAt`;
   const at = now.toISOString();
-  for (const i of increments) await db.run(sql, [i.email, i.day, i.currency, i.requests, i.tokens, i.sapCost, at]);
+  for (const i of increments) await db.run(sql, [i.email, i.day, i.currency, i.requests, i.tokens, i.sapCost, i.externalCost, at]);
   return increments.length;
 }
 
@@ -81,16 +83,16 @@ export async function applyIncrements(db: any, increments: Increment[], now: Dat
 export async function readBuckets(db: any, emails: string[], since: Date): Promise<BucketRow[]> {
   if (emails.length === 0) return [];
   const { SELECT } = cds.ql;
-  const rows = await db.run(SELECT.from(BUCKETS).columns('email', 'day', 'currency', 'requests', 'tokens', 'sapCost')
+  const rows = await db.run(SELECT.from(BUCKETS).columns('email', 'day', 'currency', 'requests', 'tokens', 'sapCost', 'externalCost')
     .where({ email: { in: emails }, day: { '>=': utcDay(since) } }));
   return (rows ?? []).map((r: any) => ({
     email: r.email, day: dayOf(r.day), currency: r.currency ?? '',
-    requests: Number(r.requests) || 0, tokens: Number(r.tokens) || 0, sapCost: Number(r.sapCost) || 0
+    requests: Number(r.requests) || 0, tokens: Number(r.tokens) || 0, sapCost: Number(r.sapCost) || 0, externalCost: Number(r.externalCost) || 0
   }));
 }
 
-/** Day / ISO week / month usage from bucket rows; `currency` is the quota currency `sapCost` reports. */
-export function windowsFromBuckets(rows: BucketRow[], now: Date, currency: string): Record<WindowName, WindowUsage> {
+/** Day / ISO week / month usage from bucket rows; `currency` is the quota currency `sapCost` reports (SAP cost plus Connection list cost: the spend). */
+export function windowsFromBuckets(rows: Array<Pick<BucketRow, 'day' | 'currency' | 'requests' | 'tokens' | 'sapCost' | 'externalCost'>>, now: Date, currency: string): Record<WindowName, WindowUsage> {
   const starts = windowStarts(now);
   const since: Record<WindowName, string> = { day: utcDay(starts.day), week: utcDay(starts.week), month: utcDay(starts.month) };
   const out = {} as Record<WindowName, WindowUsage>;
@@ -99,12 +101,59 @@ export function windowsFromBuckets(rows: BucketRow[], now: Date, currency: strin
     for (const r of rows) {
       if (dayOf(r.day) < since[w]) continue;
       u.requests += r.requests; u.tokens += r.tokens;
-      if (r.currency) u.sapCostByCurrency[r.currency] = round((u.sapCostByCurrency[r.currency] ?? 0) + r.sapCost);
+      if (r.currency) u.sapCostByCurrency[r.currency] = round((u.sapCostByCurrency[r.currency] ?? 0) + r.sapCost + r.externalCost);
     }
     u.sapCost = round(u.sapCostByCurrency[currency] ?? 0);
     out[w] = u;
   }
   return out;
+}
+
+// ---- team buckets (spec 2026-10-14 §6) ------------------------------------------------------
+export const TEAM_BUCKETS = 'sap.llm.gateway.admin.TeamUsageDaily';
+export const TEAM_BUCKETS_TABLE = 'sap_llm_gateway_admin_TeamUsageDaily';
+const TEAMS = 'sap.llm.gateway.admin.Teams';
+export interface TeamIncrement { teamId: string; day: string; currency: string; requests: number; tokens: number; sapCost: number; externalCost: number; }
+export type TeamBucketRow = TeamIncrement;
+
+/** Like foldIncrements, keyed by team: records whose `teamOf` is null fold into nothing. */
+export function foldTeamIncrements(records: Array<Record<string, any>>, teamOf: (r: Record<string, any>) => string | null | undefined): TeamIncrement[] {
+  const out = new Map<string, TeamIncrement>();
+  for (const r of records) {
+    const teamId = teamOf(r);
+    if (!teamId) continue;
+    const day = utcDay(r.validFrom);
+    const currency = r.sapCostCurrency ?? r.listCostCurrency ?? '';
+    const key = `${teamId}|${day}|${currency}`;
+    const inc = out.get(key) ?? { teamId, day, currency, requests: 0, tokens: 0, sapCost: 0, externalCost: 0 };
+    inc.requests += r.requests !== undefined ? Number(r.requests) || 0 : 1;
+    inc.tokens += r.tokens !== undefined ? Number(r.tokens) || 0 : (r.inputTokens ?? 0) + (r.outputTokens ?? 0) + (r.cacheCreationInputTokens ?? 0);
+    inc.sapCost = round(inc.sapCost + (Number(r.sapCost) || 0));
+    inc.externalCost = round(inc.externalCost + (Number(r.externalCost ?? r.listCost) || 0));
+    out.set(key, inc);
+  }
+  return [...out.values()];
+}
+
+/** The team upsert: the same statement text as applyIncrements on the team table. */
+export async function applyTeamIncrements(db: any, increments: TeamIncrement[], now: Date = new Date()): Promise<number> {
+  if (increments.length === 0) return 0;
+  const pg = isPostgres(db);
+  const values = pg ? '($1, $2, $3, $4, $5, $6, $7, $8)' : '(?, ?, ?, ?, ?, ?, ?, ?)';
+  const sql = `INSERT INTO ${TEAM_BUCKETS_TABLE} (teamId, day, currency, requests, tokens, sapCost, externalCost, updatedAt) VALUES ${values}
+    ON CONFLICT (teamId, day, currency) DO UPDATE SET requests = ${TEAM_BUCKETS_TABLE}.requests + excluded.requests,
+    tokens = ${TEAM_BUCKETS_TABLE}.tokens + excluded.tokens, sapCost = ${TEAM_BUCKETS_TABLE}.sapCost + excluded.sapCost,
+    externalCost = ${TEAM_BUCKETS_TABLE}.externalCost + excluded.externalCost, updatedAt = excluded.updatedAt`;
+  const at = now.toISOString();
+  for (const i of increments) await db.run(sql, [i.teamId, i.day, i.currency, i.requests, i.tokens, i.sapCost, i.externalCost, at]);
+  return increments.length;
+}
+
+export async function readTeamBuckets(db: any, teamIds: string[], since: Date): Promise<TeamBucketRow[]> {
+  if (teamIds.length === 0) return [];
+  const rows = await db.run(cds.ql.SELECT.from(TEAM_BUCKETS).columns('teamId', 'day', 'currency', 'requests', 'tokens', 'sapCost', 'externalCost')
+    .where({ teamId: { in: teamIds }, day: { '>=': utcDay(since) } }));
+  return (rows ?? []).map((r: any) => ({ teamId: r.teamId, day: dayOf(r.day), currency: r.currency ?? '', requests: Number(r.requests) || 0, tokens: Number(r.tokens) || 0, sapCost: Number(r.sapCost) || 0, externalCost: Number(r.externalCost) || 0 }));
 }
 
 // ---- rebuild from the rows (spec §3.5) ------------------------------------------------------
@@ -115,7 +164,7 @@ const AWS_USAGE_TABLE = 'sap_llm_gateway_admin_AwsCredentialUsage';
 const TOKENS_SUM = 'coalesce(sum(inputTokens),0) + coalesce(sum(outputTokens),0) + coalesce(sum(cacheCreationInputTokens),0)';
 const isEmail = (s: any) => typeof s === 'string' && s.includes('@');
 
-export interface RebuildResult { users: number; buckets: number; bucketsByUser: Record<string, number>; durationMs: number; }
+export interface RebuildResult { users: number; buckets: number; bucketsByUser: Record<string, number>; durationMs: number; teams: number; teamBuckets: number; }
 
 /**
  * A raw-SQL result field, whatever case the driver returned it in. The quoted aliases in
@@ -127,7 +176,7 @@ const pick = (row: any, name: string) => row[name] ?? row[name.toLowerCase()];
 const normaliseRows = (rows: any[]): any[] => (rows ?? []).map((r) => ({
   owner: pick(r, 'owner'), credential_ID: pick(r, 'credential_ID'), day: pick(r, 'day'),
   sapCostCurrency: pick(r, 'sapCostCurrency'), requests: pick(r, 'requests'),
-  tokens: pick(r, 'tokens'), sapCost: pick(r, 'sapCost')
+  tokens: pick(r, 'tokens'), sapCost: pick(r, 'sapCost'), externalCost: pick(r, 'externalCost')
 }));
 
 /**
@@ -161,11 +210,37 @@ async function groupedUsage(tx: any, table: string, ownerColumn: 'email' | 'user
   // REFERENCES stay unquoted on purpose — CAP's Postgres DDL creates them folded, so quoting
   // them would look for columns that do not exist.
   return normaliseRows(await tx.run(
-    `SELECT ${ownerColumn} AS "owner", ${credential}, ${dayExpr} AS "day", coalesce(sapCostCurrency, '') AS "sapCostCurrency",
-            count(*) AS "requests", ${TOKENS_SUM} AS "tokens", coalesce(sum(sapCost), 0) AS "sapCost"
+    `SELECT ${ownerColumn} AS "owner", ${credential}, ${dayExpr} AS "day", coalesce(sapCostCurrency, listCostCurrency, '') AS "sapCostCurrency",
+            count(*) AS "requests", ${TOKENS_SUM} AS "tokens", coalesce(sum(sapCost), 0) AS "sapCost", coalesce(sum(listCost), 0) AS "externalCost"
        FROM ${table}
       WHERE validFrom >= ${p(1)} AND usageSignature IS NOT NULL${scope}
-      GROUP BY ${ownerColumn}, ${groupCredential}${dayExpr}, coalesce(sapCostCurrency, '')`, params));
+      GROUP BY ${ownerColumn}, ${groupCredential}${dayExpr}, coalesce(sapCostCurrency, listCostCurrency, '')`, params));
+}
+
+/** Grouped usage of one table per (team, day, currency) from `since`; rows without a team are excluded. */
+async function groupedTeamUsage(tx: any, table: string, since: Date, teamIds: string[] | undefined, pg: boolean): Promise<any[]> {
+  const p = (i: number) => (pg ? `$${i}` : '?');
+  const dayExpr = pg ? `to_char(validFrom, 'YYYY-MM-DD')` : `substr(validFrom, 1, 10)`;
+  const params: any[] = [since.toISOString()];
+  let scope = '';
+  if (teamIds) {
+    if (teamIds.length === 0) return [];
+    scope = ` AND team_ID IN (${teamIds.map((_, i) => p(i + 2)).join(', ')})`;
+    params.push(...teamIds);
+  }
+  const rows = await tx.run(
+    `SELECT team_ID AS "teamId", ${dayExpr} AS "day", coalesce(sapCostCurrency, listCostCurrency, '') AS "sapCostCurrency",
+            count(*) AS "requests", ${TOKENS_SUM} AS "tokens", coalesce(sum(sapCost), 0) AS "sapCost", coalesce(sum(listCost), 0) AS "externalCost"
+       FROM ${table}
+      WHERE validFrom >= ${p(1)} AND usageSignature IS NOT NULL AND team_ID IS NOT NULL${scope}
+      GROUP BY team_ID, ${dayExpr}, coalesce(sapCostCurrency, listCostCurrency, '')`, params);
+  return (rows ?? []).map((r: any) => ({ teamId: pick(r, 'teamId'), day: pick(r, 'day'), sapCostCurrency: pick(r, 'sapCostCurrency'), requests: pick(r, 'requests'), tokens: pick(r, 'tokens'), sapCost: pick(r, 'sapCost'), externalCost: pick(r, 'externalCost') }));
+}
+
+async function teamBucketsFromRows(tx: any, since: Date, teamIds: string[] | undefined, pg: boolean): Promise<TeamIncrement[]> {
+  const rows = [...await groupedTeamUsage(tx, KEY_USAGE_TABLE, since, teamIds, pg), ...await groupedTeamUsage(tx, AWS_USAGE_TABLE, since, teamIds, pg)]
+    .map((r: any) => ({ ...r, validFrom: `${dayOf(r.day)}T00:00:00.000Z` }));
+  return foldTeamIncrements(rows, (r) => r.teamId);
 }
 
 /** Buckets for one owner scope from `since`: API-key rows by e-mail, AWS rows by userId or the credential's owner. */
@@ -196,46 +271,73 @@ async function bucketsFromRows(tx: any, since: Date, emails: string[] | undefine
  * and — for a full rebuild — applies the retention. One transaction, so a usage batch committing
  * meanwhile is counted exactly once (spec §3.5).
  */
-export async function rebuild(db: any, opts: { emails?: string[]; now?: Date } = {}): Promise<RebuildResult> {
+export async function rebuild(db: any, opts: { emails?: string[]; teamIds?: string[]; now?: Date } = {}): Promise<RebuildResult> {
   const now = opts.now ?? new Date();
   const started = Date.now();
   const horizon = windowHorizon(now);
   const scope = opts.emails ? [...new Set(opts.emails.filter(Boolean))] : undefined;
+  const teamScope = opts.teamIds ? [...new Set(opts.teamIds.filter(Boolean))] : undefined;
+  // Unscoped: both sides. Scoped: the side(s) named. An empty scope rebuilds nothing on its side
+  // (an `IN ()` list is invalid SQL on Postgres and a no-op filter is a full rebuild).
+  const doUsers = (opts.emails !== undefined || opts.teamIds === undefined) && !(scope && scope.length === 0);
+  const doTeams = (opts.teamIds !== undefined || opts.emails === undefined) && !(teamScope && teamScope.length === 0);
   const { SELECT, DELETE, INSERT } = cds.ql;
   let buckets = 0; let users = 0; let bucketsByUser: Record<string, number> = {};
+  let teams = 0; let teamBuckets = 0;
   // db.tx(fn) would open a root transaction and deadlock the single connection from inside a
   // request (rebuildUsageCounters); db.run(fn) joins the ambient one or opens its own.
   await db.run(async (tx: any) => {
     const pg = isPostgres(tx);
-    const dayFilter: any = { day: { '>=': utcDay(horizon) } };
-    if (scope) dayFilter.email = { in: scope };
-    await tx.run(DELETE.from(BUCKETS).where(dayFilter));
-    const increments = await bucketsFromRows(tx, horizon, scope, pg);
-    // Users with a reset inside the range count only from their watermark (spec §3.4/§3.5).
-    // Bounded above by `now` — the rebuild's clock (a test seam, not always wall-clock) — so a
-    // watermark stored after `now` (an explicit-now replay) has not happened yet and is ignored:
-    // otherwise this filter would delete that user's buckets without restoring them below.
-    // Chained `.where({a}).and({b})`, NOT a single `{ quotaResetAt: { '>=': x, '<=': y } }` object:
-    // the latter renders as `quotaResetAt >= ? <= ?` with no `and` — a SQLite no-op (always true)
-    // and a Postgres type error (`boolean <= timestamp`) — verified with DEBUG=sql (see the report).
-    let resetQuery = SELECT.from(USERS).columns('email', 'quotaResetAt')
-      .where({ quotaResetAt: { '>=': horizon.toISOString() } })
-      .and({ quotaResetAt: { '<=': now.toISOString() } });
-    if (scope) resetQuery = resetQuery.and({ email: { in: scope } });
-    const resetUsers: any[] = await tx.run(resetQuery);
-    const resetEmails = new Set(resetUsers.map((u) => u.email));
-    const kept = increments.filter((i) => !resetEmails.has(i.email));
-    for (const u of resetUsers) kept.push(...await bucketsFromRows(tx, new Date(u.quotaResetAt), [u.email], pg));
-    const at = now.toISOString();
-    if (kept.length > 0) await tx.run(INSERT.into(BUCKETS).entries(kept.map((i) => ({ ...i, updatedAt: at }))));
-    if (!scope) await tx.run(DELETE.from(BUCKETS).where({ day: { '<': utcDay(new Date(windowStarts(now).day.getTime() - RETENTION_DAYS * 86_400_000)) } }));
-    buckets = kept.length;
-    users = new Set(kept.map((i) => i.email)).size;
-    for (const i of kept) bucketsByUser[i.email] = (bucketsByUser[i.email] ?? 0) + 1;
+    if (doUsers) {
+      const dayFilter: any = { day: { '>=': utcDay(horizon) } };
+      if (scope) dayFilter.email = { in: scope };
+      await tx.run(DELETE.from(BUCKETS).where(dayFilter));
+      const increments = await bucketsFromRows(tx, horizon, scope, pg);
+      // Users with a reset inside the range count only from their watermark (spec §3.4/§3.5).
+      // Bounded above by `now` — the rebuild's clock (a test seam, not always wall-clock) — so a
+      // watermark stored after `now` (an explicit-now replay) has not happened yet and is ignored:
+      // otherwise this filter would delete that user's buckets without restoring them below.
+      // Chained `.where({a}).and({b})`, NOT a single `{ quotaResetAt: { '>=': x, '<=': y } }` object:
+      // the latter renders as `quotaResetAt >= ? <= ?` with no `and` — a SQLite no-op (always true)
+      // and a Postgres type error (`boolean <= timestamp`) — verified with DEBUG=sql (see the report).
+      let resetQuery = SELECT.from(USERS).columns('email', 'quotaResetAt')
+        .where({ quotaResetAt: { '>=': horizon.toISOString() } })
+        .and({ quotaResetAt: { '<=': now.toISOString() } });
+      if (scope) resetQuery = resetQuery.and({ email: { in: scope } });
+      const resetUsers: any[] = await tx.run(resetQuery);
+      const resetEmails = new Set(resetUsers.map((u) => u.email));
+      const kept = increments.filter((i) => !resetEmails.has(i.email));
+      for (const u of resetUsers) kept.push(...await bucketsFromRows(tx, new Date(u.quotaResetAt), [u.email], pg));
+      const at = now.toISOString();
+      if (kept.length > 0) await tx.run(INSERT.into(BUCKETS).entries(kept.map((i) => ({ ...i, updatedAt: at }))));
+      if (!scope) await tx.run(DELETE.from(BUCKETS).where({ day: { '<': utcDay(new Date(windowStarts(now).day.getTime() - RETENTION_DAYS * 86_400_000)) } }));
+      buckets = kept.length;
+      users = new Set(kept.map((i) => i.email)).size;
+      for (const i of kept) bucketsByUser[i.email] = (bucketsByUser[i.email] ?? 0) + 1;
+    }
+    if (doTeams) {
+      const teamFilter: any = { day: { '>=': utcDay(horizon) } };
+      if (teamScope) teamFilter.teamId = { in: teamScope };
+      await tx.run(DELETE.from(TEAM_BUCKETS).where(teamFilter));
+      const increments = await teamBucketsFromRows(tx, horizon, teamScope, pg);
+      // Chained where/and, see the users' reset query above.
+      let resetQuery = SELECT.from(TEAMS).columns('ID', 'quotaResetAt')
+        .where({ quotaResetAt: { '>=': horizon.toISOString() } })
+        .and({ quotaResetAt: { '<=': now.toISOString() } });
+      if (teamScope) resetQuery = resetQuery.and({ ID: { in: teamScope } });
+      const resetTeams: any[] = await tx.run(resetQuery);
+      const resetIds = new Set(resetTeams.map((t) => t.ID));
+      const kept = increments.filter((i) => !resetIds.has(i.teamId));
+      for (const t of resetTeams) kept.push(...await teamBucketsFromRows(tx, new Date(t.quotaResetAt), [t.ID], pg));
+      if (kept.length > 0) await tx.run(INSERT.into(TEAM_BUCKETS).entries(kept.map((i) => ({ ...i, updatedAt: now.toISOString() }))));
+      if (!teamScope) await tx.run(DELETE.from(TEAM_BUCKETS).where({ day: { '<': utcDay(new Date(windowStarts(now).day.getTime() - RETENTION_DAYS * 86_400_000)) } }));
+      teamBuckets = kept.length;
+      teams = new Set(kept.map((i) => i.teamId)).size;
+    }
   });
   const durationMs = Date.now() - started;
-  logger.info('UsageCounters', `Rebuilt usage buckets: ${users} users, ${buckets} buckets in ${durationMs} ms${scope ? ` (${scope.length} requested)` : ''}`);
-  return { users, buckets, bucketsByUser, durationMs };
+  logger.info('UsageCounters', `Rebuilt usage buckets: ${users} users, ${buckets} buckets, ${teams} teams, ${teamBuckets} team buckets in ${durationMs} ms${scope ? ` (${scope.length} requested)` : ''}`);
+  return { users, buckets, bucketsByUser, durationMs, teams, teamBuckets };
 }
 
 /** The migration for an existing deployment: an empty bucket table with usage rows behind it is rebuilt once. */
@@ -246,5 +348,20 @@ export async function rebuildIfEmpty(db: any, now: Date = new Date()): Promise<b
   const hasRows = async (t: string) => (await db.run(SELECT.from(t).columns('ID').limit(1))).length > 0;
   if (!(await hasRows('sap.llm.gateway.admin.ApiKeyUsage')) && !(await hasRows('sap.llm.gateway.admin.AwsCredentialUsage'))) return false;
   await rebuild(db, { now });
+  return true;
+}
+
+/** First start with team buckets: build them once from rows that already carry a team. */
+export async function rebuildTeamsIfEmpty(db: any, now: Date = new Date()): Promise<boolean> {
+  const { SELECT } = cds.ql;
+  const [{ n }] = await db.run(SELECT.from(TEAM_BUCKETS).columns('count(*) as n'));
+  if (Number(n) > 0) return false;
+  const ids = new Set<string>();
+  const horizon = windowHorizon(now).toISOString();
+  for (const t of ['sap.llm.gateway.admin.ApiKeyUsage', 'sap.llm.gateway.admin.AwsCredentialUsage']) {
+    for (const r of await db.run(SELECT.distinct.from(t).columns('team_ID').where({ team_ID: { '!=': null } }).and({ validFrom: { '>=': horizon } }))) if (r.team_ID) ids.add(r.team_ID);
+  }
+  if (ids.size === 0) return false;
+  await rebuild(db, { now, teamIds: [...ids] });
   return true;
 }

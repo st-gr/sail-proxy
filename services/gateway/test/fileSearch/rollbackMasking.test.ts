@@ -20,16 +20,16 @@
 // `.catch(() => {})`; only the REASON differs per site:
 //   - db.ts:166, :213                              - already guarded (unchanged)
 //   - teacherLogger.ts:196                          - already guarded (unchanged)
-//   - repository.ts:778  (attachFile catch)         - error-masking guard (Task 5)
-//   - repository.ts:853  (deleteStoreFile, "store not found" no-op)
-//   - repository.ts:866  (deleteStoreFile, "file not attached" no-op)
+//   - storeFiles.ts (attachFile catch)              - error-masking guard (Task 5)
+//   - storeFiles.ts (deleteStoreFile, "store not found" no-op)
+//   - storeFiles.ts (deleteStoreFile, "file not attached" no-op)
 //       - no-op guard (Task 2): NOT an error path (documented as "never a
 //         distinguishing error" in the function's own doc comment) -- guarded
 //         so a dying connection can't turn the no-op into a thrown error.
-//   - repository.ts:879  (deleteStoreFile catch)    - error-masking guard (Task 5)
-//   - repository.ts:914  (deleteStoreCascade, "store not found" no-op)
+//   - storeFiles.ts (deleteStoreFile catch)         - error-masking guard (Task 5)
+//   - storeFiles.ts (deleteStoreCascade, "store not found" no-op)
 //       - no-op guard (Task 2): same shape as deleteStoreFile's no-op above.
-//   - repository.ts:925  (deleteStoreCascade catch) - error-masking guard (Task 5)
+//   - storeFiles.ts (deleteStoreCascade catch)      - error-masking guard (Task 5)
 //   - blob/blobStore.ts:115 (retainBlob catch)      - error-masking guard (Task 5)
 //   - blob/blobStore.ts:157 (releaseBlob catch)     - error-masking guard (Task 5)
 //   - batches.ts:202 (discardPartialBatch catch)    - guarded from the start,
@@ -159,7 +159,11 @@ describe('a failing ROLLBACK does not mask the original error (rollback masking,
   it('blobStore.retainBlob: reports the ORIGINAL error when ROLLBACK also fails', async () => {
     const client = fakeClient((sql) => {
       if (sql === 'BEGIN') return undefined;
-      if (sql.includes('SELECT sha256 FROM file_blobs')) return { rowCount: 1, rows: [{ sha256: 'a'.repeat(64) }] };
+      if (sql.includes('pg_advisory_xact_lock')) return undefined;
+      // A live row (delete_after NULL) -> the increment branch.
+      if (sql.includes('SELECT storage, location, delete_after FROM file_blobs')) {
+        return { rowCount: 1, rows: [{ storage: 'db', location: null, delete_after: null }] };
+      }
       if (sql.includes('UPDATE file_blobs SET ref_count = ref_count + 1')) throw new Error(REAL_CAUSE_MESSAGE);
       if (sql === 'ROLLBACK') throw new Error(ROLLBACK_MESSAGE);
       throw new Error(`unexpected query in test: ${sql}`);
@@ -172,8 +176,8 @@ describe('a failing ROLLBACK does not mask the original error (rollback masking,
   it('blobStore.releaseBlob: reports the ORIGINAL error when ROLLBACK also fails', async () => {
     const client = fakeClient((sql) => {
       if (sql === 'BEGIN') return undefined;
-      // ref_count 2 -> remaining 1 -> takes the UPDATE branch, never the
-      // DELETE/physical-delete branch, so this stays a pure transaction test.
+      // ref_count 2 -> remaining 1 -> takes the decrement branch, never the
+      // pending-delete branch, so this stays a pure transaction test.
       if (sql.includes('SELECT ref_count FROM file_blobs')) return { rowCount: 1, rows: [{ ref_count: 2 }] };
       if (sql.includes('UPDATE file_blobs SET ref_count = $2')) throw new Error(REAL_CAUSE_MESSAGE);
       if (sql === 'ROLLBACK') throw new Error(ROLLBACK_MESSAGE);
@@ -215,6 +219,8 @@ function fakeBatchPool(connectImpls: Array<() => any>): any {
           rows: [{ id: 'vsfb_1', store_id: 'vs_1', cancel_requested: false, created_at: new Date() }],
         };
       }
+      // The batch's job row (jobs.createFileBatchJob), inserted before the attaches.
+      if (sql.includes('INSERT INTO fs_jobs')) return { rowCount: 1, rows: [] };
       throw new Error(`unexpected pool query in test: ${sql}`);
     }),
     connect: jest.fn(async () => {

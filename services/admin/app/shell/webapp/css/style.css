@@ -128,3 +128,39 @@ ui5-avatar-ui5[size="XS"],
 .adminShellQuotaGroup { padding: 0.75rem 0; }
 .adminShellQuotaGroup + .adminShellQuotaGroup { border-top: 1px solid var(--sapList_BorderColor, #e5e5e5); }
 .adminShellQuotaSummary { color: var(--sapContent_LabelColor, #556b82); font-size: 0.875rem; margin-top: 0.125rem; }
+
+/* Dark theme (Settings > Theme): the hard-coded colours above are light-only. UI5 sets
+   sapUiTheme-<id> on <html> at boot and on every Theming.setTheme, so these follow live.
+   The ShellBar title needs no dark rule: the `::part(title) bdi` rule above never matches (nothing
+   may follow ::part), so App.controller's inline var(--sapShell_TextColor) already applies. */
+html.sapUiTheme-sap_horizon_dark [ui5-shellbar]::part(secondaryTitle),
+html.sapUiTheme-sap_horizon_dark ui5-shellbar-ui5::part(secondaryTitle) {
+	color: var(--sapShell_SubBrand_TextColor) !important;
+}
+
+/* Security notification cards (Notifications.controller.ts): Light keeps their inline colours;
+   !important is needed to win over those inline styles, the hover ones included */
+html.sapUiTheme-sap_horizon_dark .notification-item-high {
+	background-color: var(--sapErrorBackground) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-medium {
+	background-color: var(--sapWarningBackground) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item:hover {
+	background-color: var(--sapList_Hover_Background) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-title {
+	color: var(--sapTextColor) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-message,
+html.sapUiTheme-sap_horizon_dark .notification-item-close {
+	color: var(--sapContent_LabelColor) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-close:hover {
+	background-color: var(--sapButton_Lite_Hover_Background) !important;
+}

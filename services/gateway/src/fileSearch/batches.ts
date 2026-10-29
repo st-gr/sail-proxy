@@ -23,7 +23,7 @@
 // never by the batch id alone. A `vsfb_` id carries 96 bits of entropy, but
 // unguessability is not authorization — it is a secret that can be logged,
 // pasted into a ticket, or leaked by a proxy. Every other query in this
-// codebase is scoped by predicate (see `STORE_ACCESS_PREDICATE_SQL` and
+// codebase is scoped by predicate (see `storeAccessPredicateSql` and
 // `deleteStoreFile`'s `ownerEmail` scoping); this one is too. The HTTP layer
 // establishes that the caller owns `storeId`; these functions guarantee that a
 // batch id from a different store resolves to nothing rather than to data.
@@ -31,8 +31,10 @@ import type { PoolClient } from 'pg';
 import { getPool } from './db';
 import { getDefaultLogger } from '@libs/logger';
 import { newBatchId } from './ids';
+import { createFileBatchJob } from './jobs';
 import { attachFile, driverErrorCode, FileCounts, VectorStoreFileRow, VALID_FILE_STATUSES } from './repository';
 import { PageOrder } from './pagination';
+import { attachedFileNotExpiredSql } from './fileRows';
 
 const logger = getDefaultLogger();
 
@@ -89,6 +91,24 @@ function deriveBatchStatus(cancelRequested: boolean, counts: FileCounts): BatchS
   return 'completed';
 }
 
+export interface CreateBatchJobOptions {
+  /** The acting user recorded on the job; defaults to the store's owner. */
+  startedBy?: string | null;
+  credentialId?: string | null;
+  authType?: string | null;
+  /** The store's owner, on a grounding call only. Not stored on the job: it
+   *  is stamped on each member with the credential (`attachFile`'s stamp). */
+  onBehalfOf?: string | null;
+}
+
+/** A batch member with its own values: OpenAI's `files: [{ file_id, attributes?, chunking_strategy? }]`.
+ *  Its values replace the batch's shared ones for that member (OpenAI ignores the shared ones then). */
+export interface BatchFile {
+  fileId: string;
+  attributes?: Record<string, unknown> | null;
+  chunkingStrategy?: Record<string, unknown> | null;
+}
+
 /**
  * Creates a batch over `fileIds` and attaches every one of them to `storeId`,
  * stamped with the new batch's id.
@@ -115,12 +135,16 @@ function deriveBatchStatus(cancelRequested: boolean, counts: FileCounts): BatchS
  * attachments nobody asked for. `discardPartialBatch` below undoes the whole
  * thing before the original error is rethrown, so the failure is
  * all-or-nothing from the caller's point of view.
+ *
+ * A member given as a `BatchFile` is attached with its own attributes and chunking strategy; a
+ * plain id with the shared `attributes`/`chunkingStrategy`.
  */
 export async function createBatch(
   storeId: string,
-  fileIds: string[],
+  fileIds: ReadonlyArray<string | BatchFile>,
   attributes: Record<string, unknown> | null | undefined,
   chunkingStrategy?: Record<string, unknown> | null,
+  jobOptions: CreateBatchJobOptions = {},
 ): Promise<BatchRow> {
   const pool = getPool();
   if (!pool) throw new Error('file_search database is not configured');
@@ -138,8 +162,20 @@ export async function createBatch(
   const batch = rows[0];
 
   try {
-    for (const fileId of fileIds) {
-      await attachFile(storeId, fileId, attributes, chunkingStrategy, id);
+    // Every batch is a job (jobs.ts). Created after the batch row and inside
+    // this try, so a failure here is undone by the same cleanup as a failed
+    // attach.
+    const { onBehalfOf, ...job } = jobOptions;
+    await createFileBatchJob(pool, { storeId, batchId: id, ...job });
+    // Every member is stamped with the batch's credential: its ingestion is
+    // billed like a single attach by the same caller.
+    const stamp = { credentialId: job.credentialId ?? null, authType: job.authType ?? null, onBehalfOf: onBehalfOf ?? null };
+    for (const member of fileIds) {
+      if (typeof member === 'string') {
+        await attachFile(storeId, member, attributes, chunkingStrategy, id, stamp);
+      } else {
+        await attachFile(storeId, member.fileId, member.attributes, member.chunkingStrategy, id, stamp);
+      }
     }
   } catch (attachError) {
     await discardPartialBatch(storeId, id);
@@ -152,7 +188,7 @@ export async function createBatch(
 /**
  * Undoes a `createBatch` that failed partway through: removes the chunks and
  * `vector_store_files` rows already stamped with `batchId`, then the batch row
- * itself. Scoped by `store_id` AND `batch_id`, over an id minted moments ago,
+ * and its job row. Scoped by `store_id` AND `batch_id`, over an id minted moments ago,
  * so it can only ever match rows this call created.
  *
  * LOCK ORDER: takes `vector_stores FOR UPDATE` before touching
@@ -193,8 +229,16 @@ async function discardPartialBatch(storeId: string, batchId: string): Promise<vo
           AND file_id IN (SELECT file_id FROM vector_store_files WHERE store_id = $1 AND batch_id = $2)`,
       [storeId, batchId],
     );
+    // A member already ingested while the store re-embeds has a work item.
+    await client.query(
+      `DELETE FROM fs_reembed_items
+        WHERE store_id = $1
+          AND file_id IN (SELECT file_id FROM vector_store_files WHERE store_id = $1 AND batch_id = $2)`,
+      [storeId, batchId],
+    );
     await client.query('DELETE FROM vector_store_files WHERE store_id = $1 AND batch_id = $2', [storeId, batchId]);
     await client.query('DELETE FROM vector_store_batches WHERE id = $1 AND store_id = $2', [batchId, storeId]);
+    await client.query('DELETE FROM fs_jobs WHERE batch_id = $1 AND store_id = $2', [batchId, storeId]);
     await client.query('COMMIT');
   } catch (cleanupError: any) {
     // `client` is undefined when it was the `connect()` itself that failed;
@@ -447,7 +491,10 @@ export async function listBatchFiles(
   const fetchSortDir = usingBefore ? (displaySortDir === 'ASC' ? 'DESC' : 'ASC') : displaySortDir;
 
   const { where: scopeWhere, params } = storeFileScope(storeId, batchId);
-  let where = scopeWhere;
+  // An expired file is gone from the listing at once; the cursor above still resolves it, so paging
+  // goes on. The store's and the batch's file_counts (and usage_bytes) still count it until the
+  // expiry sweeper has detached it, a few minutes at most.
+  let where = `${scopeWhere} AND ${attachedFileNotExpiredSql('vector_store_files.file_id')}`;
   if (opts.filter) {
     params.push(opts.filter);
     where += ` AND status = $${params.length}`;

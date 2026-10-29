@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
-import { getDefaultLogger } from '@libs/logger';
+import { getDefaultLogger, createHeadersPreview } from '@libs/logger';
+import { verifyGatewayServiceJwt } from '../utils/gatewayServiceJwt';
 
 const logger = getDefaultLogger();
 
@@ -92,7 +93,10 @@ export class AuthMiddleware {
     logger.trace('AuthMiddleware', '🔍 DOCKER AUTH DEBUG - All authentication headers:', {
       url: req.url,
       method: req.method,
-      allAuthHeaders,
+      // allAuthHeaders carries the raw Authorization / access-token values;
+      // this key isn't `headers`, so the logger's own redaction never sees
+      // it. Redact it the same way createHeadersPreview does before logging.
+      allAuthHeaders: createHeadersPreview(allAuthHeaders),
       hasAnyAuthHeader: Object.values(allAuthHeaders).some(v => v !== undefined),
       headerCount: Object.keys(req.headers).length,
       userAgent: req.headers['user-agent']
@@ -335,13 +339,8 @@ export class AuthMiddleware {
    */
   private async verifyGatewayJwt(token: string): Promise<JWTClaims> {
     try {
-      const secret = process.env.VALIDATION_TOKEN_SECRET || 'dev-secret-change-in-production';
-      
-      // Verify JWT with HMAC SHA256
-      const claims = jwt.verify(token, secret, {
-        algorithms: ['HS256'],
-        issuer: 'gateway-service'
-      }) as JWTClaims;
+      // Verify JWT with HMAC SHA256 (shared with the validation service's signing-key check)
+      const claims = verifyGatewayServiceJwt(token) as JWTClaims;
 
       logger.trace('AuthMiddleware', 'Gateway JWT verification successful', {
         sub: claims.sub,

@@ -33,6 +33,7 @@ import { Pool } from 'pg';
 import { buildSchemaSql } from '../../../src/fileSearch/schema.sql';
 import { createIsolatedSchema, IsolatedSchema } from './schemaFixture';
 import { getPool, runMigration, isFileSearchAvailable, __resetForTests } from '../../../src/fileSearch/db';
+import { unavailableCause } from '../../../src/fileSearch/unavailableCause';
 import { getDefaultLogger } from '@libs/logger';
 import { createFreshDatabase, dsnWithCredentials } from './dbFixture';
 
@@ -76,11 +77,17 @@ jest.mock('../../../src/fileSearch/schema.sql', () => {
 // stale copy — and asserted, not assumed, so a rename that turned this into
 // "the whole current schema" (making every test below vacuously pass) fails
 // here instead of silently.
+//
+// Only the reranker block is cut out: fs_jobs, declared after it, came later
+// still and is kept, so these tests stay about the reranker pair (fs_jobs has
+// its own upgrade test below).
 function preBranchSchemaSql(): string {
   const full = buildSchemaSql(EMBED_DIM);
   const cut = full.indexOf(`CREATE TABLE IF NOT EXISTS ${NEW_TABLES[0]}`);
   expect(cut).toBeGreaterThan(0);
-  const pre = full.slice(0, cut);
+  const resume = full.indexOf('CREATE TABLE IF NOT EXISTS fs_jobs');
+  expect(resume).toBeGreaterThan(cut);
+  const pre = full.slice(0, cut) + full.slice(resume);
   expect(pre).toContain('vector_store_chunks');
   for (const t of NEW_TABLES) expect(pre).not.toContain(`CREATE TABLE IF NOT EXISTS ${t}`);
   return pre;
@@ -192,6 +199,45 @@ d('runMigration() upgrades an already-migrated single-DSN install (requires FILE
     }
   });
 
+  // The fs_jobs upgrade: an install that already holds file batches gains the
+  // table AND one backfilled job per batch in the same migration run (the
+  // backfill INSERT comes after the CREATE TABLE in the script).
+  it('creates fs_jobs on an owner install and backfills a job for every existing batch', async () => {
+    let fixture: IsolatedSchema | undefined;
+    try {
+      fixture = await createIsolatedSchema(DSN!, EMBED_DIM);
+      // fs_reembed_items and fs_blob_migration_items came later still and reference fs_jobs.
+      await fixture.pool.query('DROP TABLE fs_blob_migration_items, fs_reembed_items, fs_jobs');
+      await fixture.pool.query(
+        `INSERT INTO vector_stores (id, owner_email, embedding_model, embedding_dim)
+         VALUES ('vs_upgrade', 'upgrade-owner@example.test', 'test-model', ${EMBED_DIM})`,
+      );
+      await fixture.pool.query(
+        `INSERT INTO vector_store_batches (id, store_id, created_at)
+         VALUES ('vsfb_a', 'vs_upgrade', now()), ('vsfb_b', 'vs_upgrade', now())`,
+      );
+
+      process.env.FILE_SEARCH_DATABASE_URL = fixture.dsn;
+      __resetForTests();
+      const errorSpy = jest.spyOn(getDefaultLogger(), 'error');
+
+      expect(await runMigration()).toBe(true);
+      expect(errorSpy).not.toHaveBeenCalled();
+
+      const { rows } = await getPool()!.query(
+        'SELECT batch_id, owner_email FROM fs_jobs ORDER BY batch_id',
+      );
+      expect(rows).toEqual([
+        { batch_id: 'vsfb_a', owner_email: 'upgrade-owner@example.test' },
+        { batch_id: 'vsfb_b', owner_email: 'upgrade-owner@example.test' },
+      ]);
+    } finally {
+      await getPool()?.end().catch(() => {});
+      __resetForTests();
+      await fixture?.teardown();
+    }
+  });
+
   // A role that holds CREATE on the schema but does not own the existing
   // tables is rejected with 42501 on `CREATE INDEX IF NOT EXISTS`, even though
   // every index already exists.
@@ -287,6 +333,7 @@ d('runMigration() upgrades an already-migrated single-DSN install (requires FILE
       // Fatal: the feature reports unavailable rather than half-migrated.
       expect(await runMigration()).toBe(false);
       expect(isFileSearchAvailable()).toBe(false);
+      expect(unavailableCause()).toBe('migration_failed');
 
       expect(errorSpy).toHaveBeenCalled();
       const reported = errorSpy.mock.calls.map((c) => String(c[1])).join('\n');

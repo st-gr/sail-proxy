@@ -9,3 +9,5 @@ using from './siem';
 using from './model-library';
 using from './tool-governance';
 using from './users';
+using from './teams';
+using from './connections';

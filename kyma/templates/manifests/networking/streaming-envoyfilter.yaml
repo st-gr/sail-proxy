@@ -4,12 +4,13 @@
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: streaming-timeouts
+  name: __ISTIO_SYSTEM_PREFIX__streaming-timeouts
   namespace: istio-system
   labels:
     app: sail-proxy
     purpose: streaming-optimization
     issue: claude-code-timeouts
+    __ISTIO_SYSTEM_NAMESPACE_LABEL__
 spec:
   workloadSelector:
     labels:

@@ -14,7 +14,7 @@
  *
  *   A unit call on the guard therefore proves nothing here. Every case below
  *   drives a REAL router module through supertest, mounted the way
- *   src/index.ts mounts it, and asserts that the malicious status DIFFERS
+ *   src/app.ts mounts it, and asserts that the malicious status DIFFERS
  *   from the clean-request baseline. Two failure modes both fall out of that:
  *   a guard that is never reached (malicious == clean == 200) and a guard
  *   that rejects everything (clean == malicious == 400).
@@ -111,6 +111,7 @@ jest.mock('../src/services/unifiedAuthProxyService', () => ({
 }));
 
 jest.mock('../src/controllers/filesController', () => mockControllerModule('filesController'));
+jest.mock('../src/controllers/uploadsController', () => mockControllerModule('uploadsController'));
 jest.mock('../src/controllers/vectorStoresController', () => mockControllerModule('vectorStoresController'));
 jest.mock('../src/controllers/apiKeyController', () => mockControllerModule('apiKeyController'));
 jest.mock('../src/controllers/awsApiKeysController', () => mockControllerModule('awsApiKeysController'));
@@ -140,6 +141,7 @@ interface Case {
 const CASES: Case[] = [
   // Already guarded before this change — kept as regression cover.
   { router: 'filesRoutes', param: 'id', method: 'get', malicious: '/openai/api/v1/files/file-abc%00def' },
+  { router: 'uploadsRoutes', param: 'id', method: 'post', malicious: '/openai/api/v1/uploads/upload_abc%00def/cancel' },
   { router: 'vectorStoresRoutes', param: 'id', method: 'get', malicious: '/openai/api/v1/vector_stores/vs_abc%00def' },
   { router: 'vectorStoresRoutes', param: 'file_id', method: 'get', malicious: '/openai/api/v1/vector_stores/vs_1/files/file_abc%00def' },
   // `:batch_id` reaches Postgres as raw text inside the file-batch handlers'
@@ -160,6 +162,7 @@ const CASES: Case[] = [
   { router: 'awsBedrockRoutes', param: 'modelId', method: 'post', malicious: '/aws-bedrock/model/anthropic.claude%00v2/invoke' },
   { router: 'awsBedrockRoutes', param: 'subpath', method: 'post', malicious: '/aws-bedrock/model/anthropic.claude-v2/invo%00ke' },
   { router: 'openRouterRoutes', param: 'id', method: 'get', malicious: '/openrouter/api/v1/files/file-abc%00def' },
+  { router: 'openRouterRoutes', param: 'id', method: 'post', malicious: '/openrouter/api/v1/uploads/upload_abc%00def/parts' },
   { router: 'openRouterRoutes', param: 'author', method: 'get', malicious: '/openrouter/api/v1/models/anthro%00pic/claude-3/endpoints' },
   { router: 'openRouterRoutes', param: 'slug', method: 'get', malicious: '/openrouter/api/v1/models/anthropic/claude%003/endpoints' },
 ];
@@ -187,6 +190,7 @@ describe('NUL-byte path-param guard — every router, driven through Express', (
   beforeAll((done) => {
     /* eslint-disable @typescript-eslint/no-var-requires */
     const filesRoutes = require('../src/routes/filesRoutes').default;
+    const uploadsRoutes = require('../src/routes/uploadsRoutes').default;
     const vectorStoresRoutes = require('../src/routes/vectorStoresRoutes').default;
     const modelRoutes = require('../src/routes/modelRoutes').default;
     const apiKeyRoutes = require('../src/routes/apiKeyRoutes').default;
@@ -198,9 +202,10 @@ describe('NUL-byte path-param guard — every router, driven through Express', (
     app = express();
     app.use(express.json());
 
-    // Mount paths mirror src/index.ts exactly.
+    // Mount paths mirror src/app.ts exactly.
     app.use('/v1/models', modelRoutes);
     app.use('/openai/api/v1/files', filesRoutes);
+    app.use('/openai/api/v1/uploads', uploadsRoutes);
     app.use('/openai/api/v1/vector_stores', vectorStoresRoutes);
     app.use('/aws-bedrock', awsBedrockRoutes);
     app.use('/aws/api-keys', awsCredentialsRoutes);

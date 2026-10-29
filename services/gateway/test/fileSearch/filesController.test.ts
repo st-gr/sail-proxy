@@ -23,7 +23,8 @@ const dbState: { available: boolean } = { available: true };
 const poolQuery: any = jest.fn();
 jest.mock('../../src/fileSearch/db', () => ({
   isFileSearchAvailable: () => dbState.available,
-  getPool: () => ({ query: poolQuery }),
+  // deleteFile runs in a transaction on a connected client: the same query mock serves both.
+  getPool: () => ({ query: poolQuery, connect: async () => ({ query: poolQuery, release: () => {} }) }),
 }));
 
 jest.mock('../../src/fileSearch/blob/blobStore', () => {
@@ -34,11 +35,20 @@ jest.mock('../../src/fileSearch/blob/blobStore', () => {
     // `instanceof`, so a mocked-away constructor would make that check
     // vacuously false (or throw) and the 503 mapping untestable.
     UnsupportedBlobBackendError: actual.UnsupportedBlobBackendError,
+    BlobUnavailableError: actual.BlobUnavailableError,
     retainBlob: jest.fn(),
     releaseBlob: jest.fn(),
-    getBackend: jest.fn(),
+    releaseBlobIn: jest.fn(),
+    openBlob: jest.fn(),
   };
 });
+
+// DELETE /files/{id} detaches the file from every store and deletes it in one transaction; that
+// transaction is the repository's (covered against a real database in the integration suites).
+const detachingDelete: any = jest.fn();
+jest.mock('../../src/fileSearch/repository', () => ({
+  deleteFileDetachingEverywhere: (...args: any[]) => detachingDelete(...args),
+}));
 
 const configState: { maxFileBytes: number } = { maxFileBytes: 33554432 };
 jest.mock('../../src/services/configService', () => ({
@@ -46,11 +56,17 @@ jest.mock('../../src/services/configService', () => ({
 }));
 
 import * as filesController from '../../src/controllers/filesController';
-import { retainBlob, releaseBlob, getBackend, UnsupportedBlobBackendError } from '../../src/fileSearch/blob/blobStore';
+import {
+  retainBlob, releaseBlob, releaseBlobIn, openBlob, UnsupportedBlobBackendError, BlobUnavailableError,
+} from '../../src/fileSearch/blob/blobStore';
 
 const mockRetainBlob = retainBlob as any;
 const mockReleaseBlob = releaseBlob as any;
-const mockGetBackend = getBackend as any;
+const mockReleaseBlobIn = releaseBlobIn as any;
+const mockOpenBlob = openBlob as any;
+
+/** The SQL statements the controller sent, in order (BEGIN/COMMIT/ROLLBACK included). */
+const sqlSent = (): string[] => poolQuery.mock.calls.map((c: any[]) => String(c[0]));
 
 function makeRes(): any {
   const res: any = { headersSent: false, statusCode: 200 };
@@ -58,6 +74,10 @@ function makeRes(): any {
   res.json = jest.fn((body: any) => { res.body = body; return res; });
   res.set = jest.fn((..._args: any[]) => res);
   res.send = jest.fn((body: any) => { res.body = body; return res; });
+  // The tooLarge branch registers `res.once('finish', ...)` (B11: destroy the
+  // request only once the 413 has actually been flushed) — a no-op here since
+  // this mock never actually finishes a response.
+  res.once = jest.fn((..._args: any[]) => res);
   return res;
 }
 
@@ -127,9 +147,11 @@ beforeEach(() => {
   dbState.available = true;
   configState.maxFileBytes = 33554432;
   poolQuery.mockReset();
+  detachingDelete.mockReset();
   mockRetainBlob.mockReset();
   mockReleaseBlob.mockReset();
-  mockGetBackend.mockReset();
+  mockReleaseBlobIn.mockReset();
+  mockOpenBlob.mockReset();
   loggerError.mockReset();
   loggerDebug.mockReset();
 });
@@ -224,6 +246,23 @@ describe('uploadFile', () => {
     expect(res.body.purpose).toBe('assistants');
   });
 
+  // OpenAI's "flexible file type for any purpose" (openai-node FilePurpose), which its file-search
+  // guide's Java and Ruby samples upload with before attaching the file to a vector store.
+  it('accepts purpose "user_data" and keeps it on the stored file', async () => {
+    mockRetainBlob.mockResolvedValue({ deduplicated: false });
+    poolQuery.mockResolvedValue({ rows: [{ created_at: new Date() }] });
+    const req = makeUploadReq(
+      buildMultipartBody('bP4', { content: Buffer.from('hello'), purpose: 'user_data', filename: 'u.txt' }),
+      { boundary: 'bP4' },
+    );
+    const res = makeRes();
+    await filesController.uploadFile(req, res, jest.fn());
+    expect(res.statusCode).toBe(200);
+    expect(res.body.purpose).toBe('user_data');
+    const insert = poolQuery.mock.calls.find(([sql]: any) => /INSERT INTO fs_files/.test(sql));
+    expect(insert[1]).toContain('user_data');
+  });
+
   it('rejects the undocumented purpose "file_search" this endpoint used to require, with 400', async () => {
     const req = makeUploadReq(buildMultipartBody('bP2', { content: Buffer.from('hello'), purpose: 'file_search' }), { boundary: 'bP2' });
     const res = makeRes();
@@ -243,6 +282,7 @@ describe('uploadFile', () => {
     // The message has to name the value a caller should have sent, or it tells
     // them nothing they can act on.
     expect(res.body.error.message).toContain('"assistants"');
+    expect(res.body.error.message).toContain('"user_data"');
     expect(mockRetainBlob).not.toHaveBeenCalled();
     expect(poolQuery).not.toHaveBeenCalled();
   });
@@ -298,6 +338,10 @@ describe('uploadFile', () => {
     expect(res.body).toMatchObject({
       object: 'file', bytes: content.length, filename: 'doc.txt', purpose: 'assistants',
     });
+    // OpenAI's File object carries `status`; a stored file is ready at once (the SDK's
+    // waitForProcessing polls for 'processed').
+    expect(res.body.status).toBe('processed');
+    expect(res.body.status_details).toBeNull();
     expect(typeof res.body.id).toBe('string');
     expect(res.body.id).toMatch(/^file-[0-9a-f]{24}$/);
     expect(typeof res.body.created_at).toBe('number');
@@ -310,8 +354,9 @@ describe('uploadFile', () => {
     // created_at is NOT bound: it comes from the database clock via now(), and
     // the stored value is read back with RETURNING so the response reports what
     // was actually written. A bound Date here would be the old behaviour, where
-    // RETURNING merely echoed the application's own guess.
-    expect(params).toEqual([res.body.id, 'owner@example.com', 'doc.txt', 'assistants', expectedSha, content.length]);
+    // RETURNING merely echoed the application's own guess. The last parameter is
+    // the expires_after seconds: null, as no expiry was asked for.
+    expect(params).toEqual([res.body.id, 'owner@example.com', 'doc.txt', 'assistants', expectedSha, content.length, null]);
     expect(sql).toMatch(/now\(\)/);
     expect(sql).toMatch(/RETURNING created_at/);
   });
@@ -534,6 +579,18 @@ describe('listFiles', () => {
     expect(params[params.length - 1]).toBe(6); // limit(5) + 1
   });
 
+  // OpenAI: "Limit can range between 1 and 10,000, and the default is 10,000"
+  // (openai-python types/file_list_params.py). The vector-store lists keep 20/100 (pagination.test.ts).
+  it.each([
+    [undefined, 10001], ['500', 501], ['10000', 10001], ['20000', 10001], ['0', 2],
+  ])('pages GET /files as OpenAI does: limit %s fetches %d rows', async (limit, fetched) => {
+    poolQuery.mockResolvedValue({ rows: [] });
+    const query = limit === undefined ? {} : { limit };
+    await filesController.listFiles(baseReq({ query }), makeRes(), jest.fn());
+    const [, params]: [string, any[]] = poolQuery.mock.calls[0];
+    expect(params[params.length - 1]).toBe(fetched);
+  });
+
   it('reports has_more/first_id/last_id from an over-fetched page', async () => {
     poolQuery.mockResolvedValue({
       rows: [
@@ -547,9 +604,58 @@ describe('listFiles', () => {
     await filesController.listFiles(req, res, jest.fn());
 
     expect(res.body.data.map((f: any) => f.id)).toEqual(['file-a', 'file-b']);
+    expect(res.body.data.every((f: any) => f.status === 'processed' && f.status_details === null)).toBe(true);
     expect(res.body.has_more).toBe(true);
     expect(res.body.first_id).toBe('file-a');
     expect(res.body.last_id).toBe('file-b');
+  });
+
+  it.each(['assistants', 'user_data'])('?purpose=%s narrows the query to files of that purpose', async (purpose) => {
+    poolQuery.mockResolvedValue({ rows: [] });
+    const res = makeRes();
+    await filesController.listFiles(baseReq({ query: { purpose, limit: '5' } }), res, jest.fn());
+    expect(res.statusCode).toBe(200);
+    const [sql, params]: [string, any[]] = poolQuery.mock.calls[0];
+    expect(sql).toMatch(/purpose = \$2/);
+    expect(params[1]).toBe(purpose);
+    expect(params[params.length - 1]).toBe(6);
+  });
+
+  it('without ?purpose= the query lists every purpose', async () => {
+    poolQuery.mockResolvedValue({ rows: [] });
+    await filesController.listFiles(baseReq({ query: { limit: '5' } }), makeRes(), jest.fn());
+    const [sql]: [string] = poolQuery.mock.calls[0];
+    expect(sql).not.toMatch(/purpose =/);
+  });
+
+  it('an empty ?purpose= is treated as absent', async () => {
+    poolQuery.mockResolvedValue({ rows: [] });
+    const res = makeRes();
+    await filesController.listFiles(baseReq({ query: { purpose: '' } }), res, jest.fn());
+    expect(res.statusCode).toBe(200);
+    expect(poolQuery).toHaveBeenCalled();
+  });
+
+  it.each(['batch', 'fine-tune', 'vision', 'ASSISTANTS'])(
+    '?purpose=%s answers an empty list without querying (no other purpose is stored)',
+    async (purpose) => {
+      const res = makeRes();
+      await filesController.listFiles(baseReq({ query: { purpose } }), res, jest.fn());
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ object: 'list', data: [], has_more: false, first_id: null, last_id: null });
+      expect(poolQuery).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a bracketed ?purpose[x]=1 (a null-prototype object) is ignored like an absent filter, never a throw', async () => {
+    poolQuery.mockResolvedValue({ rows: [] });
+    const purpose = Object.assign(Object.create(null), { x: '1' });
+    const res = makeRes();
+    const next = jest.fn();
+    await filesController.listFiles(baseReq({ query: { purpose } }), res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(poolQuery).toHaveBeenCalled();
   });
 
   it('returns an empty page — not an error, and without querying fs_files again — when the after cursor does not resolve for this owner', async () => {
@@ -661,46 +767,62 @@ describe('retrieveFile', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
       id: 'file-mine', object: 'file', bytes: 42, filename: 'mine.txt', purpose: 'assistants',
-      created_at: Math.floor(createdAt.getTime() / 1000),
+      created_at: Math.floor(createdAt.getTime() / 1000), status: 'processed', status_details: null,
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// deleteFile — decrements, does not destroy
+// deleteFile — OpenAI's "delete a file and remove it from all vector stores"
 // ---------------------------------------------------------------------------
 describe('deleteFile', () => {
-  it('404s for a file that does not exist or belongs to someone else', async () => {
-    poolQuery.mockResolvedValue({ rows: [] });
+  it('detaches the file from every store of the caller and deletes it, in the repository\'s one transaction', async () => {
+    detachingDelete.mockResolvedValue({ deleted: true, sha256: 'deadbeef'.repeat(8) });
     const res = makeRes();
     await filesController.deleteFile(baseReq({ params: { id: 'file-x' } }), res, jest.fn());
-    expect(res.statusCode).toBe(404);
+
+    expect(detachingDelete).toHaveBeenCalledWith('file-x', 'owner@example.com');
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ id: 'file-x', object: 'file', deleted: true });
+    // No statement of its own: the detach, the delete and the blob release are the repository's.
+    expect(poolQuery).not.toHaveBeenCalled();
     expect(mockReleaseBlob).not.toHaveBeenCalled();
   });
 
-  it('releases the blob (refcount decrement) rather than deleting bytes directly', async () => {
-    poolQuery.mockResolvedValue({ rows: [{ sha256: 'deadbeef'.repeat(8) }] });
-    mockReleaseBlob.mockResolvedValue({ removed: false }); // another owner still references it
+  it('404s for a file that does not exist or belongs to someone else, scoped by the caller', async () => {
+    detachingDelete.mockResolvedValue({ deleted: false });
     const res = makeRes();
-    await filesController.deleteFile(baseReq({ params: { id: 'file-x' } }), res, jest.fn());
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ id: 'file-x', object: 'file', deleted: true });
-    expect(mockReleaseBlob).toHaveBeenCalledWith('deadbeef'.repeat(8));
-    // The controller must never reach into the blob backend directly — only
-    // releaseBlob (which owns the refcount bookkeeping) may decide to delete bytes.
-    expect(mockGetBackend).not.toHaveBeenCalled();
+    await filesController.deleteFile(
+      baseReq({ params: { id: 'file-x' }, apiKeyInfo: { email: 'someone@example.com' } }), res, jest.fn(),
+    );
+    expect(detachingDelete).toHaveBeenCalledWith('file-x', 'someone@example.com');
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('file_not_found');
   });
 
-  it('scopes the delete to the caller by owner_email', async () => {
-    poolQuery.mockResolvedValue({ rows: [{ sha256: 'aa'.repeat(32) }] });
-    mockReleaseBlob.mockResolvedValue({ removed: true });
+  it('409 file_in_use only when a store of ANOTHER owner still references the file', async () => {
+    detachingDelete.mockResolvedValue({ deleted: false, inUse: true });
     const res = makeRes();
-    await filesController.deleteFile(baseReq({ params: { id: 'file-x' }, apiKeyInfo: { email: 'someone@example.com' } }), res, jest.fn());
-    const [sql, params] = poolQuery.mock.calls[0];
-    expect(sql).toMatch(/DELETE FROM fs_files/);
-    expect(sql).toMatch(/owner_email = \$2/);
-    expect(params).toEqual(['file-x', 'someone@example.com']);
+    await filesController.deleteFile(baseReq({ params: { id: 'file-x' } }), res, jest.fn());
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('file_in_use');
+  });
+
+  it('a deadlock victim answers 409 concurrent_modification (retryable), not a 500', async () => {
+    detachingDelete.mockRejectedValue(Object.assign(new Error('deadlock detected'), { code: '40P01' }));
+    const res = makeRes();
+    const next = jest.fn();
+    await filesController.deleteFile(baseReq({ params: { id: 'file-x' } }), res, next);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('concurrent_modification');
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('any other failure reaches next()', async () => {
+    detachingDelete.mockRejectedValue(new Error('connection lost'));
+    const next = jest.fn();
+    await filesController.deleteFile(baseReq({ params: { id: 'file-x' } }), makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 
@@ -727,8 +849,7 @@ describe('downloadFileContent', () => {
   it('streams back the original bytes with the stored mime type and a sanitized filename header', async () => {
     poolQuery.mockResolvedValue({ rows: [{ filename: 'evil".txt\r\nX-Injected: yes', sha256: 'ab'.repeat(32), mime: 'text/plain' }] });
     const bytes = Buffer.from('the original bytes');
-    const getFn: any = (jest.fn() as any).mockResolvedValue(bytes);
-    mockGetBackend.mockReturnValue({ get: getFn });
+    mockOpenBlob.mockResolvedValue(bytes);
 
     const res = makeRes();
     await filesController.downloadFileContent(baseReq({ params: { id: 'file-x' } }), res, jest.fn());
@@ -739,25 +860,57 @@ describe('downloadFileContent', () => {
     // No CR/LF survives — that's what would let a crafted filename inject a
     // second header line (e.g. its own Content-Disposition or a redirect).
     expect(dispositionCall[1]).not.toMatch(/[\r\n]/);
-    expect(dispositionCall[1]).toBe('attachment; filename="evil_.txt__X-Injected: yes"');
+    // The ASCII fallback matches the old sanitizer's output (both replace
+    // '"'/CR/LF with '_'); the RFC 5987 extended form is new — it carries the
+    // filename losslessly, which the fallback alone cannot for a name like this.
+    expect(dispositionCall[1]).toBe(
+      'attachment; filename="evil_.txt__X-Injected: yes"; '
+      + "filename*=UTF-8''evil%22.txt%0D%0AX-Injected%3A%20yes",
+    );
     expect(res.send).toHaveBeenCalledWith(bytes);
+    expect(mockOpenBlob).toHaveBeenCalledWith('ab'.repeat(32));
   });
 
-  it('500s (not a crash) when the row exists but the backing blob is missing', async () => {
+  it.each([
+    ['missing bytes', new BlobUnavailableError('db', 'missing')],
+    ['missing S3 credentials', new BlobUnavailableError('s3', 'not_configured',
+      'blob_storage.s3: FILE_SEARCH_S3_ACCESS_KEY_ID / FILE_SEARCH_S3_SECRET_ACCESS_KEY are not configured')],
+    ['a location outside the configured prefix', new BlobUnavailableError('s3', 'location_unreachable')],
+  ])('503s blob_storage_unavailable without storage internals for %s', async (_case, error) => {
     poolQuery.mockResolvedValue({ rows: [{ filename: 'x.txt', sha256: 'cd'.repeat(32), mime: null }] });
-    const missingGetFn: any = (jest.fn() as any).mockResolvedValue(null);
-    mockGetBackend.mockReturnValue({ get: missingGetFn });
+    mockOpenBlob.mockRejectedValue(error);
     const res = makeRes();
-    await filesController.downloadFileContent(baseReq({ params: { id: 'file-x' } }), res, jest.fn());
-    expect(res.statusCode).toBe(500);
-    expect(res.body.error.code).toBe('blob_missing');
+    const next = jest.fn();
+    await filesController.downloadFileContent(baseReq({ params: { id: 'file-x' } }), res, next);
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toEqual({
+      message: 'The file content storage is unavailable.',
+      type: 'server_error',
+      param: null,
+      code: 'blob_storage_unavailable',
+    });
+    expect(next).not.toHaveBeenCalled();
+    // The detail reaches the operator's log, not the caller.
+    expect(loggerError).toHaveBeenCalledWith('FilesController', 'Blob storage is unavailable', error);
+  });
+
+  it('uploadFile answers 503 blob_storage_unavailable when the blob cannot be stored', async () => {
+    mockRetainBlob.mockRejectedValue(new BlobUnavailableError('s3', 'request_failed', 'S3 PutObject failed: HTTP 503 SlowDown'));
+    const req = makeUploadReq(
+      buildMultipartBody('bV', { content: Buffer.from('x'), purpose: 'assistants' }), { boundary: 'bV' },
+    );
+    const res = makeRes();
+    await filesController.uploadFile(req, res, jest.fn());
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('blob_storage_unavailable');
+    expect(JSON.stringify(res.body)).not.toMatch(/S3|PutObject|SlowDown/);
   });
 });
 
 // ---------------------------------------------------------------------------
 // UnsupportedBlobBackendError -> 503 file_search_unavailable
 //
-// `getBackend()` refuses a `blob_storage.backend` of "local" or "s3" (see
+// `getBackend()` refuses a `blob_storage.backend` of "local" (see
 // blobStore.ts). That is a DEPLOYMENT MISCONFIGURATION — the same class of
 // condition as "no vector database is configured", which this module already
 // answers with 503 file_search_unavailable. It used to fall through to
@@ -765,7 +918,7 @@ describe('downloadFileContent', () => {
 // and tells a client to retry a thing that will never work.
 // ---------------------------------------------------------------------------
 describe('an unsupported blob backend', () => {
-  const backendError = (): Error => new UnsupportedBlobBackendError('s3');
+  const backendError = (): Error => new UnsupportedBlobBackendError('local');
 
   /** The full envelope, asserted field by field rather than "not 500". */
   function expectUnavailableEnvelope(res: any): void {
@@ -775,13 +928,13 @@ describe('an unsupported blob backend', () => {
     expect(res.body.error.param).toBeNull();
     // The message is the operator-facing one the error itself carries — it names
     // the offending backend and the fix.
-    expect(res.body.error.message).toContain('s3');
+    expect(res.body.error.message).toContain('local');
     expect(res.body.error.message).toContain('blob_storage.backend');
   }
 
   it('downloadFileContent answers 503 file_search_unavailable, not a generic 500', async () => {
     poolQuery.mockResolvedValue({ rows: [{ filename: 'x.txt', sha256: 'ef'.repeat(32), mime: null }] });
-    mockGetBackend.mockImplementation(() => { throw backendError(); });
+    mockOpenBlob.mockRejectedValue(backendError());
     const res = makeRes();
     const next = jest.fn();
 
@@ -808,8 +961,8 @@ describe('an unsupported blob backend', () => {
   });
 
   it('deleteFile answers 503 too', async () => {
-    poolQuery.mockResolvedValue({ rows: [{ sha256: 'ab'.repeat(32) }] });
-    mockReleaseBlob.mockRejectedValue(backendError());
+    // The blob release inside the repository's transaction is where the backend is consulted.
+    detachingDelete.mockRejectedValue(backendError());
     const res = makeRes();
     const next = jest.fn();
 
@@ -823,7 +976,7 @@ describe('an unsupported blob backend', () => {
     // The guard that keeps the mapping from swallowing real server faults: only
     // this one error class is a configuration problem.
     poolQuery.mockResolvedValue({ rows: [{ filename: 'x.txt', sha256: 'ef'.repeat(32), mime: null }] });
-    mockGetBackend.mockImplementation(() => { throw new Error('disk on fire'); });
+    mockOpenBlob.mockRejectedValue(new Error('disk on fire'));
     const res = makeRes();
     const next = jest.fn();
 
@@ -831,5 +984,111 @@ describe('an unsupported blob backend', () => {
 
     expect(next).toHaveBeenCalledWith(expect.any(Error));
     expect(res.json).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expires_after (G11) — OpenAI's FileCreateParams.ExpiresAfter, sent by both SDKs as the
+// multipart fields `expires_after[anchor]` and `expires_after[seconds]` (openai-node
+// addFormValue `${key}[${name}]`; openai-python stringify_items, nested format "brackets").
+// ---------------------------------------------------------------------------
+describe('uploadFile expires_after', () => {
+  function bodyWith(boundary: string, fields: Array<[string, string]>): Buffer {
+    const parts: Buffer[] = [Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="doc.txt"\r\n`
+      + 'Content-Type: text/plain\r\n\r\nhello\r\n', 'latin1')];
+    for (const [name, value] of [['purpose', 'assistants'] as [string, string], ...fields]) {
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`, 'latin1'));
+    }
+    parts.push(Buffer.from(`--${boundary}--\r\n`, 'latin1'));
+    return Buffer.concat(parts);
+  }
+
+  async function upload(fields: Array<[string, string]>): Promise<any> {
+    const res = makeRes();
+    await filesController.uploadFile(makeUploadReq(bodyWith('bx', fields), { boundary: 'bx' }), res, jest.fn());
+    return res;
+  }
+
+  const invalid: Array<[string, Array<[string, string]>, string]> = [
+    ['an anchor other than created_at', [['expires_after[anchor]', 'last_active_at'], ['expires_after[seconds]', '3600']], 'expires_after.anchor'],
+    ['seconds below 3600', [['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', '3599']], 'expires_after.seconds'],
+    ['seconds above 2592000', [['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', '2592001']], 'expires_after.seconds'],
+    ['non-integer seconds', [['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', '3600.5']], 'expires_after.seconds'],
+    ['non-numeric seconds', [['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', 'soon']], 'expires_after.seconds'],
+    ['empty seconds', [['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', '']], 'expires_after.seconds'],
+    ['only the anchor', [['expires_after[anchor]', 'created_at']], 'expires_after.seconds'],
+    ['only the seconds', [['expires_after[seconds]', '3600']], 'expires_after.anchor'],
+  ];
+
+  it.each(invalid)('400 invalid_request_error naming the param for %s, storing nothing', async (_label, fields, param) => {
+    const res = await upload(fields);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({ type: 'invalid_request_error', param, code: 'invalid_expires_after' });
+    expect(typeof res.body.error.message).toBe('string');
+    expect(mockRetainBlob).not.toHaveBeenCalled();
+    expect(poolQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([['3600'], ['2592000'], ['86400']])('accepts seconds=%s, stores it, and returns expires_at', async (seconds) => {
+    mockRetainBlob.mockResolvedValue({ deduplicated: false });
+    const createdAt = new Date('2026-10-13T10:00:00.000Z');
+    const expiresAt = new Date(createdAt.getTime() + Number(seconds) * 1000);
+    poolQuery.mockResolvedValue({ rows: [{ created_at: createdAt, expires_at: expiresAt }] });
+    const res = await upload([['expires_after[anchor]', 'created_at'], ['expires_after[seconds]', seconds]]);
+    expect(res.statusCode).toBe(200);
+    const [sql, params]: [string, any[]] = poolQuery.mock.calls[0];
+    expect(sql).toMatch(/expires_at/);
+    expect(params).toContain(Number(seconds));
+    expect(res.body.expires_at).toBe(Math.floor(expiresAt.getTime() / 1000));
+    // OpenAI's key order: expires_at right after created_at.
+    expect(Object.keys(res.body)).toEqual(
+      ['id', 'object', 'bytes', 'created_at', 'expires_at', 'filename', 'purpose', 'status', 'status_details']);
+  });
+
+  it('without expires_after the file object is unchanged: no expires_at key at all', async () => {
+    mockRetainBlob.mockResolvedValue({ deduplicated: false });
+    poolQuery.mockResolvedValue({ rows: [{ created_at: new Date(), expires_at: null }] });
+    const res = await upload([]);
+    expect(res.statusCode).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['id', 'object', 'bytes', 'created_at', 'filename', 'purpose', 'status', 'status_details']);
+    expect(poolQuery.mock.calls[0][1]).toContain(null);
+  });
+
+  // Only the two bracket fields are read (all four OpenAI SDKs send exactly those; none sends a
+  // JSON-encoded `expires_after`); any other part is ignored, as unknown parts always are.
+  it.each([
+    ['a bare expires_after field', [['expires_after', '{"anchor":"created_at","seconds":3600}']]],
+    ['another expires_after key', [['expires_after[days]', '1']]],
+  ] as Array<[string, Array<[string, string]>]>)('ignores %s: the file is stored without an expiry', async (_label, fields) => {
+    mockRetainBlob.mockResolvedValue({ deduplicated: false });
+    poolQuery.mockResolvedValue({ rows: [{ created_at: new Date(), expires_at: null }] });
+    const res = await upload(fields);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toHaveProperty('expires_at');
+    expect(poolQuery.mock.calls[0][1][6]).toBeNull();
+  });
+
+  it('retrieve and list return expires_at for an expiring file, and hide expired files in the query itself', async () => {
+    const createdAt = new Date('2026-10-13T10:00:00Z');
+    const expiresAt = new Date('2026-10-13T11:00:00Z');
+    poolQuery.mockResolvedValue({ rows: [{ id: 'file-e', filename: 'e.txt', purpose: 'assistants', size_bytes: '1', created_at: createdAt, expires_at: expiresAt }] });
+    const getRes = makeRes();
+    await filesController.retrieveFile(baseReq({ params: { id: 'file-e' } }), getRes, jest.fn());
+    expect(getRes.body.expires_at).toBe(Math.floor(expiresAt.getTime() / 1000));
+    expect(String(poolQuery.mock.calls[0][0])).toMatch(/expires_at IS NULL OR expires_at > now\(\)/);
+
+    poolQuery.mockClear();
+    const listRes = makeRes();
+    await filesController.listFiles(baseReq(), listRes, jest.fn());
+    expect(listRes.body.data[0].expires_at).toBe(Math.floor(expiresAt.getTime() / 1000));
+    expect(String(poolQuery.mock.calls[0][0])).toMatch(/expires_at IS NULL OR expires_at > now\(\)/);
+
+    poolQuery.mockReset();
+    poolQuery.mockResolvedValue({ rows: [] });
+    const dlRes = makeRes();
+    await filesController.downloadFileContent(baseReq({ params: { id: 'file-e' } }), dlRes, jest.fn());
+    expect(dlRes.statusCode).toBe(404);
+    expect(String(poolQuery.mock.calls[0][0])).toMatch(/f\.expires_at IS NULL OR f\.expires_at > now\(\)/);
   });
 });

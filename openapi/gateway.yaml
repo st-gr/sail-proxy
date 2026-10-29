@@ -1,0 +1,3378 @@
+openapi: 3.1.0
+info:
+  title: sail-proxy gateway
+  version: 0.11.0
+  summary: The client routes of the sail-proxy gateway.
+  description: |-
+    Every client-callable route of the sail-proxy gateway.
+
+    The vendor-compatible routes (OpenAI, Anthropic, Google Gemini, AWS Bedrock, OpenRouter) take and return the vendor's bodies; each links the vendor's API reference in `externalDocs` and says in its description what sail-proxy changes: the credential, which models it serves, parameters it drops, refuses or rewrites, extra limits, the plugins that act on the request and its own error responses. sail-proxy's own routes (models, SAP-RPT, health, service information) carry full schemas.
+
+    `x-sail-aliases` on a path item lists the other paths the same operations are served under, `x-sail-upstream` says what answers the request and `x-sail-credential` which credential it takes. Routes for operating the gateway are listed in internal-routes.json, not here. The realtime WebSocket is not an HTTP route and is not described here.
+
+    Every API key route reads the key from `Authorization: Bearer sk-…`, `x-api-key`, `x-stainless-key`, `x-goog-api-key`, `?api_key=` or `?key=`.
+servers:
+  - url: /gateway
+    description: Docker or Kyma, behind nginx
+  - url: http://127.0.0.1:3000
+    description: npm gateway
+tags:
+  - name: OpenAI
+    description: The Files, Uploads and Vector Stores routes need the file search database; without it they answer `503 file_search_unavailable`.
+  - name: Anthropic
+  - name: Google Gemini
+    description: "`{modelAndMethod}` is `<model>:generateContent`, `<model>:streamGenerateContent` or `<model>:embedContent`. Any other path or method under `/google` (for example `:countTokens`) answers `404` in the Gemini error format."
+  - name: AWS Bedrock
+    description: |-
+      `{subpath}` is `invoke`, `invoke-with-response-stream`, `converse` or `converse-stream`; any other answers `400` with the list of valid ones.
+
+      A model without a deployment is served through orchestration on all four subpaths, with one exception: `invoke` and `invoke-with-response-stream` take the model's native request body, which the gateway translates only for Claude models. For other models, such as Amazon Nova, use `converse` or `converse-stream`; `invoke` answers `400`.
+
+      The two streamed subpaths answer in AWS's binary event stream (`application/vnd.amazon.eventstream`), as Bedrock does: `invoke-with-response-stream` sends each model event as a `chunk` with base64 `bytes`, and `converse-stream` sends Converse events. An error after the stream has started arrives as an exception message.
+  - name: OpenRouter
+  - name: SAP-RPT
+  - name: Models and health
+paths:
+  /openai/v1/chat/completions:
+    x-sail-aliases:
+      - /openai/api/v1/chat/completions
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateChatCompletion
+      summary: Create a chat completion
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** every model `/v1/models` lists. A model id ending in `--deployed` is sent to its SAP AI Core deployment (OpenAI and Perplexity deployments; a deployment of another provider is not served on this route and the request is refused with `400` and code `model_not_supported` before the deployment is called; Anthropic deployments are served by `/anthropic/v1/messages`); every other model is served by SAP orchestration. Renames in `providers.openai.substitute_models` and `providers.perplexity.substitute_models` apply first. A model id of the form `<model>--<connection>` is served by that Connection (an administrator-defined provider such as Azure OpenAI or OpenAI), never by SAP AI Core; it is refused with 503 `connection_unavailable` when the Connection is inactive or has no usable credential, 409 `model_unpriced` when it has no list price, and 400 `model_route_mismatch` on a route that does not serve its family. Pseudonymization and its enforcement apply to Connection models as they do to SAP models.
+
+        **What changes in the request:**
+
+        - `model` and a non-empty `messages` are required (400 `invalid_request_error`); an embedding-only model is refused with 400 `model_not_supported`.
+        - Through orchestration only `messages`, `max_tokens`, `temperature`, `top_p`, `top_k`, `stop`, `frequency_penalty`, `presence_penalty`, `tools`, `tool_choice`, `response_format`, `stream` and `stream_options.include_usage` are carried over; other fields are not forwarded.
+        - For gpt-5 and o-series models `temperature`, `frequency_penalty` and `presence_penalty` are dropped and `max_tokens` is sent as `max_completion_tokens`.
+        - Parameters configured as unsupported for the provider or model (`unsupported_params`) are dropped; the shipped configuration drops `tools`, `tool_choice` and `response_format` for Perplexity.
+        - Image URLs sent to an Anthropic model are downloaded and sent inline.
+        - A deployment is called without streaming: `stream: true` is answered as an emulated stream where streaming emulation is configured for the model, otherwise as one JSON response. The deployment receives its upstream model name instead of the `--deployed` id.
+
+        **Pseudonymization:** in the shipped configuration (`hooks.defaults.openai`) personal data in the prompt is replaced by placeholders before the request leaves the gateway, and the placeholders in the answer are restored. The header `x-sail-proxy-pseudonymization: off` or the body field `pseudonymization_off: true` skip it only where the configuration allows a user bypass (the shipped configuration does not). The plugins run for `--deployed` models too: the deployment receives the masked prompt, with the note on placeholders in a system message, and the answer (or the emulated stream) is restored before it is returned. When pseudonymization is enforced for the route or the model but the active configuration would not run it for this request (no hook for this route, a hook without the pseudonymization plugin, or one whose match does not fit the request), the request is refused with 503 `pseudonymization_hook_missing` before anything is sent upstream. Where it is enforced, a request's own `masking` settings can add categories and patterns but never remove or exempt any. When pseudonymization is enforced for the route or the model and the request cannot be masked, it is refused with 503 `pseudonymization_failed` and not sent.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `tool_not_entitled` in OpenAI's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/chat/create
+      x-sail-upstream: Orchestration; a --deployed OpenAI or Perplexity model goes to its deployment
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A chat completion, or with `stream: true` a server-sent event stream of chunks, as OpenAI defines them."
+        "400":
+          description: A missing `model` or `messages`, or a model that serves embeddings only.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`), or a tool policy refused a declared tool (`tool_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openai/v1/embeddings:
+    x-sail-aliases:
+      - /openai/api/v1/embeddings
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateEmbedding
+      summary: Create embeddings
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** models with the embedding capability, served by SAP orchestration's embedding module; a `--deployed` id is sent under its base name. A model id of the form `<model>--<connection>` is served by that Connection (an administrator-defined provider such as Azure OpenAI or OpenAI), never by SAP AI Core; it is refused with 503 `connection_unavailable` when the Connection is inactive or has no usable credential, 409 `model_unpriced` when it has no list price, and 400 `model_route_mismatch` on a route that does not serve its family. The input checks and limits below are SAP AI Core's and apply to SAP models only; a Connection model's input goes to the provider as sent.
+
+        **What changes in the request:**
+
+        - `model` and `input` are required (400 `missing_required_fields`); a model without the embedding capability, and a model the catalogue does not list, are refused with 400 `model_not_supported`. 404 `model_not_found` comes only when the model list cannot be fetched from SAP AI Core.
+        - `input` is a string or a non-empty array of strings; every element is embedded and `data[i].index` is its position in the array, `usage` counts the whole request. Token arrays (`number[]`, `number[][]`), an empty array and an array of more than 256 elements are refused with 400 `invalid_input`. SAP AI Core limits a request to 300000 tokens: when it rejects the request (any 4xx), the same status is returned with SAP's message (code `embedding_request_rejected`) and retrying cannot help; other upstream failures answer 500 `embedding_generation_failed`.
+        - `encoding_format`, `dimensions` and `user` are not forwarded.
+        - No plugin and no tool governance run on this route: the input is embedded as sent and never pseudonymized, also where pseudonymization is enforced for chat.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/embeddings/create
+      x-sail-upstream: Orchestration embeddings
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "An embeddings list (`object: list`, one `embedding` per returned item, `usage.prompt_tokens` and `total_tokens`), as OpenAI defines it."
+        "400":
+          description: A missing `model` or `input`, an `input` that is not a non-empty array of at most 256 strings (`invalid_input`), a model that is unknown or has no embedding capability (`model_not_supported`), or a request SAP AI Core rejects, such as one over its 300000-token limit (`embedding_request_rejected`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model list could not be fetched from SAP AI Core, so the model could not be looked up (`model_not_found`). An unknown model is answered 400 `model_not_supported`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          description: SAP AI Core did not produce the embedding (`embedding_generation_failed`), or another failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openai/v1/responses:
+    x-sail-aliases:
+      - /openai/api/v1/responses
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateResponse
+      summary: Create a model response
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** a deployment that serves the Responses API natively (a deployed GPT-5 or later or o-series model, or one flagged with `supports_responses_api`) receives the request almost unchanged; a bare model name whose `--deployed` twin can serve it natively is moved to the twin. Every other model in the catalogue is served through SAP orchestration, with the Responses request translated to orchestration and the answer back. A deployed model that cannot serve the Responses API, and a model not in the catalogue, are refused with 400 `model_not_supported`. A model id of the form `<model>--<connection>` is served by that Connection (an administrator-defined provider such as Azure OpenAI or OpenAI), never by SAP AI Core; it is refused with 503 `connection_unavailable` when the Connection is inactive or has no usable credential, 409 `model_unpriced` when it has no list price, and 400 `model_route_mismatch` on a route that does not serve its family. Pseudonymization and its enforcement apply to Connection models as they do to SAP models.
+
+        **What changes in the request:**
+
+        - `model` is required (400).
+        - Natively served: the deployment receives its upstream model name; configured unsupported parameters are dropped and configured parameter renames applied.
+        - Through orchestration: an input item type the translation does not know is refused with 400 `unsupported_input_item`.
+
+        **Plugins (shipped configuration, `hooks.defaults.openai.responses` and `responses-stream`):**
+
+        - pseudonymization (as on chat completions; when it is enforced but the active configuration would not run it for this request the request is refused with 503 `pseudonymization_hook_missing`, and a request that cannot be masked with 503 `pseudonymization_failed`);
+        - the `web_search` tool is run by the gateway with Perplexity sonar-pro on SAP AI Core, at most `capabilities.web_search.max_searches_per_request` searches per request (1 to 10, default 3);
+        - the `file_search` tool searches the caller's vector stores in the gateway (at most `capabilities.file_search.tool.max_searches_per_request` searches, 1 to 10, default 3);
+        - remote `input_image` URLs are normalised for the orchestration path, namespaced tools are flattened and custom tools translated (`capabilities.namespace_tools`, `capabilities.custom_tools`).
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `tool_not_entitled` in OpenAI's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/responses/create
+      x-sail-upstream: Deployment for a deployed GPT-5 or later or o-series model; orchestration for other models
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A response object, or with `stream: true` a server-sent event stream of Responses events, as OpenAI defines them."
+        "400":
+          description: A missing `model`, a model that cannot serve the Responses API (`model_not_supported`), or an unsupported input item (`unsupported_input_item`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`), or a tool policy refused a declared tool (`tool_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openai/v1/images/generations:
+    x-sail-aliases:
+      - /openai/api/v1/images/generations
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateImage
+      summary: Generate an image
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **What changes in the request (JSON body):**
+
+        - `model` must be a Google image model with a deployment on SAP AI Core (the bare name or its `--deployed` id); any other model is answered 404 `model_not_found`.
+        - Each image is one Gemini `generateContent` call to that deployment; `n` is 1 to 4.
+        - `size` is `1024x1024`, `1536x1024`, `1024x1536` or `auto`; `quality` `high` asks for 2K and `max` for 4K, `standard`, `low`, `medium`, `xhigh` and `auto` are accepted and ignored.
+        - `response_format` must be `b64_json` (the gateway stores no images) and `output_format` `png`. `stream`, `partial_images`, `background` and `moderation` other than their defaults, and `style`, `input_fidelity` and `output_compression` are refused with 400 `unsupported_parameter`.
+        - The answer carries `b64_json` images, `output_format: png`, `size` and token `usage` summed over the calls.
+
+        No pseudonymization or tool governance run on this route.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`. Both the requested id and the deployment it resolves to must be entitled.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/images/create
+      x-sail-upstream: Deployed Gemini image model (JSON body)
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: An images response with `b64_json` images, as OpenAI defines it.
+        "400":
+          description: A missing `model` or `prompt`, or a parameter the gateway does not support (`missing_parameter`, `invalid_value`, `unsupported_parameter`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model is not a Google image model with a deployment (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          description: An internal failure of the gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "502":
+          description: SAP AI Core refused or could not be reached (`upstream_error`), or the model returned no image (`no_image`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "503":
+          description: SAP AI Core answered 503 (`upstream_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openai/v1/images/edits:
+    x-sail-aliases:
+      - /openai/api/v1/images/edits
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateImageEdit
+      summary: Edit an image
+      description: |-
+        **Credential:** a sail-proxy API key. An AWS SigV4 signature does not work here: the gateway verifies a signature against the JSON body it captured, and a multipart body is not captured.
+
+        **What changes in the request (multipart body):**
+
+        - The body must be `multipart/form-data` (400 `invalid_content_type`, `invalid_multipart_body`).
+        - At most 4 `image` parts, each PNG, JPEG or WebP of at most 20 MiB (400 `file_too_large`); a `mask` is refused (Gemini edits by instruction).
+        - Text fields such as `prompt` are limited to 32 KB each (400 `field_too_large`).
+        - `model` must be a Google image model with a deployment on SAP AI Core (the bare name or its `--deployed` id); any other model is answered 404 `model_not_found`.
+        - Each image is one Gemini `generateContent` call to that deployment; `n` is 1 to 4.
+        - `size` is `1024x1024`, `1536x1024`, `1024x1536` or `auto`; `quality` `high` asks for 2K and `max` for 4K, `standard`, `low`, `medium`, `xhigh` and `auto` are accepted and ignored.
+        - `response_format` must be `b64_json` (the gateway stores no images) and `output_format` `png`. `stream`, `partial_images`, `background` and `moderation` other than their defaults, and `style`, `input_fidelity` and `output_compression` are refused with 400 `unsupported_parameter`.
+        - The answer carries `b64_json` images, `output_format: png`, `size` and token `usage` summed over the calls.
+
+        No pseudonymization or tool governance run on this route.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`. Both the requested id and the deployment it resolves to must be entitled.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/images/createEdit
+      x-sail-upstream: Deployed Gemini image model (multipart body)
+      x-sail-credential: Gateway API key (a multipart body cannot be SigV4-signed)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: An images response with `b64_json` images, as OpenAI defines it.
+        "400":
+          description: Not multipart, a malformed body, an image or field over its limit, a mask, or a parameter the gateway does not support.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model is not a Google image model with a deployment (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          description: An internal failure of the gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "502":
+          description: SAP AI Core refused or could not be reached (`upstream_error`), or the model returned no image (`no_image`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "503":
+          description: SAP AI Core answered 503 (`upstream_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openai/v1/files:
+    x-sail-aliases:
+      - /openai/api/v1/files
+      - /openrouter/api/v1/files
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiUploadFile
+      summary: Upload a file
+      description: |-
+        The file lands in the gateway's own file store for the `file_search` tool; nothing is sent to OpenAI.
+
+        **What changes in the request:**
+
+        - `purpose` must be `assistants` or `user_data` (400 `invalid_purpose`); other purposes are not stored.
+        - `expires_after[anchor]` must be `created_at` and `expires_after[seconds]` 3600 to 2592000 (400 `invalid_expires_after`).
+        - The filename is at most 255 characters (400 `invalid_filename`).
+        - The file is at most `capabilities.file_search.limits.max_file_bytes` (32 MiB in the shipped configuration); a larger one is refused with 413 `file_too_large` while it streams in.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/files/create
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused); a multipart body cannot be SigV4-signed
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file object.
+        "400":
+          description: A missing or malformed part, or an invalid `purpose`, filename or `expires_after`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "413":
+          description: The file exceeds `max_file_bytes` (`file_too_large`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiListFiles
+      summary: List files
+      description: |-
+        Lists the caller's files in the gateway's file store.
+
+        - `?purpose=` filters; a purpose the gateway does not store answers an empty list.
+        - `limit`, `order`, `after` and `before` page the list; `limit` is at most 10000, the default.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/files/list
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: A list of file objects.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/files/{id}:
+    x-sail-aliases:
+      - /openai/api/v1/files/{id}
+      - /openrouter/api/v1/files/{id}
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveFile
+      summary: Retrieve a file
+      description: |-
+        One of the caller's files.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/files/retrieve
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file object.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such file for this owner (`file_not_found`); another owner's file is answered the same way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    delete:
+      tags:
+        - OpenAI
+      operationId: openaiDeleteFile
+      summary: Delete a file
+      description: |-
+        Deletes one of the caller's files and detaches it from the caller's vector stores. A file another owner's vector store still uses is not deleted (409 `file_in_use`).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/files/delete
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: "The deletion status (`deleted: true`)."
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such file for this owner (`file_not_found`); another owner's file is answered the same way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "409":
+          description: Another owner's vector store uses the file (`file_in_use`), or a concurrent change (`concurrent_modification`, retry).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/files/{id}/content:
+    x-sail-aliases:
+      - /openai/api/v1/files/{id}/content
+      - /openrouter/api/v1/files/{id}/content
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveFileContent
+      summary: Download a file's content
+      description: |-
+        The original bytes of one of the caller's files.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/files/retrieve-contents
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file content.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such file for this owner (`file_not_found`); another owner's file is answered the same way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/uploads:
+    x-sail-aliases:
+      - /openai/api/v1/uploads
+      - /openrouter/api/v1/uploads
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateUpload
+      summary: Start a multi-part upload
+      description: |-
+        Starts an upload of a large file in parts into the gateway's file store; the completed upload is an ordinary file with the rules of `POST /openai/v1/files`.
+
+        - `bytes` is at most `max_file_bytes` (400 `file_too_large`); `filename`, `purpose` and `expires_after` follow the Files rules; `mime_type` must be a valid media type.
+        - An owner may have at most 10 pending uploads (400 `too_many_pending_uploads`).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/uploads/create
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: "The upload object (`status: pending`)."
+        "400":
+          description: A missing or invalid parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/uploads/{id}/parts:
+    x-sail-aliases:
+      - /openai/api/v1/uploads/{id}/parts
+      - /openrouter/api/v1/uploads/{id}/parts
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiAddUploadPart
+      summary: Add a part to an upload
+      description: |-
+        The part is the multipart field `data`, at most 48 MiB or `max_file_bytes` if that is smaller (413).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/uploads/add-part
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused); a multipart body cannot be SigV4-signed
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The upload part object.
+        "400":
+          description: Not multipart or a malformed body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such upload for this owner (`upload_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          description: The part exceeds the part size limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/uploads/{id}/complete:
+    x-sail-aliases:
+      - /openai/api/v1/uploads/{id}/complete
+      - /openrouter/api/v1/uploads/{id}/complete
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCompleteUpload
+      summary: Complete an upload into a file
+      description: |-
+        Completes an upload into a file. `part_ids` names 1 to 1000 parts in order; an optional `md5` is checked.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/uploads/complete
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The upload object with the created file.
+        "400":
+          description: Invalid `part_ids` or `md5`, an upload that is not pending, or parts that do not make up the upload (`invalid_part_id`, `upload_size_mismatch`, `md5_mismatch`, `file_too_large`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such upload for this owner (`upload_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/uploads/{id}/cancel:
+    x-sail-aliases:
+      - /openai/api/v1/uploads/{id}/cancel
+      - /openrouter/api/v1/uploads/{id}/cancel
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCancelUpload
+      summary: Cancel an upload
+      description: |-
+        Cancels a pending upload.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/uploads/cancel
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: "The upload object (`status: cancelled`)."
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such upload for this owner (`upload_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores
+      - /openrouter/api/v1/vector_stores
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateVectorStore
+      summary: Create a vector store
+      description: |-
+        Creates a vector store for the caller.
+
+        Vector stores live in the gateway; files are chunked and embedded there (`capabilities.file_search`: chunking, embedding model, at most `limits.max_files_per_store` files per store, 10000 in the shipped configuration).
+
+        `chunking_strategy` is `auto` or `static` in OpenAI's ranges (400 otherwise).
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/create
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store object.
+        "400":
+          description: The body or a query parameter is invalid (for example a `chunking_strategy` other than `auto` or `static` in OpenAI's ranges, or invalid attributes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiListVectorStores
+      summary: List vector stores
+      description: |-
+        Lists the caller's vector stores.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/list
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: A list of vector store objects.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}
+      - /openrouter/api/v1/vector_stores/{id}
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveVectorStore
+      summary: Retrieve a vector store
+      description: |-
+        One of the caller's vector stores.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/retrieve
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store object.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiModifyVectorStore
+      summary: Modify a vector store
+      description: |-
+        Changes the name, metadata or expiry of one of the caller's vector stores.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/modify
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store object.
+        "400":
+          description: The body or a query parameter is invalid (for example a `chunking_strategy` other than `auto` or `static` in OpenAI's ranges, or invalid attributes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    delete:
+      tags:
+        - OpenAI
+      operationId: openaiDeleteVectorStore
+      summary: Delete a vector store
+      description: |-
+        Deletes one of the caller's vector stores.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/delete
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The deletion status.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/files:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/files
+      - /openrouter/api/v1/vector_stores/{id}/files
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateVectorStoreFile
+      summary: Add a file to a vector store
+      description: |-
+        Attaches one of the caller's files to a vector store; chunking and embedding run in the gateway.
+
+        `chunking_strategy` is `auto` or `static` in OpenAI's ranges (400 otherwise).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store file object.
+        "400":
+          description: The body or a query parameter is invalid (for example a `chunking_strategy` other than `auto` or `static` in OpenAI's ranges, or invalid attributes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "409":
+          description: "A conflict: the store has expired (`vector_store_expired`), its embedding dimensions differ from the configured ones (`embedding_dimension_mismatch`), the file is already attached (`file_already_attached`), or a concurrent change to the same file (`concurrent_modification`, retry)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiListVectorStoreFiles
+      summary: List a vector store's files
+      description: |-
+        Lists the files of a vector store.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: A list of vector store file objects.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/files/{file_id}:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/files/{file_id}
+      - /openrouter/api/v1/vector_stores/{id}/files/{file_id}
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveVectorStoreFile
+      summary: Retrieve a vector store file
+      description: |-
+        One file of a vector store, with its effective chunking strategy.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store file object.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiUpdateVectorStoreFile
+      summary: Update a vector store file's attributes
+      description: |-
+        Replaces the attributes of a vector store file.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The vector store file object.
+        "400":
+          description: The body or a query parameter is invalid (for example a `chunking_strategy` other than `auto` or `static` in OpenAI's ranges, or invalid attributes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+    delete:
+      tags:
+        - OpenAI
+      operationId: openaiDeleteVectorStoreFile
+      summary: Remove a file from a vector store
+      description: |-
+        Removes a file from a vector store (the file itself is kept).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The deletion status.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "409":
+          description: A concurrent change to the same file (`concurrent_modification`, retry).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/files/{file_id}/content:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/files/{file_id}/content
+      - /openrouter/api/v1/vector_stores/{id}/files/{file_id}/content
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveVectorStoreFileContent
+      summary: Download a vector store file's content
+      description: |-
+        The extracted text of a vector store file, reassembled from its chunks.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-files
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file content, as OpenAI defines it.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/file_batches:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/file_batches
+      - /openrouter/api/v1/vector_stores/{id}/file_batches
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCreateVectorStoreFileBatch
+      summary: Add a batch of files to a vector store
+      description: |-
+        Attaches several of the caller's files at once (`file_ids`, or `files` with per-file `attributes` and `chunking_strategy`).
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-file-batches
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file batch object.
+        "400":
+          description: The body or a query parameter is invalid (for example a `chunking_strategy` other than `auto` or `static` in OpenAI's ranges, or invalid attributes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "409":
+          description: "A conflict: the store has expired (`vector_store_expired`), its embedding dimensions differ from the configured ones (`embedding_dimension_mismatch`), the file is already attached (`file_already_attached`), or a concurrent change to the same file (`concurrent_modification`, retry)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/file_batches/{batch_id}:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/file_batches/{batch_id}
+      - /openrouter/api/v1/vector_stores/{id}/file_batches/{batch_id}
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiRetrieveVectorStoreFileBatch
+      summary: Retrieve a file batch
+      description: |-
+        One file batch.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-file-batches
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file batch object.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/file_batches/{batch_id}/cancel:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/file_batches/{batch_id}/cancel
+      - /openrouter/api/v1/vector_stores/{id}/file_batches/{batch_id}/cancel
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiCancelVectorStoreFileBatch
+      summary: Cancel a file batch
+      description: |-
+        Cancels a file batch.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-file-batches
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The file batch object.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/file_batches/{batch_id}/files:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/file_batches/{batch_id}/files
+      - /openrouter/api/v1/vector_stores/{id}/file_batches/{batch_id}/files
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenAI
+      operationId: openaiListVectorStoreFileBatchFiles
+      summary: List a file batch's files
+      description: |-
+        Lists the files of a file batch.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores-file-batches
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: A list of vector store file objects.
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /openai/v1/vector_stores/{id}/search:
+    x-sail-aliases:
+      - /openai/api/v1/vector_stores/{id}/search
+      - /openrouter/api/v1/vector_stores/{id}/search
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - OpenAI
+      operationId: openaiSearchVectorStore
+      summary: Search a vector store
+      description: |-
+        Searches a vector store in the gateway: hybrid vector and lexical retrieval, optionally reranked, as configured under `capabilities.file_search`.
+
+        - `max_num_results` is an integer from 1 to 50 (default 10).
+        - `ranking_options.ranker` is `none` (no rerank), `auto`, `default-2024-11-15` or `default_2024_08_21`; `ranking_options.score_threshold` is a number.
+        - `rewrite_query` is a boolean.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Credential:** a sail-proxy API key that belongs to a user. Files, uploads and vector stores belong to the key's e-mail, and another owner's object is answered 404 like one that does not exist. A request without an owner (an AWS SigV4 signature carries none) is answered 401 `authentication_required`. On a standalone gateway every key shares one owner.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Availability:** answered 503 `file_search_unavailable` when file search is switched off (`capabilities.file_search.enabled`) or its database is not set up, 503 `blob_storage_unavailable` when the file content storage cannot be reached, and 503 `file_search_busy` when no database connection is free.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/vector-stores/search
+      x-sail-upstream: Gateway file store for the file_search tool
+      x-sail-credential: Gateway API key of a user (files belong to the key's e-mail; an AWS SigV4 signature carries no owner and is refused)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: A page of search results, as OpenAI defines it.
+        "400":
+          description: An invalid `query`, `filters`, `max_num_results`, `ranking_options` or `rewrite_query`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/FileStoreUnauthorized"
+        "404":
+          description: No such vector store, file or batch for this owner (`vector_store_not_found`, `vector_store_file_not_found`, `vector_store_file_batch_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          $ref: "#/components/responses/FileStoreUnavailable"
+  /anthropic/v1/messages:
+    post:
+      tags:
+        - Anthropic
+      operationId: anthropicCreateMessage
+      summary: Create a message
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** renames in `providers.anthropic.substitute_models` apply first. A model with a deployment (`--deployed`) is called at its SAP AI Core deployment; every other model is served by SAP orchestration. A model the catalogue does not list is answered 404 `not_found_error` in Anthropic's format.
+
+        **What changes in the request:**
+
+        - Through orchestration the system prompt is sent as text, and only `messages`, `temperature`, `max_tokens`, `top_p`, `top_k`, `stop_sequences`, `tools` and `tool_choice` are carried over (`frequency_penalty` and `presence_penalty` too when a rename points at a non-Anthropic model; `max_tokens` is left out for an OpenAI model). Other fields are not forwarded.
+        - At a deployment, `model` and `stream` are removed from the body, `anthropic_version` is filled in from the model's configuration when missing, and the `anthropic-beta` header (or a body `anthropic_beta`) is filtered through `providers.anthropic.supported_beta_headers` and `excluded_beta_headers` and through flags SAP AI Core rejected for that model in the last 30 minutes.
+        - A streamed request is streamed natively, emulated where configured, or answered without streaming when the model cannot stream.
+
+        **Pseudonymization:** in the shipped configuration (`hooks.defaults.anthropic`) personal data in the prompt is replaced by placeholders before the request leaves the gateway, and the placeholders in the answer are restored. The header `x-sail-proxy-pseudonymization: off` or the body field `pseudonymization_off: true` skip it only where the configuration allows a user bypass (the shipped configuration does not). For the deployed Claude models the shipped configuration adds per-model hooks: the `web_search` server tool is run by the gateway with Perplexity sonar-pro on SAP AI Core (a streamed request makes at most `capabilities.web_search.max_searches_per_request` searches per request (1 to 10, default 3)), empty assistant messages are removed, responses are cached, and for newer models cache-control scopes are stripped, tool blocks repaired and oversized images resized. When pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, the request is refused with 503 `pseudonymization_hook_missing`; when it cannot be masked, with 503 `pseudonymization_failed`. Either way it is not sent.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `permission_error` in Anthropic's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` (in the gateway's error format).
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Errors:** authentication, entitlement and quota refusals use the gateway's error format; everything else uses Anthropic's.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/messages
+      x-sail-upstream: Orchestration; a --deployed Anthropic model goes to its deployment
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A message, or with `stream: true` a server-sent event stream, as Anthropic defines them."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: A tool policy refused a declared tool (Anthropic's format, `permission_error`), or the model is not entitled (gateway format, `model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AnthropicError"
+                  - $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model is not in the catalogue (`not_found_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Both in the gateway's error format; either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: Any other error, in Anthropic's error format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+  /anthropic/v1/messages/count_tokens:
+    post:
+      tags:
+        - Anthropic
+      operationId: anthropicCountTokens
+      summary: Count the tokens of a message
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **What the gateway does:** it estimates the count itself, with no upstream call. The request is translated to OpenAI's format and counted with a local tokenizer for the model after `providers.anthropic.substitute_models` renames; for Claude models (`claude…`, `anthropic--…`) 346 tokens are added when tools are declared (not for `mcp__` tools under a `claude-code` beta header) and the sum is multiplied by 1.15, rounded; for Grok models 480 and 1.03 the same way.
+
+        It never fails: a body without `model` or `messages`, and any error while counting, is answered `{"input_tokens": 1}`.
+
+        No quota, plugin or tool governance runs on this route.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/messages-count-tokens
+      x-sail-upstream: Counted in the gateway, no upstream call
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The estimated count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicTokenCount"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+  /anthropic/v1/models:
+    get:
+      tags:
+        - Anthropic
+      operationId: anthropicListModels
+      summary: List models
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        The Claude models (provider `anthropic`, or an id containing `claude`) of the gateway's model list that the caller is entitled to, in Anthropic's list format: one page (`has_more: false`), `display_name` equal to the id, `created_at` from the model's creation time. Query parameters are ignored.
+
+        No quota runs on this route.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/models-list
+      x-sail-upstream: The Claude models the key may use, in Anthropic's list format
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The models, in Anthropic's list format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicModelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /anthropic/v1/models/{model_id}:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - Anthropic
+      operationId: anthropicRetrieveModel
+      summary: Retrieve a model
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        One model of `GET /anthropic/v1/models`; any other id, including one the caller is not entitled to, is answered 404 `not_found_error`.
+
+        No quota runs on this route.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/models/retrieve
+      x-sail-upstream: One of the Claude models the key may use
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The model, in Anthropic's format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicModel"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Not a Claude model the caller may use (`not_found_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /anthropic/v1/complete:
+    post:
+      tags:
+        - Anthropic
+      operationId: anthropicComplete
+      summary: Create a message (legacy path)
+      description: |-
+        The handler of `POST /anthropic/v1/messages` under the legacy path: it takes a Messages request body, not a Text Completions one.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** renames in `providers.anthropic.substitute_models` apply first. A model with a deployment (`--deployed`) is called at its SAP AI Core deployment; every other model is served by SAP orchestration. A model the catalogue does not list is answered 404 `not_found_error` in Anthropic's format.
+
+        **What changes in the request:**
+
+        - Through orchestration the system prompt is sent as text, and only `messages`, `temperature`, `max_tokens`, `top_p`, `top_k`, `stop_sequences`, `tools` and `tool_choice` are carried over (`frequency_penalty` and `presence_penalty` too when a rename points at a non-Anthropic model; `max_tokens` is left out for an OpenAI model). Other fields are not forwarded.
+        - At a deployment, `model` and `stream` are removed from the body, `anthropic_version` is filled in from the model's configuration when missing, and the `anthropic-beta` header (or a body `anthropic_beta`) is filtered through `providers.anthropic.supported_beta_headers` and `excluded_beta_headers` and through flags SAP AI Core rejected for that model in the last 30 minutes.
+        - A streamed request is streamed natively, emulated where configured, or answered without streaming when the model cannot stream.
+
+        **Pseudonymization:** in the shipped configuration (`hooks.defaults.anthropic`) personal data in the prompt is replaced by placeholders before the request leaves the gateway, and the placeholders in the answer are restored. The header `x-sail-proxy-pseudonymization: off` or the body field `pseudonymization_off: true` skip it only where the configuration allows a user bypass (the shipped configuration does not). For the deployed Claude models the shipped configuration adds per-model hooks: the `web_search` server tool is run by the gateway with Perplexity sonar-pro on SAP AI Core (a streamed request makes at most `capabilities.web_search.max_searches_per_request` searches per request (1 to 10, default 3)), empty assistant messages are removed, responses are cached, and for newer models cache-control scopes are stripped, tool blocks repaired and oversized images resized. When pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, the request is refused with 503 `pseudonymization_hook_missing`; when it cannot be masked, with 503 `pseudonymization_failed`. Either way it is not sent.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `permission_error` in Anthropic's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` (in the gateway's error format).
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Errors:** authentication, entitlement and quota refusals use the gateway's error format; everything else uses Anthropic's.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/messages
+      x-sail-upstream: Same handler as /anthropic/v1/messages; takes a Messages request body
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A message, or with `stream: true` a server-sent event stream, as Anthropic defines them."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: A tool policy refused a declared tool (Anthropic's format, `permission_error`), or the model is not entitled (gateway format, `model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AnthropicError"
+                  - $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model is not in the catalogue (`not_found_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Both in the gateway's error format; either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: Any other error, in Anthropic's error format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+  /anthropic/v1/messages-beta:
+    post:
+      tags:
+        - Anthropic
+      operationId: anthropicCreateMessageBeta
+      summary: Create a message (beta path)
+      description: |-
+        The handler of `POST /anthropic/v1/messages` under a second path.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** renames in `providers.anthropic.substitute_models` apply first. A model with a deployment (`--deployed`) is called at its SAP AI Core deployment; every other model is served by SAP orchestration. A model the catalogue does not list is answered 404 `not_found_error` in Anthropic's format.
+
+        **What changes in the request:**
+
+        - Through orchestration the system prompt is sent as text, and only `messages`, `temperature`, `max_tokens`, `top_p`, `top_k`, `stop_sequences`, `tools` and `tool_choice` are carried over (`frequency_penalty` and `presence_penalty` too when a rename points at a non-Anthropic model; `max_tokens` is left out for an OpenAI model). Other fields are not forwarded.
+        - At a deployment, `model` and `stream` are removed from the body, `anthropic_version` is filled in from the model's configuration when missing, and the `anthropic-beta` header (or a body `anthropic_beta`) is filtered through `providers.anthropic.supported_beta_headers` and `excluded_beta_headers` and through flags SAP AI Core rejected for that model in the last 30 minutes.
+        - A streamed request is streamed natively, emulated where configured, or answered without streaming when the model cannot stream.
+
+        **Pseudonymization:** in the shipped configuration (`hooks.defaults.anthropic`) personal data in the prompt is replaced by placeholders before the request leaves the gateway, and the placeholders in the answer are restored. The header `x-sail-proxy-pseudonymization: off` or the body field `pseudonymization_off: true` skip it only where the configuration allows a user bypass (the shipped configuration does not). For the deployed Claude models the shipped configuration adds per-model hooks: the `web_search` server tool is run by the gateway with Perplexity sonar-pro on SAP AI Core (a streamed request makes at most `capabilities.web_search.max_searches_per_request` searches per request (1 to 10, default 3)), empty assistant messages are removed, responses are cached, and for newer models cache-control scopes are stripped, tool blocks repaired and oversized images resized. When pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, the request is refused with 503 `pseudonymization_hook_missing`; when it cannot be masked, with 503 `pseudonymization_failed`. Either way it is not sent.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `permission_error` in Anthropic's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` (in the gateway's error format).
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Errors:** authentication, entitlement and quota refusals use the gateway's error format; everything else uses Anthropic's.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.anthropic.com/en/api/messages
+      x-sail-upstream: Same handler as /anthropic/v1/messages
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A message, or with `stream: true` a server-sent event stream, as Anthropic defines them."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: A tool policy refused a declared tool (Anthropic's format, `permission_error`), or the model is not entitled (gateway format, `model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AnthropicError"
+                  - $ref: "#/components/schemas/GatewayError"
+        "404":
+          description: The model is not in the catalogue (`not_found_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Both in the gateway's error format; either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: Any other error, in Anthropic's error format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+  /google/v1beta/models/{modelAndMethod}:
+    x-sail-aliases:
+      - /google/v1/models/{modelAndMethod}
+    parameters:
+      - name: modelAndMethod
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - Google Gemini
+      operationId: geminiModelMethod
+      summary: Generate, stream or embed content ({model}:generateContent, :streamGenerateContent, :embedContent)
+      description: |-
+        The path segment is `<model>:<method>`, the shape the `@google/genai` SDK builds; `generateContent`, `streamGenerateContent` and `embedContent` are served (the embeddings reference is https://ai.google.dev/api/embeddings). Any other method, and any other path under `/google/v1beta` or `/google/v1`, is answered 404 in the Gemini error format.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials. The `x-goog-api-key` header and `?key=` that Gemini clients send are read like `x-api-key`.
+
+        **Models:** renames in `providers.google.substitute_models` apply first. A Gemini model with a Google deployment on SAP AI Core is served natively; every other model in the catalogue (Claude, GPT, Mistral, an undeployed Gemini model) is served by SAP orchestration with a Gemini-to-orchestration translation. `embedContent` uses the orchestration embedding scenario first and a Google embedding deployment otherwise. Image output (`responseModalities` with `IMAGE`) needs a Google deployment; without one the request is refused with 400.
+
+        **What changes in the request:** the same limits apply on both paths: tools other than `functionDeclarations` (hosted tools) are refused, `candidateCount` above 1 is refused, function calls and responses must pair up turn by turn (all 400). Through orchestration, `temperature` and `topP` are dropped for Claude and gpt-5 models where SAP refuses them.
+
+        **Plugins:** the hooks configured for the `google` endpoint run (the shipped configuration configures none). Pseudonymization masks the system instruction, the text parts of `contents` and the tool calls and tool results in them (`functionCall.args`, `functionResponse.response`). When pseudonymization is enforced for the route or the model, `generateContent` and `streamGenerateContent` are refused with 503 `pseudonymization_hook_missing` when the active configuration would not run it for the request, and with 503 `pseudonymization_failed` when the request cannot be masked; neither is sent. `embedContent` is never pseudonymized: the pseudonymization plugin is skipped for it, enforced or not, and the other hooks run.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `PERMISSION_DENIED` in the Gemini error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 in the Gemini error format; both the requested id and the one it is routed to must be entitled.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Errors:** in the Gemini format `{error: {code, message, status}}`, except authentication and quota refusals, which use the gateway's formats.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://ai.google.dev/api/generate-content
+      x-sail-upstream: Deployed Gemini model, or orchestration; :embedContent goes to an embedding model
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: A `GenerateContentResponse`, a server-sent event stream of them for `streamGenerateContent`, or an `EmbedContentResponse`, as the Gemini API defines them.
+        "400":
+          description: A request the gateway does not accept (hosted tools, `candidateCount` above 1, unpaired function calls) or image output for a model without a Google deployment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not entitled, or a tool policy refused a declared tool (`PERMISSION_DENIED`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+        "404":
+          description: An unsupported method, or a model the gateway cannot serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Both in the gateway's error format; either way the request is not sent upstream. `:embedContent` is never pseudonymized and never refused this way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: Any other error, in the Gemini API's error format; a failure after the stream started arrives as one error frame.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+  /aws-bedrock/model/{modelId}/{subpath}:
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: subpath
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - AWS Bedrock
+      operationId: bedrockModelOperation
+      summary: Invoke or converse with a model (subpath invoke, invoke-with-response-stream, converse or converse-stream)
+      description: |-
+        `subpath` is `invoke`, `invoke-with-response-stream`, `converse` or `converse-stream` (400 otherwise).
+
+        **Credential:** an AWS SigV4 signature made with gateway-issued AWS credentials (what the AWS SDKs send), or a sail-proxy API key.
+
+        **Models:** renames in `providers.aws-bedrock.substitute_models` apply first; the model must be a Bedrock model of the catalogue (404 when unknown, 400 when it is not a Bedrock model). A model with a deployment is called at its SAP AI Core deployment: `model` and `stream` are removed from the body, `anthropic_version` is filled in when missing and `anthropic_beta` is filtered as on `/anthropic/v1/messages`. A model without one is served by SAP orchestration through the `/anthropic/v1/messages` flow: `invoke` takes an Anthropic Messages body and only for Claude models (400 otherwise), `converse` bodies are translated to Messages and the answer back.
+
+        Streams are AWS event-stream frames, as from Bedrock.
+
+        **Pseudonymization:** in the shipped configuration (`hooks.defaults.aws-bedrock`) personal data in the prompt is replaced by placeholders before the request leaves the gateway, and the placeholders in the answer are restored. The header `x-sail-proxy-pseudonymization: off` or the body field `pseudonymization_off: true` skip it only where the configuration allows a user bypass (the shipped configuration does not). The per-model hooks of `/anthropic/v1/messages` (web search and the rest) apply to the deployed Claude models here too. For a model served through orchestration the plugins of `/anthropic/v1/messages` run instead; pseudonymization enforced for `aws-bedrock` still applies to it. The shipped configuration runs pseudonymization on all four subpaths. For a deployed model it masks Anthropic messages bodies and Converse bodies (`converse`, `converse-stream`, and the Amazon Nova body on `invoke`): the system prompt, message text, tool-call inputs and tool results; the answer is restored, streamed or not. When pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, the request is refused with 503 `pseudonymization_hook_missing`; when it cannot be masked, or its body is one pseudonymization cannot read (a `prompt`, `inputText` or `message` body), with 503 `pseudonymization_failed`. Either way it is not sent.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 in Bedrock's format (`{message}`, `x-amzn-ErrorType: AccessDeniedException`).
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` (in the gateway's error format).
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+
+        **Errors:** for a model served through orchestration in Bedrock's format, `{message}` with an `x-amzn-ErrorType` header; the gateway's own refusals and errors from a deployment in the gateway's error format.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_Operations_Amazon_Bedrock_Runtime.html
+      x-sail-upstream: Deployment for a --deployed model, orchestration otherwise
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The model's answer (`invoke`), a Converse response (`converse`) or an AWS event stream (`-stream` subpaths), as Bedrock defines them.
+        "400":
+          description: An unknown subpath, a model that is not a Bedrock model, or `invoke` on a non-Claude model without a deployment.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/GatewayError"
+                  - $ref: "#/components/schemas/BedrockError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not entitled (gateway format), or a tool policy refused a declared tool (Bedrock format).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/GatewayError"
+                  - $ref: "#/components/schemas/BedrockError"
+        "404":
+          description: The model is not in the catalogue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked, or its body is one pseudonymization cannot read (`pseudonymization_failed`). Both in the gateway's error format, also for a model served through orchestration; either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: in Bedrock's format for a model served through orchestration, otherwise in the gateway's error format."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/GatewayError"
+                  - $ref: "#/components/schemas/BedrockError"
+  /openrouter/api/v1/chat/completions:
+    post:
+      tags:
+        - OpenRouter
+      operationId: openrouterCreateChatCompletion
+      summary: Create a chat completion
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** a `provider/name` model id loses its provider prefix (Claude 3 and 4 names under `anthropic/` get the `anthropic--` prefix of the catalogue), renames in `providers.openrouter.substitute_models` apply, and a missing `max_tokens` is filled in from `openrouter.model_mappings` where the configuration has one.
+
+        The request is then served exactly as `POST /openai/v1/chat/completions` (deployments, orchestration, dropped parameters, pseudonymization, including for `--deployed` models), without that route's `openai`/`perplexity` renames.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `tool_not_entitled` in OpenAI's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api-reference/chat-completion
+      x-sail-upstream: As /openai/v1/chat/completions
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A chat completion, or with `stream: true` a server-sent event stream of chunks, as OpenAI defines them."
+        "400":
+          description: A missing `model` or `messages`, or a model that serves embeddings only.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`), or a tool policy refused a declared tool (`tool_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openrouter/api/v1/completions:
+    post:
+      tags:
+        - OpenRouter
+      operationId: openrouterCreateCompletion
+      summary: Create a completion (legacy)
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        Served by the chat completions handler: the body must be a chat completions body with `messages`; a body with only `prompt` is refused with 400.
+
+        **Models:** a `provider/name` model id loses its provider prefix (Claude 3 and 4 names under `anthropic/` get the `anthropic--` prefix of the catalogue), renames in `providers.openrouter.substitute_models` apply, and a missing `max_tokens` is filled in from `openrouter.model_mappings` where the configuration has one.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `tool_not_entitled` in OpenAI's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api-reference/overview
+      x-sail-upstream: Handled like chat completions
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A chat completion, or with `stream: true` a server-sent event stream of chunks, as OpenAI defines them."
+        "400":
+          description: A missing `model` or `messages`, or a model that serves embeddings only.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`), or a tool policy refused a declared tool (`tool_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Both in the gateway's error format; either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openrouter/api/v1/responses:
+    post:
+      tags:
+        - OpenRouter
+      operationId: openrouterCreateResponse
+      summary: Create a model response
+      description: |-
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        Served by the handler of `POST /openai/v1/responses`, with the same models, plugins and errors; no model renames run on this path.
+
+        **Tool governance:** the caller's tool policies are applied to the tools the request declares: monitored, stripped (the model is told which tools were removed) or refused with 403 `tool_not_entitled` in OpenAI's error format.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled`.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api/reference/responses/overview
+      x-sail-upstream: As /openai/v1/responses
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: "A response object, or with `stream: true` a server-sent event stream of Responses events, as OpenAI defines them."
+        "400":
+          description: A missing `model`, a model that cannot serve the Responses API (`model_not_supported`), or an unsupported input item (`unsupported_input_item`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`), or a tool policy refused a declared tool (`tool_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "503":
+          description: Pseudonymization is enforced for the route or the model but the active configuration would not run it for this request, because there is no hook for this route, the hook lacks the pseudonymization plugin, or its match does not fit the request (`pseudonymization_hook_missing`). Pseudonymization is enforced for the route or the model and the request could not be masked (`pseudonymization_failed`). Either way the request is not sent upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openrouter/api/v1/models:
+    get:
+      tags:
+        - OpenRouter
+      operationId: openrouterListModels
+      summary: List models
+      description: |-
+        The gateway's model list in OpenRouter's format, built from the SAP AI Core model list; it is not filtered by the caller's entitlement.
+
+        **Credential:** optional. A request without a key is answered too, through the gateway's local key check (unless `UNIFIED_AUTH_FALLBACK_TO_LOCAL=false`).
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api/api-reference/models/get-models
+      x-sail-upstream: Model list in OpenRouter format
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+        - {}
+      responses:
+        "200":
+          description: The models, in OpenRouter's list format.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openrouter/api/v1/models/{author}/{slug}/endpoints:
+    parameters:
+      - name: author
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - OpenRouter
+      operationId: openrouterListModelEndpoints
+      summary: List a model's endpoints
+      description: |-
+        The endpoints entry for the model whose canonical slug is `author/slug`, built from the SAP AI Core model list.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials. A request without a key whose user agent contains `GitHubCopilot` is answered too, through the gateway's local key check.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api/api-reference/endpoints/list-endpoints
+      x-sail-upstream: Model list from SAP AI Core, in OpenRouter's endpoints format
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The model's endpoints, in OpenRouter's format.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No model with that slug.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        default:
+          description: "Any other error: what SAP AI Core or the deployment answered, passed on in the gateway's error format. SAP's error fields are filtered; the templated prompt is never returned."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /openrouter/api/v1/generation:
+    get:
+      tags:
+        - OpenRouter
+      operationId: openrouterGetGeneration
+      summary: Get generation statistics (placeholder)
+      description: |-
+        A placeholder: the gateway keeps no generation statistics and always answers `status: not_implemented`.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api-reference/get-a-generation
+      x-sail-upstream: "None: the gateway answers a status not_implemented placeholder"
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The placeholder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenRouterGenerationPlaceholder"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+  /openrouter/api/v1/credits:
+    get:
+      tags:
+        - OpenRouter
+      operationId: openrouterGetCredits
+      summary: Get credits (placeholder)
+      description: |-
+        A placeholder: the gateway keeps no OpenRouter credits and always answers `status: not_implemented` with `credits: null`.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 with `Retry-After` and `X-RateLimit-*` headers.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://openrouter.ai/docs/api-reference/get-credits
+      x-sail-upstream: "None: the gateway answers a status not_implemented placeholder"
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The placeholder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenRouterCreditsPlaceholder"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+  /sap/v1/rpt/{model}/predict:
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - SAP-RPT
+      operationId: sapRptPredict
+      summary: Predict from JSON rows
+      description: |-
+        Tabular prediction from JSON rows. No vendor reference: the body is SAP-RPT's, which the gateway forwards as it is.
+
+        **Credential:** a sail-proxy API key instead of the vendor's key (see the security schemes), or an AWS SigV4 signature made with gateway-issued AWS credentials.
+
+        **Models:** `{model}` is a SAP-RPT model with a deployment on SAP AI Core, by its bare name or `--deployed` id; renames in `providers.sap-rpt.substitute_models` apply first.
+
+        **What the gateway does:** it resolves the deployment, adds the SAP AI Core credentials, forwards the body unchanged and relays SAP's answer unchanged: status, body and the `content-type`, `ai-inference-id`, `x-request-id` and `x-upstream-service-time` headers, including SAP's own validation errors (400, 422). It validates nothing itself. No plugin, masking or tool governance runs and nothing streams. Usage is counted in cells from the response's `metadata` (`num_rows` x `num_columns` in, `num_predictions` out); a refused call counts nothing.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` in the SAP shape.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 in the SAP shape (the quota details in `detail[0].quota`) with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Errors:** the gateway's own refusals use SAP's error shape (`detail[]` and `status`), so a client parses one shape whichever side refused.
+
+        **Limits:** a JSON body above the configured request size (`maxRequestSize`, 10 MB by default) is refused with 413 (in the gateway's error format).
+      x-sail-upstream: Deployed SAP-RPT model, JSON rows
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RptPredictionRequest"
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The predictions, relayed from SAP.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptPredictionResponse"
+        "401":
+          description: No key or an invalid key (`gateway_auth`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "404":
+          description: No deployment of that model (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "429":
+          description: A rate limit or quota is exhausted (`quota_exceeded`).
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/Retry-After"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "502":
+          description: The deployment could not be reached (`upstream_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        default:
+          description: "Any other status: SAP's own answer, relayed unchanged (for example its 400 and 422 validation errors)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+  /sap/v1/rpt/{model}/predict-parquet:
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - SAP-RPT
+      operationId: sapRptPredictParquet
+      summary: Predict from a Parquet file
+      description: |-
+        Tabular prediction from a Parquet file: the multipart request is streamed to the deployment unchanged, so the gateway cannot read it; usage is still counted from the response.
+
+        **Credential:** a sail-proxy API key. An AWS SigV4 signature does not work here: the gateway verifies a signature against the JSON body it captured, and a multipart body is not captured.
+
+        **Models:** `{model}` is a SAP-RPT model with a deployment on SAP AI Core, by its bare name or `--deployed` id; renames in `providers.sap-rpt.substitute_models` apply first.
+
+        **What the gateway does:** it resolves the deployment, adds the SAP AI Core credentials, forwards the body unchanged and relays SAP's answer unchanged: status, body and the `content-type`, `ai-inference-id`, `x-request-id` and `x-upstream-service-time` headers, including SAP's own validation errors (400, 422). It validates nothing itself. No plugin, masking or tool governance runs and nothing streams. Usage is counted in cells from the response's `metadata` (`num_rows` x `num_columns` in, `num_predictions` out); a refused call counts nothing.
+
+        **Entitlement:** a model outside the caller's entitlement catalog is refused with 403 `model_not_entitled` in the SAP shape.
+
+        **Quota:** the caller's rate limits and quotas apply (per key, user and team; on a standalone gateway 100 requests per minute per key unless `RATE_LIMIT_RPM` says otherwise). A refusal is 429 in the SAP shape (the quota details in `detail[0].quota`) with `Retry-After` and `X-RateLimit-*` headers.
+
+        **Errors:** the gateway's own refusals use SAP's error shape (`detail[]` and `status`), so a client parses one shape whichever side refused.
+      x-sail-upstream: Deployed SAP-RPT model, Parquet file
+      x-sail-credential: Gateway API key (a multipart body cannot be SigV4-signed)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              description: SAP-RPT's multipart form (a Parquet file and its prediction settings), forwarded unchanged.
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+      responses:
+        "200":
+          description: The predictions, relayed from SAP.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptPredictionResponse"
+        "401":
+          description: No key or an invalid key (`gateway_auth`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "403":
+          description: The model is not in the caller's entitlement catalog (`model_not_entitled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "404":
+          description: No deployment of that model (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "429":
+          description: A rate limit or quota is exhausted (`quota_exceeded`).
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/Retry-After"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        "502":
+          description: The deployment could not be reached (`upstream_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+        default:
+          description: "Any other status: SAP's own answer, relayed unchanged (for example its 400 and 422 validation errors)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RptError"
+  /v1/models:
+    x-sail-aliases:
+      - /openai/v1/models
+    get:
+      tags:
+        - Models and health
+      operationId: listModels
+      summary: List models
+      description: |-
+        The models a request can be routed to, in OpenAI's list format: the SAP AI Core foundation models with the orchestration scenario that are not deprecated, and each running deployment as `<model>--deployed`, after the overrides in `models.overrides`, and each model an administrator published on a Connection as `<model>--<connection>` (served by that Connection's provider, not by SAP AI Core). Filtered by the caller's entitlement catalog.
+
+        - The list is cached for `SAP_MODEL_CACHE_DURATION_SECONDS` (300 by default); `?refresh=true` bypasses the cache.
+        - `?include=unroutable` adds the foundation models the gateway cannot route, marked `routable: false`.
+        - With `SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES=true` each model carries SAP AI Core's attributes as well (`accessType`, `routable`, `streamingSupported`, versions, deployment details).
+
+        **Credential:** a sail-proxy API key or an AWS SigV4 signature. No quota runs on this route.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/models/list
+      x-sail-upstream: Model list from SAP AI Core
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          description: "`true` fetches the list from SAP AI Core instead of the cache."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: include
+          in: query
+          required: false
+          description: "`unroutable` adds the models the gateway cannot route."
+          schema:
+            type: string
+            enum:
+              - unroutable
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          description: SAP AI Core could not be asked for the list; its status, in the gateway's error format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /v1/models/{model_id}:
+    x-sail-aliases:
+      - /openai/v1/models/{model_id}
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - Models and health
+      operationId: retrieveModel
+      summary: Retrieve a model
+      description: |-
+        One model of `GET /v1/models`, including the Connection models (`<model>--<connection>`). An id with a date or version suffix (`-20250101`, `-2025-01-01`, `-v2`) that is not listed falls back to its base name.
+
+        An id the list does not contain, or a model the caller is not entitled to, is answered 404 `model_not_found_error`.
+
+        `?refresh=true` bypasses the model cache.
+
+        **Credential:** a sail-proxy API key or an AWS SigV4 signature. No quota runs on this route.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/models/retrieve
+      x-sail-upstream: One model of the model list from SAP AI Core
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          description: "`true` fetches the list from SAP AI Core instead of the cache."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The model.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No model has that id, or the caller is not entitled to it (`model_not_found_error`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+        default:
+          description: SAP AI Core could not be asked for the list; its status, in the gateway's error format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayError"
+  /v1/models/cache/clear:
+    x-sail-aliases:
+      - /openai/v1/models/cache/clear
+    post:
+      tags:
+        - Models and health
+      operationId: clearModelsCache
+      summary: Clear the gateway's model cache
+      description: |-
+        Empties the gateway's in-memory model list cache, so the next request fetches the list from SAP AI Core. Any valid key may call it.
+
+        **Credential:** a sail-proxy API key or an AWS SigV4 signature.
+      x-sail-upstream: The gateway's in-memory model cache, no upstream call
+      x-sail-credential: Gateway API key or AWS SigV4 signature (gateway-issued AWS credentials)
+      security:
+        - apiKeyBearer: []
+        - apiKeyHeader: []
+        - googApiKeyHeader: []
+        - awsSigV4: []
+      responses:
+        "200":
+          description: The cache is empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheCleared"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /health:
+    get:
+      tags:
+        - Models and health
+      operationId: getHealth
+      summary: Health check
+      description: The unauthenticated liveness probe of the gateway.
+      x-sail-upstream: The gateway
+      x-sail-credential: None
+      parameters:
+        - name: response_wait
+          in: query
+          required: false
+          description: "Only when the gateway runs with `DEBUG=true`: waits this many seconds (1 to 660) before answering, to exercise client timeouts. Ignored otherwise."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 660
+      security: []
+      responses:
+        "200":
+          description: The gateway is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /:
+    get:
+      tags:
+        - Models and health
+      operationId: getServiceInfo
+      summary: Service information
+      description: "Static service information: the gateway's name, deploy target and the route prefixes it serves."
+      x-sail-upstream: The gateway
+      x-sail-credential: None
+      security: []
+      responses:
+        "200":
+          description: The service information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+components:
+  securitySchemes:
+    apiKeyBearer:
+      type: http
+      scheme: bearer
+      description: "A sail-proxy API key as `Authorization: Bearer <key>`. Only a token that starts with `sk-` is read as a key."
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: A sail-proxy API key in `x-api-key`. The same key is also read from `x-stainless-key` and from the query parameter `api_key`.
+    googApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: A sail-proxy API key in `x-goog-api-key`, as Gemini clients send it, or in the query parameter `key`.
+    awsSigV4:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: "An AWS Signature Version 4 (`AWS4-HMAC-SHA256 Credential=…`, with `X-Amz-Date`) made with AWS credentials the gateway issued. The signature covers the JSON body, so it works only on routes with a JSON body or none. A malformed header or date is answered 401, an unknown credential or a wrong signature 403, and 503 when the credential cannot be validated, each as `{error: {code, message, timestamp}}`."
+  headers:
+    Retry-After:
+      description: Seconds until the exhausted window resets.
+      schema:
+        type: integer
+    X-RateLimit-Limit:
+      description: The limit that was exceeded.
+      schema:
+        type: string
+    X-RateLimit-Remaining:
+      description: What is left of it (0).
+      schema:
+        type: string
+    X-RateLimit-Reset:
+      description: When the window resets, in Unix seconds.
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: No API key, an invalid one, a deactivated user (`user_deactivated`), or an AWS signature with a malformed header or date, in the gateway's error format (`authentication_error`). Every route answers this one in the gateway's format, whatever format the vendor uses.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    FileStoreUnauthorized:
+      description: No key, an invalid key, or a credential without an owner (`authentication_required`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    FileStoreUnavailable:
+      description: File search is unavailable (`file_search_unavailable`, `file_search_busy`) or its content storage cannot be reached (`blob_storage_unavailable`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    PayloadTooLarge:
+      description: The JSON body is larger than the configured request size (`maxRequestSize`, 10 MB by default).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    QuotaExceeded:
+      description: A rate limit (`rate_limit_exceeded`) or a token or spend quota (`quota_exceeded`) of the key, user or team is exhausted.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/X-RateLimit-Limit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/X-RateLimit-Remaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/X-RateLimit-Reset"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QuotaError"
+  schemas:
+    GatewayError:
+      type: object
+      description: The gateway's error format, OpenAI's envelope. Further fields depend on the error (`param`, `help`, `details`, `model`, `catalog`); a refused AWS signature has `code`, `message` and `timestamp` and no `type`.
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              description: For example `authentication_error`, `invalid_request_error`, `model_not_entitled`, `file_search_unavailable`, `api_error`.
+            code:
+              type:
+                - string
+                - integer
+                - "null"
+              description: A machine-readable code, or the HTTP status.
+            param:
+              type:
+                - string
+                - "null"
+    QuotaError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - type
+            - scope
+            - dimension
+            - window
+            - limit
+            - used
+            - resets_at
+          properties:
+            type:
+              type: string
+              enum:
+                - rate_limit_exceeded
+                - quota_exceeded
+            scope:
+              type: string
+              enum:
+                - user
+                - key
+                - team
+            team:
+              type: string
+              description: The team's name, when the scope is `team`.
+            dimension:
+              type: string
+              enum:
+                - requests
+                - tokens
+                - spend
+            window:
+              type: string
+              examples:
+                - minute
+                - hour
+                - day
+                - week
+                - month
+            limit:
+              type: number
+            used:
+              type: number
+            resets_at:
+              type: string
+              format: date-time
+    AnthropicError:
+      type: object
+      required:
+        - type
+        - error
+      properties:
+        type:
+          const: error
+        error:
+          type: object
+          required:
+            - type
+            - message
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+    GeminiError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+            - status
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+            status:
+              type: string
+              examples:
+                - INVALID_ARGUMENT
+                - PERMISSION_DENIED
+                - NOT_FOUND
+    BedrockError:
+      type: object
+      required:
+        - message
+      description: Bedrock's error body; the error type is in the `x-amzn-ErrorType` header.
+      properties:
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - deployTarget
+        - timestamp
+        - message
+      properties:
+        status:
+          const: healthy
+        service:
+          const: gateway
+        deployTarget:
+          type: string
+          enum:
+            - local
+            - docker
+            - btp
+            - xsa
+          description: "`DEPLOY_TARGET`; `local` for the npm gateway."
+        timestamp:
+          type: string
+          format: date-time
+        message:
+          type: string
+        simulatedDelay:
+          type: integer
+          minimum: 1
+          maximum: 660
+          description: The seconds waited, when `response_wait` was given.
+    ServiceInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+        - version
+        - service
+        - deployTarget
+        - status
+        - endpoints
+      properties:
+        message:
+          type: string
+        version:
+          type: string
+          description: A fixed string, not the release version.
+        service:
+          const: gateway
+        deployTarget:
+          type: string
+          enum:
+            - local
+            - docker
+            - btp
+            - xsa
+        status:
+          type: string
+        endpoints:
+          type: object
+          description: Route prefixes by area.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+        availableFiles:
+          type: object
+          additionalProperties:
+            type: string
+    Model:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - owned_by
+      description: A model in OpenAI's format. With `SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES=true` it carries SAP AI Core's attributes as further properties.
+      properties:
+        id:
+          type: string
+          description: The SAP AI Core model name; `<model>--deployed` for a deployment.
+          examples:
+            - gpt-5-mini
+            - anthropic--claude-4.5-sonnet--deployed
+        object:
+          const: model
+        created:
+          type: number
+          description: Unix seconds.
+        owned_by:
+          type: string
+          description: The provider SAP AI Core names.
+        accessType:
+          type: string
+          enum:
+            - foundation
+            - deployment
+        routable:
+          type: boolean
+          description: Whether a request for the model can be routed (`false` only with `include=unroutable`).
+        streamingSupported:
+          type: boolean
+    ModelList:
+      type: object
+      additionalProperties: false
+      required:
+        - object
+        - data
+      properties:
+        object:
+          const: list
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Model"
+    CacheCleared:
+      type: object
+      additionalProperties: false
+      required:
+        - success
+        - message
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+    AnthropicTokenCount:
+      type: object
+      additionalProperties: false
+      required:
+        - input_tokens
+      properties:
+        input_tokens:
+          type: integer
+          minimum: 1
+    AnthropicModel:
+      type: object
+      required:
+        - type
+        - id
+        - display_name
+        - created_at
+      properties:
+        type:
+          const: model
+        id:
+          type: string
+        display_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    AnthropicModelList:
+      type: object
+      required:
+        - data
+        - has_more
+        - first_id
+        - last_id
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnthropicModel"
+        has_more:
+          const: false
+        first_id:
+          type:
+            - string
+            - "null"
+        last_id:
+          type:
+            - string
+            - "null"
+    OpenRouterGenerationPlaceholder:
+      type: object
+      required:
+        - status
+        - message
+      properties:
+        status:
+          const: not_implemented
+        message:
+          type: string
+    OpenRouterCreditsPlaceholder:
+      type: object
+      required:
+        - status
+        - message
+        - object
+        - credits
+      properties:
+        status:
+          const: not_implemented
+        message:
+          type: string
+        object:
+          const: credit_summary
+        credits:
+          type: "null"
+    RptPredictionRequest:
+      type: object
+      required:
+        - prediction_config
+        - rows
+      description: SAP-RPT's request, forwarded unchanged; SAP validates it (for example at most 10 target columns).
+      properties:
+        prediction_config:
+          type: object
+          required:
+            - target_columns
+          properties:
+            target_columns:
+              type: array
+              items:
+                type: object
+                required:
+                  - name
+                properties:
+                  name:
+                    type: string
+                  task_type:
+                    type: string
+                    enum:
+                      - classification
+                      - regression
+                  prediction_placeholder:
+                    type: string
+                    description: The value that marks the cells to predict.
+                    examples:
+                      - "[PREDICT]"
+            explanations:
+              type: object
+              description: sap-rpt-1.5 and later.
+              properties:
+                top_column_scores:
+                  type: integer
+                top_relevant_context_rows:
+                  type: integer
+            context_mode:
+              type: string
+              enum:
+                - default
+                - deep
+        index_column:
+          type: string
+          description: The column that identifies a row in the predictions.
+        rows:
+          type: array
+          description: Context rows first, then the rows to predict.
+          items:
+            type: object
+            additionalProperties: true
+        data_schema:
+          type: object
+          description: 'Column types, for example `{"Open Days": {"dtype": "numeric"}}`.'
+    RptPredictionResponse:
+      type: object
+      description: SAP-RPT's answer, relayed unchanged.
+      properties:
+        id:
+          type: string
+        metadata:
+          type: object
+          properties:
+            num_rows:
+              type: integer
+            num_columns:
+              type: integer
+            num_query_rows:
+              type: integer
+            num_predictions:
+              type: integer
+            context_mode:
+              type: string
+        predictions:
+          type: array
+          description: One entry per query row, keyed by its index value, with one list of `{prediction, confidence, confidence_interval}` per target column.
+          items:
+            type: object
+            additionalProperties: true
+        explanations:
+          type: object
+        status:
+          type: object
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+    RptError:
+      type: object
+      required:
+        - detail
+        - status
+      description: SAP-RPT's error shape, used for the gateway's own refusals on this route too.
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            required:
+              - loc
+              - msg
+              - type
+            properties:
+              loc:
+                type: array
+                items:
+                  type:
+                    - string
+                    - integer
+              msg:
+                type: string
+              type:
+                type: string
+                description: The gateway's are `gateway_auth`, `model_not_entitled`, `model_not_found`, `quota_exceeded` and `upstream_unavailable`.
+              quota:
+                type: object
+                description: The quota refusal's details, on `quota_exceeded`.
+        status:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+        id:
+          type: string

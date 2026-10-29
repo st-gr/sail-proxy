@@ -139,6 +139,12 @@ export interface FileCitationAnnotation {
    */
   start_index: number;
   end_index: number;
+  /**
+   * An EXTENSION, like `start_index`/`end_index`: the pages (first and last) of the cited
+   * passage, present only when its file has pages. Never in a file's `attributes`, which
+   * belong to the user.
+   */
+  pages?: { first: number; last: number };
 }
 
 export interface CitedMessage {
@@ -340,6 +346,7 @@ export function buildCitations(
       index: start + needle.length - 1,
       start_index: start,
       end_index: start + needle.length,
+      ...(h.pages ? { pages: { first: h.pages.first, last: h.pages.last } } : {}),
     }];
   });
 

@@ -12,7 +12,7 @@ sap.ui.define([
 				var oFx = expectations.expect.fixtures;
 				var bAdmin = expectations.expect.isAdmin;
 				// the real shell page (its own bootstrap + ushell mock), relative to this test page
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../../index.html?sap-language=EN");
 				Then.onTheShell.iSeeTheProfile(expectations.email, expectations.expect.shell.userRoleLabel);
 				// An administrator's summary covers every user and adds the "Active users" tile; a user's
 				// covers their own usage, whose seeded tokens (fixtures.js quota.seededTokens) are exact.

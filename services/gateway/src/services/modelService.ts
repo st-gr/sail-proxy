@@ -2,6 +2,11 @@ import axios, { AxiosResponse } from 'axios';
 import * as dotenv from 'dotenv';
 import configService from './configService';
 import { getDefaultLogger } from '@libs/logger';
+import { rebaseDeploymentUrl } from '../utils/sapDeploymentUrl';
+import { sapRequest, sapTiming } from '../utils/sapRequest';
+import { connectionRegistry } from '../connections/connectionRegistry';
+import { externalModelEntry, mergeExternalModels } from '../connections/mergeExternalModels';
+import { currentSapTarget, isLatestSapTarget, onSapTargetChange, withSapTarget, type SapTarget } from '../sap/sapTarget';
 const logger = getDefaultLogger();
 
 dotenv.config();
@@ -9,6 +14,8 @@ dotenv.config();
 // Type definitions
 interface TokenCache {
   token: string | null;
+  /** The target the token was issued for: a request pinned to an older target never gets it. */
+  fingerprint: string | null;
   expiresAt: number;
 }
 
@@ -41,14 +48,10 @@ interface AuthTokenResponse {
   expires_in: number;
 }
 
-// Configuration from environment variables
-const authUrl = process.env.AUTH_URL;
-const clientId = process.env.CLIENT_ID;
-const clientSecret = process.env.CLIENT_SECRET;
-const aiRegion = process.env.SAP_AI_REGION || 'us-east-1';
-const aiCoreUrl = configService.getSAPAICoreConfig().url || `https://api.ai.${aiRegion}.aws.ml.hana.ondemand.com`;
-const aiCoreBaseUrl = `${aiCoreUrl}/v2`;
-const aiResourceGroup = process.env.SAP_AI_RESOURCE_GROUP || 'default';
+// The SAP AI Core target is read at call time (sap/sapTarget.ts), so an installed target takes
+// effect on the next call; the URL comes through configService.getSAPAICoreConfig(), which reads it.
+const aiCoreBaseUrl = (): string =>
+  `${configService.getSAPAICoreConfig().url || `https://api.ai.${currentSapTarget().region}.aws.ml.hana.ondemand.com`}/v2`;
 const includeExtendedAttributes = process.env.SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES === 'true';
 
 // Cache settings
@@ -61,6 +64,7 @@ const defaultTimestamp = 184978800;
 // Caches
 let tokenCache: TokenCache = {
   token: null,
+  fingerprint: null,
   expiresAt: 0
 };
 
@@ -70,6 +74,17 @@ let modelsCache: ModelsCache = {
   expiresAt: 0
 };
 
+// A new SAP AI Core target makes the token, the model list and the streaming support the old one served stale.
+onSapTargetChange(() => {
+  tokenCache.token = null;
+  tokenCache.fingerprint = null;
+  tokenCache.expiresAt = 0;
+  modelsCache.data = null;
+  modelsCache.all = null;
+  modelsCache.expiresAt = 0;
+  streamingSupportCache.clear();
+});
+
 
 /**
  * Get authentication token for SAP AI Core API
@@ -78,27 +93,38 @@ let modelsCache: ModelsCache = {
 export async function getAuthToken(): Promise<string> {
   // Check if we have a valid cached token
   const now = Date.now();
-  if (tokenCache.token && tokenCache.expiresAt > now + 60000) {
+  const target = currentSapTarget();
+  if (tokenCache.token && tokenCache.fingerprint === target.fingerprint && tokenCache.expiresAt > now + 60000) {
     return tokenCache.token;
   }
 
   try {
     // Request new token
+    const { authUrl, clientId, clientSecret } = target;
     const params = new URLSearchParams();
     params.append('grant_type', 'client_credentials');
-    params.append('client_id', clientId!);
-    params.append('client_secret', clientSecret!);
+    params.append('client_id', clientId);
+    params.append('client_secret', clientSecret);
 
-    const response: AxiosResponse<AuthTokenResponse> = await axios.post(authUrl!, params, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
+    // A client-credentials grant has no side effect: safe to retry once.
+    const response: AxiosResponse<AuthTokenResponse> = await sapRequest(
+      { kind: 'SAP AI Core token', attemptTimeoutMs: sapTiming().tokenAttemptMs, retry: true },
+      ({ timeoutMs, signal }) => axios.post(authUrl, params, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: timeoutMs,
+        signal
+      })
+    );
 
-    // Cache the token with expiration time
+    // Cache the token with expiration time, unless a newer target was installed while it was fetched
     const { access_token, expires_in } = response.data;
-    tokenCache.token = access_token;
-    tokenCache.expiresAt = now + (expires_in * 1000);
+    if (isLatestSapTarget(target)) {
+      tokenCache.token = access_token;
+      tokenCache.fingerprint = target.fingerprint;
+      tokenCache.expiresAt = now + (expires_in * 1000);
+    }
 
     return access_token;
   } catch (error: any) {
@@ -124,15 +150,20 @@ export async function getAuthToken(): Promise<string> {
  */
 async function _fetchDeployments(token: string): Promise<any[]> {
   try {
-    const url = `${aiCoreBaseUrl}/lm/deployments`;
+    const url = `${aiCoreBaseUrl()}/lm/deployments`;
     logger.debug('ModelService', 'Fetching deployments from SAP AI Core');
-    const response: AxiosResponse = await axios.get(url, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'AI-Resource-Group': aiResourceGroup,
-        'Accept': 'application/json'
-      }
-    });
+    const response: AxiosResponse = await sapRequest(
+      { kind: 'deployment list', attemptTimeoutMs: sapTiming().listAttemptMs, retry: true },
+      ({ timeoutMs, signal }) => axios.get(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'AI-Resource-Group': currentSapTarget().resourceGroup,
+          'Accept': 'application/json'
+        },
+        timeout: timeoutMs,
+        signal
+      })
+    );
 
     if (response.data && response.data.resources) {
       const filtered = response.data.resources.filter((dep: any) =>
@@ -235,9 +266,44 @@ export interface GetModelsOptions {
  * @param options - See {@link GetModelsOptions}
  * @returns List of models in OpenAI format
  */
+/**
+ * The model list: SAP AI Core's (cached for SAP_MODEL_CACHE_DURATION_SECONDS) plus the published
+ * Connection models (spec 2026-10-23 §4.3), merged on every call so a published or withdrawn
+ * connection model shows without waiting for the SAP cache. While the SAP list fails, the
+ * connection models are served alone; with none, the SAP error propagates as it always has.
+ */
 export async function getModels(
   forceRefresh: boolean = false,
   options: GetModelsOptions = {}
+): Promise<{ object: string; data: ModelInfo[] }> {
+  await connectionRegistry.refreshInBackground();
+  const external = connectionRegistry.publishedModels().map(({ connection, model }) => externalModelEntry(connection, model));
+  let sap: { object: string; data: ModelInfo[] };
+  try {
+    sap = await getSapModels(forceRefresh, options);
+  } catch (error: any) {
+    if (external.length === 0) throw error;
+    logger.error('ModelService', `SAP AI Core model list unavailable (${error?.message}); serving ${external.length} connection model(s) only`);
+    sap = { object: 'list', data: [] };
+  }
+  const { data, shadowed } = mergeExternalModels(sap.data, external);
+  connectionRegistry.setShadowed(shadowed);
+  return { ...sap, data };
+}
+
+/** Reads token, URL and resource group from one target, even when another is installed meanwhile. */
+function getSapModels(
+  forceRefresh: boolean,
+  options: GetModelsOptions
+): Promise<{ object: string; data: ModelInfo[] }> {
+  const target = currentSapTarget();
+  return withSapTarget(target, () => fetchSapModels(target, forceRefresh, options));
+}
+
+async function fetchSapModels(
+  target: SapTarget,
+  forceRefresh: boolean,
+  options: GetModelsOptions
 ): Promise<{ object: string; data: ModelInfo[] }> {
   const wanted = () => (options.includeUnroutable ? modelsCache.all! : modelsCache.data!);
   try {
@@ -250,15 +316,20 @@ export async function getModels(
     }
 
     const token = await getAuthToken();
-    const foundationModelsUrl = `${aiCoreBaseUrl}/lm/scenarios/foundation-models/models`;
+    const foundationModelsUrl = `${aiCoreBaseUrl()}/lm/scenarios/foundation-models/models`;
 
     logger.debug('ModelService', 'Fetching foundation models from SAP AI Core');
-    const foundationModelsResponse: AxiosResponse = await axios.get(foundationModelsUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'AI-Resource-Group': aiResourceGroup
-      }
-    });
+    const foundationModelsResponse: AxiosResponse = await sapRequest(
+      { kind: 'foundation-model list', attemptTimeoutMs: sapTiming().listAttemptMs, retry: true },
+      ({ timeoutMs, signal }) => axios.get(foundationModelsUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'AI-Resource-Group': currentSapTarget().resourceGroup
+        },
+        timeout: timeoutMs,
+        signal
+      })
+    );
 
     const rawFoundationModels: any[] = foundationModelsResponse.data.resources || [];
 
@@ -380,7 +451,7 @@ export async function getModels(
           scenarioId: dep.scenarioId,
           configurationId: dep.configurationId,
           configurationName: dep.configurationName,
-          deploymentUrl: dep.deploymentUrl,
+          deploymentUrl: rebaseDeploymentUrl(dep.deploymentUrl, process.env.SAP_DEPLOYMENT_URL_BASE),
           model: modelNameFromDeployment,
           provider: baseModel.provider || 'unknown',
           versions: finalActiveVersionForDeployment ? [finalActiveVersionForDeployment] : []
@@ -404,7 +475,7 @@ export async function getModels(
           scenarioId: dep.scenarioId,
           configurationId: dep.configurationId,
           configurationName: dep.configurationName,
-          deploymentUrl: dep.deploymentUrl,
+          deploymentUrl: rebaseDeploymentUrl(dep.deploymentUrl, process.env.SAP_DEPLOYMENT_URL_BASE),
           model: modelNameFromDeployment,
           provider: "unknown",
           versions: []
@@ -485,7 +556,7 @@ export async function getModels(
       // If no changeEntry, model.streamingSupported retains its initial value.
 
       // Update runtime streamingSupportCache with the final determined value for this model
-      streamingSupportCache.set(model.internal_id, model.streamingSupported);
+      if (isLatestSapTarget(target)) streamingSupportCache.set(model.internal_id, model.streamingSupported);
       if (model.versions && Array.isArray(model.versions)) {
         model.versions.forEach((version: any) => {
             version.streamingSupported = model.streamingSupported; // Ensure version flags are consistent
@@ -517,13 +588,17 @@ export async function getModels(
     const routableModels = processedModels.filter(m => m.routable !== false);
     const transformedData = transformModelsToOpenAIFormat(routableModels);
 
-    modelsCache.data = transformedData;
-    modelsCache.all = transformModelsToOpenAIFormat(processedModels);
-    modelsCache.expiresAt = now + (modelCacheDurationSeconds * 1000);
+    const allModels = transformModelsToOpenAIFormat(processedModels);
+    // A list fetched for a target replaced meanwhile is answered but not cached.
+    if (isLatestSapTarget(target)) {
+      modelsCache.data = transformedData;
+      modelsCache.all = allModels;
+      modelsCache.expiresAt = now + (modelCacheDurationSeconds * 1000);
+    }
 
     const routableFoundation = routableModels.length - deploymentDerivedModels.length;
     logger.info('ModelService', `Retrieved ${transformedData.data.length} routable models (${routableFoundation} foundation + ${deploymentDerivedModels.length} deployed); ${unroutableCount} further foundation model(s) are listed only for the library`);
-    return wanted();
+    return options.includeUnroutable ? allModels : transformedData;
   } catch (error: any) {
     logger.error('ModelService', `Error fetching or processing models from SAP AI Core: ${error.message}`);
     const enhancedError = new Error(error.message) as any;
@@ -641,6 +716,7 @@ export function clearAllCaches(): void {
   
   // Clear token cache
   tokenCache.token = null;
+  tokenCache.fingerprint = null;
   tokenCache.expiresAt = 0;
   
   // Clear streaming support cache

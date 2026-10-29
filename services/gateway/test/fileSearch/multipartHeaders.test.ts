@@ -27,9 +27,11 @@ jest.mock('../../src/fileSearch/db', () => ({
 jest.mock('../../src/fileSearch/blob/blobStore', () => ({
   sha256Of: jest.fn(),
   UnsupportedBlobBackendError: class extends Error {},
+  BlobUnavailableError: class extends Error {},
   retainBlob: jest.fn(),
   releaseBlob: jest.fn(),
-  getBackend: jest.fn(),
+  releaseBlobIn: jest.fn(),
+  openBlob: jest.fn(),
 }));
 jest.mock('../../src/services/configService', () => ({
   getFileSearchConfig: () => ({}),

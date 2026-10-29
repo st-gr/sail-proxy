@@ -58,7 +58,7 @@ entity admin.ApiConfiguration {
         },
         "anthropic": {
           "substitute_models": [
-            {"from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-3-haiku"}
+            {"from": "claude-3-5-haiku-20241022", "to": "anthropic--claude-4.5-haiku"}
           ],
           "emulate_streaming_for_models": ["anthropic--claude-3.7-sonnet"]
         }

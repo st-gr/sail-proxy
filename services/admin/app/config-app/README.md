@@ -40,7 +40,7 @@ The app is launched from the shell's "Settings" navigation item and provides a c
 
 ## Technical Details
 
-- **UI5 Version**: 1.136.0
+- **UI5 Version**: 1.136.22
 - **Libraries**: sap.m, sap.f, sap.ui.codeeditor
 - **TypeScript**: Full TypeScript implementation
 - **Build Tool**: UI5 Tooling with TypeScript transpilation

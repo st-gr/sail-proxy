@@ -1,0 +1,51 @@
+name: Documentation site
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'docs/**', 'openapi/**', 'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', '.github/workflows/docs.yml', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # lastUpdated reads each page's git date
+      - uses: pnpm/action-setup@v3
+        with:
+          version: '10'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install the docs package
+        run: pnpm install --frozen-lockfile --filter docs...
+      - name: Check and build the site
+        run: pnpm --filter docs check
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    # Only the public repository publishes; the private mirror builds to catch breakage early.
+    if: github.repository == 'st-gr/sail-proxy'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
+      - id: deployment
+        uses: actions/deploy-pages@v5

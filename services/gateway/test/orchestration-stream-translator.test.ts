@@ -11,7 +11,7 @@ import {
   createOrchestrationBlockTranslator,
 } from '../src/responses/orchestrationBridge/streamTranslator';
 
-const OPTS = { model: 'anthropic--claude-4.8-opus', responseId: 'resp_1' };
+const OPTS = { model: 'anthropic--claude-4.8-opus', sapModel: 'anthropic--claude-4.8-opus', responseId: 'resp_1' };
 
 /** Parse the SSE blocks a translator returned into frame objects. */
 function frames(blocks: string[]): any[] {

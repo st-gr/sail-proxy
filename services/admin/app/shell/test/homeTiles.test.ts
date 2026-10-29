@@ -1,7 +1,7 @@
 import { toHomeView } from '../webapp/model/homeTiles';
 
 const summary = (over: any = {}) => ({
-  scope: 'self', monthStart: '2026-09-01', requests: 1234, tokens: 987654, users: 1, sapCost: 12.5, sapCostCurrency: 'USD', otherCurrencies: [],
+  scope: 'self', monthStart: '2026-09-01', requests: 1234, tokens: 987654, users: 1, sapCost: 12.5, externalCost: 0, sapCostCurrency: 'USD', otherCurrencies: [],
   ...over
 });
 
@@ -36,5 +36,11 @@ describe('toHomeView', () => {
   it('no summary (the request failed) means no tiles', () => {
     expect(toHomeView(null)).toEqual({ available: false, scopeText: '', tiles: [] });
     expect(toHomeView({} as any).available).toBe(false);
+  });
+  it('the Connections tile appears only with Connection spend', () => {
+    expect(toHomeView(summary({ externalCost: 0 })).tiles.map((t) => t.key)).not.toContain('externalCost');
+    const fmt = { int: (n: number) => String(n), money: (n: number, c: string) => `${n} ${c}` };
+    const tile = toHomeView(summary({ externalCost: 0.5 }), fmt).tiles.find((t) => t.key === 'externalCost')!;
+    expect(tile).toMatchObject({ header: 'Connections cost', subheader: 'USD (Connections list prices)', value: fmt.money(0.5, 'USD') });
   });
 });

@@ -423,10 +423,11 @@ describe('ModelCostService End-to-End Tests', () => {
       mockCdsRun.mockClear();
       mockCdsRun
         .mockResolvedValueOnce([]) // No existing pricing in cache (first getModelPricing call)
-        .mockResolvedValueOnce([]) // No existing records to update (during refresh)
-        .mockResolvedValueOnce(1)  // Successful INSERT (during refresh)
+        .mockResolvedValueOnce([]) // No published Connection models (upsertLibrarySnapshot read)
         .mockResolvedValueOnce(1)  // Library snapshot UPSERT write (upsertLibrarySnapshot, before pricing update)
         .mockResolvedValueOnce(0)  // Library snapshot absence UPDATE (upsertLibrarySnapshot)
+        .mockResolvedValueOnce([]) // No existing records to update (during refresh)
+        .mockResolvedValueOnce(1)  // Successful INSERT (during refresh)
         .mockResolvedValueOnce([   // Return cached pricing for calculation (second getModelPricing call)
           {
             inputCost: '0.03',
@@ -475,9 +476,9 @@ describe('ModelCostService End-to-End Tests', () => {
         provider: 'OpenAI'
       });
 
-      // Verify database operations occurred (2 more than before Task 3: upsertLibrarySnapshot's
-      // UPSERT write and absence UPDATE now run during the refresh, ahead of pricing update)
-      expect(mockCdsRun).toHaveBeenCalledTimes(13);
+      // Verify database operations occurred (3 more than before Task 3: upsertLibrarySnapshot's
+      // Connection models read, UPSERT write and absence UPDATE now run during the refresh, ahead of pricing update)
+      expect(mockCdsRun).toHaveBeenCalledTimes(14);
     });
 
     it('should handle service initialization correctly', async () => {
@@ -511,8 +512,9 @@ describe('ModelCostService End-to-End Tests', () => {
       
       await expect((modelCostService as any).refreshPricingData()).resolves.not.toThrow();
       
-      // Should handle gracefully and not update database
-      expect(mockCdsRun).not.toHaveBeenCalled();
+      // Should handle gracefully and not update database: the one statement is the snapshot's read of
+      // the published Connection models, which an empty gateway list still needs
+      expect(mockCdsRun).toHaveBeenCalledTimes(1);
     });
 
     it('should handle database connection errors', async () => {

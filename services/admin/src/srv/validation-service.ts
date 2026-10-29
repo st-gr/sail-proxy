@@ -8,7 +8,12 @@ import { credentialExpired } from '../services/credentialLifecycle';
 import { entitlementBlockFor, EntitlementBlock } from '../services/modelEntitlementService';
 import { credentialRateLimits } from '../services/rateLimitsService';
 import { wireBlock, UserBlock } from '../services/usersService';
-import { policyBlockFor, keyPolicyBlockFor, ToolPolicyBlock } from '../services/toolPolicyService';
+import { policyBlockFor, keyPolicyBlockFor, teamPolicyBlockFor, ToolPolicyBlock } from '../services/toolPolicyService';
+import { TeamBlock, TeamRef, CredentialRef, requestTeamFor, wireTeamBlock } from '../services/teamLookups';
+import { decryptSecret } from '../utils/awsSecretCrypto';
+import { isGatewayServiceCaller, verifyGatewayServiceJwt, verificationValidationTokenSecret } from '../utils/gatewayServiceJwt';
+import { buildConnectionSnapshot } from '../services/connectionSnapshot';
+import { deriveSigningKeys, invalidSigningScopes, SigningKey, SigningScope } from '../services/awsSigningKeys';
 
 // Import file config service
 const FileConfigService = require('./file-config-service');
@@ -45,6 +50,8 @@ interface ApiKeyValidationResult {
     user?: UserBlock;
     toolPolicy?: ToolPolicyBlock;
     keyToolPolicy?: ToolPolicyBlock;
+    team?: TeamBlock;
+    teamToolPolicy?: ToolPolicyBlock;
   };
   cacheHit: boolean;
   validationTime: number;
@@ -53,7 +60,6 @@ interface ApiKeyValidationResult {
 interface AwsCredentialValidationResult {
   valid: boolean;
   credentialId: string | null;
-  secretKey?: string;
   permissions: Array<{
     service: string;
     action: string;
@@ -109,9 +115,19 @@ interface UnifiedTokenData {
     headers?: string;
     signature?: string; // For AWS requests
   };
+  /** AWS only: the SigV4 scopes the gateway needs signing keys for (at most 4). */
+  signingScopes?: SigningScope[];
   requestId: string;
   timestamp: number;
   expiresAt: number;
+}
+
+/**
+ * error.credentialId for a refused credential that exists: only the gateway, proven by its
+ * service JWT, gets the row ID (it links its failed-auth event to the credential).
+ */
+function refusedCredential(credentialId: string | undefined, authorization?: string): { credentialId?: string } {
+  return credentialId && isGatewayServiceCaller(authorization) ? { credentialId } : {};
 }
 
 interface UnifiedValidationResult {
@@ -127,6 +143,10 @@ interface UnifiedValidationResult {
     code: string;
     message: string;
     details: string;
+    // The row ID of a credential that exists but was refused (inactive or expired), so the
+    // gateway's failed-auth event links to it. Only for the gateway (service JWT); never for an
+    // unknown key.
+    credentialId?: string;
   };
 }
 
@@ -152,11 +172,16 @@ interface ApiKeyValidationData {
   toolPolicy?: ToolPolicyBlock;
   /** The key's own narrowing policy, when it names one; absent otherwise or when the lookup failed. */
   keyToolPolicy?: ToolPolicyBlock;
+  /** The request's team (the credential's, else the owner's primary) with its pool limits; absent without a team. */
+  team?: TeamBlock;
+  /** The team's tool policy, when the team names one. */
+  teamToolPolicy?: ToolPolicyBlock;
 }
 
 interface AwsCredentialValidationData {
   credentialId: string;
-  secretAccessKey: string; // Only returned in secure token validation
+  /** hex(kSigning) per requested signingScope; computed per request, never cached, never the secret. */
+  signingKeys?: SigningKey[];
   permissions: Array<{
     service: string;
     action: string;
@@ -182,6 +207,10 @@ interface AwsCredentialValidationData {
   user?: UserBlock;
   /** The caller's effective tool policy (assigned or default); absent when the lookup failed. */
   toolPolicy?: ToolPolicyBlock;
+  /** The request's team (the credential's, else the owner's primary) with its pool limits; absent without a team. */
+  team?: TeamBlock;
+  /** The team's tool policy, when the team names one. */
+  teamToolPolicy?: ToolPolicyBlock;
 }
 
 interface ValidationRequest {
@@ -209,6 +238,7 @@ interface ValidationRequest {
     // Unified auth properties
     authType?: 'api_key' | 'aws_credential';
     identifier?: string; // API key or AWS accessKeyId
+    signingScopes?: SigningScope[]; // AWS only: scopes to return signing keys for
     // Usage event processing properties
     events?: Array<{
       requestId: string;
@@ -306,6 +336,7 @@ class ValidationService {
 
     // Configuration management endpoints
     service.on('getConfig', this.getConfig.bind(this));
+    service.on('getConnections', this.getConnections.bind(this));
     service.on('checkConfigUpdate', this.checkConfigUpdate.bind(this));
     service.on('reloadConfig', this.reloadConfig.bind(this));
     service.on('registerConfigWebhook', this.registerConfigWebhook.bind(this));
@@ -383,6 +414,7 @@ class ValidationService {
       // Get current usage for rate limiting
       const usage = await this.getCurrentUsage(keyRecord.ID);
 
+      const team = await this.teamFor({ apiKeyId: keyRecord.ID });
       validationResult = {
         valid: true,
         keyId: keyRecord.ID,
@@ -398,8 +430,10 @@ class ValidationService {
           name: keyRecord.name,
           email: keyRecord.email,
           lastUsed: keyRecord.lastUsed,
-          entitlement: await this.entitlementBlock(keyRecord.email),
+          entitlement: await this.entitlementBlock(keyRecord.email, team),
           user: await this.userBlock(keyRecord.email),
+          team: await this.teamBlock(team),
+          teamToolPolicy: await this.teamToolPolicyBlock(team),
           toolPolicy: await this.toolPolicyBlock(keyRecord.email),
           keyToolPolicy: await this.keyToolPolicyBlock(keyRecord.ID)
         },
@@ -436,7 +470,7 @@ class ValidationService {
 
   async validateAwsCredentials(req: ValidationRequest): Promise<AwsCredentialValidationResult> {
     const startTime = performance.now();
-    const { accessKeyId, signature, stringToSign, clientIp, userAgent } = req.data;
+    const { accessKeyId, clientIp, userAgent } = req.data;
     
     if (!accessKeyId) {
       throw new Error('Access key ID is required');
@@ -444,28 +478,9 @@ class ValidationService {
 
     this.cache.stats.validations++;
     
-    // Check cache first
+    // No cache-hit answer: a hit can only be valid with a verified signature, which this action
+    // cannot produce (see below).
     const cacheKey = `aws:${accessKeyId}`;
-    const cached = this.cache.awsCredentials.get(cacheKey);
-    
-    if (cached && Date.now() - cached.timestamp < this.cacheConfig.awsCredentialTTL) {
-      this.cache.stats.hits++;
-      
-      // For AWS credentials, we still need to validate the signature
-      const isValidSignature = signature && stringToSign && cached.result.secretKey ? 
-        this.validateAwsSignature(cached.result.secretKey, signature, stringToSign) : false;
-      
-      if (isValidSignature && cached.result.credentialId) {
-        // Update last used timestamp asynchronously
-        this.updateLastUsed('AwsCredentials', cached.result.credentialId);
-        
-        return {
-          ...cached.result,
-          cacheHit: true,
-          validationTime: performance.now() - startTime
-        };
-      }
-    }
     
     this.cache.stats.misses++;
     
@@ -495,7 +510,6 @@ class ValidationService {
           valid: false,
           expired: true,
           credentialId: credRecord.ID,
-          secretKey: undefined,
           permissions: [],
           ipAllowed: false,
           metadata: {},
@@ -503,12 +517,10 @@ class ValidationService {
           validationTime: performance.now() - startTime
         };
       } else {
-        // Reconstruct secret for signature validation (simplified - use proper key derivation in production)
-        const secretKey = this.deriveSecretKey(credRecord.secretHash, credRecord.salt);
-        
-        // Validate signature
-        const isValidSignature = signature && stringToSign ? 
-          this.validateAwsSignature(secretKey, signature, stringToSign) : false;
+        // This action never had a real secret (it HMACed with the stored secretHash) and is not
+        // SigV4. It fails closed: the gateway verifies SigV4 itself with day-scoped signing keys
+        // from validateUnifiedAuthByToken.
+        const isValidSignature = false;
         
         // Check IP restrictions
         const ipAllowed = this.checkIpAllowed(credRecord.ipRestrictions, clientIp);
@@ -516,7 +528,6 @@ class ValidationService {
         validationResult = {
           valid: isValidSignature && ipAllowed,
           credentialId: credRecord.ID,
-          secretKey: isValidSignature ? secretKey : undefined,
           permissions: credRecord.permissions || [],
           ipAllowed,
           expired: false,
@@ -547,7 +558,6 @@ class ValidationService {
       validationResult = {
         valid: false,
         credentialId: null,
-        secretKey: undefined,
         permissions: [],
         ipAllowed: false,
         expired: false,
@@ -564,7 +574,7 @@ class ValidationService {
       });
     }
     
-    // Cache the result (with sensitive data for signature validation)
+    // Cache the result (no secret in it)
     this.cache.awsCredentials.set(cacheKey, {
       result: validationResult,
       timestamp: Date.now()
@@ -931,8 +941,9 @@ class ValidationService {
       
       const token = authHeader.substring(7); // Remove 'Bearer ' prefix
       
-      // Verify JWT token
-      const tokenPayload = this.verifyJwtToken(token);
+      // Verify the gateway's service JWT: HS256, issuer gateway-service, unexpired, and never
+      // under a publicly known secret outside development (this action bypasses CAP auth).
+      const tokenPayload = verifyGatewayServiceJwt(token);
       
       // Check if token is from gateway service
       if (tokenPayload.service !== 'gateway' || !tokenPayload.roles?.includes('gateway')) {
@@ -996,24 +1007,6 @@ class ValidationService {
         this.rateLimitWindows.delete(key);
       }
     }
-  }
-
-  private validateAwsSignature(secretKey: string, providedSignature: string, stringToSign: string): boolean {
-    // Simplified AWS signature validation - implement proper AWS SigV4 in production
-    const expectedSignature = crypto
-      .createHmac('sha256', secretKey)
-      .update(stringToSign)
-      .digest('hex');
-    
-    return crypto.timingSafeEqual(
-      Buffer.from(providedSignature), 
-      Buffer.from(expectedSignature)
-    );
-  }
-
-  private deriveSecretKey(secretHash: string, salt: string): string {
-    // Simplified secret derivation - use proper key derivation in production
-    return secretHash; // This is a placeholder
   }
 
   /**
@@ -1112,14 +1105,32 @@ class ValidationService {
    * logged and leaves the block absent, which the gateway reads as unrestricted - entitlement
    * must never be the reason a valid credential is rejected.
    */
-  private async entitlementBlock(email?: string): Promise<EntitlementBlock | undefined> {
+  private async entitlementBlock(email?: string, team: TeamRef | null = null): Promise<EntitlementBlock | undefined> {
     if (!email) return undefined;
     try {
-      return await entitlementBlockFor(cds.db, email);
+      return await entitlementBlockFor(cds.db, email, team);
     } catch (error) {
       logger.warn('validation-service', `entitlement lookup failed for ${email}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
+  }
+
+  /** The request's team (spec 2026-10-14 §4); null when the credential has none and its owner no primary. Fails open to null. */
+  private async teamFor(cred: CredentialRef): Promise<TeamRef | null> {
+    try { return await requestTeamFor(cds.db, cred); }
+    catch (error) { logger.warn('validation-service', `team lookup failed: ${error instanceof Error ? error.message : String(error)}`); return null; }
+  }
+
+  private async teamBlock(team: TeamRef | null): Promise<TeamBlock | undefined> {
+    if (!team) return undefined;
+    try { return await wireTeamBlock(cds.db, team); }
+    catch (error) { logger.warn('validation-service', `team block failed for ${team.teamId}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
+  }
+
+  private async teamToolPolicyBlock(team: TeamRef | null): Promise<ToolPolicyBlock | undefined> {
+    if (!team) return undefined;
+    try { return (await teamPolicyBlockFor(cds.db, team.teamId)) ?? undefined; }
+    catch (error) { logger.warn('validation-service', `team tool policy failed for ${team.teamId}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
   }
 
   /** The owner's `user` block (status, roles, effective limits). Fails open like entitlementBlock. */
@@ -1401,7 +1412,7 @@ class ValidationService {
       }
 
       // The SigV4 gateway path reads credentialMetadata, not the unified data block
-      const entitlement = await this.entitlementBlock(credential.email || credential.userId);
+      const team = await this.teamFor({ awsCredentialId: credential.ID });
       const user = await this.userBlock(credential.email || credential.userId);
       const toolPolicy = await this.toolPolicyBlock(credential.email || credential.userId);
 
@@ -1414,8 +1425,10 @@ class ValidationService {
           region: credential.region,
           sapAiRegion: credential.sapAiRegion,
           userId: credential.userId,
-          entitlement,
+          entitlement: await this.entitlementBlock(credential.email || credential.userId, team),
           user,
+          team: await this.teamBlock(team),
+          teamToolPolicy: await this.teamToolPolicyBlock(team),
           toolPolicy,
           rateLimits: await credentialRateLimits(cds.db, { awsCredentialId: credential.ID })
         },
@@ -1425,7 +1438,8 @@ class ValidationService {
           validationTime: Date.now(),
           cacheHit: false,
           ipAllowed: true,
-          signatureValid: true
+          // Not checked here: the gateway verifies the SigV4 signature itself.
+          signatureValid: false
         }
       };
       
@@ -1501,7 +1515,7 @@ class ValidationService {
     requestId: string;
   }> {
     logger.debug('validation-service', 'createUnifiedValidationToken called', req.data);
-    const { authType, identifier, clientIp, userAgent, method, endpoint, headers, signature } = req.data;
+    const { authType, identifier, clientIp, userAgent, method, endpoint, headers, signature, signingScopes } = req.data;
     
     try {
       // Validate required parameters
@@ -1539,6 +1553,7 @@ class ValidationService {
           headers,
           signature
         },
+        signingScopes,
         requestId,
         timestamp: Date.now(),
         expiresAt: Date.now() + (5 * 60 * 1000) // 5 minutes
@@ -1655,9 +1670,9 @@ class ValidationService {
       }
       
       if (tokenData.authType === 'api_key') {
-        return await this.validateApiKeyByToken(tokenData, startTime);
+        return await this.validateApiKeyByToken(tokenData, startTime, req.headers?.authorization);
       } else if (tokenData.authType === 'aws_credential') {
-        return await this.validateAwsCredentialByToken(tokenData, startTime);
+        return await this.validateAwsCredentialByToken(tokenData, startTime, req.headers?.authorization);
       } else {
         return {
           valid: false,
@@ -1707,7 +1722,7 @@ class ValidationService {
     }
   }
 
-  private async validateApiKeyByToken(tokenData: UnifiedTokenData, startTime: number): Promise<UnifiedValidationResult> {
+  private async validateApiKeyByToken(tokenData: UnifiedTokenData, startTime: number, authorization?: string): Promise<UnifiedValidationResult> {
     const apiKey = tokenData.identifier;
     
     // Check cache first
@@ -1740,6 +1755,7 @@ class ValidationService {
     const keys = await cds.run(SELECT);
     
     if (keys.length === 0) {
+      const inactive = await this.inactiveRowId('ApiKeys', { key: apiKey }, authorization);
       return {
         valid: false,
         authType: 'api_key',
@@ -1752,7 +1768,8 @@ class ValidationService {
         error: {
           code: 'API_KEY_NOT_FOUND',
           message: 'API key not found or inactive',
-          details: 'Invalid API key'
+          details: 'Invalid API key',
+          ...refusedCredential(inactive, authorization)
         }
       };
     }
@@ -1766,10 +1783,11 @@ class ValidationService {
         authType: 'api_key',
         data: {} as any,
         auditInfo: { requestId: tokenData.requestId, validationTime: performance.now() - startTime, cacheHit: false },
-        error: { code: 'API_KEY_EXPIRED', message: 'API key expired', details: 'Key is past its expiration date and has been locked' }
+        error: { code: 'API_KEY_EXPIRED', message: 'API key expired', details: 'Key is past its expiration date and has been locked', ...refusedCredential(keyData.ID, authorization) }
       };
     }
 
+    const team = await this.teamFor({ apiKeyId: keyData.ID });
     const validationData: ApiKeyValidationData = {
       keyId: keyData.ID,
       name: keyData.name,
@@ -1782,8 +1800,10 @@ class ValidationService {
       },
       // Cached with the rest of the data, so the cache-hit response carries it too; the gateway's
       // cache invalidation on a catalog change is what keeps it fresh.
-      entitlement: await this.entitlementBlock(keyData.email),
+      entitlement: await this.entitlementBlock(keyData.email, team),
       user: await this.userBlock(keyData.email),
+      team: await this.teamBlock(team),
+      teamToolPolicy: await this.teamToolPolicyBlock(team),
       toolPolicy: await this.toolPolicyBlock(keyData.email),
       keyToolPolicy: await this.keyToolPolicyBlock(keyData.ID)
     };
@@ -1812,8 +1832,20 @@ class ValidationService {
     };
   }
 
-  private async validateAwsCredentialByToken(tokenData: UnifiedTokenData, startTime: number): Promise<UnifiedValidationResult> {
+  private async validateAwsCredentialByToken(tokenData: UnifiedTokenData, startTime: number, authorization?: string): Promise<UnifiedValidationResult> {
     const accessKeyId = tokenData.identifier;
+
+    let signingScopes = tokenData.signingScopes ?? [];
+    const scopeError = invalidSigningScopes(signingScopes);
+    if (scopeError) {
+      return this.awsTokenError(tokenData, startTime, 'INVALID_SIGNING_SCOPE', 'Invalid signing scope', scopeError);
+    }
+    // Signing keys are credential-equivalent: only the gateway, proven by its service JWT, gets them.
+    // Anyone else still gets the validation answer, without keys.
+    if (signingScopes.length > 0 && !isGatewayServiceCaller(authorization)) {
+      logger.warn('validation-service', 'AWS signing keys requested without a valid gateway service token; answering without keys');
+      signingScopes = [];
+    }
     
     // Check cache first
     const cacheKey = `unified_aws:${accessKeyId}`;
@@ -1822,11 +1854,34 @@ class ValidationService {
     if (cached && Date.now() - cached.timestamp < this.cacheConfig.awsCredentialTTL) {
       this.cache.stats.hits++;
       logger.debug('validation-service', 'AWS credential validation cache hit');
+
+      let data = cached.result as any as AwsCredentialValidationData;
+      if (signingScopes.length > 0) {
+        // Signing keys are never cached: derive them from the stored secret on every request.
+        const rows = await cds.run(cds.ql.SELECT.from('sap.llm.gateway.admin.AwsCredentials')
+          .columns('secretAccessKey', 'expiresAt', 'neverExpires')
+          .where({ ID: data.credentialId, isActive: true }));
+        if (rows.length === 0) {
+          this.cache.awsCredentials.delete(cacheKey);
+          return this.awsTokenError(tokenData, startTime, 'AWS_CREDENTIAL_NOT_FOUND', 'AWS credential not found or inactive', 'Invalid access key ID',
+            refusedCredential(await this.inactiveRowId('AwsCredentials', { ID: data.credentialId }, authorization), authorization));
+        }
+        if (credentialExpired(rows[0])) {
+          await this.autoLockAwsCredential(data.credentialId, accessKeyId, rows[0].expiresAt);
+          return this.awsTokenError(tokenData, startTime, 'AWS_CREDENTIAL_EXPIRED', 'AWS credential expired', 'Credential is past its expiration date and has been locked',
+            refusedCredential(data.credentialId, authorization));
+        }
+        const signingKeys = this.signingKeysFor(rows[0].secretAccessKey, signingScopes);
+        if (!signingKeys) {
+          return this.signingKeyUnavailable(tokenData, startTime, data.credentialId);
+        }
+        data = { ...data, signingKeys };
+      }
       
       return {
         valid: true,
         authType: 'aws_credential',
-        data: cached.result as any as AwsCredentialValidationData,
+        data,
         auditInfo: {
           requestId: tokenData.requestId,
           validationTime: performance.now() - startTime,
@@ -1861,6 +1916,7 @@ class ValidationService {
     }
     
     if (credentials.length === 0) {
+      const inactive = await this.inactiveRowId('AwsCredentials', { accessKeyId }, authorization);
       return {
         valid: false,
         authType: 'aws_credential',
@@ -1873,7 +1929,8 @@ class ValidationService {
         error: {
           code: 'AWS_CREDENTIAL_NOT_FOUND',
           message: 'AWS credential not found or inactive',
-          details: 'Invalid access key ID'
+          details: 'Invalid access key ID',
+          ...refusedCredential(inactive, authorization)
         }
       };
     }
@@ -1894,17 +1951,15 @@ class ValidationService {
         error: {
           code: 'AWS_CREDENTIAL_EXPIRED',
           message: 'AWS credential expired',
-          details: 'Credential is past its expiration date and has been locked'
+          details: 'Credential is past its expiration date and has been locked',
+          ...refusedCredential(credential.ID, authorization)
         }
       };
     }
 
-    // For AWS credentials, we need to derive the secret key from stored hash
-    const secretAccessKey = this.deriveSecretKey(credential.secretHash, credential.salt);
-    
+    const team = await this.teamFor({ awsCredentialId: credential.ID });
     const validationData: AwsCredentialValidationData = {
       credentialId: credential.ID,
-      secretAccessKey, // This is the critical piece for AWS signature validation
       permissions: credential.permissions || [],
       region: credential.region,
       sapAiRegion: credential.sapAiRegion,
@@ -1915,17 +1970,25 @@ class ValidationService {
         isActive: credential.isActive,
         expiresAt: credential.expiresAt
       },
-      entitlement: await this.entitlementBlock(credential.email || credential.userId),
+      entitlement: await this.entitlementBlock(credential.email || credential.userId, team),
       user: await this.userBlock(credential.email || credential.userId),
+      team: await this.teamBlock(team),
+      teamToolPolicy: await this.teamToolPolicyBlock(team),
       toolPolicy: await this.toolPolicyBlock(credential.email || credential.userId)
     };
     
-    // Cache the result (without the secret for security)
-    const cacheData = { ...validationData };
-    delete (cacheData as any).secretAccessKey; // Don't cache the secret
+    // The gateway verifies the SigV4 signature itself with these keys; the secret never leaves here.
+    let signingKeys: SigningKey[] | null = null;
+    if (signingScopes.length > 0) {
+      signingKeys = this.signingKeysFor(credential.secretAccessKey, signingScopes);
+      if (!signingKeys) {
+        return this.signingKeyUnavailable(tokenData, startTime, credential.ID);
+      }
+    }
     
+    // Cache the result without signing keys (they are derived per request)
     this.cache.awsCredentials.set(cacheKey, {
-      result: cacheData as any,
+      result: validationData as any,
       timestamp: Date.now()
     });
     
@@ -1938,13 +2001,59 @@ class ValidationService {
     return {
       valid: true,
       authType: 'aws_credential',
-      data: validationData, // Include secret in response for SigV4 validation
+      data: signingKeys ? { ...validationData, signingKeys } : validationData,
       auditInfo: {
         requestId: tokenData.requestId,
         validationTime: performance.now() - startTime,
         cacheHit: false
       }
     };
+  }
+
+  /** kSigning per scope from the stored, encrypted secret; null when there is no usable secret. */
+  private signingKeysFor(encryptedSecret: unknown, scopes: SigningScope[]): SigningKey[] | null {
+    if (typeof encryptedSecret !== 'string' || !encryptedSecret) return null;
+    const secret = decryptSecret(encryptedSecret);
+    return secret ? deriveSigningKeys(secret, scopes) : null;
+  }
+
+  private signingKeyUnavailable(tokenData: UnifiedTokenData, startTime: number, credentialId: string): UnifiedValidationResult {
+    logger.warn('validation-service', 'No signing key for AWS credential: stored secret missing or not decryptable', { credentialId });
+    return this.awsTokenError(tokenData, startTime, 'SIGNING_KEY_UNAVAILABLE', 'No signing key for this AWS credential', 'Stored secret missing or not decryptable');
+  }
+
+  private awsTokenError(tokenData: UnifiedTokenData, startTime: number, code: string, message: string, details: string, refused: { credentialId?: string } = {}): UnifiedValidationResult {
+    return {
+      valid: false,
+      authType: 'aws_credential',
+      data: {} as any,
+      auditInfo: {
+        requestId: tokenData.requestId,
+        validationTime: performance.now() - startTime,
+        cacheHit: false
+      },
+      error: { code, message, details, ...refused }
+    };
+  }
+
+  /**
+   * The ID of an inactive row matching `where`, for error.credentialId; only looked up for the
+   * gateway (the only caller that gets the ID), otherwise undefined.
+   */
+  private async inactiveRowId(entity: 'ApiKeys' | 'AwsCredentials', where: Record<string, string>, authorization?: string): Promise<string | undefined> {
+    if (!isGatewayServiceCaller(authorization)) return undefined;
+    const row = await cds.run(cds.ql.SELECT.one.from(`sap.llm.gateway.admin.${entity}`).columns('ID').where({ ...where, isActive: false }));
+    return row?.ID;
+  }
+
+  /** The Connections snapshot, decrypted: the gateway's service JWT only (services/connectionSnapshot.ts). */
+  private async getConnections(req: any): Promise<any> {
+    if (!isGatewayServiceCaller(req.headers?.authorization || req.req?.headers?.authorization)) {
+      return req.reject(403, 'Forbidden');
+    }
+    const snapshot = await buildConnectionSnapshot();
+    logger.debug('validation-service', `Connections snapshot: ${snapshot.connections.length} connection(s)`);
+    return { success: true, snapshot };
   }
 
   /**
@@ -1982,9 +2091,10 @@ class ValidationService {
    * Verify JWT token signature and return payload
    */
   private verifyJwtToken(jwt: string): any {
-    const secret = process.env.VALIDATION_TOKEN_SECRET || 'dev-secret-change-in-production';
-    
     try {
+      // Refuses an unset or publicly known secret outside development, like verifyGatewayServiceJwt.
+      const secret = verificationValidationTokenSecret();
+
       const parts = jwt.split('.');
       if (parts.length !== 3) {
         throw new Error('Invalid JWT format');
@@ -1998,13 +2108,23 @@ class ValidationService {
         .update(`${encodedHeader}.${encodedPayload}`)
         .digest('base64url');
 
-      // Use timing-safe comparison
-      if (providedSignature !== expectedSignature) {
+      // Constant-time comparison; timingSafeEqual needs equal lengths, so a length mismatch is
+      // simply a wrong signature.
+      const provided = Buffer.from(providedSignature);
+      const expected = Buffer.from(expectedSignature);
+      if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
         throw new Error('Invalid JWT signature');
       }
 
-      // Decode and return payload
+      // Decode and return payload. exp (seconds) is required: its only producer,
+      // ValidationTokenUtils.createValidationJWT, always sets it.
       const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString());
+      if (typeof payload.exp !== 'number') {
+        throw new Error('JWT has no exp claim');
+      }
+      if (payload.exp * 1000 <= Date.now()) {
+        throw new Error('JWT expired');
+      }
       return payload;
     } catch (error) {
       logger.error('validation-service', 'JWT verification error', error as Error);

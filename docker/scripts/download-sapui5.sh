@@ -2,7 +2,7 @@
 # Download SAPUI5 Runtime for Docker deployment
 # This script downloads the necessary SAPUI5 libraries for offline usage
 
-SAPUI5_VERSION="1.136.0"
+SAPUI5_VERSION="1.136.22"
 DOWNLOAD_DIR="/opt/ui5/${SAPUI5_VERSION}/resources"
 
 echo "=== Downloading SAPUI5 Runtime ${SAPUI5_VERSION} ==="

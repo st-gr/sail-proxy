@@ -13,9 +13,9 @@ jest.mock('../src/services/securityEventEmitter', () => ({ __esModule: true, def
 jest.mock('../src/services/configService', () => ({ __esModule: true, default: {}, getTrustForwardedFor: () => false }));
 jest.mock('@libs/logger', () => ({ getDefaultLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), trace: jest.fn() }) }));
 
-import { createQuotaEnforcement } from '../src/middlewares/quotaEnforcement';
+import { createQuotaEnforcement, createOwnerAdmission } from '../src/middlewares/quotaEnforcement';
 import { MemoryRateLimitStore } from '../src/services/rateLimitStore';
-import { QuotaStateReader, quotaKeyFor } from '../src/services/quotaStateReader';
+import { QuotaStateReader, quotaKeyFor, teamQuotaKeyFor } from '../src/services/quotaStateReader';
 
 let now = Date.parse('2026-09-07T10:00:00Z');
 const clock = () => now;
@@ -92,5 +92,37 @@ describe('admission from the state document', () => {
     const mw = build(fakeValkey({ [quotaKeyFor('u@test.com')]: doc({ day: { requests: 1, tokens: 10, sapCost: 0 } }, { limits: { tokensPerDay: 1 } }) }));
     const r = await call(mw, { apiKey: { key: 'sk-x', id: 'k1', email: 'u@test.com' }, body: {}, headers: {}, socket: { remoteAddress: '203.0.113.7' }, originalUrl: '/v1/messages', method: 'POST', get: () => 'jest' });
     expect(r.next).toHaveBeenCalled();
+  });
+});
+
+const teamDoc = (used: any, over: any = {}) => ({ teamId: 't-a', teamName: 'Alpha', limits: limits(over.limits), used: { day: { requests: 0, tokens: 0, sapCost: 0 }, week: { requests: 0, tokens: 0, sapCost: 0 }, month: { requests: 0, tokens: 0, sapCost: 0 }, ...used },
+  windowStart: { day: '2026-09-07T00:00:00.000Z', week: '2026-09-07T00:00:00.000Z', month: '2026-09-01T00:00:00.000Z', ...(over.windowStart || {}) }, quotaResetAt: null, updatedAt: '2026-09-07T09:59:00.000Z' });
+const teamReq = (teamLimits: any = {}, roles: string[] = []) => { const r = req(); r.unifiedAuth.data.user.roles = roles; r.unifiedAuth.data.team = { teamId: 't-a', teamName: 'Alpha', limits: limits(teamLimits) }; return r; };
+
+describe('team pool admission', () => {
+  it('429 scope team when the team document\'s month spend reaches the pool limit; the user document passed first', async () => {
+    const client = fakeValkey({ [quotaKeyFor('u@test.com')]: doc({}), [teamQuotaKeyFor('t-a')]: teamDoc({ month: { requests: 50, tokens: 1, sapCost: 1000 } }, { limits: { spendPerMonth: 1000 } }) });
+    const r = await call(build(client), teamReq({ spendPerMonth: 1000 }));
+    expect(r.s.statusCode).toBe(429);
+    expect(r.s.body.error).toEqual({ type: 'quota_exceeded', scope: 'team', team: 'Alpha', dimension: 'spend', window: 'month', limit: 1000, used: 1000, resets_at: '2026-10-01T00:00:00.000Z' });
+  });
+  it('a team document from yesterday counts as empty for the day, still for the month (review focus 4)', async () => {
+    const client = fakeValkey({ [teamQuotaKeyFor('t-a')]: teamDoc({ day: { requests: 1, tokens: 999, sapCost: 0 }, month: { requests: 1, tokens: 999, sapCost: 0 } },
+      { limits: { tokensPerDay: 100, tokensPerMonth: 999 }, windowStart: { day: '2026-09-06T00:00:00.000Z', week: '2026-08-31T00:00:00.000Z' } }) });
+    const r = await call(build(client), teamReq());
+    expect(r.s.statusCode).toBe(429);
+    expect(r.s.body.error).toMatchObject({ scope: 'team', dimension: 'tokens', window: 'month' });
+  });
+  it('a platform admin is stopped by the pool too (review focus 5); no team document passes', async () => {
+    const client = fakeValkey({ [teamQuotaKeyFor('t-a')]: teamDoc({ day: { requests: 1, tokens: 10, sapCost: 0 } }, { limits: { tokensPerDay: 10 } }) });
+    expect((await call(build(client), teamReq({}, ['admin']))).s.statusCode).toBe(429);
+    expect((await call(build(fakeValkey({})), teamReq({ tokensPerDay: 10 }))).next).toHaveBeenCalled();
+  });
+  it('admitOwner also checks the owner\'s primary team through the user document', async () => {
+    const client = fakeValkey({ [quotaKeyFor('u@test.com')]: { ...doc({}), primaryTeamId: 't-a' }, [teamQuotaKeyFor('t-a')]: teamDoc({ day: { requests: 1, tokens: 10, sapCost: 0 } }, { limits: { tokensPerDay: 10 } }) });
+    const reader = new QuotaStateReader(client, clock);
+    const admit = createOwnerAdmission({ stateReader: () => reader, clock, standalone: () => false });
+    const x = await admit(req(), 'u@test.com');
+    expect(x).toMatchObject({ type: 'quota_exceeded', scope: 'team', team: 'Alpha', dimension: 'tokens', window: 'day' });
   });
 });

@@ -272,6 +272,29 @@ export const getAllRulesById = function(ruleId: string): PluginRule[] {
 };
 
 /**
+ * The rule a hook selects for this request: the hook's callback id and its registered rule for
+ * `strategy`, provided the hook is well formed and every matcher in its `match` fits the request.
+ * Null when the hook is malformed or does not match; `rule` is null when nothing is registered
+ * under that id and strategy. The plugin executor runs exactly what this selects, so a caller that
+ * must know whether a plugin will run (pseudonymization/forcedRun.ts) asks the same question here.
+ */
+export const selectRule = function(
+  req: Request,
+  hook: any,
+  strategy: string,
+): { ruleId: string; rule: PluginRule | null } | null {
+  if (!hook || !hook.request || !hook.request.match || !hook.request.callback) {
+    return null;
+  }
+  const { match, callback } = hook.request;
+  if (!matchAll(req, match)) {
+    return null;
+  }
+  const ruleId = callback.id;
+  return { ruleId, rule: getRule(ruleId, strategy) };
+};
+
+/**
  * Match all rule IDs against the request with performance optimizations
  * @param req - Express request object
  * @param ruleIds - Array of rule IDs to match
@@ -576,6 +599,7 @@ export default {
   getRule,
   getAllRulesById,
   matchAll,
+  selectRule,
   validateRule,
   reloadAll
 };

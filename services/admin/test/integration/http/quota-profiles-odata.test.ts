@@ -178,3 +178,20 @@ describe('QuotaProfiles create race', () => {
     // competitor's row is committed on its own and stays - what matters here is the status.)
   });
 });
+
+describe('teams that reference a profile', () => {
+  const TEAMS = 'sap.llm.gateway.admin.Teams'; const MEMBERS = 'sap.llm.gateway.admin.TeamMembers';
+  it('a profile used as a pool or member profile cannot be deleted; editing its limits republishes the team and its members', async () => {
+    const created = await POST(`${S}/QuotaProfiles`, { name: 'Pool', tokensPerDay: 1000 }, ADMIN);
+    await cds.db.run(cds.ql.INSERT.into(TEAMS).entries({ ID: 't-p', name: 'Alpha', memberQuotaProfile_ID: created.data.ID }));
+    await cds.db.run(cds.ql.INSERT.into(MEMBERS).entries({ ID: 'm-p', team_ID: 't-p', email: 'uq-user@test.com', role: 'member', isPrimary: true }));
+    const refused = await ok(DELETE(`${S}/QuotaProfiles(${created.data.ID})`, ADMIN));
+    expect(refused.status).toBe(409); expect(message(refused)).toMatch(/Alpha/);
+    (quotaStateStore.setJson as jest.Mock).mockClear(); (cacheInvalidationService.bulkInvalidate as jest.Mock).mockClear();
+    expect((await PATCH(`${S}/QuotaProfiles(${created.data.ID})`, { tokensPerDay: 2000 }, ADMIN)).status).toBe(200);
+    const keys = (quotaStateStore.setJson as jest.Mock).mock.calls.map((c: any) => c[0]);
+    expect(keys).toEqual(expect.arrayContaining(['quota:team:t-p', quotaKeyFor('uq-user@test.com')]));
+    expect((cacheInvalidationService.bulkInvalidate as jest.Mock).mock.calls.flat(2).map((c: any) => c.credentialId)).toContain('sk-qp-user');
+    await cds.db.run(cds.ql.DELETE.from(MEMBERS)); await cds.db.run(cds.ql.DELETE.from(TEAMS));
+  });
+});

@@ -6,7 +6,8 @@
 import * as crypto from 'crypto';
 import { Pool } from 'pg';
 import { getPool, __resetForTests } from '../../../src/fileSearch/db';
-import { recallCandidates, RecallInputError } from '../../../src/fileSearch/repository';
+import { recallCandidates, RecallInputError, setLexicalRankFunction, OR_QUERY_SQL } from '../../../src/fileSearch/repository';
+import { STOP_WORDS } from '../../../src/fileSearch/stopWords';
 import { createIsolatedSchema, IsolatedSchema } from './schemaFixture';
 
 const DSN = process.env.FILE_SEARCH_TEST_DSN;
@@ -23,16 +24,19 @@ jest.mock('../../../src/services/configService', () => ({
 d('recallCandidates hybrid recall (requires FILE_SEARCH_TEST_DSN pointing at pgvector)', () => {
   let fixture: IsolatedSchema;
   let pool: Pool;
+  // Every NOTICE the recall connections receive (e.g. "text-search query doesn't contain lexemes").
+  const notices: string[] = [];
 
   beforeAll(async () => {
     fixture = await createIsolatedSchema(DSN!, EMBED_DIM);
-    // repository.ts reaches the database through src/fileSearch/db.ts's
+    // The repository modules reach the database through src/fileSearch/db.ts's
     // getPool() singleton, which builds its own Pool from this env var rather
     // than accepting one — point it at the isolated schema the same way the
     // fixture's own pool is scoped.
     process.env.FILE_SEARCH_DATABASE_URL = fixture.dsn;
     __resetForTests();
     pool = getPool()!;
+    pool.on('connect', (client) => client.on('notice', (n) => notices.push(String(n.message))));
   });
 
   afterAll(async () => {
@@ -45,8 +49,9 @@ d('recallCandidates hybrid recall (requires FILE_SEARCH_TEST_DSN pointing at pgv
   beforeEach(() => {
     mockConfig = {
       embeddingDimensions: EMBED_DIM,
-      hybrid: { rrfK: 60, lexicalEnabled: true, candidates: 50 },
+      hybrid: { rrfK: 60, lexicalEnabled: true, lexicalQuery: 'any', candidates: 50 },
     };
+    notices.length = 0;
   });
 
   async function seedStore(ownerEmail: string, isShared = false): Promise<string> {
@@ -428,13 +433,14 @@ d('recallCandidates hybrid recall (requires FILE_SEARCH_TEST_DSN pointing at pgv
     // would both still be "defined" and pass every assertion above. Compute
     // the same ts_rank Postgres would have produced for f-both's own text
     // against the same query, straight from the table (bypassing
-    // recallCandidates entirely), and assert repository.ts's returned
+    // recallCandidates entirely), and assert recall.ts's returned
     // lexicalScore equals it to float4 precision.
+    // hybrid.lexical_query "any" (the default): the query is the OR of the question's terms.
     const rawTsRank = await pool.query<{ score: number }>(
-      `SELECT ts_rank(c.tsv, plainto_tsquery('simple', $1)) AS score
+      `SELECT ts_rank(c.tsv, to_tsquery('simple', 'alpha | beta')) AS score
        FROM vector_store_chunks c
-       WHERE c.store_id = $2 AND c.file_id = $3 AND c.ord = $4`,
-      [ 'alpha beta', storeId, 'f-both', 0 ],
+       WHERE c.store_id = $1 AND c.file_id = $2 AND c.ord = $3`,
+      [ storeId, 'f-both', 0 ],
     );
     expect(rawTsRank.rows.length).toBe(1);
     expect(both.lexicalScore!).toBeCloseTo(rawTsRank.rows[0].score, 5);
@@ -529,5 +535,256 @@ d('recallCandidates hybrid recall (requires FILE_SEARCH_TEST_DSN pointing at pgv
       const again = await runOnce();
       expect(again.map((r) => r.fileId)).toEqual(firstOrder);
     }
+  });
+
+  // hybrid_search weights: A is the closest vector with no query term, B matches the
+  // query text with a far vector. Unweighted, B wins (it is in both lists).
+  it('hybridWeights steer the fusion toward the vector or the full-text ranking', async () => {
+    const storeId = await seedStore('nina@example.com');
+    await seedChunk({ storeId, fileId: 'f-A', ord: 0, text: 'plum kiwi mango', embedding: [1, 0, 0] });
+    await seedChunk({ storeId, fileId: 'f-B', ord: 0, text: 'zebra crossing', embedding: [0, 1, 0] });
+
+    const run = async (hybridWeights?: { embedding: number; text: number }) => (await recallCandidates({
+      storeIds: [storeId],
+      ownerEmail: 'nina@example.com',
+      queryText: 'zebra',
+      queryEmbedding: [1, 0, 0],
+      hybridWeights,
+    })).map((r) => r.fileId);
+
+    expect(await run()).toEqual(['f-B', 'f-A']);
+    expect(await run({ embedding: 1, text: 1 })).toEqual(['f-B', 'f-A']);
+    expect((await run({ embedding: 1, text: 0 }))[0]).toBe('f-A');
+    expect((await run({ embedding: 0, text: 1 }))[0]).toBe('f-B');
+  });
+  // ---------------------------------------------------------------------
+  // hybrid.lexical_query: "any" ORs the question's non-stop-word terms; "all" is the
+  // original plainto_tsquery (every word, stop words included, must be in the chunk).
+  // ---------------------------------------------------------------------
+  describe('the full-text query for natural-language questions', () => {
+    const QUESTION = "What port does the optional Ollama service use for SAIL-PROXY's Ollama compatibility feature?";
+    const ANSWER = 'Optional Ollama service on port 11434';
+
+    async function lexicalHits(storeId: string, owner: string, queryText: string, extra: Record<string, unknown> = {}) {
+      const results = await recallCandidates({ storeIds: [storeId], ownerEmail: owner, queryText, queryEmbedding: [0, 0, 1], ...extra });
+      return results.filter((r) => r.lexicalRank !== undefined);
+    }
+
+    it('matches the chunk that answers a question, which the all-words query misses', async () => {
+      const storeId = await seedStore('quinn@example.com');
+      await seedChunk({ storeId, fileId: 'f-answer', ord: 0, text: ANSWER, embedding: [1, 0, 0] });
+      await seedChunk({ storeId, fileId: 'f-noise', ord: 0, text: 'what does the for', embedding: [0, 1, 0] });
+
+      const any = await lexicalHits(storeId, 'quinn@example.com', QUESTION);
+      // Only stop words in common: f-noise is not recalled by the full-text arm.
+      expect(any.map((r) => r.fileId)).toEqual(['f-answer']);
+      expect(any[0].lexicalScore).toBeGreaterThan(0);
+
+      mockConfig.hybrid.lexicalQuery = 'all';
+      expect(await lexicalHits(storeId, 'quinn@example.com', QUESTION)).toEqual([]);
+    });
+
+    it('"all" keeps the original all-words match and score', async () => {
+      mockConfig.hybrid.lexicalQuery = 'all';
+      const storeId = await seedStore('rita@example.com');
+      await seedChunk({ storeId, fileId: 'f-all', ord: 0, text: 'the quarterly report for the board', embedding: [1, 0, 0] });
+      await seedChunk({ storeId, fileId: 'f-part', ord: 0, text: 'the quarterly numbers', embedding: [0, 1, 0] });
+
+      const hits = await lexicalHits(storeId, 'rita@example.com', 'the quarterly report');
+      expect(hits.map((r) => r.fileId)).toEqual(['f-all']);
+      const raw = await pool.query<{ score: number }>(
+        `SELECT ts_rank(tsv, plainto_tsquery('simple', $1)) AS score FROM vector_store_chunks WHERE store_id = $2 AND file_id = 'f-all'`,
+        ['the quarterly report', storeId],
+      );
+      expect(hits[0].lexicalScore!).toBeCloseTo(raw.rows[0].score, 5);
+    });
+
+    it('never turns quotes, backslashes, operators or Unicode in the question into a tsquery error', async () => {
+      const storeId = await seedStore('sam@example.com');
+      await seedChunk({ storeId, fileId: 'f-de', ord: 0, text: 'Die Größe der Straße über dem Fluß', embedding: [1, 0, 0] });
+      await seedChunk({
+        storeId, fileId: 'f-url', ord: 0, text: String.raw`see http://x.org/a'b\c and C:\Users\demo`, embedding: [0, 1, 0],
+      });
+      const questions = [
+        "it's rock'n'roll 'quoted' \"double\" question",
+        String.raw`back\slash \\ \' \" trailing\ `,
+        '& | ! ( ) : * <-> <2> !( a & b ) | ',
+        'foo:* bar:A baz:*AB & !qux',
+        "''' \\\\ ''",
+        String.raw`http://x.org/a'b\c`,
+        'Wie groß ist die Straße über dem Fluß?',
+        'Ünïcödé émoji 😀 中文 العربية',
+        '   ',
+        '',
+      ];
+      for (const q of questions) {
+        // eslint-disable-next-line no-await-in-loop
+        await expect(recallCandidates({ storeIds: [storeId], ownerEmail: 'sam@example.com', queryText: q, queryEmbedding: [0, 0, 1] }))
+          .resolves.toEqual(expect.any(Array));
+      }
+      expect((await lexicalHits(storeId, 'sam@example.com', 'Wie groß ist die Straße?')).map((r) => r.fileId)).toEqual(['f-de']);
+      expect((await lexicalHits(storeId, 'sam@example.com', String.raw`what is http://x.org/a'b\c`)).map((r) => r.fileId))
+        .toEqual(['f-url']);
+    });
+
+    // Bounded work for common terms: when at least `limit` chunks contain every term, the OR
+    // arm (which ranks every chunk with any term) does not run.
+    it('takes the AND matches when there are enough of them, and the OR matches otherwise', async () => {
+      mockConfig.hybrid.candidates = 2;
+      const storeId = await seedStore('yuri@example.com');
+      await seedChunk({ storeId, fileId: 'f-both-1', ord: 0, text: 'retry policy of the gateway', embedding: [1, 0, 0] });
+      await seedChunk({ storeId, fileId: 'f-one', ord: 0, text: 'gateway gateway gateway gateway', embedding: [1, 0, 0] });
+      const question = 'What is the retry policy of the gateway?';
+
+      // one chunk has every term: fewer than the limit of 2, so the OR arm ranks
+      const or = await lexicalHits(storeId, 'yuri@example.com', question);
+      expect(or.map((r) => r.fileId).sort()).toEqual(['f-both-1', 'f-one']);
+
+      await seedChunk({ storeId, fileId: 'f-both-2', ord: 0, text: 'the gateway retry policy', embedding: [1, 0, 0] });
+      const and = await lexicalHits(storeId, 'yuri@example.com', question);
+      expect(and.map((r) => r.fileId).sort()).toEqual(['f-both-1', 'f-both-2']);
+      const raw = await pool.query<{ score: number }>(
+        `SELECT ts_rank(tsv, to_tsquery('simple', 'retry & policy & gateway')) AS score
+         FROM vector_store_chunks WHERE store_id = $1 AND file_id = 'f-both-2'`, [storeId]);
+      expect(and.find((r) => r.fileId === 'f-both-2')!.lexicalScore!).toBeCloseTo(raw.rows[0].score, 5);
+    });
+
+    it('keeps only the first 32 distinct terms of a long question, in question order', async () => {
+      const words = Array.from({ length: 100 }, (_, i) => `term${String(i).padStart(3, '0')}`);
+      // stop words, one-letter tokens and repeats in between do not count towards the 32
+      const question = words.map((w, i) => (i % 3 ? w : `the ${w} a ${words[0]}`)).join(' ');
+      const client = await pool.connect();
+      try {
+        const q = (await client.query(OR_QUERY_SQL, [question, STOP_WORDS])).rows[0].q as string;
+        expect(q).toBe(words.slice(0, 32).map((w) => `'${w}'`).join(' | '));
+      } finally {
+        client.release();
+      }
+      // the cap is on the query, not on matching: a chunk with only the 33rd term is not recalled
+      const storeId = await seedStore('xena@example.com');
+      await seedChunk({ storeId, fileId: 'f-32', ord: 0, text: words[31], embedding: [1, 0, 0] });
+      await seedChunk({ storeId, fileId: 'f-33', ord: 0, text: words[32], embedding: [1, 0, 0] });
+      expect((await lexicalHits(storeId, 'xena@example.com', question)).map((r) => r.fileId)).toEqual(['f-32']);
+    });
+
+    it('builds the same OR query whether standard_conforming_strings is on or off', async () => {
+      const question = String.raw`see C:\Users\demo and http://x.org/a'b\c it's`;
+      const client = await pool.connect();
+      try {
+        const build = async (scs: 'on' | 'off') => {
+          await client.query(`SET standard_conforming_strings = ${scs}`);
+          return (await client.query(OR_QUERY_SQL, [question, STOP_WORDS])).rows[0].q as string;
+        };
+        const on = await build('on');
+        const off = await build('off');
+        expect(off).toBe(on);
+        // the quote inside a URL lexeme is escaped; the parser splits at a backslash
+        // in question order: the parser emits a URL whole and then its host and path, each at the
+        // next position ('x.org/a''b':6 'x.org':7 '/a''b':8)
+        expect(on).toBe(String.raw`'see' | 'users' | 'demo' | 'x.org/a''b' | 'x.org' | '/a''b'`);
+      } finally {
+        await client.query('RESET standard_conforming_strings');
+        client.release();
+      }
+    });
+
+    it('skips the full-text arm for a question of only stop words and single letters, without a NOTICE; the vector arm still answers', async () => {
+      const storeId = await seedStore('tara@example.com');
+      await seedChunk({ storeId, fileId: 'f-1', ord: 0, text: 'what is it and how does a b c work', embedding: [1, 0, 0] });
+
+      for (const q of ['What is it?', 'a b c', 'Was ist das und wie?', 'x', '?!']) {
+        // eslint-disable-next-line no-await-in-loop
+        const results = await recallCandidates({ storeIds: [storeId], ownerEmail: 'tara@example.com', queryText: q, queryEmbedding: [1, 0, 0] });
+        expect(results.map((r) => r.fileId)).toEqual(['f-1']);
+        expect(results[0].vectorRank).toBe(1);
+        expect(results[0].lexicalRank).toBeUndefined();
+      }
+      expect(notices).toEqual([]);
+      expect(STOP_WORDS).toEqual(expect.arrayContaining(['what', 'is', 'it', 'was', 'ist', 'das']));
+    });
+
+    it('still applies the attribute filter to the full-text arm', async () => {
+      const storeId = await seedStore('uma@example.com');
+      await seedChunk({ storeId, fileId: 'f-in', ord: 0, text: 'invoice totals', embedding: [1, 0, 0], attributes: { dept: 'finance' } });
+      await seedChunk({ storeId, fileId: 'f-out', ord: 0, text: 'invoice archive', embedding: [1, 0, 0], attributes: { dept: 'legal' } });
+      await seedChunk({ storeId, fileId: 'f-out2', ord: 0, text: 'archive totals', embedding: [1, 0, 0], attributes: { dept: 'legal' } });
+
+      const unfiltered = await lexicalHits(storeId, 'uma@example.com', 'Where are the invoice totals or the archive?');
+      expect(unfiltered.map((r) => r.fileId).sort()).toEqual(['f-in', 'f-out', 'f-out2']);
+
+      const results = await recallCandidates({
+        storeIds: [storeId], ownerEmail: 'uma@example.com', queryText: 'Where are the invoice totals or the archive?',
+        queryEmbedding: [1, 0, 0], filter: { type: 'eq', key: 'dept', value: 'finance' },
+      });
+      expect(results.map((r) => r.fileId)).toEqual(['f-in']);
+      expect(results[0].lexicalRank).toBe(1);
+    });
+
+    it('ranks a chunk with more of the terms higher, and ts_rank_cd is selectable for the evaluation', async () => {
+      const storeId = await seedStore('vera@example.com');
+      await seedChunk({ storeId, fileId: 'f-two', ord: 0, text: 'configure the winston logger here', embedding: [0, 1, 0] });
+      await seedChunk({ storeId, fileId: 'f-one', ord: 0, text: 'the logger', embedding: [0, 1, 0] });
+      const q = 'Where do I configure the winston logger?';
+      expect((await lexicalHits(storeId, 'vera@example.com', q)).sort((a, b) => a.lexicalRank! - b.lexicalRank!).map((r) => r.fileId))
+        .toEqual(['f-two', 'f-one']);
+      setLexicalRankFunction('ts_rank_cd');
+      try {
+        const cd = await lexicalHits(storeId, 'vera@example.com', q);
+        const raw = await pool.query<{ score: number }>(
+          `SELECT ts_rank_cd(tsv, to_tsquery('simple', 'configure | logger | winston')) AS score
+           FROM vector_store_chunks WHERE store_id = $1 AND file_id = 'f-two'`, [storeId]);
+        expect(cd.find((r) => r.fileId === 'f-two')!.lexicalScore!).toBeCloseTo(raw.rows[0].score, 5);
+      } finally {
+        setLexicalRankFunction('ts_rank');
+      }
+    });
+
+    // Review focus 5: on a large store the OR query is answered from the GIN index.
+    it('uses the GIN index idx_chunks_tsv for the OR query on a large store', async () => {
+      const storeId = await seedStore('wendy@example.com');
+      await seedChunk({ storeId, fileId: 'f-big', ord: 0, text: 'seed', embedding: [1, 0, 0] });
+      await pool.query(
+        `INSERT INTO vector_store_chunks (store_id, file_id, ord, text, embedding)
+         SELECT $1, 'f-big', g, 'filler text number ' || g || ' about common things', '[0,1,0]'
+         FROM generate_series(1, 20000) g`, [storeId]);
+      await pool.query(
+        `INSERT INTO vector_store_chunks (store_id, file_id, ord, text, embedding)
+         VALUES ($1, 'f-big', 20001, 'the rare zymurgy chapter', '[0,1,0]')`, [storeId]);
+      // VACUUM, not only ANALYZE: the GIN index's own statistics (which the planner's cost
+      // estimate for it reads) are written by VACUUM, as autovacuum does on a live store.
+      await pool.query('VACUUM ANALYZE vector_store_chunks');
+
+      // Capture the statement recallCandidates sends, then EXPLAIN it with the same parameters.
+      let captured: { sql: string; params: unknown[] } | undefined;
+      const realConnect = pool.connect.bind(pool);
+      const spy = jest.spyOn(pool, 'connect').mockImplementation((async () => {
+        const client: any = await realConnect();
+        const realQuery = client.query.bind(client);
+        client.query = (sql: any, params?: any) => {
+          if (typeof sql === 'string' && sql.includes('\nlex AS (')) captured = { sql, params };
+          return realQuery(sql, params);
+        };
+        const realRelease = client.release.bind(client);
+        client.release = (...a: any[]) => { client.query = realQuery; client.release = realRelease; return realRelease(...a); };
+        return client;
+      }) as any);
+      let hits;
+      try {
+        hits = await lexicalHits(storeId, 'wendy@example.com', 'Which chapter covers zymurgy?');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(hits.map((r) => r.ord)).toEqual([20001]);
+      expect(captured).toBeDefined();
+
+      const client = await pool.connect();
+      try {
+        const plan = await client.query(`EXPLAIN (FORMAT JSON) ${captured!.sql}`, captured!.params as any[]);
+        const text = JSON.stringify(plan.rows[0]['QUERY PLAN']);
+        expect(text).toContain('idx_chunks_tsv');
+      } finally {
+        client.release();
+      }
+    });
   });
 });

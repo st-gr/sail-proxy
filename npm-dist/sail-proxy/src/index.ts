@@ -13,6 +13,8 @@ import { ollamaCommand } from './commands/ollama';
 import { updateCommand } from './commands/update';
 import { logsCommand } from './commands/logs';
 import { endpointCommand } from './commands/endpoint';
+import { fileSearchCommand } from './commands/fileSearch';
+import { connectionCommand } from './commands/connection';
 import { ADAPTERS, runLauncher } from './commands/launch';
 
 // Utils
@@ -44,6 +46,8 @@ program.addCommand(ollamaCommand);
 program.addCommand(updateCommand);
 program.addCommand(logsCommand);
 program.addCommand(endpointCommand);
+program.addCommand(fileSearchCommand);
+program.addCommand(connectionCommand);
 
 // Default action when no command is specified
 program.action(async () => {

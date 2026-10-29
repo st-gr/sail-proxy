@@ -1,18 +1,63 @@
 import { Pool, PoolClient } from 'pg';
-import { buildSchemaSql, splitSqlStatements } from './schema.sql';
+import { buildSchemaSql, splitSchemaPhases, embeddingDimensionsProblem } from './schema.sql';
+import { setUnavailableCause } from './unavailableCause';
+import { nonDefaultBuildNote, readVectorIndex, VECTOR_INDEX_NAME, VECTOR_INDEX_BUILD_NAME } from './vectorIndex';
 import { getFileSearchConfig } from '../services/configService';
 import { getDefaultLogger } from '@libs/logger';
+import { FileSearchBusyError } from './dbBusy';
 
 const logger = getDefaultLogger();
 
 let pool: Pool | null = null;
 let migrated = false;
 
+/**
+ * How long a request waits for a pooled connection (or for a new one to connect) before it fails.
+ * Without a limit, requests queue behind a pool held by slow work (an S3 request under a
+ * transaction, a long query) until the client gives up, and the queue only grows. 15 s is far
+ * above a normal wait (milliseconds) and below the timeouts of SDK clients and proxies (60 s and
+ * more), so the caller gets a clean 503 it can retry instead of a hung request.
+ */
+export const POOL_CONNECTION_TIMEOUT_MS = 15_000;
+
+// In its own module, so code whose tests mock this one still sees the real class.
+export { FileSearchBusyError };
+
+const PG_POOL_TIMEOUT_MESSAGES = new Set([
+  'timeout exceeded when trying to connect',          // waited for a pooled connection
+  'Connection terminated due to connection timeout',  // a new connection did not connect in time
+]);
+
+function translatePoolError(err: unknown): unknown {
+  return err instanceof Error && PG_POOL_TIMEOUT_MESSAGES.has(err.message) ? new FileSearchBusyError() : err;
+}
+
+/** pg's Pool, with its connect-timeout errors as FileSearchBusyError (pool.query connects through connect). */
+class FileSearchPool extends Pool {
+  connect(): Promise<PoolClient>;
+  connect(callback: (err: Error | undefined, client: PoolClient | undefined, done: (release?: any) => void) => void): void;
+  connect(callback?: (err: Error | undefined, client: PoolClient | undefined, done: (release?: any) => void) => void): any {
+    if (callback) {
+      return super.connect((err, client, done) => callback(translatePoolError(err) as Error | undefined, client, done));
+    }
+    return super.connect().catch((err: unknown) => { throw translatePoolError(err); });
+  }
+}
+
+/** The runtime pool (`opts` for tests: a smaller pool or a shorter timeout). */
+export function createFileSearchPool(
+  connectionString: string, opts: { max?: number; connectionTimeoutMillis?: number } = {},
+): Pool {
+  return new FileSearchPool({
+    connectionString, max: opts.max ?? 10, connectionTimeoutMillis: opts.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
+  });
+}
+
 export function getPool(): Pool | null {
   if (pool) return pool;
   const dsn = process.env.FILE_SEARCH_DATABASE_URL || process.env.POSTGRES_URL;
   if (!dsn) return null;               // standalone installs: no database, feature unavailable
-  pool = new Pool({ connectionString: dsn, max: 10 });
+  pool = createFileSearchPool(dsn);
   pool.on('error', (err) => logger.error('FileSearchDb', `Idle pg client error: ${err.message}`, err));
   return pool;
 }
@@ -87,6 +132,94 @@ async function missingSchemaTables(client: PoolClient): Promise<string[]> {
   const { rows } = await client.query<{ name: string }>(
     'SELECT name FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL', [tables]);
   return rows.map((r) => r.name);
+}
+
+// Schema parts the code cannot work without that the table probe above cannot
+// see: columns added to tables that already existed, the chunk key that admits
+// a second generation, the one-running-job indexes, and the job item tables
+// (fs_reembed_items and fs_blob_migration_items cannot be created by a role
+// lacking REFERENCES on fs_jobs, so a non-owner install misses them together
+// with the columns), the blob garbage table, the Uploads API tables and the team shares. A role that does not own the
+// tables cannot add any of these, and every search would then fail with 42703 —
+// so their absence makes file_search unavailable rather than half-working.
+const REQUIRED_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+  ['vector_stores', 'active_generation'],
+  ['vector_store_chunks', 'generation'],
+  ['fs_jobs', 'cancel_requested'],
+  ['fs_jobs', 'target_model'],
+  ['fs_jobs', 'target_dim'],
+  ['fs_jobs', 'target_generation'],
+  ['fs_jobs', 'target_storage'],
+  ['vector_store_files', 'credential_id'],
+  ['vector_store_files', 'auth_type'],
+  ['vector_store_files', 'on_behalf_of'],
+  ['file_blobs', 'delete_after'],
+  ['vector_stores', 'chunking'],
+  ['vector_store_chunks', 'context'],
+  ['vector_store_chunks', 'context_tsv'],
+  ['vector_store_chunks', 'section'],
+  ['vector_store_chunks', 'section_offset'],
+  ['vector_store_chunks', 'heading_path'],
+  ['fs_jobs', 'target_chunking'],
+  ['fs_jobs', 'context_input_tokens'],
+  ['fs_jobs', 'context_output_tokens'],
+  ['fs_jobs', 'context_cached_tokens'],
+  ['fs_jobs', 'context_failed_chunks'],
+  ['fs_jobs', 'ocr_pages'],
+  ['fs_jobs', 'ocr_skipped_pages'],
+  ['fs_jobs', 'vision_pages'],
+  ['fs_jobs', 'vision_skipped_pages'],
+  ['vector_store_chunks', 'page_start'],
+  ['vector_store_chunks', 'page_end'],
+  ['vector_store_files', 'extraction_version'],
+  ['fs_jobs', 'reextract'],
+  ['fs_reembed_items', 'extraction_version'],
+  ['vector_store_files', 'ocr_pending'],
+  ['fs_reembed_items', 'ocr_pending'],
+  ['vector_store_files', 'context_stopped'],
+  ['fs_reembed_items', 'context_stopped'],
+  ['fs_files', 'expires_at'],
+];
+const REQUIRED_TABLES: readonly string[] = [
+  'fs_reembed_items', 'fs_blob_migration_items', 'file_blob_garbage', 'fs_uploads', 'fs_upload_parts',
+  'vector_store_team_shares',
+];
+// The database's guarantees of at most one unfinished re-embed per store and
+// one blob migration at a time; a non-owner cannot create them (CREATE INDEX
+// needs ownership of fs_jobs).
+const REQUIRED_UNIQUE_INDEXES: readonly string[] = ['idx_fs_jobs_reembed_running', 'idx_fs_jobs_blob_migration_running'];
+
+async function missingRequiredSchema(client: PoolClient): Promise<string[]> {
+  const { rows: columnRows } = await client.query<{ name: string }>(
+    `SELECT t.tbl || '.' || t.col AS name
+       FROM unnest($1::text[], $2::text[]) AS t(tbl, col)
+      WHERE NOT EXISTS (SELECT 1 FROM pg_attribute a
+                         WHERE a.attrelid = to_regclass(t.tbl) AND a.attname = t.col
+                           AND a.attnum > 0 AND NOT a.attisdropped)`,
+    [REQUIRED_COLUMNS.map(([t]) => t), REQUIRED_COLUMNS.map(([, c]) => c)],
+  );
+  const { rows: tableRows } = await client.query<{ name: string }>(
+    'SELECT name FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL', [REQUIRED_TABLES]);
+  const { rows: keyRows } = await client.query<{ ok: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_constraint con
+                      JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+                     WHERE con.conrelid = to_regclass('vector_store_chunks') AND con.contype = 'p'
+                       AND a.attname = 'generation') AS ok`);
+  // Whitespace-only structured chunks are stored without a vector.
+  const { rows: embeddingRows } = await client.query<{ notnull: boolean }>(
+    `SELECT a.attnotnull AS notnull FROM pg_attribute a
+      WHERE a.attrelid = to_regclass('vector_store_chunks') AND a.attname = 'embedding' AND NOT a.attisdropped`);
+  const { rows: indexRows } = await client.query<{ name: string }>(
+    `SELECT name FROM unnest($1::text[]) AS name
+      WHERE NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indexrelid = to_regclass(name) AND i.indisunique)`,
+    [REQUIRED_UNIQUE_INDEXES]);
+  return [
+    ...columnRows.map((r) => r.name),
+    ...tableRows.map((r) => r.name),
+    ...(keyRows[0].ok ? [] : ['the vector_store_chunks primary key on (store_id, file_id, generation, ord)']),
+    ...(embeddingRows[0]?.notnull ? ['vector_store_chunks.embedding accepting NULL'] : []),
+    ...indexRows.map((r) => `the unique index ${r.name}`),
+  ];
 }
 
 function parseDsnCredentials(dsn: string): { user: string; password: string } {
@@ -200,8 +333,7 @@ class SchemaApplicationError extends Error {
  * this function — decides whether the statements that DID apply should be
  * committed or rolled back. See applySchemaLocked.
  */
-async function applySchemaStatements(client: PoolClient): Promise<StatementFailure[]> {
-  const statements = splitSqlStatements(buildSchemaSql(getFileSearchConfig().embeddingDimensions));
+async function applySchemaStatements(client: PoolClient, statements: string[]): Promise<StatementFailure[]> {
   const failures: StatementFailure[] = [];
 
   for (let i = 0; i < statements.length; i += 1) {
@@ -227,8 +359,19 @@ async function applySchemaStatements(client: PoolClient): Promise<StatementFailu
   return failures;
 }
 
+/** The schema's two phases (see POST_COMMIT_INDEXES in schema.sql.ts). */
+function schemaPhases(): { main: string[]; post: string[] } {
+  return splitSchemaPhases(buildSchemaSql(getFileSearchConfig().embeddingDimensions));
+}
+
 /**
  * Applies the schema under the migration advisory lock.
+ *
+ * Over a present schema, in two transactions: the main one, then the
+ * post-commit index builds (POST_COMMIT_INDEXES), so an index scan never runs
+ * while the same transaction holds a column addition's ACCESS EXCLUSIVE lock.
+ * A first-ever migration stays one all-or-nothing transaction: its tables are
+ * new, empty and unread.
  *
  * `commitPartial` decides what happens when some statements were rejected, and
  * the two answers are opposites for good reason:
@@ -249,28 +392,36 @@ async function applySchemaLocked(
   client: PoolClient,
   { commitPartial }: { commitPartial: boolean },
 ): Promise<void> {
-  let failures: StatementFailure[];
-  let total: number;
+  const { main, post } = schemaPhases();
+  const total = main.length + post.length;
+  const failures: StatementFailure[] = [];
 
-  await client.query('BEGIN');
-  try {
-    await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
-    const statements = splitSqlStatements(buildSchemaSql(getFileSearchConfig().embeddingDimensions));
-    total = statements.length;
-    failures = await applySchemaStatements(client);
-    if (failures.length > 0 && !commitPartial) {
-      await client.query('ROLLBACK');
-      throw new SchemaApplicationError(failures, total);
+  for (const statements of commitPartial ? [main, post] : [[...main, ...post]]) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.query('BEGIN');
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+      // eslint-disable-next-line no-await-in-loop
+      const rejected = await applySchemaStatements(client, statements);
+      if (rejected.length > 0 && !commitPartial) {
+        // eslint-disable-next-line no-await-in-loop
+        await client.query('ROLLBACK');
+        throw new SchemaApplicationError(rejected, total);
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await client.query('COMMIT');
+      failures.push(...rejected);
+    } catch (err) {
+      // A SchemaApplicationError has already rolled back and must not be
+      // re-wrapped; anything else is an infrastructure failure (lost connection,
+      // lock wait aborted) that leaves the transaction to unwind here.
+      if (!(err instanceof SchemaApplicationError)) {
+        // eslint-disable-next-line no-await-in-loop
+        await client.query('ROLLBACK').catch(() => {});
+      }
+      throw err;
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    // A SchemaApplicationError has already rolled back and must not be
-    // re-wrapped; anything else is an infrastructure failure (lost connection,
-    // lock wait aborted) that leaves the transaction to unwind here.
-    if (!(err instanceof SchemaApplicationError)) {
-      await client.query('ROLLBACK').catch(() => {});
-    }
-    throw err;
   }
 
   // Raised only AFTER the successful statements are committed, so the caller's
@@ -299,10 +450,53 @@ async function smokeTestRuntimeGrants(runtimeDsn: string): Promise<void> {
   }
 }
 
+/**
+ * Says at boot when the approximate-search index is not the one a new install gets (vectorIndex.ts): the
+ * schema never builds it over existing chunks, so an upgraded install keeps its previous index, and an
+ * install with chunks but no index stays without one, until an operator runs `rebuild-index`. Searches are
+ * exact either way; this only names the command. Best effort: it never changes the migration's outcome.
+ */
+async function reportVectorIndex(client: PoolClient): Promise<void> {
+  const command = '`rebuild-index` (as the tables\' owner; --dry-run first) builds it without blocking writes: standalone CLI ' +
+    '`sail-proxy file-search rebuild-index`, a checkout `node cli-tools/file-search-migrate.js rebuild-index`, Docker and Kyma: see the developer guide';
+  try {
+    const leftover = await readVectorIndex(client, VECTOR_INDEX_BUILD_NAME);
+    if (leftover) {
+      logger.info('FileSearchDb',
+        `file_search has a ${leftover.valid ? 'built, not yet swapped' : 'partial'} ${VECTOR_INDEX_BUILD_NAME} from a running ` +
+        `or interrupted rebuild-index; every write maintains it. If no rebuild-index is running, run it again: it ` +
+        `${leftover.valid ? 'reuses that index when it is the one asked for' : 'drops that index and builds anew'}`);
+    }
+    const index = await readVectorIndex(client);
+    if (index?.kind === 'halfvec' && index.valid) {
+      const note = nonDefaultBuildNote(index);
+      if (note) logger.info('FileSearchDb', `file_search's approximate-search index ${VECTOR_INDEX_NAME} was ${note}`);
+      return;
+    }
+    if (!index) {
+      const { rows } = await client.query('SELECT EXISTS (SELECT 1 FROM vector_store_chunks) AS populated');
+      if (rows[0].populated) {
+        logger.info('FileSearchDb',
+          `file_search has no approximate-search index (${VECTOR_INDEX_NAME}) over its chunks; it is never built at ` +
+          `boot. ${command}`);
+      }
+    } else if (!index.valid) {
+      logger.warn('FileSearchDb',
+        `file_search's approximate-search index ${VECTOR_INDEX_NAME} is INVALID (an interrupted build); ${command}`);
+    } else {
+      logger.info('FileSearchDb',
+        `file_search's approximate-search index ${VECTOR_INDEX_NAME} is the previous kind; approximate search ` +
+        `needs the halfvec index. ${command}`);
+    }
+  } catch (error: any) {
+    logger.debug('FileSearchDb', `could not read the approximate-search index: ${error.message}`);
+  }
+}
+
 // Runs the full DDL migration (schema + runtime-role grants) against a
 // dedicated, short-lived pool for `migrationDsn` — intentionally never
 // assigned to the module-level `pool` singleton returned by getPool(), so
-// the gateway's runtime connections (repository.ts, search.ts,
+// the gateway's runtime connections (the repository modules, search.ts,
 // ingestWorker.ts, blob/*.ts, ...) never see DDL-capable credentials, not
 // even transiently.
 async function runPrivilegedMigration(migrationDsn: string, runtimeDsn: string | undefined): Promise<void> {
@@ -311,37 +505,49 @@ async function runPrivilegedMigration(migrationDsn: string, runtimeDsn: string |
     const { user: migrationUser } = parseDsnCredentials(migrationDsn);
     const client = await migrationPool.connect();
     try {
-      await client.query('BEGIN');
-      try {
-        await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+      // Two transactions, like applySchemaLocked over a present schema: the
+      // main one (with the grants), then the post-commit index builds.
+      const { main, post } = schemaPhases();
+      const total = main.length + post.length;
+      for (const [phase, statements] of [main, post].entries()) {
+        // eslint-disable-next-line no-await-in-loop
+        await client.query('BEGIN');
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
 
-        // Statement-by-statement, exactly as applySchemaLocked does. This path
-        // is fatal on failure either way — it owns the privileged credential
-        // and a partial schema must not be committed — so the savepoints buy
-        // diagnostics rather than progress: the transaction survives each
-        // rejection long enough to collect EVERY failing statement and name
-        // them, instead of dying on the first with no indication of which of
-        // the ~30 statements it was.
-        //
-        // Keeping both paths on one applier is the point. They previously
-        // differed — one split, one not — and nothing at either call site said
-        // so.
-        const total = splitSqlStatements(
-          buildSchemaSql(getFileSearchConfig().embeddingDimensions),
-        ).length;
-        const failures = await applySchemaStatements(client);
-        if (failures.length > 0) {
-          throw new SchemaApplicationError(failures, total);
-        }
+          // Statement-by-statement, exactly as applySchemaLocked does. This path
+          // is fatal on failure either way — it owns the privileged credential
+          // and a partial main phase must not be committed (a rejected
+          // post-commit index leaves the committed main phase, which a re-run
+          // completes) — so the savepoints buy
+          // diagnostics rather than progress: the transaction survives each
+          // rejection long enough to collect EVERY failing statement and name
+          // them, instead of dying on the first with no indication of which of
+          // the ~30 statements it was.
+          //
+          // Keeping both paths on one applier is the point. They previously
+          // differed — one split, one not — and nothing at either call site said
+          // so.
+          // eslint-disable-next-line no-await-in-loop
+          const failures = await applySchemaStatements(client, statements);
+          if (failures.length > 0) {
+            throw new SchemaApplicationError(failures, total);
+          }
 
-        if (runtimeDsn) {
-          await grantRuntimeRole(client, migrationUser, runtimeDsn);
+          if (phase === 0 && runtimeDsn) {
+            // eslint-disable-next-line no-await-in-loop
+            await grantRuntimeRole(client, migrationUser, runtimeDsn);
+          }
+          // eslint-disable-next-line no-await-in-loop
+          await client.query('COMMIT');
+        } catch (err) {
+          // eslint-disable-next-line no-await-in-loop
+          await client.query('ROLLBACK').catch(() => {});
+          throw err;
         }
-        await client.query('COMMIT');
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw err;
       }
+      await reportVectorIndex(client);
     } finally {
       client.release();
     }
@@ -356,9 +562,11 @@ async function runPrivilegedMigration(migrationDsn: string, runtimeDsn: string |
     }
 
     migrated = true;
+    setUnavailableCause(null);
     logger.info('FileSearchDb', 'file_search schema migration applied (privileged migration credential)');
   } catch (error: any) {
     migrated = false;
+    setUnavailableCause('migration_failed');
     logger.error('FileSearchDb',
       `file_search migration failed; feature will report unavailable: ${error.message}`, error);
   } finally {
@@ -404,6 +612,10 @@ async function runPrivilegedMigration(migrationDsn: string, runtimeDsn: string |
  * nothing left to do. So on the already-present path a failed re-application
  * is caught, and what runMigration() reports is decided by probing which of
  * buildSchemaSql()'s tables actually exist (missingSchemaTables):
+ *  - a REQUIRED column, key or table missing (missingRequiredSchema — the
+ *    chunk generations, typically on a non-owner install that could not add
+ *    them): NOT migrated, at warn, naming the migration step. Every search
+ *    would fail with 42703, so the feature fails closed instead.
  *  - none missing: migrated, at info — but only when the rejection was 42501
  *    (insufficient_privilege), i.e. the ownership case above. Re-application
  *    failing for any OTHER reason with every table present is a real failure
@@ -430,6 +642,18 @@ export async function runMigration(): Promise<boolean> {
   const migrationDsn = process.env.FILE_SEARCH_MIGRATION_DATABASE_URL;
   const runtimeDsn = process.env.FILE_SEARCH_DATABASE_URL || process.env.POSTGRES_URL;
 
+  // An out-of-range width must neither crash the boot nor reach Postgres as a raw
+  // pgvector error: file_search stays unavailable and the log says why.
+  const dimensions = getFileSearchConfig().embeddingDimensions;
+  const dimensionsProblem = embeddingDimensionsProblem(dimensions);
+  if (dimensionsProblem) {
+    logger.error('FileSearchDb', `file_search is UNAVAILABLE: ${dimensionsProblem}`,
+      new Error(dimensionsProblem));
+    migrated = false;
+    setUnavailableCause('embedding_dimensions');
+    return false;
+  }
+
   if (migrationDsn) {
     await runPrivilegedMigration(migrationDsn, runtimeDsn);
     return migrated;
@@ -453,6 +677,7 @@ export async function runMigration(): Promise<boolean> {
 
       if (!schemaPresent && !canCreate) {
         migrated = false;
+        setUnavailableCause('schema_not_provisioned');
         logger.info('FileSearchDb',
           'file_search schema is absent and the configured database role cannot create it; run the ' +
           'migration deploy step (cli-tools/file-search-migrate.js, or set FILE_SEARCH_MIGRATION_DATABASE_URL) ' +
@@ -462,6 +687,7 @@ export async function runMigration(): Promise<boolean> {
         // outer catch reports unavailable), because nothing usable exists.
         await applySchemaLocked(client, { commitPartial: false });
         migrated = true;
+        setUnavailableCause(null);
         logger.info('FileSearchDb', 'file_search schema migration applied');
       } else {
         // Already present: re-apply the idempotent DDL so schema additions
@@ -478,8 +704,21 @@ export async function runMigration(): Promise<boolean> {
         }
 
         const missing = await missingSchemaTables(client);
-        migrated = true;
-        if (missing.length > 0) {
+        const requiredMissing = await missingRequiredSchema(client);
+        migrated = requiredMissing.length === 0;
+        setUnavailableCause(migrated ? null : 'schema_outdated');
+        if (requiredMissing.length > 0) {
+          // Unlike an absent optional table, these break every search and
+          // every ingestion: report unavailable, never half-working.
+          const cause = ddlError
+            ? `re-applying the schema failed (${ddlError.code ?? 'no code'}: ${ddlError.message})`
+            : 'this database role has no CREATE privilege on the schema';
+          logger.warn('FileSearchDb',
+            `file_search is UNAVAILABLE: the schema predates this gateway version and could not be upgraded — ` +
+            `missing ${requiredMissing.join(', ')}; ${cause}. Upgrading needs the role that owns the ` +
+            'file_search tables: run the migration deploy step (cli-tools/file-search-migrate.js, or set ' +
+            'FILE_SEARCH_MIGRATION_DATABASE_URL). file_search reports unavailable until then');
+        } else if (missing.length > 0) {
           const one = missing.length === 1;
           // States the cause verbatim rather than asserting a permissions
           // problem: re-application can fail for reasons that have nothing to
@@ -522,11 +761,13 @@ export async function runMigration(): Promise<boolean> {
           logger.info('FileSearchDb', 'file_search schema already present; idempotent migration re-applied');
         }
       }
+      if (migrated) await reportVectorIndex(client);
     } finally {
       client.release();
     }
   } catch (error: any) {
     migrated = false;
+    setUnavailableCause('migration_failed');
     logger.error('FileSearchDb',
       `file_search migration failed; feature will report unavailable: ${error.message}`, error);
   }

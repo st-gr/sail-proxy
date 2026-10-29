@@ -11,7 +11,7 @@
  * produce the escape; `jsonb` then rejects that escape SPECIFICALLY, because jsonb stores
  * decoded text and U+0000 has no representation in it.
  *
- * @see ../../../src/fileSearch/repository.ts - validateAttributes
+ * @see ../../../src/fileSearch/storeValidation.ts - validateAttributes
  * @see ../attributeNulByte.test.ts - the same guard at all four HTTP entry points
  */
 import { Pool } from 'pg';

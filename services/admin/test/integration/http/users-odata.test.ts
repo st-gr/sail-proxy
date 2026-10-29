@@ -423,6 +423,14 @@ describe('usageUnits', () => {
     expect(res.status).toBe(200);
     expect(res.data.value).toEqual([{ model: 'sap-rpt-1.6', unit: 'cells' }]);
   });
+
+  it('lists the models whose usage is counted in units (rerank)', async () => {
+    await cds.db.run(cds.ql.INSERT.into(KEY_USAGE).entries({ apiKey_ID: 'k-u1', email: 'uq-user@test.com', validFrom: new Date(), validTo: new Date(), provider: 'sap', model: 'cohere-rerank', statusCode: 200, inputTokens: 2, outputTokens: 0, totalTokens: 2, unit: 'units', usageSignature: `sig-units-${Date.now()}` }));
+
+    const res = await GET(`${S}/usageUnits()`, USER);
+    expect(res.status).toBe(200);
+    expect(res.data.value).toEqual([{ model: 'cohere-rerank', unit: 'units' }]);
+  });
 });
 
 describe("the owner's user-level limit on a credential", () => {
@@ -521,20 +529,105 @@ describe('usage buckets: reset, rebuild action, credential deletion', () => {
     // The processor only persists when model data is available, and it must find the model's
     // price in ModelCosts: an uncached model sends modelCostService to the gateway, which is not
     // running here (and whose own key lookup opens a root transaction of its own).
+    // Restores what it changes, like the 4b test below: the flag, the provider map and only
+    // the price row it seeds.
     const { modelCostService } = require('../../../src/services/modelCostService');
-    modelCostService.hasModelData = true;
-    modelCostService.modelProviderMap.set('m', 'anthropic');
-    await cds.db.run(cds.ql.DELETE.from(COSTS));
-    await cds.db.run(cds.ql.INSERT.into(COSTS).entries({ model: 'm', provider: 'anthropic', inputCost: 0.001, outputCost: 0.002, dateFrom: '2020-01-01T00:00:00.000Z', dateTo: '9999-12-31T23:59:59.999Z' }));
-    const before = (await cds.db.run(cds.ql.SELECT.from(KEY_USAGE))).length;
-    const r = await POST(`${S}/processUsageEvents`, { events: [{
-      requestId: `rq-${Date.now()}`, timestamp: Math.floor(Date.now() / 1000), authType: 'api_key',
-      credentialId: 'k-u1', provider: 'anthropic', model: 'm',
-      inputTokens: 5, outputTokens: 0, responseTime: 1, statusCode: 200
-    }] }, ADMIN);
-    expect(r.data).toMatchObject({ processed: 1, status: 'success' });
-    expect(await cds.db.run(cds.ql.SELECT.from(KEY_USAGE))).toHaveLength(before + 1);
-    expect((await GET(u('uq-user@test.com'), ADMIN)).data.usedTokensDay).toBe(405);
+    const savedHasModelData = modelCostService.hasModelData;
+    const savedProviderMap = new Map<string, string>(modelCostService.modelProviderMap);
+    const dropSeededPrice = () => cds.db.run(cds.ql.DELETE.from(COSTS).where({ model: 'm' }));
+    try {
+      modelCostService.hasModelData = true;
+      modelCostService.modelProviderMap.set('m', 'anthropic');
+      await dropSeededPrice();
+      await cds.db.run(cds.ql.INSERT.into(COSTS).entries({ model: 'm', provider: 'anthropic', inputCost: 0.001, outputCost: 0.002, dateFrom: '2020-01-01T00:00:00.000Z', dateTo: '9999-12-31T23:59:59.999Z' }));
+      const before = (await cds.db.run(cds.ql.SELECT.from(KEY_USAGE))).length;
+      const r = await POST(`${S}/processUsageEvents`, { events: [{
+        requestId: `rq-${Date.now()}`, timestamp: Math.floor(Date.now() / 1000), authType: 'api_key',
+        credentialId: 'k-u1', provider: 'anthropic', model: 'm',
+        inputTokens: 5, outputTokens: 0, responseTime: 1, statusCode: 200
+      }] }, ADMIN);
+      expect(r.data).toMatchObject({ processed: 1, status: 'success' });
+      expect(await cds.db.run(cds.ql.SELECT.from(KEY_USAGE))).toHaveLength(before + 1);
+      expect((await GET(u('uq-user@test.com'), ADMIN)).data.usedTokensDay).toBe(405);
+    } finally {
+      modelCostService.hasModelData = savedHasModelData;
+      modelCostService.modelProviderMap.clear();
+      for (const [model, provider] of savedProviderMap) modelCostService.modelProviderMap.set(model, provider);
+      await dropSeededPrice();
+    }
+  });
+
+  // Grounding phase 4b: the gateway's HTTP fallback (adminServiceClient.callAdminAction →
+  // ValidationService) and the admin action both carry onBehalfOf, unit and the optional fields
+  // through the action struct to the processor: a cockpit event on the service key lands on the
+  // acting user, rerank units keep their unit.
+  describe.each([
+    ['ValidationService (gateway HTTP fallback)', '/odata/v4/validation/processUsageEvents', () => ({
+      headers: { authorization: `Bearer ${require('jsonwebtoken').sign({ sub: 'gateway', service: 'gateway', roles: ['gateway'] }, process.env.VALIDATION_TOKEN_SECRET, { algorithm: 'HS256', issuer: 'gateway-service', expiresIn: 300 })}` }
+    })],
+    ['AdminService', `${S}/processUsageEvents`, () => ADMIN]
+  ])('processUsageEvents through %s', (_name, url, opts) => {
+    const savedSecret = process.env.VALIDATION_TOKEN_SECRET;
+    const { modelCostService } = require('../../../src/services/modelCostService');
+    let savedHasModelData: boolean;
+    let savedProviderMap: Map<string, string>;
+    // Only the rows this test writes: the prices it seeds and the tool rows its event creates.
+    const cleanUp = async () => {
+      await cds.db.run(cds.ql.DELETE.from(COSTS).where({ model: { in: ['emb', 'rr'] } }));
+      await cds.db.run(cds.ql.DELETE.from('sap.llm.gateway.admin.ToolUsageDaily').where({ identity: 'function:lookup' }));
+      await cds.db.run(cds.ql.DELETE.from('sap.llm.gateway.admin.TeamMembers').where({ ID: 'tm-x' }));
+      await cds.db.run(cds.ql.DELETE.from('sap.llm.gateway.admin.Teams').where({ ID: 't-x' }));
+    };
+    beforeAll(async () => {
+      process.env.VALIDATION_TOKEN_SECRET = 'users-odata-test-validation-token-secret-0123456789';
+      savedHasModelData = modelCostService.hasModelData;
+      savedProviderMap = new Map(modelCostService.modelProviderMap);
+      await cleanUp();
+    });
+    afterAll(async () => {
+      if (savedSecret === undefined) delete process.env.VALIDATION_TOKEN_SECRET; else process.env.VALIDATION_TOKEN_SECRET = savedSecret;
+      modelCostService.hasModelData = savedHasModelData;
+      modelCostService.modelProviderMap.clear();
+      for (const [model, provider] of savedProviderMap) modelCostService.modelProviderMap.set(model, provider);
+      await cleanUp();
+    });
+    afterEach(cleanUp);
+
+    it('carries onBehalfOf, unit and the optional token fields to the row and the acting user\'s bucket', async () => {
+      // The processor persists only with model data (the flag AND a non-empty provider map).
+      modelCostService.hasModelData = true;
+      modelCostService.modelProviderMap.set('emb', 'unknown');
+      modelCostService.modelProviderMap.set('rr', 'unknown');
+      await cds.db.run(cds.ql.INSERT.into(KEYS).entries({ ID: 'k-svc', key: 'sk-svc', name: 'Admin Service to Gateway', email: 'admin2gateway.service.key', isActive: true }));
+      await cds.db.run(cds.ql.INSERT.into(COSTS).entries([
+        { model: 'emb', provider: 'unknown', inputCost: 0.001, outputCost: 0, dateFrom: '2020-01-01T00:00:00.000Z', dateTo: '9999-12-31T23:59:59.999Z' },
+        { model: 'rr', provider: 'unknown', inputCost: 0.001, outputCost: 0, dateFrom: '2020-01-01T00:00:00.000Z', dateTo: '9999-12-31T23:59:59.999Z' }
+      ]));
+      // the service key books to the acting user's primary team (the event's teamId is ignored for it)
+      await cds.db.run(cds.ql.INSERT.into('sap.llm.gateway.admin.Teams').entries({ ID: 't-x', name: 'Team X' }));
+      await cds.db.run(cds.ql.INSERT.into('sap.llm.gateway.admin.TeamMembers').entries({ ID: 'tm-x', team_ID: 't-x', email: 'uq-other@test.com', role: 'member', isPrimary: true }));
+      const base = { timestamp: Math.floor(Date.now() / 1000), authType: 'api_key', credentialId: 'k-svc', provider: 'unknown', outputTokens: 0, responseTime: 1, statusCode: 200 };
+      const id = `${Date.now()}-${Math.random()}`;
+      const r = await POST(url, { events: [
+        { ...base, requestId: `emb-${id}`, model: 'emb', inputTokens: 20, endpoint: 'file_search/search', unit: 'tokens', onBehalfOf: 'uq-other@test.com', teamId: 't-x',
+          cacheReadInputTokens: 3, cacheCreationInputTokens: 2, usageEstimated: true,
+          imageInputTokens: 0, imageOutputTokens: 0, audioInputTokens: 0, audioOutputTokens: 0, userAgent: 'example-client/1.0',
+          tools: [{ identity: 'function:lookup', facet: 'declared', count: 1, decision: 'allowed' }] },
+        { ...base, requestId: `rr-${id}`, model: 'rr', inputTokens: 1, endpoint: 'file_search/rerank', unit: 'units', onBehalfOf: 'uq-other@test.com' }
+      ] }, opts());
+      expect(r.data).toMatchObject({ processed: 2, status: 'success' });
+      const rows = await cds.db.run(cds.ql.SELECT.from(KEY_USAGE).columns('requestId', 'email', 'unit', 'endpoint', 'cacheReadInputTokens', 'cacheCreationInputTokens', 'usageEstimated', 'team_ID')
+        .where({ apiKey_ID: 'k-svc' }));
+      const byEndpoint = Object.fromEntries(rows.map((x: any) => [x.endpoint, x]));
+      expect(byEndpoint['file_search/search']).toMatchObject({ email: 'uq-other@test.com', unit: 'tokens', cacheReadInputTokens: 3, cacheCreationInputTokens: 2, team_ID: 't-x' });
+      expect(Boolean(byEndpoint['file_search/search'].usageEstimated)).toBe(true);
+      expect(byEndpoint['file_search/rerank']).toMatchObject({ email: 'uq-other@test.com', unit: 'units' });
+      // 20 + 2 cache writes + 1 search unit, on the acting user, not on the service key
+      expect((await GET(u('uq-other@test.com'), ADMIN)).data.usedTokensDay).toBe(23);
+      // the tool rows follow the row e-mail too
+      const tools = await cds.db.run(cds.ql.SELECT.from('sap.llm.gateway.admin.ToolUsageDaily').columns('email', 'identity').where({ identity: 'function:lookup' }));
+      expect(tools.map((t: any) => t.email)).toEqual(['uq-other@test.com']);
+    });
   });
 });
 

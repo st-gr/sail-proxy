@@ -1,3 +1,8 @@
+---
+title: Model library and entitlements internals
+description: Catalogue, cost factors, entitlements and quota evaluation.
+---
+
 # Model Library, entitlement catalogs, prices and deployments — internals
 
 Data: `LibraryModels` is a snapshot of the gateway's `/v1/models` (extended attributes) written by
@@ -5,7 +10,7 @@ Data: `LibraryModels` is a snapshot of the gateway's `/v1/models` (extended attr
 the `refreshModelLibrary` action; rows are marked `absent`, never deleted. `ModelCatalogs` hold the
 default (exclusion-defined, never deletable), admin catalogs (`parent = null`) and user catalogs
 (`ownerEmail`, `parent` = the user's assigned catalog). Assignment lives on `Users.entitlementCatalog`
-(the admin cockpit chapter's Data Model section covers the `Users` entity): the `assignCatalog` and
+(the Data Model section of [Admin service (CAP)](/developer/admin-cockpit#data-model-cds) covers the `Users` entity): the `assignCatalog` and
 `unassignCatalog` bound actions write it, `getAssignedCatalog`, `affectedEmails` and the
 `libraryUsers` action read it. `ModelCatalogAssignments` is legacy —
 `usersService.migrateCatalogAssignments` drains it into `Users.entitlementCatalog` once at startup
@@ -42,7 +47,7 @@ prefix stripped (`VALKEY_CACHE_KEY_PREFIX`, pinned by
 validation service instance cache (`apikey:*`, `unified_apikey:*`, `aws:*`, `unified_aws:*`).
 An administrator is never restricted: `entitlementFromRequest`
 (`services/gateway/src/utils/modelEntitlement.ts`) treats a caller whose `user` block carries the
-admin role as unrestricted before it looks at the assignment at all (spec §5's limitation, closed).
+admin role as unrestricted before it looks at the assignment at all.
 The Users & Quotas app shows the user's assigned catalog read-only on its Entitlement section; the
 Entitlements & Quotas app's *Assignments* tab is still what writes it.
 
@@ -61,7 +66,26 @@ and `textOut = outputTokens − imageOut − audioOut`; `imageOutputGenAiRate` i
 `ModelCosts.imageOutputCost / 1000` when maintained, else it falls back to the output rate (itself
 falling back to the input rate); `audioInputGenAiRate`/`audioOutputGenAiRate` are
 `ModelCosts.audioInputCost / 1000` and `audioOutputCost / 1000`, falling back to the text rate of
-their direction. SQLite migration: `docs/developer/sqlite-migrations/audio-tokens-sqlite-migration.sql`.
+their direction. SQLite migration: [`audio-tokens-sqlite-migration.sql`](https://github.com/st-gr/sail-proxy/blob/main/docs/developer/sqlite-migrations/audio-tokens-sqlite-migration.sql).
+
+Cache billing factors (`providers.<key>.sap_cache_read_token_billing_factor` /
+`sap_cache_write_token_billing_factor`, schema-allowed on `anthropic` only) scale the cache read and
+write tokens before their GenAI rate. `sapCapacityService.cacheBillingFactorsByProvider()` is the one
+place that decides which rows a factor applies to: a map keyed by the lower-cased provider key, a
+missing or negative value read as 1. A usage row's provider is the ModelCosts provider SAP publishes
+(`Anthropic`), so the match ignores case; a row with any other, unknown or missing provider gets 1.
+Live capture (`computeSapNative` → `getCacheBillingFactors(provider)`) and the daily cost
+recalculation (`costRecalculationService.buildUpdateSQL`, which binds the map as
+`(CASE LOWER(<row>.provider) WHEN 'anthropic' THEN <f> ELSE 1 END)` into both the Postgres and the
+SQLite statement, or `1` when no factor differs from 1) therefore give the same figures. Before this,
+live capture looked the key up case-sensitively and never applied a factor, while the recalculation
+applied the `anthropic` factor to every row it touched. The recalculation covers the last 30 days;
+on Postgres it rewrites only rows whose dollar costs drift more than 5% from ModelCosts, so rows
+captured before the fix with a factor other than 1 keep their old SAP-native figures (no forced
+recompute exists yet); SQLite reprices every active row in the window. Tests:
+`test/integration/cost-recalculation-cache-factors.test.ts` (both paths, one model per cache
+regime, unknown and missing provider), `test/unit/services/cost-recalculation-factor-sql.test.ts`
+(mixed-case key, the generated SQL).
 
 Deployments: `services/gateway/src/services/deploymentManagementService.ts` ports the CLI's calls
 behind `/api/admin/deployments` (service key `ADMIN_TO_GATEWAY`, `deployments:read/write`). The
@@ -77,8 +101,9 @@ and stepped over so it can never stop the pricing update. `pruneChildren` carrie
 the parent chain is data, and a cycle would otherwise never terminate — the `ModelCatalogs` UPDATE
 handler additionally refuses any parent that is not an admin catalog or the default.
 
-Local SQLite dev: the running dev admin (`cds serve`) does not deploy schema changes, so an
-existing `db/admin.db` needs both steps by hand, with the admin stopped and after
+Local SQLite dev: the admin's boot-time self-heal (`src/db/data/sqlite-schema-heal.ts`) adds these
+tables, the defaulted `source` column and the views to an existing `db/admin.db` on the next start.
+To migrate with the admin stopped instead, apply both steps by hand after
 `PRAGMA wal_checkpoint(TRUNCATE)` and a copy of the file:
 `ALTER TABLE sap_llm_gateway_admin_ModelCosts ADD COLUMN source NVARCHAR(8) DEFAULT 'sap'`, and
 the five new tables plus six new views taken from `npx cds compile src/db src/srv --to sql
@@ -133,17 +158,17 @@ for every user assigned to it, in one pass (`quota.publishMany` / `invalidateFor
 reads for its Assignments table — one row per user (email, displayName, status, profileId,
 profileName), self-healing via `backfillUsers` like `libraryUsers`.
 
-Seeding: three starters (Light / Standard / Power, spec 2026-09-08 §1) live in
+Seeding: three starters (Light / Standard / Power) live in
 `quotaProfilesService.STARTER_PROFILES`; `ensureStarterProfiles(db)` inserts them only into an empty
 table (a `count(*)` check, not a name match), called from `initializeModelLibrary()`
 (`admin-service-library.ts`) right next to `ensureDefaultCatalog(db)` — the same startup hook, so a
 fresh or upgraded deployment gets both the default entitlement catalog and the three starter quota
 profiles on first boot, and never again once either table already holds a row.
 
-Local SQLite dev: the running dev admin (`cds serve`) does not deploy schema changes here either,
-and `pnpm run db:migrate` (`cds deploy --to sqlite:db/admin.db`) recreates the database empty
-rather than migrating it — verified against a copy. An existing `db/admin.db` needs the same
-by-hand treatment as the catalogs above, with the admin stopped and after `PRAGMA
+Local SQLite dev: the boot-time self-heal adds the nullable `quotaProfile_ID` columns, the new
+table and the views here as well. `pnpm run db:migrate` (`cds deploy --to sqlite:db/admin.db`)
+recreates the database empty rather than migrating it. To migrate an existing `db/admin.db` with
+the admin stopped instead, apply by hand, after `PRAGMA
 wal_checkpoint(TRUNCATE)` and a copy of the file: the two `quotaProfile_ID` columns (`Users` and
 its draft table), the new `QuotaProfiles` table, and the `AdminService_Users` / new
 `AdminService_QuotaProfiles` views, taken from `npx cds compile src/db src/srv --to sql --dialect

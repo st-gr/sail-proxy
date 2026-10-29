@@ -17,7 +17,6 @@
  * @see registry.ts - where descriptors are looked up by tool type / function name
  * @see ../webSearch/descriptor.ts - the first implementation
  */
-
 /**
  * Structurally identical to `webSearch/searchExecutor`'s `Logger`, redeclared here so
  * nothing under `hostedTool/` has to import from a specific tool's directory.
@@ -61,11 +60,15 @@ export interface ToolExecResult {
 
 export interface PrepareCtx {
   ownerEmail: string | undefined;
+  /** The caller's team ids (utils/userBlock.ts callerTeamIds): stores shared with them are readable. */
+  teamIds: string[];
   logger: Logger;
 }
 
 export interface ToolExecCtx {
   ownerEmail: string | undefined;
+  /** The caller's team ids (utils/userBlock.ts callerTeamIds): stores shared with them are searchable. */
+  teamIds: string[];
   /** Live pseudonymization ReplacementMap, or undefined when masking is off. */
   replacementMap: any;
   /**
@@ -107,6 +110,25 @@ export interface ToolExecCtx {
    */
   remask(text: string): string;
   logger: Logger;
+  /**
+   * Records the billed calls a tool makes (file_search: query embeddings and rerank units)
+   * against the request's caller, with request ids unique to this one call. The engine binds
+   * it from `req`, so a descriptor never needs the request itself. Absent where no live call
+   * runs (replay rehydration).
+   */
+  recordUsage?: (u: HostedToolUsage) => void;
+}
+
+/**
+ * One billed call a hosted tool made, as `ToolExecCtx.recordUsage` takes it. Owned here so
+ * the contract names no specific tool; file_search's `SearchUsage` is one such record.
+ */
+export interface HostedToolUsage {
+  endpoint: string;
+  model: string;
+  inputTokens: number;
+  unit: 'tokens' | 'units';
+  responseTime: number;
 }
 
 export interface RenderCallItemOpts {

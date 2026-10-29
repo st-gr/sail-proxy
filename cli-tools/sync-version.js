@@ -7,6 +7,7 @@
  * 3. docker/package.json
  * 4. npm-dist/sail-proxy package
  * 5. services/{gateway,admin}/package.docker.json (the Docker image manifests)
+ * 6. info.version of the OpenAPI documents in openapi/ (three YAML files, line-level; admin-odata.json, JSON)
  *
  * NOTE: This does NOT touch workspace:* protocols - those are for development
  * and should only be replaced during packaging (see prepare-for-pack.js).
@@ -81,6 +82,59 @@ function collectTargetPackages() {
   return targets;
 }
 
+const OPENAPI_YAML_FILES = ['gateway.yaml', 'admin-rest.yaml', 'ollama.yaml'];
+const OPENAPI_JSON_FILES = ['admin-odata.json'];
+
+/**
+ * The `version:` line of a YAML document's top-level `info:` block. Matched by line so the hand-written
+ * formatting stays untouched; a missing line is an error, never a silent skip.
+ */
+function findYamlInfoVersion(text, filePath) {
+  const lines = text.split('\n');
+  const infoAt = lines.findIndex(line => /^info:\s*$/.test(line));
+  if (infoAt === -1) throw new Error(`${getRelativePath(filePath)}: no top-level "info:" block`);
+  for (let i = infoAt + 1; i < lines.length && (lines[i] === '' || /^\s/.test(lines[i])); i++) {
+    const match = /^(\s+version:\s*)(['"]?)([^'"\s#]+)\2(\s*(#.*)?)$/.exec(lines[i]);
+    if (match) return { lines, index: i, match };
+  }
+  throw new Error(`${getRelativePath(filePath)}: no "version:" line inside the "info:" block`);
+}
+
+/** Each OpenAPI document with its current info.version and a function that rewrites the file to a new one. */
+function collectOpenApiTargets() {
+  const dir = path.join(projectRoot, 'openapi');
+  const targets = [];
+  for (const name of OPENAPI_YAML_FILES) {
+    const filePath = path.join(dir, name);
+    const text = fs.readFileSync(filePath, 'utf8');
+    const { lines, index, match } = findYamlInfoVersion(text, filePath);
+    targets.push({
+      path: filePath,
+      version: match[3],
+      write(version) {
+        lines[index] = `${match[1]}${match[2]}${version}${match[2]}${match[4]}`;
+        fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+      },
+    });
+  }
+  for (const name of OPENAPI_JSON_FILES) {
+    const filePath = path.join(dir, name);
+    const doc = readJsonFile(filePath);
+    if (!doc.info || typeof doc.info.version !== 'string') {
+      throw new Error(`${getRelativePath(filePath)}: no info.version`);
+    }
+    targets.push({
+      path: filePath,
+      version: doc.info.version,
+      write(version) {
+        doc.info.version = version;
+        writeJsonFile(filePath, doc);
+      },
+    });
+  }
+  return targets;
+}
+
 async function main() {
   const checkOnly = process.argv.includes('--check-only');
   const stage = process.argv.includes('--stage');
@@ -103,6 +157,14 @@ async function main() {
     if (pkg.version !== rootVersion) {
       issues.push(`${getRelativePath(targetPath)}: ${pkg.version} ≠ ${rootVersion}`);
       if (!checkOnly) updates.push({ path: targetPath, package: pkg });
+    }
+  }
+
+  const openApiUpdates = [];
+  for (const target of collectOpenApiTargets()) {
+    if (target.version !== rootVersion) {
+      issues.push(`${getRelativePath(target.path)}: info.version ${target.version} ≠ ${rootVersion}`);
+      if (!checkOnly) openApiUpdates.push(target);
     }
   }
 
@@ -130,6 +192,14 @@ async function main() {
     writtenPaths.push(update.path);
     console.log(`✅ ${getRelativePath(update.path)}`);
     console.log(`   - version: ${oldVersion} → ${rootVersion}`);
+  }
+
+  for (const target of openApiUpdates) {
+    const oldVersion = target.version;
+    target.write(rootVersion);
+    writtenPaths.push(target.path);
+    console.log(`✅ ${getRelativePath(target.path)}`);
+    console.log(`   - info.version: ${oldVersion} → ${rootVersion}`);
   }
 
   if (stage && writtenPaths.length > 0) {

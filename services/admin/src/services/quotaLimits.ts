@@ -19,7 +19,10 @@ export const LIMIT_FIELDS = [
 ] as const;
 export type LimitField = typeof LIMIT_FIELDS[number];
 export type Limits = Record<LimitField, number | null>;
-export type LimitSource = Record<LimitField, 'user' | 'profile' | 'platform' | 'unlimited'>;
+export type LimitSource = Record<LimitField, 'user' | 'profile' | 'team' | 'platform' | 'unlimited'>;
+
+/** The lowest member-profile value per field across a user's teams, with the team that supplied it (spec §4). */
+export interface TeamMemberLimits { limits: Partial<Limits>; teamByField: Partial<Record<LimitField, string>>; }
 const INTEGER_FIELDS: ReadonlySet<string> = new Set(['requestsPerMinute', 'tokensPerDay', 'tokensPerWeek', 'tokensPerMonth']);
 
 export const UNLIMITED: Limits = Object.freeze(Object.fromEntries(LIMIT_FIELDS.map((f) => [f, null]))) as Limits;
@@ -81,15 +84,16 @@ export async function maintenanceRunAtUtc(db?: DbLike): Promise<string | null> {
   return v;
 }
 
-/** Per field: the user's own value, else the assigned profile's, else the platform default, else unlimited. */
-export function effectiveLimits(user: Partial<Record<LimitField, any>> | null, profile: Partial<Record<LimitField, any>> | null, platform: Limits): { limits: Limits; limitSource: LimitSource } {
+/** Per field: the user's own value, else the assigned profile's, else the lowest team member profile, else the platform default, else unlimited. */
+export function effectiveLimits(user: Partial<Record<LimitField, any>> | null, profile: Partial<Record<LimitField, any>> | null, platform: Limits, team?: TeamMemberLimits | null): { limits: Limits; limitSource: LimitSource } {
   const limits: any = {};
   const limitSource: any = {};
   const own = (v: any) => (v === null || v === undefined || v === '' ? null : Number(v));
   for (const f of LIMIT_FIELDS) {
-    const u = own(user?.[f]); const p = own(profile?.[f]);
+    const u = own(user?.[f]); const p = own(profile?.[f]); const t = own(team?.limits?.[f]);
     if (u !== null && Number.isFinite(u)) { limits[f] = u; limitSource[f] = 'user'; }
     else if (p !== null && Number.isFinite(p)) { limits[f] = p; limitSource[f] = 'profile'; }
+    else if (t !== null && Number.isFinite(t)) { limits[f] = t; limitSource[f] = 'team'; }
     else if (platform[f] !== null) { limits[f] = platform[f]; limitSource[f] = 'platform'; }
     else { limits[f] = null; limitSource[f] = 'unlimited'; }
   }
@@ -104,6 +108,7 @@ export function effectiveLimits(user: Partial<Record<LimitField, any>> | null, p
 export type DefaultTextSource = {
   profileLimits: Partial<Limits> | null; platformLimits: Limits;
   quotaProfileName: string | null; sapCostCurrency: string;
+  teamLimits?: TeamMemberLimits | null;
 };
 
 /**
@@ -122,6 +127,7 @@ export interface EffectiveLimitSource {
   limitSource: LimitSource;
   quotaProfileName: string | null;
   sapCostCurrency: string;
+  teamByField?: Partial<Record<LimitField, string>>;
 }
 
 /**
@@ -137,16 +143,19 @@ export function effectiveLimitText(f: LimitField, s: EffectiveLimitSource): stri
   switch (s.limitSource[f]) {
     case 'user': return `${figure} (own constraint)`;
     case 'profile': return `${figure} (${s.quotaProfileName} profile)`;
+    case 'team': return `${figure} (${s.teamByField?.[f] ?? 'team'} team)`;
     default: return `${figure} (platform)`;
   }
 }
 
 export function defaultText(f: LimitField, s: DefaultTextSource): string {
-  const { limits, limitSource } = effectiveLimits(null, s.profileLimits ?? null, s.platformLimits);
+  const { limits, limitSource } = effectiveLimits(null, s.profileLimits ?? null, s.platformLimits, s.teamLimits ?? null);
   const value = limits[f];
   if (value === null) return 'unlimited';
   const figure = f.startsWith('spend') ? `${value.toFixed(2)} ${s.sapCostCurrency}` : value.toLocaleString('en-US');
-  return limitSource[f] === 'profile' ? `${figure} (${s.quotaProfileName} profile)` : `${figure} (platform)`;
+  if (limitSource[f] === 'profile') return `${figure} (${s.quotaProfileName} profile)`;
+  if (limitSource[f] === 'team') return `${figure} (${s.teamLimits?.teamByField?.[f] ?? 'team'} team)`;
+  return `${figure} (platform)`;
 }
 
 /**

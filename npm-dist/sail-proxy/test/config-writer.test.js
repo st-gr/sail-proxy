@@ -54,4 +54,14 @@ check('applyEdit throws a file-scoped error on malformed JSON', () => {
     fs.unlinkSync(tmpFile);
   }
 });
+check('applyEdit creates a missing config directory (a client never started has none, e.g. ~/.config/opencode)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-cw-'));
+  const file = path.join(dir, 'never', 'started', 'opencode.json');
+  try {
+    cw.applyEdit({ file, format: 'json', blocks: { 'provider.sail-proxy': '{"npm":"@ai-sdk/openai"}' } });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).provider['sail-proxy'], { npm: '@ai-sdk/openai' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 process.exit(f ? 1 : 0);

@@ -107,6 +107,8 @@ const hookConfigCalls: any[][] = [];
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: {
+    // Read by the forced-pseudonymization check: nothing forces masking here.
+    getConfig: () => ({}),
     getSubstitutedModel: (_p: string, m: string) => configState.substitutions[m] || m,
     getHookConfig: (...a: any[]) => { hookConfigCalls.push(a); return configState.hookConfig; },
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'rg-test' }),

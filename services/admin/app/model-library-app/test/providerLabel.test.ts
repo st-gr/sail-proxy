@@ -3,7 +3,7 @@
  * lists. The vendor-prefix fallback resolves that for every id shaped <vendor>--<model>; what is
  * left reads "Other" (L). The value behind it is untouched - it is the filter's key.
  */
-import { providerLabel, UNKNOWN_PROVIDER } from '../webapp/model/providerLabel';
+import { providerLabel, providerMarkName, UNKNOWN_PROVIDER } from '../webapp/model/providerLabel';
 import { providerMark } from '../webapp/model/providerMarks';
 
 describe('providerLabel', () => {
@@ -23,5 +23,17 @@ describe('providerLabel', () => {
   });
   it('gives the avatar "OT" rather than "UN"', () => {
     expect(providerMark(providerLabel(UNKNOWN_PROVIDER))).toEqual({ initials: 'OT' });
+  });
+});
+
+describe('providerLabel in the cockpit language', () => {
+  it('translates "Other" but keeps the mark token and the filter value', () => {
+    const t = (key: string) => (key === 'providerOther' ? 'Andere' : key);
+    expect(providerLabel(UNKNOWN_PROVIDER, t)).toBe('Andere');
+    expect(providerLabel('Anthropic', t)).toBe('Anthropic');
+    expect(providerMark(providerMarkName(UNKNOWN_PROVIDER))).toEqual({ initials: 'OT' });
+  });
+  it('falls back to English while the bundle has not loaded (the translator returns the key)', () => {
+    expect(providerLabel(UNKNOWN_PROVIDER, (key) => key)).toBe('Other');
   });
 });

@@ -3,12 +3,35 @@ import { getDefaultLogger } from '@libs/logger';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// description : String(1000) on both ApiKeySecurityEvents and AwsCredentialSecurityEvents.
+const DESCRIPTION_MAX_LENGTH = 1000;
+
+/**
+ * The description as stored: capped at the column length (Postgres rejects a longer value with
+ * 22001), and, when the event has no credential association because the credential is unknown,
+ * ending with the gateway's hint and a hash prefix so the row still shows which credential was
+ * tried. Only a hinted, unresolved credentialId is a hash (gateway credentialIdentity); without a
+ * hint it may be raw key material from another caller, so nothing is appended then.
+ */
+function storedDescription(description: string, unknownCredentialId?: string, credentialHint?: string): string {
+  const suffix = unknownCredentialId && credentialHint
+    ? ` (unknown credential hint=${credentialHint}, hash=${unknownCredentialId.substring(0, 12)})`
+    : '';
+  if (description == null && !suffix) return description;
+  return (description ?? '').substring(0, DESCRIPTION_MAX_LENGTH - suffix.length) + suffix;
+}
 
 export interface SecurityEventData {
   credentialId: string;
   eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'credential_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced' | 'tool_not_entitled' | 'placeholder_invented';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
+  // Set by the gateway (credentialIdentity) with every presented credential it hashes or resolves.
+  // credentialId/keyId is the admin row UUID whenever the gateway resolved the credential (API key or
+  // AWS: wrong signature/payload, disabled, expired, stale request date; no note then), and the hash
+  // only when nothing was resolved.
+  credentialHint?: string;
   clientIP?: string;
   userAgent?: string;
   endpoint?: string;
@@ -22,6 +45,11 @@ export interface ApiKeySecurityEventData {
   eventType: 'failed_auth' | 'suspicious_activity' | 'rate_limit_exceeded' | 'unauthorized_access' | 'key_rotation' | 'ip_blocked' | 'brute_force_detected' | 'model_not_entitled' | 'deployment_created' | 'quota_exceeded' | 'quota_unenforced' | 'tool_not_entitled' | 'placeholder_invented';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
+  // Set by the gateway (credentialIdentity) with every presented credential it hashes or resolves.
+  // credentialId/keyId is the admin row UUID whenever the gateway resolved the credential (API key or
+  // AWS: wrong signature/payload, disabled, expired, stale request date; no note then), and the hash
+  // only when nothing was resolved.
+  credentialHint?: string;
   clientIP?: string;
   userAgent?: string;
   endpoint?: string;
@@ -55,12 +83,14 @@ export class SecurityEventService {
    * swallowing here would let a DB failure be acked and silently dropped.
    */
   static async createAwsSecurityEventOrThrow(eventData: SecurityEventData): Promise<void> {
+    const db = await cds.connect.to('db');
+    const credentialID = await this.resolveAwsCredentialId(db, eventData.credentialId);
     const securityEvent = {
       ID: uuidv4(),
-      credential_ID: eventData.credentialId,
+      credential_ID: credentialID,
       eventType: eventData.eventType,
       severity: eventData.severity,
-      description: eventData.description,
+      description: storedDescription(eventData.description, credentialID ? undefined : eventData.credentialId, eventData.credentialHint),
       clientIP: eventData.clientIP || null,
       userAgent: eventData.userAgent || null,
       endpoint: eventData.endpoint || null,
@@ -72,7 +102,6 @@ export class SecurityEventService {
       createdBy: 'system'
     };
 
-    const db = await cds.connect.to('db');
     await db.run(
       cds.ql.INSERT.into('sap.llm.gateway.admin.AwsCredentialSecurityEvents').entries(securityEvent)
     );
@@ -88,6 +117,31 @@ export class SecurityEventService {
       clientIP: eventData.clientIP,
       actionTaken: eventData.actionTaken
     });
+  }
+
+  /**
+   * The AwsCredentials row ID for an event's credentialId, or null when it names no credential.
+   * The gateway sends the row ID for a resolved credential, sometimes an access key id, and the
+   * sha256 of the presented access key (64 chars) for an unknown one; only a UUID fits the
+   * credential association (varchar(36) on Postgres). Same lookup order as createNotificationForAwsEvent.
+   */
+  private static async resolveAwsCredentialId(db: any, credentialId: string): Promise<string | null> {
+    if (UUID_PATTERN.test(credentialId)) return credentialId;
+
+    const credential = await db.run(
+      cds.ql.SELECT.one.from('sap.llm.gateway.admin.AwsCredentials')
+        .columns('ID')
+        .where({ accessKeyId: credentialId })
+    );
+    if (credential) return credential.ID;
+
+    const rotation = await db.run(
+      cds.ql.SELECT.one.from('sap.llm.gateway.admin.AwsCredentialRotations')
+        .columns('credential_ID')
+        .where({ oldAccessKeyId: credentialId })
+        .orderBy('createdAt desc')
+    );
+    return rotation?.credential_ID ?? null;
   }
 
   /**
@@ -122,7 +176,7 @@ export class SecurityEventService {
     );
 
     // If not found by key, try by ID (fallback for cases where ID is actually sent)
-    if (!apiKeyResult && eventData.keyId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    if (!apiKeyResult && UUID_PATTERN.test(eventData.keyId)) {
       apiKeyResult = await db.run(
         SELECT.one.from('sap.llm.gateway.admin.ApiKeys')
           .columns('ID')
@@ -152,8 +206,10 @@ export class SecurityEventService {
       logger.warn('SecurityEventService', 'API key not found even after checking rotation history', {
         keyId: eventData.keyId.substring(0, 10) + '...'
       });
-      // Use the key string as the ID temporarily - this will allow notification creation with system owner
-      apiKeyResult = { ID: eventData.keyId };
+      // No association: apiKey_ID is a UUID column (varchar(36) on Postgres), and the gateway's
+      // hash of an unknown key (64 chars) would fail the insert. The hash and hint still reach the
+      // SIEM through the stream event; the notification falls back to a system notification.
+      apiKeyResult = { ID: null };
     }
 
     const securityEvent = {
@@ -161,7 +217,7 @@ export class SecurityEventService {
       apiKey_ID: apiKeyResult.ID,
       eventType: eventData.eventType,
       severity: eventData.severity,
-      description: eventData.description,
+      description: storedDescription(eventData.description, apiKeyResult.ID ? undefined : eventData.keyId, eventData.credentialHint),
       clientIP: eventData.clientIP || null,
       userAgent: eventData.userAgent || null,
       endpoint: eventData.endpoint || null,
@@ -340,7 +396,7 @@ export class SecurityEventService {
       }
       
       // If still not found, try looking up in rotation history (for rotated credentials)
-      if (!credential) {
+      if (!credential && securityEvent.credential_ID) {
         const rotation = await db.run(
           cds.ql.SELECT.one.from('sap.llm.gateway.admin.AwsCredentialRotations')
             .columns('credential_ID')

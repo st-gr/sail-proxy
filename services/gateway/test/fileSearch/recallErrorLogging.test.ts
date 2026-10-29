@@ -12,7 +12,7 @@
  * `${name}: ${message}\n    at …`, so passing the original error through after replacing
  * only the message string still ships the message — in the stack's first line.
  *
- * @see ../../src/fileSearch/repository.ts - driverErrorCode / redactDriverError
+ * @see ../../src/fileSearch/recallErrors.ts - driverErrorCode / redactDriverError
  * @see ./ordinalFilterValue.test.ts - the helpers in isolation, and the 400 that now
  *      prevents this particular error from being raised at all
  */
@@ -27,9 +27,20 @@ jest.mock('@libs/logger', () => ({
 }));
 
 const poolQuery = jest.fn<(...args: any[]) => Promise<any>>();
+// Recall runs on a checked-out client inside a transaction; the transaction
+// control, the pgvector probe and the SET LOCAL settings are answered here so
+// `poolQuery` sees only the recall statement itself.
 jest.mock('../../src/fileSearch/db', () => ({
   __esModule: true,
-  getPool: () => ({ query: (...a: any[]) => poolQuery(...a) }),
+  getPool: () => ({
+    connect: async () => ({
+      query: (sql: string, ...rest: any[]) => (
+        /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|SELECT extversion)/.test(sql)
+          ? Promise.resolve({ rows: [] })
+          : poolQuery(sql, ...rest)),
+      release: () => {},
+    }),
+  }),
 }));
 
 jest.mock('../../src/services/configService', () => ({

@@ -11,9 +11,21 @@ const tool = (name: string) => ({ type: 'function', name, parameters: {} });
 const sessionUpdate = (tools: any[], extra: any = {}) => JSON.stringify({ type: 'session.update', event_id: 'ev1', session: { tools, ...extra } });
 const parse = (s?: string) => (s ? JSON.parse(s) : undefined);
 
+describe('team policy', () => {
+  it('a team reject policy refuses a tool the user policy allows, and policyId stays the user\'s', () => {
+    const user = policy('monitor', { policyId: 'u', policyName: 'User' });
+    const team = policy('reject', { policyId: 't', policyName: 'Team', deny: ['function:shell'] });
+    const gate = createRealtimeToolGate([user, null, team].filter(Boolean) as any[]);
+    const out = gate.onClientFrame(sessionUpdate([tool('shell')]))!;
+    expect(out.drop).toBe(true);
+    expect(parse(out.reply)).toMatchObject({ type: 'error', error: { code: 'tool_not_entitled' } });
+    expect(gate.state().result.policyId).toBe('u');
+  });
+});
+
 describe('declarations', () => {
   it('strip removes a denied tool and appends the notice to the frame\'s instructions', () => {
-    const gate = createRealtimeToolGate(policy('strip', { deny: ['function:shell'] }), null);
+    const gate = createRealtimeToolGate([policy('strip', { deny: ['function:shell'] })]);
     const out = gate.onClientFrame(sessionUpdate([tool('shell'), tool('weather')], { instructions: 'be kind' }))!;
     const f = parse(out.forward);
     expect(f.session.tools.map((t: any) => t.name)).toEqual(['weather']);
@@ -22,25 +34,25 @@ describe('declarations', () => {
     expect(out.refused).toMatchObject({ identities: ['function:shell'], mode: 'strip' });
   });
   it('strip without instructions in the frame: tools removed, instructions untouched', () => {
-    const gate = createRealtimeToolGate(policy('strip', { deny: ['function:shell'] }), null);
+    const gate = createRealtimeToolGate([policy('strip', { deny: ['function:shell'] })]);
     const f = parse(gate.onClientFrame(sessionUpdate([tool('shell'), tool('weather')]))!.forward);
     expect(f.session).not.toHaveProperty('instructions');
     expect(f.session.tools).toHaveLength(1);
   });
   it('reject drops the frame and answers with a Realtime error event', () => {
-    const gate = createRealtimeToolGate(policy('reject', { deny: ['function:shell'] }), null);
+    const gate = createRealtimeToolGate([policy('reject', { deny: ['function:shell'] })]);
     const out = gate.onClientFrame(sessionUpdate([tool('shell')]))!;
     expect(out.drop).toBe(true);
     const e = parse(out.reply);
     expect(e).toMatchObject({ type: 'error', error: { type: 'invalid_request_error', code: 'tool_not_entitled', event_id: 'ev1' } });
   });
   it('response.create tools are judged the same way', () => {
-    const gate = createRealtimeToolGate(policy('strip', { deny: ['function:shell'] }), null);
+    const gate = createRealtimeToolGate([policy('strip', { deny: ['function:shell'] })]);
     const f = parse(gate.onClientFrame(JSON.stringify({ type: 'response.create', response: { tools: [tool('shell'), tool('weather')] } }))!.forward);
     expect(f.response.tools.map((t: any) => t.name)).toEqual(['weather']);
   });
   it('monitor and non-tool frames are left alone', () => {
-    const gate = createRealtimeToolGate(policy('monitor', { deny: ['function:shell'] }), null);
+    const gate = createRealtimeToolGate([policy('monitor', { deny: ['function:shell'] })]);
     expect(gate.onClientFrame(sessionUpdate([tool('shell')]))).toBeNull();
     expect(gate.onClientFrame('{"type":"input_audio_buffer.append","audio":"AAA="}')).toBeNull();
     expect(gate.onClientFrame('not json')).toBeNull();
@@ -50,7 +62,7 @@ describe('declarations', () => {
 
 describe('trust chain in a session', () => {
   const setup = (mode: string) => {
-    const gate = createRealtimeToolGate(policy(mode), null);
+    const gate = createRealtimeToolGate([policy(mode)]);
     gate.onClientFrame(sessionUpdate([tool('send_mail'), tool('fetch_page')], { instructions: 'assist' }));
     gate.onResponseDone(JSON.stringify({ type: 'response.done', response: { output: [{ type: 'function_call', call_id: 'c1', name: 'fetch_page', arguments: '{}' }] } }));
     return gate;
@@ -85,14 +97,14 @@ describe('trust chain in a session', () => {
     expect(gate.state().sources).toEqual(['function:fetch_page', 'function:<unknown>']);
   });
   it('sources keep their counts', () => {
-    const gate = createRealtimeToolGate(policy('monitor'), null);
+    const gate = createRealtimeToolGate([policy('monitor')]);
     const orphan = (id: string) => JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: id, output: 'x' } });
     gate.onClientFrame(orphan('a'));
     gate.onClientFrame(orphan('b'));
     expect(gate.state().sources).toEqual(['function:<unknown>', 'function:<unknown>']);
   });
   it('a result for an unknown call counts as <unknown>', () => {
-    const gate = createRealtimeToolGate(policy('strip'), null);
+    const gate = createRealtimeToolGate([policy('strip')]);
     gate.onClientFrame(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: 'zz', output: 'x' } }));
     expect(gate.state().sources).toEqual(['function:<unknown>']);
   });

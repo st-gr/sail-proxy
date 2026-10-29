@@ -46,7 +46,7 @@ exports[`the tab shell's section-building, siem among it snapshots the siem desc
     "value": undefined,
   },
   {
-    "description": "Event categories to export. 'usage' is one request-completion event per request and is the only category that can carry conversation content; it ships absent from this list, so exporting it is an explicit opt-in.",
+    "description": "Event categories to export. 'usage' is one request-completion event per request and is the only category that can carry conversation content; the shipped list omits it, so exporting it is an explicit opt-in; a missing or empty list exports all three, usage included.",
     "kind": "list",
     "label": "Categories",
     "options": [

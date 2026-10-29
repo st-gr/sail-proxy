@@ -16,20 +16,23 @@
  * Strategies: before + after + stream
  *
  * @see ../pseudonymization.md - Usage, activation methods, and category configuration
- * @see ../../../../../docs/security/pseudonymization-security-assessment.md - Security assessment
+ * @see ../../../../../docs/developer/pseudonymization-assessment.md - Security assessment
  */
 
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../../utils/redactUrl';
 import configService, { PseudonymizationConfig, DefaultHookEntry } from '../../services/configService';
-import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityConfig, AllowlistConfig } from './types';
+import { MaskingConfig, MaskingInfo, PseudonymizationState, EntityMatch, EntityConfig, AllowlistConfig, CustomEntity } from './types';
 import { ReplacementMap } from './replacementMap';
-import { detectEntities } from './detectors';
+import { detectEntities, DetectionConfig, STRICT_DETECTORS } from './detectors';
 import { replaceEntities, maskJsonValue, propagateMaskedValues } from './replacer';
 import { propagatableNames } from './detectors/speakerLabelDetector';
 import { applyEntityToggles, buildKnownEntityTypes } from './entityToggles';
 import { DEFAULT_MASKING_CONFIG } from './defaultMaskingConfig';
-import { unmaskText, unmaskJsonValue } from './unmasker';
+import { readForceSource, servedModelOf } from './forcedRun';
+import { unmaskText, unmaskJsonValue, unmaskJsonArguments, unmaskResponseBody } from './unmasker';
+import { mapJsonStringLeaves } from '../../utils/jsonStringLeaves';
 import { StreamUnmaskBuffer } from './streamBuffer';
 import { entityCache } from './entityCache';
 import {
@@ -49,15 +52,26 @@ import {
   isGeminiBody,
   extractGeminiInputTexts,
   setGeminiInputText,
+  extractGeminiJsonValues,
   appendGeminiInstructions,
   unmaskGeminiOutput,
 } from '../../utils/geminiBodyAdapter';
+import {
+  isConverseBody,
+  extractConverseInputs,
+  setConverseInputText,
+  appendConverseInstructions,
+  unmaskConverseOutput,
+} from '../../utils/converseBodyAdapter';
+import { unsupportedBodyShape } from './bodyShape';
 import { beginStreamContentCapture } from '../../services/siemUsageEvent';
 import securityEventEmitter from '../../services/securityEventEmitter';
 import { containmentOf, registerContainment } from './containmentRegistry';
 import { placeholdersIn, resolveUnknownPlaceholderMode } from './unknownPlaceholders';
 import type { UnknownPlaceholderMode } from './unknownPlaceholders';
 import { appendStreamContent } from '../../services/siemStreamCapture';
+import { FORCED_FLAG, refuseUnmasked, describeErrorWithoutContent } from './failClosed';
+import { parseConverseEventData } from '../../utils/converseEventData';
 
 interface PluginContext {
   req: Request;
@@ -119,6 +133,55 @@ function setTextInMessage(message: any, path: string, newText: string): void {
     obj = obj[parts[i]];
   }
   obj[parts[parts.length - 1]] = newText;
+}
+
+/**
+ * Mask a tool call's JSON-text arguments (OpenAI `function.arguments`, Responses
+ * `function_call.arguments`) structurally: each string leaf is masked and the JSON
+ * re-serialized, so the map holds the real value rather than its JSON-escaped form and the
+ * arguments stay valid JSON. Arguments that are not JSON are masked as plain text.
+ */
+function maskJsonArguments(
+  text: string,
+  map: ReplacementMap,
+  detectConfig: DetectionConfig,
+  maskingConfig: MaskingConfig
+): { text: string; entities: EntityMatch[] } {
+  const entities: EntityMatch[] = [];
+  const maskText = (s: string): string => {
+    const detected = detectEntities(s, detectConfig);
+    if (detected.length === 0) return s;
+    entities.push(...detected);
+    return replaceEntities(s, detected, map, maskingConfig);
+  };
+  return { text: mapJsonStringLeaves(text, maskText) ?? maskText(text), entities };
+}
+
+/**
+ * Add a note to an OpenAI Chat `messages` array: appended to the first `system`
+ * message, or as a new system message at index 0. Index 0 keeps the last message the
+ * client's own and never places a system message after a tool message.
+ *
+ * The system message is REPLACED by a copy, never edited in place: the orchestration
+ * chat path has already built its SAP payload from these same message objects, and
+ * that payload must stay as it is.
+ */
+function appendOpenAIChatSystemNote(messages: any[], note: string): void {
+  const index = messages.findIndex((m: any) => m?.role === 'system');
+  if (index === -1) {
+    messages.unshift({ role: 'system', content: note });
+    return;
+  }
+  const system = messages[index];
+  let content: any;
+  if (Array.isArray(system.content)) {
+    content = [...system.content, { type: 'text', text: note }];
+  } else if (typeof system.content === 'string' && system.content.length > 0) {
+    content = `${system.content}\n\n${note}`;
+  } else {
+    content = note;
+  }
+  messages[index] = { ...system, content };
 }
 
 /**
@@ -224,7 +287,7 @@ function resolveDefaultEntities(req: any): EntityConfig[] {
       entities = applyEntityToggles(entities, endpointHooks?.[endpoint]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
     }
 
-    const modelName = req?.body?.model;
+    const modelName = servedModelOf(req);
     if (modelName) {
       const substituted = configService.getSubstitutedModel('anthropic', modelName) || modelName;
       entities = applyEntityToggles(entities, apiConfig.models?.overrides?.[substituted]?.pseudonymization?.entities, KNOWN_ENTITY_TYPES);
@@ -266,9 +329,9 @@ function pseudonymizationLayers(req: any): (PseudonymizationConfig | undefined)[
   return [
     apiConfig?.observability?.pseudonymization as PseudonymizationConfig | undefined,
     req?.__endpoint ? endpointHooks?.[req.__endpoint]?.pseudonymization : undefined,
-    req?.body?.model
+    servedModelOf(req)
       ? apiConfig?.models?.overrides?.[
-          configService.getSubstitutedModel('anthropic', req.body.model) || req.body.model
+          configService.getSubstitutedModel('anthropic', servedModelOf(req)!) || servedModelOf(req)!
         ]?.pseudonymization
       : undefined,
   ];
@@ -431,45 +494,28 @@ interface ForcedConfigResolution {
   source: 'model' | 'endpoint';
 }
 
+/** getModelForcedConfig could not read the configuration, so whether masking is forced is unknown. */
+const FORCE_UNDETERMINED = 'undetermined' as const;
+
 /**
  * Check if the model has pseudonymization forced on via api_config.json.
  * Returns the resolved masking config plus the allow_user_bypass flag from
- * the matching block (per-model takes precedence over per-endpoint).
+ * the matching block (per-model takes precedence over per-endpoint). Which block forces it is
+ * forcedRun.readForceSource, the same answer the controllers use to refuse a forced request the
+ * plugin would not run for.
  */
-function getModelForcedConfig(req: any): ForcedConfigResolution | null {
+function getModelForcedConfig(req: any): ForcedConfigResolution | typeof FORCE_UNDETERMINED | null {
   try {
-    const config = configService.getConfig();
-
-    // Per-model force flag
-    const modelName = req.body?.model;
-    if (modelName) {
-      const substituted = configService.getSubstitutedModel('anthropic', modelName) || modelName;
-      const modelListChanges = config?.api_config?.models?.overrides;
-      const modelConfig = modelListChanges?.[substituted];
-      if (modelConfig?.pseudonymization?.enabled) {
-        const method = modelConfig.pseudonymization.method || 'pseudonymization';
-        const allowBypass = modelConfig.pseudonymization.allow_user_bypass === true;
-        const entities = resolveDefaultEntities(req);
-        return { config: { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method }, allowBypass, source: 'model' };
-      }
-    }
-
-    // Per-endpoint force flag (hooks.defaults[endpoint].pseudonymization.enabled)
-    const endpoint = req.__endpoint;
-    if (endpoint) {
-      const endpointHooks = config?.api_config?.hooks?.defaults as Record<string, DefaultHookEntry> | undefined;
-      const endpointConfig = endpointHooks?.[endpoint];
-      if (endpointConfig?.pseudonymization?.enabled) {
-        const method = endpointConfig.pseudonymization.method || 'pseudonymization';
-        const allowBypass = endpointConfig.pseudonymization.allow_user_bypass === true;
-        const entities = resolveDefaultEntities(req);
-        return { config: { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method }, allowBypass, source: 'endpoint' };
-      }
-    }
-
-    return null;
+    const forcing = readForceSource(req);
+    if (!forcing) return null;
+    const method = forcing.block.method || 'pseudonymization';
+    const allowBypass = forcing.block.allow_user_bypass === true;
+    const entities = resolveDefaultEntities(req);
+    return { config: { ...DEFAULT_MASKING_CONFIG, entities, ...resolveMaskingLists(req, entities), ...resolveConfidenceConfig(req), ...resolveReportingConfig(req), method }, allowBypass, source: forcing.source };
   } catch {
-    return null;
+    // Not "not forced": the plugin only runs because a hook for it is configured on this route,
+    // and a configuration that cannot be read cannot vouch that masking is optional here.
+    return FORCE_UNDETERMINED;
   }
 }
 
@@ -493,12 +539,119 @@ function isBypassRequested(req: any): { source: 'header' | 'body' } | null {
   return null;
 }
 
+/** Caller-supplied `custom_entities` limits (see C3 in the review findings): a caller
+ *  entry reaches the regex engine (customDetector.ts) with no schema validation, so a
+ *  malformed one (e.g. `null`, a non-string `pattern`) throws past that detector's own
+ *  try/catch. beforeHandler's own outer try/catch keeps that from 500ing the request,
+ *  but it aborts the whole masking pass first — so today one bad entry silently disables
+ *  pseudonymization for the ENTIRE request (PII goes out unmasked), which is worse than a
+ *  clean error. An unbounded count or pattern length is also an unbounded-cost surface. */
+const MAX_CUSTOM_ENTITY_PATTERN_LENGTH = 500;
+const MAX_CUSTOM_ENTITIES = 50;
+
+/**
+ * Validate `masking.custom_entities` at the request boundary: each entry must be a
+ * non-null object with a string `pattern` (length <= MAX_CUSTOM_ENTITY_PATTERN_LENGTH)
+ * and a `flags` that is either absent or a string; at most MAX_CUSTOM_ENTITIES entries
+ * are considered. Invalid entries are dropped and logged, the same way the plugin
+ * already handles bad detector/config input elsewhere in this file — never thrown.
+ */
+function sanitizeCustomEntities(raw: unknown, logger: { warn: (msg: string) => void }): CustomEntity[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+
+  if (raw.length > MAX_CUSTOM_ENTITIES) {
+    logger.warn(`[pseudonymization] custom_entities has ${raw.length} entries; only the first ${MAX_CUSTOM_ENTITIES} are considered`);
+  }
+  const candidates = raw.slice(0, MAX_CUSTOM_ENTITIES);
+
+  const valid: CustomEntity[] = [];
+  candidates.forEach((entry, i) => {
+    const flags = (entry as any)?.flags;
+    const ok =
+      entry !== null && typeof entry === 'object' &&
+      typeof (entry as any).pattern === 'string' &&
+      (entry as any).pattern.length <= MAX_CUSTOM_ENTITY_PATTERN_LENGTH &&
+      (flags === undefined || typeof flags === 'string');
+
+    if (ok) {
+      valid.push(entry as CustomEntity);
+    } else {
+      const kind = entry === null ? 'null' : typeof entry;
+      logger.warn(`[pseudonymization] Dropping invalid custom_entities[${i}] (expected {pattern: string<=${MAX_CUSTOM_ENTITY_PATTERN_LENGTH}, flags?: string}, got ${kind})`);
+    }
+  });
+
+  return valid.length > 0 ? valid : undefined;
+}
+
+/**
+ * The masking config for a forced request whose caller sent its own `masking` config: the forced
+ * config, widened by what the caller adds. The caller can add entity categories (its entries with
+ * `enabled: false` are ignored, a forced category stays as forced), custom patterns, legal-form
+ * suffixes and gazetteer terms. Everything else stays as the configuration forces it: method,
+ * allow lists, confidence thresholds and reporting (each could exempt a value from masking), and
+ * the placeholder settings (`placeholder`, `replacement_value`, `replacement_strategy`), so a
+ * caller can neither pick what a masked value looks like nor ask for a fixed, unrestorable one.
+ * A caller that sends no entity list (or an empty one) gets the forced categories.
+ * Null when the caller lists entities and disables every one: an attempt to switch masking off.
+ */
+function widenForcedConfig(forcedConfig: MaskingConfig, caller: any): MaskingConfig | null {
+  const listed: any[] = Array.isArray(caller?.entities) ? caller.entities : [];
+  const added: EntityConfig[] = listed
+    .filter((e: any) => e && typeof e === 'object' && typeof e.type === 'string' && e.enabled !== false)
+    .map((e: any) => ({ type: e.type }));
+  if (listed.length > 0 && added.length === 0) return null;
+
+  const entities = [...forcedConfig.entities];
+  for (const e of added) {
+    if (!entities.some((f) => f.type === e.type)) entities.push(e);
+  }
+  const union = (base: string[] | undefined, extra: unknown): string[] => Array.from(new Set([
+    ...(base || []),
+    ...(Array.isArray(extra) ? extra.filter((x): x is string => typeof x === 'string') : []),
+  ]));
+  // Pattern and flags only; sanitizeCustomEntities validates them as for any caller pattern.
+  const customEntities = Array.isArray(caller?.custom_entities)
+    ? caller.custom_entities.map((c: any) => (c && typeof c === 'object' ? { pattern: c.pattern, flags: c.flags } : c))
+    : caller?.custom_entities;
+  return {
+    ...forcedConfig,
+    entities,
+    custom_entities: customEntities,
+    org_suffixes: union(forcedConfig.org_suffixes, caller.org_suffixes),
+    location_gazetteer: union(forcedConfig.location_gazetteer, caller.location_gazetteer),
+  };
+}
+
 async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop: boolean }> {
   const logger = utils.logger;
+
+  // Forced = the configuration forces masking for this route or model. A request it is forced
+  // for is refused when masking cannot be applied, never sent unmasked (failClosed.ts). The flag
+  // on the request tells the plugin executor the same should an error escape this handler.
+  const resolution = getModelForcedConfig(req);
+  if (resolution === FORCE_UNDETERMINED) {
+    logger.error('Pseudonymization force flags could not be read from the configuration; request refused');
+    refuseUnmasked(res);
+    return { stop: true };
+  }
+  const forced = resolution;
+  if (forced) (req as any)[FORCED_FLAG] = true;
 
   try {
     // Check for explicit masking config in body first
     let maskingConfig = req.body?.masking as MaskingConfig | undefined;
+
+    // Forced, the caller's own config can only widen the forced one, never narrow or disable it.
+    if (maskingConfig && forced) {
+      const widened = widenForcedConfig(forced.config, maskingConfig);
+      if (!widened) {
+        logger.error(`Pseudonymization is forced (${forced.source}) but the request's masking config disables every entity it lists; request refused`);
+        refuseUnmasked(res);
+        return { stop: true };
+      }
+      maskingConfig = widened;
+    }
 
     // If no explicit config, check for triggerword in message content
     if (!maskingConfig) {
@@ -510,11 +663,11 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // masking and ON triggerwords above represent caller intent and are not
     // overridable.
     if (!maskingConfig) {
-      const forced = getModelForcedConfig(req);
       if (forced) {
         const bypass = isBypassRequested(req);
         if (bypass) {
           if (forced.allowBypass) {
+            delete (req as any)[FORCED_FLAG];
             logger.info(
               `Pseudonymization bypass applied: source=${bypass.source} forcedFrom=${forced.source} ` +
               `endpoint=${(req as any).__endpoint || 'n/a'} model=${req.body?.model || 'n/a'} ` +
@@ -538,11 +691,43 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     }
 
     if (!maskingConfig.method || !maskingConfig.entities || maskingConfig.entities.length === 0) {
+      if (forced) {
+        logger.error(`Pseudonymization is forced (${forced.source}) but the masking config has no method or no entities; request refused`);
+        refuseUnmasked(res);
+        return { stop: true };
+      }
       logger.warn('Missing or invalid masking config, skipping pseudonymization');
       return { stop: false };
     }
 
+    // custom_entities is the only field here that reaches a regex engine with no schema
+    // validation of its own (customDetector.ts trusts it completely); sanitize it at this
+    // request boundary so a malformed entry is dropped and logged, never thrown (C3).
+    maskingConfig.custom_entities = sanitizeCustomEntities(maskingConfig.custom_entities, logger);
+
     logger.info(`Pseudonymization active: method=${maskingConfig.method}, entities=${maskingConfig.entities.length}`);
+
+    // Detection reads a copy: forced, a detector tier that cannot run throws (and the request is
+    // refused below) instead of being skipped. The stored config never carries the marker.
+    const detectConfig: DetectionConfig = forced ? { ...maskingConfig, [STRICT_DETECTORS]: true } : maskingConfig;
+
+    // Body shapes beyond chat `messages`: Responses (`instructions` + `input`), Gemini
+    // (`systemInstruction` + `contents`) and Bedrock Converse / Nova (untyped `{ text }` blocks).
+    const responsesBody = isResponsesBody(req.body);
+    const geminiBody = isGeminiBody(req.body);
+    const converseBody = isConverseBody(req.body);
+
+    // A body the plugin has no extractor for (a Llama/Mistral `prompt`, a Titan `inputText`, …)
+    // would pass through unmasked: forced, it is refused instead.
+    const unsupported = unsupportedBodyShape(req.body, responsesBody || geminiBody);
+    if (unsupported) {
+      if (forced) {
+        logger.error(`Pseudonymization is forced (${forced.source}) but the ${unsupported}; request refused`);
+        refuseUnmasked(res);
+        return { stop: true };
+      }
+      logger.warn(`Pseudonymization cannot mask this request: the ${unsupported}; it continues unmasked`);
+    }
 
     const map = new ReplacementMap(maskingConfig.method);
     const allEntities: EntityMatch[] = [];
@@ -589,10 +774,16 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // Responses API bodies use `instructions` + `input` instead of `system` +
     // `messages`. Without this the /openai/v1/responses route would bypass
     // masking entirely, even though it is force-enabled for this endpoint.
-    const responsesBody = isResponsesBody(req.body);
     if (responsesBody) {
       for (const { text, path } of extractResponsesInputTexts(req.body)) {
-        const detected = detectEntities(text, maskingConfig);
+        if (/^input\.\d+\.arguments$/.test(path)) {
+          const r = maskJsonArguments(text, map, detectConfig, maskingConfig);
+          allEntities.push(...r.entities);
+          maskedInputs.push(r.text);
+          setResponsesInputText(req.body, path, r.text);
+          continue;
+        }
+        const detected = detectEntities(text, detectConfig);
         allEntities.push(...detected);
         const masked = replaceEntities(text, detected, map, maskingConfig);
         maskedInputs.push(masked);
@@ -602,14 +793,36 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
 
     // Gemini bodies use `systemInstruction` + `contents` instead of `system` +
     // `messages`. Without this the /google route would bypass masking entirely.
-    const geminiBody = isGeminiBody(req.body);
     if (geminiBody) {
       for (const { text, path } of extractGeminiInputTexts(req.body)) {
-        const detected = detectEntities(text, maskingConfig);
+        const detected = detectEntities(text, detectConfig);
         allEntities.push(...detected);
         const masked = replaceEntities(text, detected, map, maskingConfig);
         maskedInputs.push(masked);
         setGeminiInputText(req.body, path, masked);
+      }
+      for (const { holder, key } of extractGeminiJsonValues(req.body)) {
+        const r = maskJsonValue(holder[key], map, detectConfig);
+        allEntities.push(...r.entities);
+        holder[key] = r.value;
+      }
+    }
+
+    // Bedrock Converse (and Nova invoke) bodies: untyped `{ text }` system and content blocks,
+    // `toolUse.input` and tool-result `json` masked leaf by leaf.
+    if (converseBody) {
+      const { texts, json } = extractConverseInputs(req.body);
+      for (const { text, path } of texts) {
+        const detected = detectEntities(text, detectConfig);
+        allEntities.push(...detected);
+        const masked = replaceEntities(text, detected, map, maskingConfig);
+        maskedInputs.push(masked);
+        setConverseInputText(req.body, path, masked);
+      }
+      for (const { holder, key } of json) {
+        const r = maskJsonValue(holder[key], map, detectConfig);
+        allEntities.push(...r.entities);
+        holder[key] = r.value;
       }
     }
 
@@ -618,7 +831,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       for (let i = 0; i < req.body.system.length; i++) {
         const sysBlock = req.body.system[i];
         if (sysBlock.type === 'text' && typeof sysBlock.text === 'string') {
-          const detected = detectEntities(sysBlock.text, maskingConfig);
+          const detected = detectEntities(sysBlock.text, detectConfig);
           allEntities.push(...detected);
           const masked = replaceEntities(sysBlock.text, detected, map, maskingConfig);
           req.body.system[i].text = masked;
@@ -632,7 +845,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       const textParts = extractTextFromMessage(message);
 
       for (const { text, path } of textParts) {
-        const detected = detectEntities(text, maskingConfig);
+        const detected = detectEntities(text, detectConfig);
         allEntities.push(...detected);
         const masked = replaceEntities(text, detected, map, maskingConfig);
         maskedInputs.push(masked);
@@ -646,18 +859,32 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         for (let i = 0; i < message.content.length; i++) {
           const block = message.content[i];
           if (block?.type === 'tool_use' && block.input && typeof block.input === 'object') {
-            const r = maskJsonValue(block.input, map, maskingConfig);
+            const r = maskJsonValue(block.input, map, detectConfig);
             if (r.entities.length > 0) {
               allEntities.push(...r.entities);
             }
           } else if (block?.type === 'tool_result' && typeof block.content === 'string') {
-            const detected = detectEntities(block.content, maskingConfig);
+            const detected = detectEntities(block.content, detectConfig);
             if (detected.length > 0) {
               allEntities.push(...detected);
               block.content = replaceEntities(block.content, detected, map, maskingConfig);
             }
           }
         }
+      }
+
+      // OpenAI Chat assistant turns from earlier rounds carry their tool calls outside
+      // `content`, as JSON text in `tool_calls[].function.arguments` (or, in the legacy
+      // functions shape, in `function_call.arguments`).
+      const calls = [
+        ...(Array.isArray(message?.tool_calls) ? message.tool_calls.map((c: any) => c?.function) : []),
+        message?.function_call,
+      ];
+      for (const fn of calls) {
+        if (typeof fn?.arguments !== 'string') continue;
+        const r = maskJsonArguments(fn.arguments, map, detectConfig, maskingConfig);
+        allEntities.push(...r.entities);
+        fn.arguments = r.text;
       }
     }
 
@@ -696,6 +923,13 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
         appendResponsesInstructions(req.body, copyNote);
       } else if (geminiBody) {
         appendGeminiInstructions(req.body, copyNote);
+      } else if (converseBody) {
+        // A Converse system block is `{ text }`; a `type` field fails Bedrock's validation.
+        appendConverseInstructions(req.body, copyNote);
+      } else if ((req as any).__endpoint === 'openai' && Array.isArray(req.body.messages)) {
+        // OpenAI Chat has no top-level `system` field (a deployment may reject an unknown
+        // one), so the note goes into a system message.
+        appendOpenAIChatSystemNote(req.body.messages, copyNote);
       } else if (Array.isArray(req.body.system)) {
         req.body.system.push({ type: 'text', text: copyNote });
       } else if (typeof req.body.system === 'string') {
@@ -769,7 +1003,13 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
 
     return { stop: false };
   } catch (error: any) {
-    logger.error(`Error in pseudonymization before handler: ${error.message}`, { stack: error.stack });
+    // The message is not logged: a detector error can quote the request text.
+    if (forced) {
+      logger.error(`Pseudonymization failed while forced (${forced.source}); request refused: ${describeErrorWithoutContent(error)}`);
+      refuseUnmasked(res);
+      return { stop: true };
+    }
+    logger.error(`Error in pseudonymization before handler; request continues unmasked: ${describeErrorWithoutContent(error)}`);
     return { stop: false };
   }
 }
@@ -819,12 +1059,18 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
       // content. Deliberately not done on the streaming path above — a streamed response is
       // never one string in this handler, and reassembling one here purely to export it
       // would mean buffering every response in memory whether or not any sink wants it.
-      (req as any).__siemMaskedResponse = responseText;
+      // Every choice of an `n` > 1 response, not only the first.
+      (req as any).__siemMaskedResponse = Array.isArray(upstreamResponse?.choices) && upstreamResponse.choices.length > 1
+        ? upstreamResponse.choices.map((c: any) => c?.message?.content).filter((t: any) => typeof t === 'string' && t.length > 0).join('\n')
+        : responseText;
 
       const unmasked = unmaskText(responseText, map, containmentOf(map));
       setResponseText(upstreamResponse, unmasked);
       logger.debug(`Unmasked response text (${responseText.length} → ${unmasked.length} chars)`);
     }
+
+    // OpenAI Chat with `n` > 1: the choices after the first (choices[0] is restored above).
+    unmaskLaterOpenAIChoices(upstreamResponse, map);
 
     unmaskToolBlocks(upstreamResponse, map);
 
@@ -836,6 +1082,9 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
     // recognizes), so a streamed Gemini chunk lands here too — this one site unmasks
     // both the final response and every streamed frame.
     unmaskGeminiOutput(upstreamResponse, (s: string) => unmaskText(s, map, containmentOf(map)));
+
+    // Bedrock Converse / Nova invoke: output.message.content[] (text, toolUse.input, reasoning).
+    unmaskConverseOutput(upstreamResponse, (s: string) => unmaskText(s, map, containmentOf(map)));
 
     // Residue audit (the non-streaming path had none — this is the incident path).
     // Scan the fully-unmasked client-facing body for surviving MASKED_* tokens and
@@ -897,18 +1146,28 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   if (typeof (res as any).json === 'function') {
     const originalJson = (res as any).json.bind(res);
     (res as any).json = function patchedJson(body: any): Response {
+      const id = (req as any)?.debugRequestId || 'unknown';
       try {
         if (body && typeof body === 'object' && map.reverse.size > 0) {
           const serialized = JSON.stringify(body);
           if (serialized.includes('MASKED_')) {
-            const unmasked = unmaskText(serialized, map, containmentOf(map));
-            if (unmasked !== serialized) {
-              body = JSON.parse(unmasked);
-              logger.debug('Pseudonymization', `Unmasked non-streaming JSON response body (requestId=${(req as any)?.debugRequestId || 'unknown'})`);
+            // Restored on a parsed copy, never in place (a cache hit may hand over the stored
+            // object) and never on the serialized bytes: a restored value containing `"` or `\`
+            // would break the JSON. Tool-call arguments are JSON text and restored leaf by leaf.
+            const restored = unmaskResponseBody(JSON.parse(serialized), map, containmentOf(map));
+            const out = JSON.stringify(restored);
+            const left = Array.from(map.reverse.keys()).filter((p) => out.includes(p)).length;
+            if (left > 0) {
+              // Only a count: the values are what must not be logged.
+              logger.error('Pseudonymization', `Non-streaming JSON response body still carries ${left} placeholder(s) of this request after unmasking (an object key?); sent as is (requestId=${id})`);
             }
+            body = restored;
+            logger.debug('Pseudonymization', `Unmasked non-streaming JSON response body (requestId=${id})`);
           }
         }
-      } catch { /* fall through with original body */ }
+      } catch (error: any) {
+        logger.error('Pseudonymization', `Could not unmask the non-streaming JSON response body; sent masked (requestId=${id}): ${error?.name || 'Error'}`);
+      }
       return originalJson(body);
     };
   }
@@ -916,9 +1175,10 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   const requestId = (req as any)?.debugRequestId || 'unknown';
 
   const buffers = new Map<string, StreamUnmaskBuffer>();
-  const getBuf = (key: string): StreamUnmaskBuffer => {
+  // `jsonText` for tool-call argument streams, whose deltas are JSON-text fragments.
+  const getBuf = (key: string, jsonText = false): StreamUnmaskBuffer => {
     let b = buffers.get(key);
-    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map)); buffers.set(key, b); }
+    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map), { jsonText }); buffers.set(key, b); }
     return b;
   };
 
@@ -966,7 +1226,15 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     if (!jsonStr) return block;
 
     let event: any;
-    try { event = JSON.parse(jsonStr); } catch { return block; }
+    try {
+      event = JSON.parse(jsonStr);
+    } catch {
+      // SAP streams a deployed model's native Converse events as single-quoted dicts. Parsed
+      // (never evaluated); a rewritten frame goes out as JSON, which the event-stream framing
+      // reads as well.
+      try { event = parseConverseEventData(jsonStr); } catch { return block; }
+      if (!event || typeof event !== 'object') return block;
+    }
 
     // Does this frame carry any placeholder at all? One substring scan on a string
     // already in hand, no regex — the same test `safetyNetUnmask` makes per write, so
@@ -1005,10 +1273,60 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         && event.delta?.type === 'input_json_delta'
         && typeof event.delta.partial_json === 'string') {
       const idx = event.index ?? 0;
-      const buf = getBuf(`tool_use:${idx}`);
+      const buf = getBuf(`tool_use:${idx}`, true);
       event.delta.partial_json = buf.append(event.delta.partial_json);
       track(`tool_use:${idx}`, event.delta.partial_json);
       modified = true;
+    }
+
+    // Bedrock Converse stream (the converse-stream passthrough): assistant text and tool-call
+    // input fragments in `contentBlockDelta.delta`, flushed on `contentBlockStop` / `messageStop`.
+    const converseDelta = event?.contentBlockDelta;
+    if (converseDelta && typeof converseDelta === 'object') {
+      const idx = converseDelta.contentBlockIndex ?? event.contentBlockIndex ?? 0;
+      if (typeof converseDelta.delta?.text === 'string') {
+        const key = `converse_text:${idx}`;
+        appendStreamContent(req, 'sse-wire', converseDelta.delta.text);
+        converseDelta.delta.text = getBuf(key).append(converseDelta.delta.text);
+        track(key, converseDelta.delta.text);
+        modified = true;
+      }
+      if (typeof converseDelta.delta?.toolUse?.input === 'string') {
+        const key = `converse_tool:${idx}`;
+        converseDelta.delta.toolUse.input = getBuf(key, true).append(converseDelta.delta.toolUse.input);
+        track(key, converseDelta.delta.toolUse.input);
+        modified = true;
+      }
+    }
+    // Emit a Converse block's retained remainder as a synthetic contentBlockDelta before the
+    // current frame, then audit the block.
+    const flushConverseBlock = (idx: number): void => {
+      for (const [prefix, toDelta] of [
+        ['converse_text:', (r: string) => ({ text: r })],
+        ['converse_tool:', (r: string) => ({ toolUse: { input: r } })],
+      ] as Array<[string, (r: string) => any]>) {
+        const key = `${prefix}${idx}`;
+        const buf = buffers.get(key);
+        if (!buf) continue;
+        const remainder = buf.flush();
+        if (remainder) {
+          const frame = { contentBlockDelta: { contentBlockIndex: idx, delta: toDelta(remainder) } };
+          syntheticPrefix += `${eventName ? 'event: contentBlockDelta\n' : ''}data: ${JSON.stringify(frame)}\n\n`;
+          track(key, remainder);
+        }
+        buffers.delete(key);
+        auditBlock(key);
+      }
+    };
+    if (event?.contentBlockStop && typeof event.contentBlockStop === 'object') {
+      flushConverseBlock(event.contentBlockStop.contentBlockIndex ?? event.contentBlockIndex ?? 0);
+    }
+    if (event?.messageStop !== undefined) {
+      const open = new Set<number>();
+      for (const key of Array.from(buffers.keys())) {
+        if (key.startsWith('converse_')) open.add(parseInt(key.split(':')[1], 10) || 0);
+      }
+      for (const idx of open) flushConverseBlock(idx);
     }
 
     // OpenAI Responses API deltas. Frames are bare `data: {json}` with the type
@@ -1024,7 +1342,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     }
     if (event.type === 'response.function_call_arguments.delta' && typeof event.delta === 'string') {
       const key = `responses_args:${event.output_index ?? 0}`;
-      event.delta = getBuf(key).append(event.delta);
+      event.delta = getBuf(key, true).append(event.delta);
       track(key, event.delta);
       modified = true;
     }
@@ -1163,7 +1481,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         if (typeof call?.function?.arguments === 'string') {
           const idx = call.index ?? 0;
           const key = `oai_tool_call:${idx}`;
-          const buf = getBuf(key);
+          const buf = getBuf(key, true);
           if (finishReason) {
             call.function.arguments = buf.append(call.function.arguments) + buf.flush();
             track(key, call.function.arguments);
@@ -1251,11 +1569,13 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     // Runs AFTER the delta handlers on purpose: a delta's placeholder must go through
     // its StreamUnmaskBuffer, which owns partial-token retention across frames. By the
     // time this runs, a delta holds only complete-and-already-unmasked text plus any
-    // token this request's map cannot resolve, which unmaskJsonValue leaves alone.
+    // token this request's map cannot resolve, which unmaskResponseBody leaves alone.
+    // An `arguments` string (the done / snapshot frames of a function call) is JSON text
+    // and is restored leaf by leaf, so it stays valid JSON too.
     if (carriesPlaceholder) {
       // Assigned, not just mutated: a frame whose JSON is a bare string or number is
-      // returned by value, and unmaskJsonValue has nothing to mutate in place.
-      event = unmaskJsonValue(event, map, containmentOf(map));
+      // returned by value, and unmaskResponseBody has nothing to mutate in place.
+      event = unmaskResponseBody(event, map, containmentOf(map));
       modified = true;
     }
 
@@ -1279,7 +1599,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   // It still runs over the WHOLE outgoing string, parsed blocks included — the parsed-event
   // unmask in processBlock narrows what is left for it to find, it does not exclude anything
   // from it. Two things genuinely reach the client only through this net: a block that is
-  // not JSON at all, and an object KEY carrying a placeholder, which unmaskJsonValue walks
+  // not JSON at all, and an object KEY carrying a placeholder, which unmaskResponseBody walks
   // past by design (it rewrites values only). For those the byte-level substitution and its
   // JSON-escaping hazard still apply.
   const safetyNetUnmask = (s: string): string => {
@@ -1350,8 +1670,8 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
 
 /**
  * Walk a non-streaming response and unmask placeholders inside tool_use / tool_calls blocks.
- * Covers Anthropic native (content[].type==='tool_use'), OpenAI (choices[].message.tool_calls[]),
- * and SAP orchestration V2 wrapper (final_result.choices[].message.tool_calls[]).
+ * Covers Anthropic native (content[].type==='tool_use'), OpenAI (choices[].message.tool_calls[]
+ * and the legacy function_call), and SAP orchestration V2 wrapper (final_result.choices[]).
  */
 function unmaskToolBlocks(response: any, map: ReplacementMap): void {
   if (!response || typeof response !== 'object') return;
@@ -1365,23 +1685,38 @@ function unmaskToolBlocks(response: any, map: ReplacementMap): void {
     }
   }
 
-  // OpenAI: choices[].message.tool_calls[].function.arguments (JSON string)
-  const openaiCalls = response?.choices?.[0]?.message?.tool_calls;
-  if (Array.isArray(openaiCalls)) {
-    for (const call of openaiCalls) {
-      if (typeof call?.function?.arguments === 'string') {
-        call.function.arguments = unmaskText(call.function.arguments, map, containmentOf(map));
+  // OpenAI: choices[].message.tool_calls[].function.arguments (JSON string) and the legacy
+  // choices[].message.function_call.arguments, in every choice (a request with `n` > 1 has
+  // several); the same for the SAP orchestration V2 wrapper (final_result.choices[]).
+  const choices = [
+    ...(Array.isArray(response?.choices) ? response.choices : []),
+    ...(Array.isArray(response?.final_result?.choices) ? response.final_result.choices : []),
+  ];
+  for (const choice of choices) {
+    const message = choice?.message;
+    const calls = [
+      ...(Array.isArray(message?.tool_calls) ? message.tool_calls.map((c: any) => c?.function) : []),
+      message?.function_call,
+    ];
+    for (const fn of calls) {
+      if (typeof fn?.arguments === 'string') {
+        fn.arguments = unmaskJsonArguments(fn.arguments, map, containmentOf(map));
       }
     }
   }
+}
 
-  // SAP orchestration V2 wrapper
-  const sapCalls = response?.final_result?.choices?.[0]?.message?.tool_calls;
-  if (Array.isArray(sapCalls)) {
-    for (const call of sapCalls) {
-      if (typeof call?.function?.arguments === 'string') {
-        call.function.arguments = unmaskText(call.function.arguments, map, containmentOf(map));
-      }
+/**
+ * Unmask `message.content` of choices[1..] of an OpenAI chat.completion. choices[0] goes
+ * through extractResponseText/setResponseText like every other shape; only a request with
+ * `n` > 1 has more.
+ */
+function unmaskLaterOpenAIChoices(response: any, map: ReplacementMap): void {
+  if (!Array.isArray(response?.choices)) return;
+  for (let i = 1; i < response.choices.length; i++) {
+    const message = response.choices[i]?.message;
+    if (typeof message?.content === 'string' && message.content.length > 0) {
+      message.content = unmaskText(message.content, map, containmentOf(map));
     }
   }
 }
@@ -1413,7 +1748,7 @@ function handleStreamingChunk(
   const toolBuffers: Map<string, StreamUnmaskBuffer> = (req as any).__streamToolBuffers;
   const getToolBuf = (key: string): StreamUnmaskBuffer => {
     let b = toolBuffers.get(key);
-    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map)); toolBuffers.set(key, b); }
+    if (!b) { b = new StreamUnmaskBuffer(map, containmentOf(map), { jsonText: true }); toolBuffers.set(key, b); }
     return b;
   };
 
@@ -1589,7 +1924,7 @@ function reportInventedPlaceholders(req: any, found: string[], mode: UnknownPlac
       action,
       model: typeof req?.body?.model === 'string' ? req.body.model : undefined,
       userAgent: typeof req?.get === 'function' ? req.get('user-agent') : undefined,
-      endpoint: req?.originalUrl,
+      endpoint: redactUrl(req?.originalUrl),
       method: req?.method,
       requestId
     })).catch(() => undefined);

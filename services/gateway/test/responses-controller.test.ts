@@ -92,8 +92,16 @@ jest.mock('../src/services/configService', () => ({
     getParamRenames: () => ({}),
     getTimeout: () => 1000,
     getHookConfig: () => configState.hookConfig,
-    isPseudonymizationForced: () => configState.pseudonymizationForced,
-    getConfig: () => ({}),
+    // Forced = hooks.defaults.openai.pseudonymization.enabled; the content-type matcher is
+    // what the plugin loader reads to decide whether a pseudonymization hook fits the request.
+    getConfig: () => ({
+      api_config: {
+        hooks: {
+          definitions: { 'header:contentTypeJson': { type: 'header', name: 'content-type', equals: 'application/json' } },
+          defaults: { openai: { pseudonymization: { enabled: configState.pseudonymizationForced } } },
+        },
+      },
+    }),
   },
 }));
 
@@ -407,16 +415,37 @@ describe('responsesController', () => {
     expect(posted[0].body.input).not.toContain('john@test.com');
   });
 
-  it('proceeds when pseudonymization is force-enabled and the hook config is present', async () => {
+  it('proceeds when pseudonymization is force-enabled and the hook runs the plugin', async () => {
     configState.pseudonymizationForced = true;
-    configState.hookConfig = [{ request: { callback: { id: 'pseudonymizationPlugin' } } }];
+    configState.hookConfig = [{ request: { callback: { id: 'pseudonymizationPlugin' }, match: ['header:contentTypeJson'] } }];
+    const savedRegistry = (global as any).pluginRegistry;
+    (global as any).pluginRegistry = {
+      pseudonymizationPlugin_before_0: { id: 'pseudonymizationPlugin', strategy: 'before', match: [], handler: async () => ({ stop: false }) },
+    };
+    (global as any).matcherCache?.clear?.();
+    try {
+      const req: any = { body: { model: 'gpt-5.3-codex--deployed', input: 'hi' }, headers: { 'content-type': 'application/json' } };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
 
-    const req: any = { body: { model: 'gpt-5.3-codex--deployed', input: 'hi' }, headers: {} };
+      expect(posted).toHaveLength(1);
+      expect(res.statusCode).toBe(200);
+    } finally {
+      (global as any).pluginRegistry = savedRegistry;
+    }
+  });
+
+  it('fails closed with 503 when pseudonymization is force-enabled and the hook chain lacks the plugin', async () => {
+    configState.pseudonymizationForced = true;
+    configState.hookConfig = [{ request: { callback: { id: 'responsesImagePlugin' }, match: ['header:contentTypeJson'] } }];
+
+    const req: any = { body: { model: 'gpt-5.3-codex--deployed', input: 'my email is john@test.com' }, headers: { 'content-type': 'application/json' } };
     const res = mockRes();
     await handleResponses(req, res, () => {});
 
-    expect(posted).toHaveLength(1);
-    expect(res.statusCode).toBe(200);
+    expect(posted).toHaveLength(0);
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('pseudonymization_hook_missing');
   });
 
   it('fails closed with 503 when pseudonymization is force-enabled but the hook config is missing', async () => {

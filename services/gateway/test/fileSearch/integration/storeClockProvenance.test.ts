@@ -1,6 +1,6 @@
 // Every timestamp on a vector store must come from the DATABASE clock.
 //
-// repository.ts argues at length (see RECOMPUTE_EXPIRES_AT_SQL) that every site
+// stores.ts argues at length (see RECOMPUTE_EXPIRES_AT_SQL) that every site
 // touching `last_active_at` has to agree on its clock, because
 // `expires_after.anchor = 'last_active_at'` slides the deadline forward from
 // whatever that column says. attachFile, deleteStoreFile, touchStoreActivity

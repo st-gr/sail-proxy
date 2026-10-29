@@ -37,6 +37,8 @@ export interface ReconciliationInput {
   from: Date;
   to: Date;
   invoice?: ReconciliationInvoice;
+  /** The SAP tenant zone whose rows to sum (SAP bills per subaccount); null or omitted = every row. */
+  tenant?: string | null;
 }
 
 export interface ReconciliationResult {
@@ -65,10 +67,15 @@ export async function reconcile(input: ReconciliationInput): Promise<Reconciliat
 
   const fromIso = input.from.toISOString();
   const toIso = input.to.toISOString();
+  // Fluent predicate: text and value alternate, so the tenant joins the last text piece.
+  const notExternal = "and (origin is null or origin <> 'external')";
+  const usageWhere: unknown[] = ['validFrom >=', fromIso, 'and validFrom <=', toIso];
+  if (input.tenant) usageWhere.push(`${notExternal} and sapTenant =`, input.tenant);
+  else usageWhere.push(notExternal);
 
   const [totals] = await db.run(
     SELECT.from(USAGE_ENTITY)
-      .where('validFrom >=', fromIso, 'and validFrom <=', toIso)
+      .where(...usageWhere)
       .columns([
         'COALESCE(sum(capacityUnits), 0) as capacityUnits',
         'COALESCE(sum(genAiTokens), 0) as genAiTokens',
@@ -79,7 +86,7 @@ export async function reconcile(input: ReconciliationInput): Promise<Reconciliat
 
   const currencyRows = await db.run(
     SELECT.from(USAGE_ENTITY)
-      .where('validFrom >=', fromIso, 'and validFrom <=', toIso)
+      .where(...usageWhere)
       .columns([
         'sapCostCurrency',
         'COALESCE(sum(sapCost), 0) as sapCost'
@@ -114,6 +121,7 @@ export async function reconcile(input: ReconciliationInput): Promise<Reconciliat
   logger.info('ReconciliationService', 'Invoice reconciliation computed', {
     from: fromIso,
     to: toIso,
+    tenant: input.tenant ?? null,
     capacityUnits: result.capacityUnits,
     impliedCuFactor: result.impliedCuFactor,
     impliedCacheReadFactor: result.impliedCacheReadFactor,

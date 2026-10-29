@@ -44,6 +44,10 @@ real bill (`src/services/reconciliationService.ts`). If the totals line up, the 
 constant CU factor) are right. The per-model GenAI rates come from `/v2`, so they need no
 manual validation.
 
+`reconcileInvoice` also takes an optional `tenant`, the SAP AI Core subaccount zone: SAP bills per
+subaccount, so pass the zone of the tenant the invoice belongs to and only that tenant's usage is
+summed. Omit it to sum all usage.
+
 ## Maintaining a price change (temporal correction)
 
 `SapCapacityUnitPrice` is temporal (`dateFrom` / `dateTo` per row), and a **validity-overlap

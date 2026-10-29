@@ -131,7 +131,7 @@ configCommand.action(async () => {
   
   console.log(chalk.gray('\nExample model substitutions:'));
   console.log(chalk.gray('  • "claude-3-5-sonnet-20240229" → "anthropic--claude-3.5-sonnet--deployed"'));
-  console.log(chalk.gray('  • "GPT-4" → "o1"'));
+  console.log(chalk.gray('  • "gpt-4o" → "gpt-4.1"'));
   console.log(chalk.gray('  • "us.anthropic.claude-3-7-sonnet-20250219-v1:0" → "anthropic--claude-3.7-sonnet--deployed"'));
   
   console.log(chalk.gray('\nRestart the gateway after editing api_config.json for changes to take effect.'));

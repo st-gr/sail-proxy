@@ -55,6 +55,8 @@
  * its own comment.
  */
 
+import { ENGLISH_MESSAGES, Translator, messageMatcher } from "./validationTexts";
+
 interface SchemaNode {
     type?: string | string[];
     properties?: Record<string, SchemaNode>;
@@ -81,10 +83,13 @@ interface SchemaNode {
  * Returns one message per violation, empty when `data` satisfies `schema`. Messages follow the
  * backend's own wording - `Schema validation error at '<json pointer>': <message>` - so the two
  * read identically wherever they are shown side by side.
+ *
+ * `t` words the messages (`./validationTexts`); omitted, they are the backend's English exactly.
+ * Whatever the language, `fieldErrorOf` reads them back when handed the same `t`.
  */
-export function validateSection(schema: object, data: unknown, pointerPrefix = ""): string[] {
+export function validateSection(schema: object, data: unknown, pointerPrefix = "", t: Translator = ENGLISH_MESSAGES): string[] {
     const errors: string[] = [];
-    validateNode(schema as SchemaNode, data, pointerPrefix, errors);
+    validateNode(schema as SchemaNode, data, pointerPrefix, errors, t);
     return errors;
 }
 
@@ -105,7 +110,7 @@ export function validateSection(schema: object, data: unknown, pointerPrefix = "
  * other field satisfy it while still colliding on `name`. Folding it in would make the two
  * disagree. The form's gate calls both.
  */
-export function validateSinkNames(siem: unknown, pointerPrefix = ""): string[] {
+export function validateSinkNames(siem: unknown, pointerPrefix = "", t: Translator = ENGLISH_MESSAGES): string[] {
     if (!isPlainObject(siem)) {
         return [];
     }
@@ -125,11 +130,7 @@ export function validateSinkNames(siem: unknown, pointerPrefix = ""): string[] {
         // the two, which is the one to rename.
         const clash = sinkNameClash(name, sinks.slice(0, index));
         if (clash !== -1) {
-            errors.push(
-                `Duplicate sink name at '${pointerPrefix}/sinks/${index}/name': ` +
-                `"${name.trim()}" is already used by sink #${clash}. Delivery rows are keyed by sink name, ` +
-                `so two sinks sharing one would mark each other's events delivered.`
-            );
+            errors.push(t("validationDuplicateSink", [`${pointerPrefix}/sinks/${index}/name`, name.trim(), clash]));
         }
     });
     return errors;
@@ -188,88 +189,95 @@ export interface FieldError {
  * 'url'` at the sink), because that is where Ajv reports it and parity with the backend is the
  * point. The field the user has to fill in is one segment further down, so that segment is
  * appended here. Returns null for a message this module did not produce.
+ *
+ * `t` must be the translator the message was written with: the message is matched against that
+ * language's own patterns, so a translated message is read back exactly like an English one.
  */
-export function fieldErrorOf(message: string): FieldError | null {
-    const schemaError = /^Schema validation error at '([^']*)': (.*)$/.exec(message);
+export function fieldErrorOf(message: string): FieldError | null;
+export function fieldErrorOf(message: string, t: Translator | undefined): FieldError | null;
+export function fieldErrorOf(message: string, translator: Translator = ENGLISH_MESSAGES): FieldError | null {
+    // A caller may be Array.prototype.map, which passes the index as the second argument.
+    const t = typeof translator === "function" ? translator : ENGLISH_MESSAGES;
+    const schemaError = messageMatcher(t, "validationAt", 2)(message);
     if (schemaError) {
-        const pointer = schemaError[1] === "root" ? "" : schemaError[1];
-        const reason = schemaError[2];
-        const missing = /^must have required property '(.*)'$/.exec(reason);
+        const pointer = schemaError[0] === "root" ? "" : schemaError[0];
+        const reason = schemaError[1];
+        const missing = messageMatcher(t, "validationRequired", 1)(reason);
         return missing
-            ? { pointer: `${pointer}/${escapeSegment(missing[1])}`, reason, missing: true }
+            ? { pointer: `${pointer}/${escapeSegment(missing[0])}`, reason, missing: true }
             : { pointer, reason, missing: false };
     }
-    const duplicateName = /^(Duplicate sink name at '([^']*)': .*)$/.exec(message);
+    const duplicateName = messageMatcher(t, "validationDuplicateSink", 3)(message);
     if (duplicateName) {
-        return { pointer: duplicateName[2], reason: duplicateName[1], missing: false };
+        return { pointer: duplicateName[0], reason: message, missing: false };
     }
     return null;
 }
 
-function validateNode(schema: SchemaNode, data: unknown, pointer: string, errors: string[]): void {
+function validateNode(schema: SchemaNode, data: unknown, pointer: string, errors: string[], t: Translator): void {
     if (!schema || typeof schema !== "object") {
         return;
     }
 
     if (schema.type !== undefined && !typeMatches(schema.type, data)) {
         const expected = Array.isArray(schema.type) ? schema.type.join(",") : schema.type;
-        errors.push(error(pointer, `must be ${expected}`));
+        errors.push(error(pointer, t("validationType", [expected]), t));
         // A wrong type makes every other keyword meaningless for this node.
         return;
     }
 
     if (Array.isArray(schema.enum) && !schema.enum.some(option => deepEqual(option, data))) {
-        errors.push(error(pointer, "must be equal to one of the allowed values"));
+        errors.push(error(pointer, t("validationEnum"), t));
     }
 
     if (Object.prototype.hasOwnProperty.call(schema, "const") && !deepEqual(schema.const, data)) {
-        errors.push(error(pointer, `must be equal to constant`));
+        errors.push(error(pointer, t("validationConst"), t));
     }
 
     if (typeof data === "number") {
         if (typeof schema.minimum === "number" && data < schema.minimum) {
-            errors.push(error(pointer, `must be >= ${schema.minimum}`));
+            errors.push(error(pointer, t("validationMinimum", [String(schema.minimum)]), t));
         }
         if (typeof schema.maximum === "number" && data > schema.maximum) {
-            errors.push(error(pointer, `must be <= ${schema.maximum}`));
+            errors.push(error(pointer, t("validationMaximum", [String(schema.maximum)]), t));
         }
     }
 
     if (typeof data === "string") {
         if (typeof schema.minLength === "number" && data.length < schema.minLength) {
-            errors.push(error(pointer, `must NOT have fewer than ${schema.minLength} characters`));
+            errors.push(error(pointer, t("validationMinLength", [String(schema.minLength)]), t));
         }
         if (typeof schema.maxLength === "number" && data.length > schema.maxLength) {
-            errors.push(error(pointer, `must NOT have more than ${schema.maxLength} characters`));
+            errors.push(error(pointer, t("validationMaxLength", [String(schema.maxLength)]), t));
         }
         if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(data)) {
-            errors.push(error(pointer, `must match pattern "${schema.pattern}"`));
+            errors.push(error(pointer, t("validationPattern", [schema.pattern]), t));
         }
     }
 
     if (Array.isArray(data)) {
         if (schema.uniqueItems === true && hasDuplicates(data)) {
-            errors.push(error(pointer, "must NOT have duplicate items"));
+            errors.push(error(pointer, t("validationUniqueItems"), t));
         }
         // The schema's one `minItems` guards a hook's `match` list (`$defs/hookEntryArray`), where an
         // empty list is not a hook with no condition - it is a hook that fires on every request.
         // Unimplemented, this gate called such a document valid and the backend's Ajv then rejected it
         // on save, which is precisely the disagreement this module exists to prevent.
         if (typeof schema.minItems === "number" && data.length < schema.minItems) {
-            errors.push(error(pointer, `must NOT have fewer than ${schema.minItems} items`));
+            errors.push(error(pointer, t("validationMinItems", [String(schema.minItems)]), t));
         }
         if (schema.items) {
-            data.forEach((item, index) => validateNode(schema.items as SchemaNode, item, `${pointer}/${index}`, errors));
+            data.forEach((item, index) => validateNode(schema.items as SchemaNode, item, `${pointer}/${index}`, errors, t));
         }
     }
 
     if (isPlainObject(data)) {
-        validateObject(schema, data as Record<string, unknown>, pointer, errors);
+        validateObject(schema, data as Record<string, unknown>, pointer, errors, t);
     }
 
     if (Array.isArray(schema.allOf)) {
         for (const branch of schema.allOf) {
-            validateBranch(branch, data, pointer, errors);
+            validateBranch(branch, data, pointer, errors, t);
         }
     }
 
@@ -279,24 +287,24 @@ function validateNode(schema: SchemaNode, data: unknown, pointer: string, errors
     // an inner failure is what SATISFIES a `not`, so the inner messages are deliberately discarded.
     if (isPlainObject(schema.not)) {
         const negated: string[] = [];
-        validateNode(schema.not as SchemaNode, data, pointer, negated);
+        validateNode(schema.not as SchemaNode, data, pointer, negated, t);
         if (negated.length === 0) {
-            errors.push(error(pointer, "must NOT be valid"));
+            errors.push(error(pointer, t("validationNot"), t));
         }
     }
 }
 
-function validateObject(schema: SchemaNode, data: Record<string, unknown>, pointer: string, errors: string[]): void {
+function validateObject(schema: SchemaNode, data: Record<string, unknown>, pointer: string, errors: string[], t: Translator): void {
     for (const key of schema.required || []) {
         if (!Object.prototype.hasOwnProperty.call(data, key)) {
-            errors.push(error(pointer, `must have required property '${key}'`));
+            errors.push(error(pointer, t("validationRequired", [key]), t));
         }
     }
 
     const properties = schema.properties || {};
     for (const key of Object.keys(properties)) {
         if (Object.prototype.hasOwnProperty.call(data, key)) {
-            validateNode(properties[key], data[key], `${pointer}/${escapeSegment(key)}`, errors);
+            validateNode(properties[key], data[key], `${pointer}/${escapeSegment(key)}`, errors, t);
         }
     }
 
@@ -316,7 +324,7 @@ function validateObject(schema: SchemaNode, data: Record<string, unknown>, point
             for (const { regex, subschema } of patternEntries) {
                 if (regex.test(key)) {
                     matchedByPattern.add(key);
-                    validateNode(subschema, data[key], `${pointer}/${escapeSegment(key)}`, errors);
+                    validateNode(subschema, data[key], `${pointer}/${escapeSegment(key)}`, errors, t);
                 }
             }
         }
@@ -335,9 +343,9 @@ function validateObject(schema: SchemaNode, data: Record<string, unknown>, point
                 continue;
             }
             if (additionalSchema) {
-                validateNode(additionalSchema, data[key], `${pointer}/${escapeSegment(key)}`, errors);
+                validateNode(additionalSchema, data[key], `${pointer}/${escapeSegment(key)}`, errors, t);
             } else {
-                errors.push(error(pointer, `must NOT have additional properties`));
+                errors.push(error(pointer, t("validationAdditional"), t));
             }
         }
     }
@@ -364,9 +372,9 @@ function validateObject(schema: SchemaNode, data: Record<string, unknown>, point
     if (isPlainObject(propertyNames)) {
         for (const key of Object.keys(data)) {
             const nameErrors: string[] = [];
-            validateNode(propertyNames as SchemaNode, key, pointer, nameErrors);
+            validateNode(propertyNames as SchemaNode, key, pointer, nameErrors, t);
             if (nameErrors.length > 0) {
-                errors.push(propertyNameError(pointer, key, (propertyNames as SchemaNode).enum));
+                errors.push(propertyNameError(pointer, key, (propertyNames as SchemaNode).enum, t));
             }
         }
     }
@@ -377,11 +385,13 @@ function validateObject(schema: SchemaNode, data: Record<string, unknown>, point
  * allowed set is named only when the schema states one as an `enum`, which is what Ajv can put in
  * `params.allowedValues` and therefore all the backend can name.
  */
-function propertyNameError(pointer: string, key: string, allowed: unknown): string {
-    const allowedSuffix = Array.isArray(allowed) ? ` (allowed: ${allowed.join(", ")})` : "";
+function propertyNameError(pointer: string, key: string, allowed: unknown, t: Translator): string {
     return error(
         `${pointer}/${escapeSegment(key)}`,
-        `property "${key}" is not one of the settings this provider reads${allowedSuffix}`
+        Array.isArray(allowed)
+            ? t("validationPropertyNameAllowed", [key, allowed.join(", ")])
+            : t("validationPropertyName", [key]),
+        t
     );
 }
 
@@ -389,19 +399,19 @@ function propertyNameError(pointer: string, key: string, allowed: unknown): stri
  * An `allOf` branch, which in this schema is always `{ if, then }`: the `then` schema applies
  * only when the `if` schema matches, and a non-matching `if` is not itself an error.
  */
-function validateBranch(branch: SchemaNode, data: unknown, pointer: string, errors: string[]): void {
+function validateBranch(branch: SchemaNode, data: unknown, pointer: string, errors: string[], t: Translator): void {
     const condition = branch.if as SchemaNode | undefined;
     const consequent = branch.then as SchemaNode | undefined;
 
     if (!condition) {
-        validateNode(branch, data, pointer, errors);
+        validateNode(branch, data, pointer, errors, t);
         return;
     }
 
     const conditionErrors: string[] = [];
-    validateNode(condition, data, pointer, conditionErrors);
+    validateNode(condition, data, pointer, conditionErrors, t);
     if (conditionErrors.length === 0 && consequent) {
-        validateNode(consequent, data, pointer, errors);
+        validateNode(consequent, data, pointer, errors, t);
     }
 }
 
@@ -451,6 +461,6 @@ function escapeSegment(segment: string): string {
     return segment.replace(/~/g, "~0").replace(/\//g, "~1");
 }
 
-function error(pointer: string, message: string): string {
-    return `Schema validation error at '${pointer || "root"}': ${message}`;
+function error(pointer: string, message: string, t: Translator): string {
+    return t("validationAt", [pointer || "root", message]);
 }

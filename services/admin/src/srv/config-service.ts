@@ -41,6 +41,42 @@ const validateConfigSchema = ajv.compile(configSchema);
  * here rather than imported: validateSection.ts belongs to the config-app's own
  * package and build, and the server must not depend on the frontend.
  */
+/**
+ * Substitution may target a Connection model (`<model>--<connection>`, spec 2026-10-23 §4.3).
+ * Connections live outside configuration versions, so a target whose suffix names an existing
+ * connection but none of its models is only a warning: it may be added later, and at runtime an
+ * unknown target is a 404 as today. SAP ids carry `--` as well (vendor prefixes such as
+ * `anthropic--claude-4.5-haiku`), so a suffix that names no connection is not looked at. A database
+ * that cannot be read here yields no warning rather than a failed validation.
+ */
+const CONNECTION_NAME = /^[a-z][a-z0-9-]{1,30}$/;
+const suffix = (id: string) => id.slice(id.lastIndexOf('--') + 2);
+
+async function unknownConnectionTargets(providers: Record<string, any>): Promise<string[]> {
+  const targets: Array<{ provider: string; to: string }> = [];
+  for (const [provider, config] of Object.entries(providers || {})) {
+    for (const s of (config && Array.isArray(config.substitute_models) ? config.substitute_models : [])) {
+      if (typeof s?.to === 'string' && s.to.includes('--') && CONNECTION_NAME.test(suffix(s.to))) targets.push({ provider, to: s.to });
+    }
+  }
+  if (targets.length === 0) return [];
+  let connections: Set<string>;
+  let known: Set<string>;
+  try {
+    const names = await cds.run(cds.ql.SELECT.from('sap.llm.gateway.admin.ProviderConnections').columns('name')
+      .where({ name: { in: [...new Set(targets.map((t) => suffix(t.to)))] } }));
+    connections = new Set(names.map((r: any) => r.name));
+    if (connections.size === 0) return [];
+    const rows = await cds.run(cds.ql.SELECT.from('sap.llm.gateway.admin.ConnectionModels').columns('modelId')
+      .where({ modelId: { in: [...new Set(targets.map((t) => t.to))] } }));
+    known = new Set(rows.map((r: any) => r.modelId));
+  } catch {
+    return [];
+  }
+  return targets.filter((t) => connections.has(suffix(t.to)) && !known.has(t.to))
+    .map((t) => `Model substitution in ${t.provider}: target '${t.to}' is not a known connection model`);
+}
+
 function findDuplicateSinkNames(siem: any): string[] {
   const sinks = siem?.sinks;
   if (!Array.isArray(sinks)) {
@@ -109,6 +145,21 @@ interface ConfigChangeEvent {
   timestamp: string;
 }
 
+/** Columns derived from a configuration's document: computed by the service, never taken from a client. */
+const DERIVED_COLUMNS = ['checksum', 'isValid', 'validationErrors', 'validationWarnings', 'lastValidated'];
+
+/**
+ * Columns only activation and rollback write (db-level cds.run, which no service handler sees):
+ * which configuration is active, and when and by whom it was deployed.
+ */
+const ACTIVATION_COLUMNS = ['isActive', 'deployedAt', 'deployedBy'];
+
+/** How long a configuration event publish may hold a request before it is given up. */
+const PUBLISH_TIMEOUT_MS = 3000;
+
+/** UPDATE requests whose configData differs from the stored document (set before, read after). */
+const documentChanged = new WeakSet<object>();
+
 interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -142,6 +193,8 @@ class ConfigurationService {
     service.on('getConfigurationStatus', this.getConfigurationStatus.bind(this));
 
     // Register OData event handlers
+    service.before('CREATE', 'ApiConfigurations', this.onBeforeConfigurationCreate.bind(this));
+    service.before('UPDATE', 'ApiConfigurations', this.onBeforeConfigurationUpdate.bind(this));
     service.after('CREATE', 'ApiConfigurations', this.onConfigurationCreated.bind(this));
     service.after('UPDATE', 'ApiConfigurations', this.onConfigurationUpdated.bind(this));
 
@@ -315,10 +368,7 @@ class ConfigurationService {
         configData: JSON.stringify(parsedConfigData),
         checksum,
         isActive: false,  // Created but not activated
-        isValid: validation.valid,  // Store validation result
-        validationErrors: validation.errors.length > 0 ? JSON.stringify(validation.errors) : null,
-        validationWarnings: validation.warnings.length > 0 ? JSON.stringify(validation.warnings) : null,
-        lastValidated: now,
+        ...this.validationColumns(validation, now),  // Store validation result
         createdAt: now,
         createdBy: user
       });
@@ -399,12 +449,17 @@ class ConfigurationService {
         
         logger.debug('ConfigService', 'Deactivated configs', { affectedRows: deactivateResult });
         
-        // Step 2: Then activate the target configuration
+        // Step 2: Then activate the target configuration, storing the checksum and validation
+        // result of its document (valid, so isValid is the literal true and there are no errors);
+        // rows saved before saves recomputed them get current values here.
+        const stored = this.validationColumns(validation, now);
+        config.checksum = this.generateChecksum(JSON.stringify(configData));
         const activateResult = await cds.run(
-          `UPDATE sap_llm_gateway_admin_ApiConfigurations 
-           SET isActive = true, deployedAt = ?, deployedBy = ?, modifiedAt = ?, modifiedBy = ?
+          `UPDATE sap_llm_gateway_admin_ApiConfigurations
+           SET isActive = true, deployedAt = ?, deployedBy = ?, modifiedAt = ?, modifiedBy = ?,
+               checksum = ?, isValid = true, validationErrors = ?, validationWarnings = ?, lastValidated = ?
            WHERE ID = ?`,
-          [now, user, now, user, configId]
+          [now, user, now, user, config.checksum, stored.validationErrors, stored.validationWarnings, stored.lastValidated, configId]
         );
         
         logger.debug('ConfigService', 'Activated config', { affectedRows: activateResult, configId });
@@ -420,19 +475,14 @@ class ConfigurationService {
 
       // Publish event with timeout protection
       try {
-        await Promise.race([
-          this.publishConfigurationEvent({
-            eventType: 'config-activated',
-            configId: config.ID,
-            configName: config.name,
-            version: config.version,
-            checksum: config.checksum,
-            timestamp: new Date().toISOString()
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Event publish timeout')), 3000)
-          )
-        ]);
+        await this.publishWithTimeout({
+          eventType: 'config-activated',
+          configId: config.ID,
+          configName: config.name,
+          version: config.version,
+          checksum: config.checksum,
+          timestamp: new Date().toISOString()
+        });
       } catch (error) {
         logger.warn('ConfigService', 'Event publishing failed during activation', { error: (error as Error).message });
         // Don't fail the activation if event publishing fails
@@ -662,21 +712,160 @@ class ConfigurationService {
   }
 
   /**
-   * Event handler for configuration updates
+   * Every OData CREATE of ApiConfigurations is refused (400): the createConfiguration action is
+   * the one way to create a configuration, because it validates the document and stores its
+   * checksum and validation result. The entity is writable where it is a table (Postgres), so
+   * without this a POST would store an unchecked row. The action, Duplicate and the REST PUT
+   * insert through db-level cds.run and never pass here.
+   */
+  onBeforeConfigurationCreate(req: any): void {
+    req.reject(400, 'CONFIG_CREATE_USE_ACTION');
+  }
+
+  /**
+   * An OData UPDATE of ApiConfigurations (the config app's Save) stores what createConfiguration
+   * stores with a document: its checksum and validation result, recomputed here from the
+   * document sent. Refused with 400: a document that is not valid (create refuses it too, so every
+   * stored row stays valid), and any change to the active configuration's document (it is what
+   * the gateway runs; edit a copy and activate that). Without configData in the payload the
+   * derived columns are not the client's to set, and are dropped. isActive, deployedAt and
+   * deployedBy are refused outright (400): only Activate and Rollback change which configuration
+   * is active - they write through db-level cds.run, which this handler never sees.
+   *
+   * The stored row is read with cds.run inside the request's own transaction - never cds.tx(fn)
+   * here: the admin's SQLite has one connection, and a new root transaction would wait for this
+   * one forever.
+   */
+  async onBeforeConfigurationUpdate(req: any): Promise<void> {
+    const data = req.data ?? {};
+    if (ACTIVATION_COLUMNS.some((column) => column in data)) {
+      req.reject(400, 'CONFIG_SAVE_ACTIVATION_COLUMNS');
+      return;
+    }
+    if (!('configData' in data)) {
+      for (const column of DERIVED_COLUMNS) {
+        delete data[column];
+      }
+      return;
+    }
+
+    let parsedConfigData: any;
+    if (typeof data.configData === 'string') {
+      try {
+        parsedConfigData = JSON.parse(data.configData);
+      } catch (error) {
+        req.reject(400, 'CONFIG_SAVE_INVALID_JSON');
+        return;
+      }
+    } else {
+      parsedConfigData = data.configData;
+    }
+    const canonical = JSON.stringify(parsedConfigData);
+
+    const key = req.params?.[0];
+    const ID = data.ID ?? (key && typeof key === 'object' ? key.ID : key);
+    if (!ID) {
+      // No row to judge the active-save guard by; no caller sends this today.
+      req.reject(400, 'CONFIG_SAVE_NO_KEY');
+      return;
+    }
+    const stored = await cds.run(
+      cds.ql.SELECT.one.from('sap.llm.gateway.admin.ApiConfigurations').columns('isActive', 'configData').where({ ID })
+    );
+    const changed = this.canonicalDocument(stored?.configData) !== canonical;
+    if (stored?.isActive && changed) {
+      req.reject(400, 'CONFIG_SAVE_ACTIVE');
+      return;
+    }
+
+    const validation = await this.validateConfigurationData(parsedConfigData);
+    if (!validation.valid) {
+      req.reject(400, 'CONFIG_SAVE_INVALID', [validation.errors.join('; ')]);
+      return;
+    }
+
+    data.checksum = this.generateChecksum(canonical);
+    Object.assign(data, this.validationColumns(validation, new Date().toISOString()));
+    if (changed) {
+      documentChanged.add(req);
+    }
+  }
+
+  /** A stored document in the form its checksum is taken of; text that is not JSON as it is. */
+  private canonicalDocument(configData: unknown): unknown {
+    if (typeof configData !== 'string') {
+      return JSON.stringify(configData);
+    }
+    try {
+      return JSON.stringify(JSON.parse(configData));
+    } catch (error) {
+      return configData;
+    }
+  }
+
+  /**
+   * The columns a validation result is stored in: errors and warnings as JSON arrays of strings,
+   * or null when there are none.
+   */
+  private validationColumns(validation: ValidationResult, now: string) {
+    return {
+      isValid: validation.valid,
+      validationErrors: validation.errors.length > 0 ? JSON.stringify(validation.errors) : null,
+      validationWarnings: validation.warnings.length > 0 ? JSON.stringify(validation.warnings) : null,
+      lastValidated: now
+    };
+  }
+
+  /**
+   * After an UPDATE: an active configuration whose document changed is pushed to the gateway.
+   * Via OData that cannot happen (the before handler refuses changing the active document and
+   * isActive), so this serves service-level updates only. The publish is given up after
+   * PUBLISH_TIMEOUT_MS like activation's, so a dead Valkey cannot hold the request's transaction.
    */
   private async onConfigurationUpdated(results: any, req: any): Promise<void> {
-    if (results && results.length > 0) {
-      const config = results[0];
-      if (config.isActive) {
-        await this.publishConfigurationEvent({
-          eventType: 'config-changed',
-          configId: config.ID,
-          configName: config.name,
-          version: config.version,
-          checksum: config.checksum,
-          timestamp: new Date().toISOString()
-        });
-      }
+    if (!req || !documentChanged.has(req)) {
+      return;
+    }
+    // An OData PATCH hands a single object here (never an array), holding only what was sent:
+    // the row's isActive, name and version are read back within the request.
+    const updated = Array.isArray(results) ? results[0] : results;
+    const ID = updated?.ID ?? req.data?.ID;
+    if (!ID) {
+      return;
+    }
+    const config = await cds.run(
+      cds.ql.SELECT.one.from('sap.llm.gateway.admin.ApiConfigurations').columns('ID', 'name', 'version', 'checksum', 'isActive').where({ ID })
+    );
+    if (!config?.isActive) {
+      return;
+    }
+    try {
+      await this.publishWithTimeout({
+        eventType: 'config-changed',
+        configId: config.ID,
+        configName: config.name,
+        version: config.version,
+        checksum: config.checksum,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      // The update is stored; a failed publish must not fail (and roll back) the request.
+      logger.warn('ConfigService', 'Event publishing failed after a configuration update', { error: (error as Error).message });
+    }
+  }
+
+  /** publishConfigurationEvent, rejected with 'Event publish timeout' after PUBLISH_TIMEOUT_MS. */
+  private async publishWithTimeout(event: ConfigChangeEvent): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.publishConfigurationEvent(event),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Event publish timeout')), PUBLISH_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -754,6 +943,7 @@ class ConfigurationService {
             }
           }
         }
+        warnings.push(...await unknownConnectionTargets(apiConfig.providers));
       }
 
       // Validate SIEM sink names are distinct

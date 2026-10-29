@@ -34,15 +34,28 @@ try {
   const overrides = {};
   let pinnedDirect = 0;
   let pinnedTransitive = 0;
+  // A key may carry a major selector ("uuid@11", "@scope/lib@2"). When it targets the major a direct
+  // dependency is declared at, it pins that dependency exactly like a bare-name key - npm rejects a
+  // forwarded "uuid@11" against a direct "uuid": "^11.1.0" (EOVERRIDE). Other majors pass through.
+  const majorOf = (range) => { const m = String(range).match(/\d+/); return m ? m[0] : null; };
+  const directName = (key, deps) => {
+    const at = key.indexOf('@', 1);
+    const name = at === -1 ? key : key.slice(0, at);
+    if (!Object.prototype.hasOwnProperty.call(deps, name)) return null;
+    if (at !== -1 && majorOf(key.slice(at + 1)) !== majorOf(deps[name])) return null;
+    return name;
+  };
   for (const [key, version] of Object.entries(rootOverrides)) {
     if (key.includes('>')) continue;
-    if (Object.prototype.hasOwnProperty.call(dependencies, key)) {
-      dependencies[key] = version;
-      overrides[key] = `$${key}`;
+    const direct = directName(key, dependencies);
+    const optional = direct ? null : directName(key, optionalDependencies);
+    if (direct) {
+      dependencies[direct] = version;
+      overrides[direct] = `$${direct}`;
       pinnedDirect++;
-    } else if (Object.prototype.hasOwnProperty.call(optionalDependencies, key)) {
-      optionalDependencies[key] = version;
-      overrides[key] = `$${key}`;
+    } else if (optional) {
+      optionalDependencies[optional] = version;
+      overrides[optional] = `$${optional}`;
       pinnedDirect++;
     } else {
       overrides[key] = version;

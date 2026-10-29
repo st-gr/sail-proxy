@@ -1,0 +1,265 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.connections",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": [
+                "",
+                "en",
+                "de",
+                "es",
+                "fr",
+                "it",
+                "nl",
+                "pt"
+            ],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "{{appTitle}}",
+        "description": "{{appDescription}}",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {},
+                "sap.ui.unified": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleName": "admin.connections.i18n.i18n",
+                    "supportedLocales": [
+                        "",
+                        "en",
+                        "de",
+                        "es",
+                        "fr",
+                        "it",
+                        "nl",
+                        "pt"
+                    ],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "resources": {
+            "css": [
+                {
+                    "uri": "css/style.css"
+                }
+            ]
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "ConnectionsList",
+                    "target": "ConnectionsList"
+                },
+                {
+                    "pattern": "ProviderConnections({key}):?query:",
+                    "name": "ConnectionsObjectPage",
+                    "target": "ConnectionsObjectPage"
+                }
+            ],
+            "targets": {
+                "ConnectionsList": {
+                    "type": "Component",
+                    "id": "ConnectionsList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ProviderConnections",
+                            "entitySet": "ProviderConnections",
+                            "enhanceI18n": "i18n/i18n.properties",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None",
+                                        "selectionMode": "Multi"
+                                    },
+                                    "columns": {
+                                        "CredentialColumn": {
+                                            "header": "{{credentialColumn}}",
+                                            "template": "admin.connections.ext.fragment.CredentialCell",
+                                            "importance": "Medium",
+                                            "properties": ["credentialHint"],
+                                            "position": {
+                                                "anchor": "DataField::lastTestResult",
+                                                "placement": "Before"
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "ProviderConnections": {
+                                    "detail": {
+                                        "route": "ConnectionsObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "ConnectionsObjectPage": {
+                    "type": "Component",
+                    "id": "ConnectionsObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/ProviderConnections",
+                            "enhanceI18n": "i18n/i18n.properties",
+                            "editableHeaderContent": false,
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "TestConnection": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onTestConnection",
+                                            "text": "{{testConnection}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true }",
+                                            "requiresSelection": false
+                                        },
+                                        "SetCredential": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onSetCredential",
+                                            "text": "{{setCredential}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} !== 'sap-ai-core' }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} !== 'sap-ai-core' }",
+                                            "requiresSelection": false
+                                        },
+                                        "SetServiceKey": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onSetServiceKey",
+                                            "text": "{{setServiceKey}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' }",
+                                            "requiresSelection": false
+                                        },
+                                        "AddModel": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onAddModel",
+                                            "text": "{{addModel}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} !== 'sap-ai-core' }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} !== 'sap-ai-core' }",
+                                            "requiresSelection": false
+                                        },
+                                        "Activate": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onActivate",
+                                            "text": "{{activate}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' && ${path: 'isActive', targetType: 'any'} !== true }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' && ${path: 'isActive', targetType: 'any'} !== true }",
+                                            "requiresSelection": false
+                                        },
+                                        "Deactivate": {
+                                            "press": "admin.connections.ext.controller.ConnectionActions.onDeactivate",
+                                            "text": "{{deactivate}}",
+                                            "visible": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' && ${path: 'isActive', targetType: 'any'} === true }",
+                                            "enabled": "{= ${path: 'IsActiveEntity', targetType: 'any'} === true && ${path: 'providerType', targetType: 'any'} === 'sap-ai-core' && ${path: 'isActive', targetType: 'any'} === true }",
+                                            "requiresSelection": false
+                                        }
+                                    }
+                                }
+                            },
+                            "controlConfiguration": {
+                                "models/@com.sap.vocabularies.UI.v1.LineItem#ForConnection": {
+                                    "tableSettings": {
+                                        "selectionMode": "Multi",
+                                        "p13nMode": [],
+                                        "personalization": false,
+                                        "enableAddCardToInsights": false
+                                    },
+                                    "actions": {
+                                        "DataFieldForAction::AdminService.setListPrice": {
+                                            "enableOnSelect": "single"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

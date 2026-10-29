@@ -66,10 +66,13 @@
  *   exclusive but caches BOTH copies (0 -> 34181, ~2x the write cost), which
  *   is why de-duplication and not both-marking is the fix.
  *
- * So: both SAP orchestration endpoints report EXCLUSIVE usage, and the
- * bridge's consumer adds rather than subtracts — see `recordOrchestrationUsage`
- * in `responsesController.ts`, which folds this endpoint's raw envelope with
- * `foldExclusiveUsage`. A caller holding a usage object from somewhere else
+ * So: both SAP orchestration endpoints report EXCLUSIVE usage for Claude (and
+ * Amazon Nova reports EXCLUSIVE too, measured 2026-09-30), and the bridge's
+ * consumer adds rather than subtracts for them. OpenAI-family and Gemini models
+ * report INCLUSIVE usage (probe of 2026-09-30), other families are assumed to —
+ * see `recordOrchestrationUsage` in `responsesController.ts`, which
+ * folds this endpoint's raw envelope with `foldOrchestrationUsageFor`
+ * (utils/usageFolding.ts). A caller holding a usage object from somewhere else
  * still has to know which regime produced it; the point of the era split above
  * is that a regime can be an artifact of the payload, not just of the endpoint.
  *
@@ -142,12 +145,15 @@ export function applyCacheBreakpoints(
  *
  * Whether this number is "additional to prompt_tokens" or "already inside
  * prompt_tokens" is a property of the payload as much as of the endpoint —
- * see this file's header for the era split. Both SAP orchestration endpoints
- * now measure EXCLUSIVE (additional to prompt_tokens) on the de-duplicated
- * payload this module builds breakpoints for. This function only extracts the
- * raw count; it does not know or assume which regime its caller is in, and a
- * caller holding a usage object from anywhere else still has to establish that
- * for itself rather than inheriting this file's answer.
+ * see this file's header for the era split — and of the model family behind
+ * orchestration. For Claude, both SAP orchestration endpoints measure EXCLUSIVE
+ * (additional to prompt_tokens) on the de-duplicated payload this module builds
+ * breakpoints for, and Amazon Nova measures EXCLUSIVE too; OpenAI-family and
+ * Gemini models measure INCLUSIVE, and other families are assumed to
+ * (`cacheRegimeFor` in utils/usageFolding.ts). This function
+ * only extracts the raw count; it does not know or assume which regime its
+ * caller is in, and a caller holding a usage object from anywhere else still
+ * has to establish that for itself rather than inheriting this file's answer.
  *
  * Reports only the cache-HIT counter (prompt_tokens_details.cached_tokens).
  * See this file's header for why the sibling cache-WRITE fields

@@ -10,23 +10,84 @@ import FlexibleColumnLayoutControl from "sap/f/FlexibleColumnLayout";
 import Filter from "sap/ui/model/Filter";
 import FilterOperator from "sap/ui/model/FilterOperator";
 import Control from "sap/ui/core/Control";
+import type Context from "sap/ui/model/Context";
+import type ODataListBinding from "sap/ui/model/odata/v4/ODataListBinding";
+import type ODataContext from "sap/ui/model/odata/v4/Context";
 import { SegmentedButton$SelectionChangeEvent } from "sap/m/SegmentedButton";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
+import formatMessage from "sap/base/strings/formatMessage";
+import Localization from "sap/base/i18n/Localization";
 import ConfigForm from "./ConfigForm";
+import { storedValidationMessages } from "../model/storedValidation";
+import { LatestRequest } from "../model/latestRequest";
+import { canSave, selectionState, type ConfigRow, type SelectionState } from "../model/selectionState";
+import { activeState, type DetailEdits } from "../model/activeState";
+
+/** The ApiConfigurations row fields this controller reads from a table item's context. */
+interface ApiConfigurationRow extends ConfigRow {
+    name: string;
+    version: string;
+}
+
+/**
+ * ManagedObject#setBindingContext documents null as "hide the parent context"; its typings
+ * accept only a Context.
+ */
+const NO_BINDING_CONTEXT = null as unknown as Context;
 
 /**
  * Main controller for Configuration Management
  */
 export default class MainController extends Controller {
 
+    /**
+     * The open configuration: the row last pressed, shown in the detail column. Ticking rows never
+     * changes it - the ticked rows are the toolbar's (see model/selectionState.ts).
+     */
     private _selectedConfig: any = null;
+    /** The configuration whose document the JSON editor holds; null until its read has answered. */
+    private _editorConfigId: string | null = null;
     private _originalEditorValue: string = "";
     private _isEditorDirty: boolean = false;
-    private _programmaticEditor: CodeEditor | null = null;
     private _searchTimeout: number | null = null;
     private _filterTimeout: number | null = null;
     private _dialogResizeObserver: ResizeObserver | null = null;
     private _resizeThrottleTimeout: number | null = null;
     private _configForm: ConfigForm | null = null;
+    /** The detail read of the last pressed configuration; an earlier press's late answer is dropped. */
+    private _detailLoad = new LatestRequest();
+    /** The `_detailLoad` token whose read has answered: the open configuration the detail shows. */
+    private _shownLoad: number | null = null;
+
+    /**
+     * A text from the app bundle, with {0}-style arguments. Synchronous: the texts it serves are
+     * shown on user actions, after the asynchronously loaded bundle is in place.
+     */
+    private text(key: string, args?: unknown[]): string {
+        const model = this.getOwnerComponent()?.getModel("i18n") as ResourceModel | undefined;
+        const pattern = (model?.getProperty(key) as string | null | undefined) ?? key;
+        return args ? formatMessage(pattern, args) : pattern;
+    }
+
+    /**
+     * Names the detail title's info block and validation list for screen readers, with the headings
+     * the panels they replaced carried ("Configuration Information", "Validation Results"). sap.m.VBox
+     * has no ariaLabelledBy, so each rendering of either box gets role="group" and an aria-label;
+     * a delegate, because a re-render (visibility toggles on every selection) writes a fresh element.
+     */
+    private _labelDetailGroups(): void {
+        const groups: Array<[string, string]> = [["detailInfo", "configInfo"], ["detailValidation", "validationResults"]];
+        for (const [id, key] of groups) {
+            const box = this.byId(id);
+            box?.addEventDelegate({
+                onAfterRendering: (): void => {
+                    const dom = box.getDomRef();
+                    dom?.setAttribute("role", "group");
+                    dom?.setAttribute("aria-label", this.text(key));
+                }
+            });
+        }
+    }
 
     /**
      * Helper: wait until a control has rendered once
@@ -84,14 +145,13 @@ export default class MainController extends Controller {
         // Initialize view model data with proper defaults to prevent undefined errors
         oVM.setData({
             ...oVM.getData(),
-            selectedConfigId: null,
-            selectedConfigIds: [], // Initialize as empty array to prevent .length errors
-            selectedConfigCanActivate: false,
-            selectedConfigCanDelete: false,
+            selectedConfigId: null, // The open configuration (the pressed row), not the ticked ones
+            toolbar: { canDelete: false, canDuplicate: false, canActivate: false }, // The ticked rows' actions
             selectedConfigIsActive: false, // Track if selected config is active (for read-only editor)
             selectedConfigName: "", // Track selected config name for title
             selectedConfigVersion: "", // Track selected config version for title
             isEditMode: false, // Track if editor is in edit mode
+            selectedValidationMessages: [], // The selected config's stored validation results (strips in the detail title)
             filters: {
                 search: "",
                 status: "",
@@ -105,7 +165,7 @@ export default class MainController extends Controller {
                 configData: "{\n  \n}"
             },
             dialogMode: "create", // Track if dialog is in "create" or "duplicate" mode
-            dialogTitle: "Create New Configuration",
+            dialogTitle: this.text("createConfigTitle"),
             rollbackReason: "", // For rollback dialog
             // Form view (see controller/ConfigForm.ts). Defaults keep the detail column exactly
             // as it is today: JSON editor, no form, toggle disabled until the gate says otherwise.
@@ -124,6 +184,7 @@ export default class MainController extends Controller {
 
         this._configForm = new ConfigForm(this);
         this._configForm.init();
+        this._labelDetailGroups();
 
         // Add FCL state change listener for debugging
         const fcl = this.byId("fcl") as FlexibleColumnLayoutControl;
@@ -169,47 +230,58 @@ export default class MainController extends Controller {
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
             }
-            MessageToast.show("Unable to refresh configurations");
+            MessageToast.show(this.text("unableToRefresh"));
         }
     }
 
     /**
-     * Handle table selection change
+     * The ticked rows changed: only the toolbar follows. The open configuration stays as it is.
      */
-    public onSelectionChange(event: any): void {
-        const table = event.getSource() as Table;
-        const selectedItems = table.getSelectedItems();
+    public onSelectionChange(): void {
+        this._updateToolbar();
+    }
+
+    /**
+     * The list's rows were (re)loaded - after Activate, Rollback, Save or Refresh a ticked row's
+     * state can have changed under its tick, so the toolbar is judged again.
+     */
+    public onConfigListUpdateFinished(): void {
+        this._updateToolbar();
+        this._followOpenRowActiveState();
+    }
+
+    /** The ticked rows, as the table's checkboxes show them. */
+    private _tickedRows(): ApiConfigurationRow[] {
+        const table = this.byId("configTable") as Table;
+        return table.getSelectedItems()
+            .map((item) => item.getBindingContext()?.getObject() as ApiConfigurationRow | undefined)
+            .filter((row): row is ApiConfigurationRow => !!row?.ID);
+    }
+
+    /**
+     * The open configuration's row state, or null when the detail is closed - from the detail
+     * page's live row context, never the copy taken at load (`_selectedConfig`).
+     */
+    private _openRow(): ConfigRow | null {
+        const open = this._openContextRow();
+        return open ? { ID: open.ID, isActive: open.isActive === true, isValid: open.isValid } : null;
+    }
+
+    /** What each list action acts on right now (model/selectionState.ts). */
+    private _selectionState(): SelectionState {
+        const ticked = this._tickedRows();
+        return selectionState(ticked, this._openRow());
+    }
+
+    /** Enables the toolbar's Delete, Duplicate and Activate from the ticked rows. */
+    private _updateToolbar(): void {
         const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
-        
-        if (!viewModel) return;
-
-        const selectedConfigIds = selectedItems.map((item: any) => {
-            const context = item.getBindingContext();
-            return context?.getObject()?.ID;
-        }).filter(Boolean);
-
-        viewModel.setProperty("/selectedConfigIds", selectedConfigIds);
-
-        // Update action button states
-        if (selectedConfigIds.length === 1) {
-            const selectedItem = selectedItems[0];
-            const configData = selectedItem.getBindingContext()?.getObject();
-            if (configData) {
-                viewModel.setProperty("/selectedConfigId", configData.ID);
-                viewModel.setProperty("/selectedConfigCanActivate", !configData.isActive && configData.isValid);
-                viewModel.setProperty("/selectedConfigCanDelete", !configData.isActive);
-                this._selectedConfig = configData;
-            }
-        } else {
-            viewModel.setProperty("/selectedConfigId", null);
-            viewModel.setProperty("/selectedConfigCanActivate", false);
-            viewModel.setProperty("/selectedConfigCanDelete", selectedConfigIds.length > 0);
-            viewModel.setProperty("/selectedConfigIsActive", false);
-            this._selectedConfig = null;
-            // Nothing is selected any more, so the form view has nothing to save into and its
-            // toggle is hidden with the selection. Let it settle instead of stranding an edit.
-            this._configForm?.onSelectionCleared();
-        }
+        const state = this._selectionState();
+        viewModel?.setProperty("/toolbar", {
+            canDelete: state.canDelete,
+            canDuplicate: state.duplicateId !== null,
+            canActivate: state.activateId !== null
+        });
     }
 
     /**
@@ -254,6 +326,9 @@ export default class MainController extends Controller {
         
         if (configData) {
             try {
+                // A later press supersedes this one, however their reads are answered.
+                const loadToken = this._detailLoad.begin();
+
                 // 1) Resolve the SINGLETON viewModel from the component (never per-view)
                 const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
                 if (!viewModel) {
@@ -264,16 +339,16 @@ export default class MainController extends Controller {
                 
                 // 2) Optimistically set UI state *first* so visibility gates open
                 viewModel.setProperty("/selectedConfigId", configData.ID);
-                viewModel.setProperty("/selectedConfigIds", [configData.ID]);
-                viewModel.setProperty("/selectedConfigCanActivate", !configData.isActive && configData.isValid);
-                viewModel.setProperty("/selectedConfigCanDelete", !configData.isActive);
                 viewModel.setProperty("/selectedConfigName", configData.name || "");
                 viewModel.setProperty("/selectedConfigVersion", configData.version || "");
                 viewModel.setProperty("/isEditMode", false); // Always start in view mode
-                viewModel.checkUpdate(true); // Force binding update
+                viewModel.setProperty("/selectedValidationMessages", []); // the previous config's results until this one's load
+                viewModel.updateBindings(true); // Force binding update
                 
-                // Store selected config
+                // Store selected config; the editor holds the previous one's document until this
+                // one's read answers, so it is nobody's to duplicate from until then.
                 this._selectedConfig = configData;
+                this._editorConfigId = null;
                 
                 // 3) Bind the detail page to the selected row's context (fast path)
                 const detailPage = this.byId("detailDynamicPage");
@@ -295,9 +370,13 @@ export default class MainController extends Controller {
                     await this._afterRenderingOnce(detailPage as Control);
                     console.log("Detail page rendered");
                 }
+                if (!this._detailLoad.isCurrent(loadToken)) {
+                    return; // another configuration was pressed (or the column closed) meanwhile
+                }
                 
-                // 6) Ensure editor is rendered and handle fallbacks
-                await this._handleEditorWithRenderTiming(configData.ID);
+                // 6) Load the configuration into the JSON editor. The editor takes its value with
+                // or without a DOM, so this does not depend on the form view having shown it yet.
+                this._loadConfigurationDetails(configData.ID, loadToken);
                 
                 // 7) Reset the form view for the newly selected configuration. Nothing else
                 // clears it, and it must never be able to break opening the details, so it
@@ -306,596 +385,127 @@ export default class MainController extends Controller {
 
             } catch (error) {
                 console.error("Error in onItemPress:", error);
-                // Fallback to old approach if timing fails
-                this._ensureDetailContentVisible();
-                this._createDetailContentIfNeeded();
-                this._loadConfigurationDetails(configData.ID);
             }
         }
     }
 
     /**
-     * Handle row press to show details (legacy method, keeping for compatibility)
+     * Load the selected configuration into the JSON editor (async data loading).
+     *
+     * The editor is the one declared in the view. Its value is a plain control property that it
+     * hands to its Ace instance whenever it renders, so it can be set while the editor has no DOM -
+     * hidden behind the form view on a re-selection, or not yet rendered on the first open - and
+     * shows once the editor is on screen. Nothing here waits for rendering.
+     *
+     * `token` is the press's `_detailLoad` token: an answer that arrives after a later press (or
+     * after the column closed) is dropped, so the editor never ends on a configuration that is no
+     * longer the selected one.
      */
-    public onRowPress(event: any): void {
-        const item = event.getSource();
-        const bindingContext = item.getBindingContext();
-        
-        if (!bindingContext) {
-            console.error("No binding context found for row");
-            return;
-        }
-        
-        const configData = bindingContext.getObject();
-        console.log("Row pressed, config data:", configData);
-        
-        if (configData) {
-            // Update selection in view model
-            const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
-            if (viewModel) {
-                viewModel.setProperty("/selectedConfigId", configData.ID);
-                viewModel.setProperty("/selectedConfigIds", [configData.ID]);
-                viewModel.setProperty("/selectedConfigCanActivate", !configData.isActive && configData.isValid);
-                viewModel.setProperty("/selectedConfigCanDelete", !configData.isActive);
-            }
-            
-            // Store selected config
-            this._selectedConfig = configData;
-            
-            // Show detail view
-            this._showConfigurationDetail();
-        }
-    }
-
-    /**
-     * Optimize editor height based on available viewport space
-     */
-    private _optimizeEditorHeight(editor: CodeEditor): void {
-        if (!editor || !editor.getDomRef()) return;
-        
-        try {
-            const editorElement = editor.getDomRef();
-            const rect = editorElement.getBoundingClientRect();
-            const viewportHeight = window.innerHeight;
-            
-            // Calculate optimal height: available space minus buffer
-            const availableHeight = viewportHeight - rect.top - 120; // 120px buffer for footer/padding
-            const optimalHeight = Math.min(Math.max(availableHeight, 300), 800); // Between 300-800px
-            
-            console.log(`🎯 Height optimization: viewport=${viewportHeight}px, available=${Math.round(availableHeight)}px, optimal=${Math.round(optimalHeight)}px`);
-            
-            if (optimalHeight > rect.height + 50) { // Only adjust if meaningful improvement
-                editor.setHeight(Math.round(optimalHeight) + "px");
-                console.log(`✅ Editor height optimized to ${Math.round(optimalHeight)}px`);
-            } else {
-                console.log(`ℹ️ Current height (${Math.round(rect.height)}px) is already optimal`);
-            }
-        } catch (error) {
-            console.warn("Error optimizing editor height:", error);
-        }
-    }
-
-    /**
-     * Handle editor with proper render timing coordination
-     */
-    private async _handleEditorWithRenderTiming(configId: string): Promise<void> {
-        console.log("Handling editor with render timing...");
-        
-        // Super fast path: If we already have a working programmatic editor, use it immediately!
-        if (this._programmaticEditor && 
-            this._programmaticEditor.getDomRef && 
-            this._programmaticEditor.getValue) {
-            console.log("⚡ Using existing programmatic editor - skipping all setup!");
-            this._loadConfigurationDetails(configId);
-            return;
-        }
-        
-        // Try original editor (but don't wait too long)
-        let editor = this.byId("jsonEditor") as CodeEditor;
-        
-        if (editor) {
-            console.log("Found original JSON editor, quick render check...");
-            console.log("Editor current DOM state:", editor.getDomRef() ? "has DOM" : "no DOM");
-            
-            try {
-                // Much shorter timeout for original editor (500ms instead of 2000ms)
-                const renderPromise = this._afterRenderingOnce(editor as Control);
-                const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error("Quick render timeout")), 500)
-                );
-                
-                await Promise.race([renderPromise, timeoutPromise]);
-                console.log("⚡ Original editor rendered quickly!");
-                
-                // Load data immediately
-                this._loadConfigurationDetails(configId);
-                return;
-                
-            } catch (error) {
-                console.log("Original editor not ready quickly, creating programmatic...");
-            }
-        }
-        
-        // Fast fallback: create programmatic editor
-        console.log("Creating programmatic editor for fast loading...");
-        this._ensureDetailContentVisible();
-        await this._createDetailContentIfNeeded();
-        
-        // Load data immediately after creation
-        console.log("⚡ Loading data with programmatic editor...");
-        this._loadConfigurationDetails(configId);
-    }
-
-    /**
-     * Programmatically ensure the detail content VBox is visible
-     * Simple approach: Just force all VBoxes in detail page visible
-     */
-    private _ensureDetailContentVisible(): void {
-        console.log("Unconditionally showing detail content VBox...");
-        
-        try {
-            const detailPage = this.byId("detailDynamicPage");
-            if (!detailPage) {
-                console.error("Detail page not found");
-                return;
-            }
-            
-            // Simple approach: Find ALL VBox controls and make them visible
-            const allControls = detailPage.findAggregatedObjects(true);
-            let vboxCount = 0;
-            
-            for (const control of allControls) {
-                if (control.getMetadata && 
-                    control.getMetadata().getName() === "sap.m.VBox") {
-                    
-                    console.log(`Found VBox ${vboxCount}: ${control.getId()} - currently visible: ${control.getVisible()}`);
-                    
-                    // Unconditionally set visible
-                    control.setVisible(true);
-                    vboxCount++;
-                    
-                    console.log(`VBox ${vboxCount-1} set to visible`);
-                }
-            }
-            
-            console.log(`Total VBoxes processed: ${vboxCount}`);
-            
-            // Also force visibility on the detail page content itself
-            const content = detailPage.getContent();
-            if (content && content.length > 0) {
-                content.forEach((item: any, i: number) => {
-                    if (item.setVisible) {
-                        console.log(`Setting content item ${i} visible`);
-                        item.setVisible(true);
-                    }
-                });
-            }
-            
-        } catch (error) {
-            console.error("Error ensuring detail content visibility:", error);
-        }
-    }
-
-    /**
-     * Create detail content programmatically if binding failed
-     * This bypasses the binding system entirely
-     */
-    private async _createDetailContentIfNeeded(): Promise<void> {
-        console.log("Checking if detail content needs to be created programmatically...");
-        
-        try {
-            // If we already have a working programmatic editor, reuse it!
-            if (this._programmaticEditor && 
-                this._programmaticEditor.getDomRef && 
-                this._programmaticEditor.getValue) {
-                console.log("⚡ Reusing existing programmatic editor - no creation needed!");
-                return;
-            }
-            
-            const detailPage = this.byId("detailDynamicPage");
-            if (!detailPage) {
-                console.error("Detail page not found");
-                return;
-            }
-            
-            // Clean up any existing programmatic editor first to avoid duplicate IDs
-            this._cleanupProgrammaticEditor();
-            
-            // Check if our target VBox exists (the one with JSON editor)
-            const content = detailPage.getContent();
-            let hasMainContentVBox = false;
-            
-            if (content && content.length > 0) {
-                for (const item of content) {
-                    if (item.hasStyleClass && item.hasStyleClass("sapUiMediumMargin")) {
-                        hasMainContentVBox = true;
-                        console.log("Main content VBox already exists");
-                        break;
-                    }
-                }
-            }
-            
-            if (!hasMainContentVBox) {
-                console.log("Main content VBox missing - creating programmatically...");
-                await this._createDetailContentProgrammatically();
-            } else {
-                console.log("Main content VBox exists - no need to create");
-            }
-            
-        } catch (error) {
-            console.error("Error checking detail content:", error);
-        }
-    }
-
-    /**
-     * Clean up existing programmatic editor to avoid duplicate IDs
-     */
-    private _cleanupProgrammaticEditor(): void {
-        if (this._programmaticEditor) {
-            console.log("🧹 Cleaning up existing programmatic editor");
-            try {
-                // Destroy the UI5 control properly
-                this._programmaticEditor.destroy();
-            } catch (error) {
-                console.warn("Error destroying programmatic editor:", error);
-            }
-            this._programmaticEditor = null;
-        }
-    }
-
-    /**
-     * Programmatically create the detail content VBox and JSON editor
-     */
-    private async _createDetailContentProgrammatically(): Promise<void> {
-        console.log("Creating detail content programmatically...");
-        
-        try {
-            const detailPage = this.byId("detailDynamicPage");
-            if (!detailPage) return;
-            
-            // Import required UI5 controls
-            const VBox = sap.ui.require("sap/m/VBox");
-            const Panel = sap.ui.require("sap/m/Panel");
-            const CodeEditor = sap.ui.require("sap/ui/codeeditor/CodeEditor");
-            const Text = sap.ui.require("sap/m/Text");
-            
-            if (!VBox || !Panel || !CodeEditor || !Text) {
-                console.error("Required UI5 controls not available");
-                return;
-            }
-            
-            // Create the programmatic JSON editor and store direct reference
-            // Check if config is active to determine editable state
-            const isConfigActive = this._selectedConfig?.isActive || false;
-            const programmaticEditor = new CodeEditor("programmaticJsonEditor", {
-                type: "json",
-                height: "70vh", // Optimized height for good balance
-                width: "100%", 
-                editable: !isConfigActive // Read-only if active
-                // No value binding - we'll set it programmatically to avoid Raw type
-            });
-            
-            console.log(`🔒 Programmatic editor created with editable=${!isConfigActive} (config active: ${isConfigActive})`);
-            
-            // Store direct reference for ultra-fast access
-            this._programmaticEditor = programmaticEditor;
-            console.log("🚀 Stored direct reference to programmatic editor");
-            
-            // Create main content VBox with optimized sizing
-            const mainVBox = new VBox({
-                visible: true,
-                items: [
-                    new Panel({
-                        headerText: "Configuration Data (JSON)",
-                        expandable: true,
-                        expanded: true,
-                        content: [programmaticEditor]
-                    })
-                ]
-            });
-            
-            // Add optimized CSS classes for better width utilization
-            mainVBox.addStyleClass("sapUiSmallMargin"); // Reduced from Medium to Small margin
-            
-            // Make the panel use full width
-            const panel = mainVBox.getItems()[0]; // Now first item since we removed the Text
-            panel.addStyleClass("sapUiNoContentPadding"); // Remove panel content padding
-            
-            console.log("Created main VBox with JSON editor");
-            
-            // Add to existing DynamicPage content structure instead of replacing it
-            console.log("Adding programmatic content to existing structure...");
-            console.log("Detail page type:", detailPage.getMetadata().getName());
-            
-            const existingContent = detailPage.getContent();
-            console.log("Existing content:", existingContent);
-            
-            if (existingContent && existingContent.length > 0) {
-                // Find the main VBox in existing content (the one with selectedConfigId visibility)
-                const existingVBox = existingContent[0]; // Should be the main VBox
-                console.log("Found existing VBox:", existingVBox.getMetadata().getName());
-                
-                if (existingVBox && existingVBox.addItem) {
-                    console.log("Adding programmatic content to existing VBox...");
-                    existingVBox.addItem(mainVBox.getItems()[1]); // Add just the Panel with JSON editor
-                    console.log("✓ Added programmatic Panel to existing VBox");
-                } else {
-                    console.log("Existing VBox doesn't support addItem, trying alternative...");
-                    // Get existing VBox items and add our content
-                    const existingItems = existingVBox.getItems ? existingVBox.getItems() : [];
-                    console.log("Existing VBox has", existingItems.length, "items");
-                    
-                    if (existingVBox.insertItem) {
-                        existingVBox.insertItem(mainVBox.getItems()[1], existingItems.length);
-                        console.log("✓ Inserted programmatic Panel into existing VBox");
-                    }
-                }
-            } else {
-                console.log("No existing content found, using setContent as fallback");
-                detailPage.setContent(mainVBox);
-            }
-            
-            // Verify content was added
-            const finalContent = detailPage.getContent();
-            if (finalContent && finalContent.length > 0) {
-                const mainVBox = finalContent[0];
-                const items = mainVBox.getItems ? mainVBox.getItems() : [];
-                console.log("Final VBox items count:", items.length);
-            }
-            
-            console.log("Added main VBox to detail page");
-            
-            // Force immediate rendering of the main VBox and its contents
-            console.log("Forcing immediate render of programmatic content...");
-            mainVBox.rerender();
-            
-            // Force UI5 to apply changes immediately
-            sap.ui.getCore().applyChanges();
-            
-            // Force rendering and look for the programmatic editor
-            sap.ui.getCore().applyChanges();
-            
-            // Wait a moment for the structure to settle, then look for the editor
-            setTimeout(async () => {
-                // First try byId approach
-                let progEditor = this.byId("programmaticJsonEditor") as CodeEditor;
-                
-                if (!progEditor) {
-                    console.log("byId failed, searching in all controls...");
-                    // Find the editor by searching all controls
-                    const allControls = detailPage.findAggregatedObjects(true);
-                    console.log("All controls in detail page:", allControls.map(c => c.getId()));
-                    
-                    progEditor = allControls.find(c => c.getId() === "programmaticJsonEditor") as CodeEditor;
-                    if (!progEditor) {
-                        // Try finding by ID ending
-                        progEditor = allControls.find(c => c.getId().endsWith("programmaticJsonEditor")) as CodeEditor;
-                    }
-                }
-                
-                if (progEditor) {
-                    console.log("✅ Found programmatic editor via search!");
-                    console.log("Editor ID:", progEditor.getId());
-                    console.log("Editor DOM state:", progEditor.getDomRef() ? "has DOM" : "no DOM");
-                    console.log("Editor visible:", progEditor.getVisible());
-                    
-                    try {
-                        // Add timeout for programmatic editor too
-                        const renderPromise = this._afterRenderingOnce(progEditor as Control);
-                        const timeoutPromise = new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error("Programmatic render timeout")), 1500)
-                        );
-                        
-                        await Promise.race([renderPromise, timeoutPromise]);
-                        console.log("✅ Programmatic editor rendered successfully");
-                        
-                        // Force proper sizing and optimize height
-                        if (progEditor.getDomRef()) {
-                            progEditor.rerender();
-                            console.log("✅ Programmatic editor rerendered for sizing");
-                            
-                            // Optimize height based on available space
-                            setTimeout(() => {
-                                this._optimizeEditorHeight(progEditor);
-                            }, 100);
-                        }
-                    } catch (error) {
-                        console.warn("⚠️ Programmatic editor render failed:", error);
-                        console.log("Programmatic editor DOM after timeout:", progEditor.getDomRef() ? "has DOM" : "no DOM");
-                        
-                        // Force render one more time
-                        console.log("Forcing final render attempt...");
-                        progEditor.invalidate();
-                        sap.ui.getCore().applyChanges();
-                        
-                        // Check again after force
-                        setTimeout(() => {
-                            console.log("Final DOM check:", progEditor.getDomRef() ? "has DOM" : "no DOM");
-                        }, 100);
-                    }
-                } else {
-                    console.error("❌ Could not find programmatic editor even with search!");
-                }
-            }, 100);
-            
-        } catch (error) {
-            console.error("Error creating detail content programmatically:", error);
-        }
-    }
-
-    /**
-     * Load additional configuration details (async data loading)
-     */
-    private _loadConfigurationDetails(configId: string): void {
-        // Load expanded configData for the JSON editor
+    private _loadConfigurationDetails(configId: string, token: number): void {
         const oModel = this.getView()?.getModel() as ODataModel;
         const configContext = oModel.bindContext(`/ApiConfigurations(ID='${configId}')`);
-        
+        const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
+
         configContext.requestObject().then((fullConfig: any) => {
+            if (!this._detailLoad.isCurrent(token)) {
+                return;
+            }
             console.log("Full config loaded:", fullConfig);
             
             // Store the full config for other operations
             this._selectedConfig = fullConfig;
+            this._shownLoad = token;
             
-            // Update view model with active status and metadata for UI binding
-            const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
+            // Update view model with metadata for UI binding
             if (viewModel) {
-                viewModel.setProperty("/selectedConfigIsActive", fullConfig.isActive);
                 viewModel.setProperty("/selectedConfigName", fullConfig.name || "");
                 viewModel.setProperty("/selectedConfigVersion", fullConfig.version || "");
-                console.log(`🔒 Configuration active status: ${fullConfig.isActive ? 'ACTIVE (Read-Only)' : 'INACTIVE (Editable)'}`);
+                viewModel.setProperty("/selectedValidationMessages",
+                    storedValidationMessages(fullConfig.validationErrors, fullConfig.validationWarnings));
             }
-            
-            // Set JSON editor content - try both original and programmatic editor
-            if (fullConfig.configData) {
-                try {
-                    const formatted = JSON.stringify(JSON.parse(fullConfig.configData), null, 2);
-                    
-                    // Check which editor is actually rendered and usable
-                    let editor = this.byId("programmaticJsonEditor") as CodeEditor;
-                    let editorType = "programmatic";
-                    
-                    // If byId fails, search for programmatic editor
-                    if (!editor) {
-                        console.log("byId failed for programmatic editor, searching...");
-                        const detailPage = this.byId("detailDynamicPage");
-                        if (detailPage) {
-                            const allControls = detailPage.findAggregatedObjects(true);
-                            editor = allControls.find(c => 
-                                c.getId() === "programmaticJsonEditor" || 
-                                c.getId().endsWith("programmaticJsonEditor")
-                            ) as CodeEditor;
-                            
-                            if (editor) {
-                                console.log("✅ Found programmatic editor via search for data loading!");
-                                console.log("Editor ID:", editor.getId());
-                            }
-                        }
-                    }
-                    
-                    // If programmatic editor exists and has DOM, use it
-                    if (editor && editor.getDomRef()) {
-                        console.log("Using programmatic editor (has DOM)");
-                    } else if (editor) {
-                        console.log("Programmatic editor exists but no DOM, trying to render...");
-                        editor.rerender();
-                        sap.ui.getCore().applyChanges();
-                    } else {
-                        // Fallback to original editor only if programmatic doesn't exist
-                        editor = this.byId("jsonEditor") as CodeEditor;
-                        editorType = "original";
-                        console.log("No programmatic editor found, trying original");
-                    }
-                    
-                    if (editor) {
-                        console.log(`Using ${editorType} JSON editor:`, !!editor);
-                        console.log("Editor ready state:", editor.getDomRef() ? "rendered" : "not rendered");
-                        
-                        // Use more aggressive approach to set value
-                        const setValue = () => {
-                            if (editor.getDomRef()) {
-                                console.log("Setting JSON editor value (formatted)");
-                                editor.setValue(formatted);
+            // The strip follows at once; the editor stays read-only until it holds this document.
+            this._applyActiveState(fullConfig.isActive === true);
 
-                                // Edit-first: an inactive config is editable at load (no Edit gate);
-                                // an active config stays read-only. Mirror the Form view's condition.
-                                const editable = fullConfig.isActive !== true;
-                                editor.setEditable(editable);
-                                viewModel.setProperty("/isEditMode", editable);
-                                console.log(`🔒 Editor editable at load: ${editable}`);
+            const editor = this._getActiveEditor();
+            if (!editor) {
+                return;
+            }
 
-                                console.log("JSON value set successfully");
-                                
-                                // Set up dirty state tracking (will be activated when edit mode is enabled)
-                                this._setupDirtyStateTracking(editor, formatted);
-                                return true;
-                            }
-                            return false;
-                        };
-                        
-                        // Try immediate set
-                        if (!setValue()) {
-                            console.log("Editor not rendered, trying multiple approaches...");
-                            
-                            // Force render and try again
-                            editor.invalidate();
-                            sap.ui.getCore().applyChanges();
-                            
-                            // Try after short delay
-                            setTimeout(() => {
-                                if (!setValue()) {
-                                    // Force rerender and try once more
-                                    editor.rerender();
-                                    setTimeout(() => {
-                                        if (setValue()) {
-                                            console.log("JSON value set after rerender");
-                                            // Dirty state tracking already set up in setValue()
-                                        } else {
-                                            console.warn("Failed to set JSON value - editor never rendered");
-                                        }
-                                    }, 50);
-                                }
-                            }, 100);
-                        }
-                    } else {
-                        console.warn("No JSON editor found (neither original nor programmatic)");
-                    }
-                } catch (e) {
-                    console.log("JSON parse error, setting raw value");
-                    
-                    let editor = this.byId("jsonEditor") as CodeEditor;
-                    if (!editor) {
-                        editor = this.byId("programmaticJsonEditor") as CodeEditor;
-                    }
-                    
-                    if (editor) {
-                        if (editor.getDomRef()) {
-                            editor.setValue(fullConfig.configData);
-                        } else {
-                            setTimeout(() => {
-                                if (editor.getDomRef()) {
-                                    editor.setValue(fullConfig.configData);
-                                }
-                            }, 100);
-                        }
-                    }
-                }
-            } else {
+            if (!fullConfig.configData) {
                 console.log("No configData field, setting placeholder");
-                
-                let editor = this.byId("jsonEditor") as CodeEditor;
-                if (!editor) {
-                    editor = this.byId("programmaticJsonEditor") as CodeEditor;
-                }
-                
-                if (editor) {
-                    const placeholder = "{\n  \"// Configuration data not available\": true,\n  \"configId\": \"" + configId + "\"\n}";
-                    if (editor.getDomRef()) {
-                        editor.setValue(placeholder);
-                    } else {
-                        setTimeout(() => {
-                            if (editor.getDomRef()) {
-                                editor.setValue(placeholder);
-                            }
-                        }, 100);
-                    }
-                }
+                editor.setValue("{\n  " + JSON.stringify("// " + this.text("jsonEditorConfigUnavailable")) + ": true,\n  \"configId\": \"" + configId + "\"\n}");
+                return;
             }
+
+            let formatted: string;
+            try {
+                formatted = JSON.stringify(JSON.parse(fullConfig.configData), null, 2);
+            } catch (e) {
+                console.log("JSON parse error, setting raw value");
+                editor.setValue(fullConfig.configData);
+                return;
+            }
+
+            console.log("Setting JSON editor value (formatted)");
+            editor.setValue(formatted);
+            this._editorConfigId = configId;
+
+            // Set up dirty state tracking (will be activated when edit mode is enabled)
+            this._setupDirtyStateTracking(editor, formatted);
+
+            // Edit-first: an inactive config is editable at load (no Edit gate); an active one
+            // stays read-only. The editor's editable is bound to /isEditMode.
+            this._applyActiveState(fullConfig.isActive === true);
         }).catch((error: any) => {
             console.error("Error loading full config:", error);
-            const editor = this.byId("jsonEditor") as CodeEditor;
+            if (!this._detailLoad.isCurrent(token)) {
+                return;
+            }
+            this._shownLoad = token;
+            const editor = this._getActiveEditor();
             if (editor) {
-                editor.setValue("{\n  \"// Error loading configuration\": true,\n  \"error\": \"" + error.message + "\"\n}");
+                editor.setValue("{\n  " + JSON.stringify("// " + this.text("jsonEditorLoadError")) + ": true,\n  \"error\": \"" + error.message + "\"\n}");
             }
         });
     }
 
+    /** The open detail's edit state, for model/activeState.ts. */
+    private _detailEdits(): DetailEdits {
+        const openId = this._selectedConfig?.ID ?? null;
+        return {
+            editorLoaded: openId !== null && this._editorConfigId === openId,
+            unsavedEdits: this._hasUnsavedChanges() || this._configForm?.hasUnsavedEdits() === true
+        };
+    }
+
     /**
-     * Show configuration detail in FCL (legacy method - now simplified)
+     * The one writer of the open configuration's read-only state: the strip in both views, the
+     * JSON editor's editability with its Cancel and Save (model/activeState.ts), and the form's
+     * controls. Called when the configuration's document loads and whenever its row's isActive
+     * may have changed (`_followOpenRowActiveState`). Unsaved edits stay where they are.
      */
-    private _showConfigurationDetail(): void {
-        // Legacy method - functionality moved to onItemPress with proper sequence
-        console.log("_showConfigurationDetail called - this should now be handled by onItemPress");
+    private _applyActiveState(isActive: boolean): void {
+        const state = activeState(isActive, this._detailEdits());
+        const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
+        viewModel?.setProperty("/selectedConfigIsActive", state.readOnly);
+        viewModel?.setProperty("/isEditMode", state.editorEditable);
+        this._configForm?.onActiveStateChanged(isActive);
+    }
+
+    /**
+     * After the list has (re)loaded - Activate, Rollback, Save, Refresh - the detail page's row
+     * context carries the open configuration's current isActive; the detail follows it. Not while
+     * a newer press is still loading: that configuration's own load applies its state.
+     */
+    private _followOpenRowActiveState(): void {
+        if (this._shownLoad === null || !this._detailLoad.isCurrent(this._shownLoad)) {
+            return;
+        }
+        const row = this._openContextRow();
+        if (!row || row.ID !== this._selectedConfig?.ID || typeof row.isActive !== "boolean") {
+            return;
+        }
+        this._applyActiveState(row.isActive);
     }
 
     /**
@@ -923,6 +533,18 @@ export default class MainController extends Controller {
             }
         }
         
+        this._resetDetail();
+    }
+
+    /**
+     * Empties the detail column: Close and a Delete that removed the open configuration both end
+     * here, so neither can leave part of the old configuration in the title or the form. The ticked
+     * rows are the toolbar's and stay ticked.
+     */
+    private _resetDetail(): void {
+        // A read still in flight belongs to the configuration being closed.
+        this._detailLoad.cancel();
+
         const fcl = this.byId("fcl") as FlexibleColumnLayoutControl;
         if (fcl) {
             fcl.setLayout("OneColumn");
@@ -931,31 +553,24 @@ export default class MainController extends Controller {
         // Clear binding context from detail page
         const detailPage = this.byId("detailDynamicPage");
         if (detailPage) {
-            detailPage.setBindingContext(null);
+            detailPage.setBindingContext(NO_BINDING_CONTEXT);
         }
 
-        // Clear selection
-        const table = this.byId("configTable") as Table;
-        table.removeSelections();
-        
         const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
         if (viewModel) {
             viewModel.setProperty("/selectedConfigId", null);
-            viewModel.setProperty("/selectedConfigIds", []);
-            viewModel.setProperty("/selectedConfigCanActivate", false);
-            viewModel.setProperty("/selectedConfigCanDelete", false);
             viewModel.setProperty("/selectedConfigIsActive", false);
             viewModel.setProperty("/selectedConfigName", "");
             viewModel.setProperty("/selectedConfigVersion", "");
             viewModel.setProperty("/isEditMode", false);
-            viewModel.checkUpdate(true);
+            viewModel.setProperty("/selectedValidationMessages", []);
+            viewModel.updateBindings(true);
         }
         
         
         this._selectedConfig = null;
-        
-        // Clean up programmatic editor properly
-        this._cleanupProgrammaticEditor();
+        this._editorConfigId = null;
+        this._shownLoad = null;
 
         // Clear the form view along with it
         this._configForm?.reset();
@@ -1097,7 +712,7 @@ export default class MainController extends Controller {
         console.log("🔍 Applying filters:", filters);
         
         const table = this.byId("configTable") as Table;
-        const binding = table.getBinding("items");
+        const binding = table.getBinding("items") as ODataListBinding | undefined;
         
         if (binding) {
             const filterArray: Filter[] = [];
@@ -1155,7 +770,7 @@ export default class MainController extends Controller {
         if (binding) {
             binding.refresh();
         }
-        MessageToast.show("Configurations refreshed");
+        MessageToast.show(this.text("configRefreshed"));
     }
 
     /**
@@ -1168,7 +783,7 @@ export default class MainController extends Controller {
         const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
         if (viewModel) {
             viewModel.setProperty("/dialogMode", "create");
-            viewModel.setProperty("/dialogTitle", "Create New Configuration");
+            viewModel.setProperty("/dialogTitle", this.text("createConfigTitle"));
             viewModel.setProperty("/newConfig", {
                 name: "",
                 version: "",
@@ -1195,7 +810,7 @@ export default class MainController extends Controller {
         
         // Validate required fields
         if (!newConfig?.name || !newConfig?.version || !newConfig?.configData) {
-            MessageBox.error("Please fill in all required fields");
+            MessageBox.error(this.text("fillRequiredFields"));
             return;
         }
 
@@ -1203,7 +818,7 @@ export default class MainController extends Controller {
         try {
             JSON.parse(newConfig.configData);
         } catch (e) {
-            MessageBox.error("Invalid JSON in configuration data");
+            MessageBox.error(this.text("invalidJsonInConfigData"));
             return;
         }
 
@@ -1222,10 +837,9 @@ export default class MainController extends Controller {
             const validationResult = validateBinding.getBoundContext()?.getObject();
             
             if (!validationResult?.valid) {
-                let message = "Configuration validation failed";
-                if (validationResult?.errors?.length) {
-                    message += ":\n" + validationResult.errors.join("\n");
-                }
+                const message = validationResult?.errors?.length
+                    ? this.text("configValidationFailedDetails", [validationResult.errors.join("\n")])
+                    : this.text("configValidationFailed");
                 MessageBox.error(message);
                 if (viewModel) {
                     viewModel.setProperty("/busy", false);
@@ -1246,15 +860,15 @@ export default class MainController extends Controller {
             const createResult = createBinding?.getBoundContext()?.getObject();
             
             if (createResult?.success) {
-                MessageToast.show("Configuration created successfully");
+                MessageToast.show(this.text("configCreated"));
                 this.onCancelCreateConfiguration(); // This will clean up resize handler
                 this._loadConfigurations();
             } else {
-                MessageBox.error("Failed to create configuration: " + (createResult?.errors?.join(", ") || "Unknown error"));
+                MessageBox.error(this.text("createFailed", [createResult?.errors?.join(", ") || this.text("unknownError")]));
             }
         }).catch((error: Error) => {
             if (error.message !== "Validation failed") {
-                MessageBox.error("Error creating configuration: " + error.message);
+                MessageBox.error(this.text("errorCreatingConfigDetail", [error.message]));
             }
         }).finally(() => {
             if (viewModel) {
@@ -1343,16 +957,25 @@ export default class MainController extends Controller {
             console.log("✅ Dirty state reset after save");
         }
     }
-    
+
+    /**
+     * The form confirmed by reading it back that the editor's document is the stored one (Save from
+     * the activation prompt), so the editor has nothing unsaved - also when Save stored nothing
+     * because the edit only changed whitespace.
+     */
+    public markEditorSaved(): void {
+        this._resetDirtyState();
+    }
+
     /**
      * Show confirmation dialog for navigation with unsaved changes
      */
     private _confirmNavigationWithUnsavedChanges(): Promise<boolean> {
         return new Promise((resolve) => {
             MessageBox.confirm(
-                "You have unsaved changes to the configuration.\n\nDo you want to leave without saving? Your changes will be lost.",
+                this.text("unsavedChangesMessage"),
                 {
-                    title: "Unsaved Changes",
+                    title: this.text("unsavedChangesTitle"),
                     actions: [MessageBox.Action.YES, MessageBox.Action.CANCEL],
                     emphasizedAction: MessageBox.Action.CANCEL,
                     onClose: (action: string) => {
@@ -1364,20 +987,12 @@ export default class MainController extends Controller {
     }
 
     /**
-     * Get the active editor (original or programmatic) - super fast with direct references
+     * The detail column's JSON editor, declared in the view
      */
     private _getActiveEditor(): CodeEditor | null {
-        // Ultra-fast path: Use direct reference to programmatic editor if available
-        if (this._programmaticEditor && 
-            this._programmaticEditor.getDomRef && 
-            this._programmaticEditor.getValue) {
-            return this._programmaticEditor;
-        }
-        
-        // Fast path: Try original editor via byId
-        const originalEditor = this.byId("jsonEditor") as CodeEditor;
-        if (originalEditor && originalEditor.getDomRef && originalEditor.getValue) {
-            return originalEditor;
+        const editor = this.byId("jsonEditor") as CodeEditor | undefined;
+        if (editor) {
+            return editor;
         }
         
         console.error("❌ No usable editor found");
@@ -1394,7 +1009,7 @@ export default class MainController extends Controller {
 
         const editor = this._getActiveEditor();
         if (!editor) {
-            MessageBox.error("Editor not available for validation");
+            MessageBox.error(this.text("editorUnavailableValidate"));
             return;
         }
         
@@ -1404,7 +1019,7 @@ export default class MainController extends Controller {
         try {
             JSON.parse(configData);
         } catch (e) {
-            MessageBox.error("Invalid JSON syntax");
+            MessageBox.error(this.text("invalidJson"));
             return;
         }
 
@@ -1422,16 +1037,15 @@ export default class MainController extends Controller {
         actionBinding.execute().then(() => {
             const result = actionBinding.getBoundContext()?.getObject();
             if (result?.valid) {
-                MessageToast.show("Configuration is valid");
+                MessageToast.show(this.text("configValidationPassed"));
             } else {
-                let message = "Configuration validation failed";
-                if (result?.errors?.length) {
-                    message += ":\n" + result.errors.join("\n");
-                }
+                const message = result?.errors?.length
+                    ? this.text("configValidationFailedDetails", [result.errors.join("\n")])
+                    : this.text("configValidationFailed");
                 MessageBox.error(message);
             }
         }).catch((error: Error) => {
-            MessageBox.error("Error validating configuration: " + error.message);
+            MessageBox.error(this.text("errorValidatingConfigDetail", [error.message]));
         }).finally(() => {
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
@@ -1447,15 +1061,20 @@ export default class MainController extends Controller {
             return;
         }
 
-        // Prevent saving active configurations
-        if (this._selectedConfig.isActive) {
-            MessageBox.error("Cannot save active configuration. Please deactivate it first to make changes.");
+        // Its row left the list (a filter): there is no row state to judge and no context to save to
+        if (!this._openRowOrExplain()) {
+            return;
+        }
+
+        // Prevent saving active configurations - judged by the open configuration, never a ticked row
+        if (!canSave(this._openRow())) {
+            MessageBox.error(this.text("cannotSaveActive"));
             return;
         }
 
         const editor = this._getActiveEditor();
         if (!editor) {
-            MessageBox.error("Editor not available for saving");
+            MessageBox.error(this.text("editorUnavailableSave"));
             return;
         }
         
@@ -1467,7 +1086,7 @@ export default class MainController extends Controller {
         console.log("Original config data length:", this._originalEditorValue?.length || 0);
         
         if (configData === this._originalEditorValue) {
-            MessageToast.show("No changes detected - configuration not saved");
+            MessageToast.show(this.text("noChangesDetected"));
             console.log("💡 Save skipped - no changes detected (exact match)");
             return;
         }
@@ -1478,7 +1097,7 @@ export default class MainController extends Controller {
             const originalNormalized = this._originalEditorValue ? JSON.stringify(JSON.parse(this._originalEditorValue)) : "";
             
             if (currentNormalized === originalNormalized) {
-                MessageToast.show("No changes detected - configuration not saved");
+                MessageToast.show(this.text("noChangesDetected"));
                 console.log("💡 Save skipped - no changes detected (normalized match)");
                 return;
             }
@@ -1490,7 +1109,7 @@ export default class MainController extends Controller {
         try {
             JSON.parse(configData);
         } catch (e) {
-            MessageBox.error("Invalid JSON syntax - cannot save");
+            MessageBox.error(this.text("invalidJsonCannotSave"));
             return;
         }
 
@@ -1517,10 +1136,9 @@ export default class MainController extends Controller {
             
             if (!validationResult?.valid) {
                 // Validation failed - show error and don't save
-                let message = "Configuration validation failed - cannot save";
-                if (validationResult?.errors?.length) {
-                    message += ":\n" + validationResult.errors.join("\n");
-                }
+                const message = validationResult?.errors?.length
+                    ? this.text("validationFailedCannotSaveDetails", [validationResult.errors.join("\n")])
+                    : this.text("validationFailedCannotSave");
                 MessageBox.error(message);
                 
                 if (viewModel) {
@@ -1535,7 +1153,7 @@ export default class MainController extends Controller {
             
         }).catch((error: Error) => {
             console.error("❌ Validation error:", error);
-            MessageBox.error("Validation failed: " + error.message + "\n\nCannot save configuration.");
+            MessageBox.error(this.text("validationErrorCannotSave", [error.message]));
             
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
@@ -1558,7 +1176,7 @@ export default class MainController extends Controller {
             this._saveViaDirectUpdate(oModel, configData, viewModel);
         } catch (error) {
             console.error("❌ Save setup error:", error);
-            MessageBox.error("Error setting up save operation: " + (error as Error).message);
+            MessageBox.error(this.text("saveSetupError", [(error as Error).message]));
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
             }
@@ -1589,7 +1207,7 @@ export default class MainController extends Controller {
                 }
             }).catch((error: Error) => {
                 console.error("❌ Direct update failed:", error);
-                MessageBox.error("Failed to save configuration: " + error.message);
+                MessageBox.error(this.text("saveFailed", [error.message]));
                 if (viewModel) {
                     viewModel.setProperty("/busy", false);
                 }
@@ -1607,28 +1225,34 @@ export default class MainController extends Controller {
     private _updateContextProperty(context: any, configData: string, oModel: ODataModel, viewModel: JSONModel | null): void {
         try {
             console.log("Setting configData property on context");
-            
-            // Try different ways to set the property
+
+            // The PATCH's own outcome: the server refuses an invalid document or a change to the
+            // active configuration (400), and then the model resets the property and this rejects.
+            // submitBatch alone resolves either way.
+            let patched: Promise<void>;
             if (context.setProperty) {
-                context.setProperty("configData", configData);
+                patched = context.setProperty("configData", configData);
             } else if (context.getObject) {
                 const obj = context.getObject();
                 obj.configData = configData;
+                patched = Promise.resolve();
             } else {
                 throw new Error("Unable to set property on context");
             }
-            
+
             console.log("✅ Property set, submitting batch...");
-            
+
+            const configId = this._selectedConfig.ID as string;
             // Submit the changes
-            oModel.submitBatch(oModel.getUpdateGroupId()).then(() => {
+            Promise.all([patched, oModel.submitBatch(oModel.getUpdateGroupId())]).then(() => {
                 console.log("✅ Direct save completed successfully");
-                MessageToast.show("Configuration saved successfully");
+                MessageToast.show(this.text("configSaved"));
                 this._resetDirtyState();
                 this._loadConfigurations();
+                this._refreshValidationMessages(configId);
             }).catch((error: Error) => {
                 console.error("❌ Batch submit error:", error);
-                MessageBox.error("Failed to submit changes: " + error.message);
+                MessageBox.error(this.text("submitFailed", [error.message]));
             }).finally(() => {
                 if (viewModel) {
                     viewModel.setProperty("/busy", false);
@@ -1637,7 +1261,7 @@ export default class MainController extends Controller {
             
         } catch (error) {
             console.error("❌ Property update error:", error);
-            MessageBox.error("Failed to update property: " + (error as Error).message);
+            MessageBox.error(this.text("updatePropertyFailed", [(error as Error).message]));
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
             }
@@ -1645,16 +1269,126 @@ export default class MainController extends Controller {
     }
 
     /**
-     * Activate configuration
+     * A save stores the document's validation result anew (the server recomputes it), so the
+     * title's validation strips are read again - from a fresh read of the saved row, as
+     * `_loadConfigurationDetails` reads them. Dropped if another configuration was opened since.
+     */
+    private _refreshValidationMessages(configId: string): void {
+        const oModel = this.getView()?.getModel() as ODataModel;
+        const viewModel = this.getOwnerComponent()?.getModel("viewModel") as JSONModel;
+        const shownLoad = this._shownLoad;
+        oModel.bindContext(`/ApiConfigurations(ID='${configId}')`).requestObject().then((saved: unknown) => {
+            if (shownLoad === null || !this._detailLoad.isCurrent(shownLoad) || this._selectedConfig?.ID !== configId) {
+                return;
+            }
+            const row = saved as { validationErrors?: unknown; validationWarnings?: unknown } | undefined;
+            viewModel?.setProperty("/selectedValidationMessages",
+                storedValidationMessages(row?.validationErrors, row?.validationWarnings));
+        }).catch((error: Error) => {
+            console.error("Re-reading the saved configuration's validation results failed:", error);
+        });
+    }
+
+    /**
+     * Activate the one ticked configuration (the toolbar)
      */
     public onActivateConfiguration(): void {
-        if (!this._selectedConfig) {
-            MessageBox.error("Please select a configuration to activate");
+        const activateId = this._selectionState().activateId;
+        const config = this._tickedRows().find((row) => row.ID === activateId);
+        if (!config) {
+            MessageBox.error(this.text("selectConfigToActivate"));
             return;
         }
+        void this._confirmActivate(config);
+    }
 
-        const config = this._selectedConfig;
-        const confirmText = `Activate configuration "${config.name}" version ${config.version}?\n\nThis will set it as the active configuration for the system.\n\nPlease note: The Gateway service will restart with the new configuration, \nany active connections will be interrupted, and if the configuration contains \nerrors, the Gateway service may become unavailable.`;
+    /**
+     * Activation takes the stored document, so edits of the open configuration that are not saved
+     * yet would silently not be part of it. Asks Save / Discard / Cancel (the form's prompt and
+     * buttons); resolves true to go on - nothing pending, saved and confirmed stored, or discarded.
+     * Without the form (it is created in onInit) Save stores the editor's document but cannot
+     * confirm it landed, so it does not go on to activate.
+     */
+    private _settleEditsBeforeActivate(): Promise<boolean> {
+        const open = this._openContextRow();
+        const form = this._configForm;
+        if (!open || !activeState(open.isActive === true, this._detailEdits()).activateAsksFirst) {
+            return Promise.resolve(true);
+        }
+        const saveAction = this.text("formLeaveSave");
+        const discardAction = this.text("formLeaveDiscard");
+        return new Promise<boolean>((resolve) => {
+            MessageBox.confirm(this.text("activateUnsavedMessage"), {
+                title: this.text("unsavedChangesTitle"),
+                actions: [saveAction, discardAction, MessageBox.Action.CANCEL],
+                emphasizedAction: saveAction,
+                onClose: (action: string) => {
+                    if (action === saveAction) {
+                        if (form) {
+                            void form.saveEdits().then(resolve);
+                        } else {
+                            this.onSaveConfiguration();
+                            resolve(false);
+                        }
+                    } else if (action === discardAction) {
+                        // The editor back to the stored document, then the form from it.
+                        this.onCancelEdits();
+                        form?.discardEdits();
+                        resolve(true);
+                    } else {
+                        resolve(false);
+                    }
+                }
+            });
+        });
+    }
+
+    /**
+     * The open configuration as the list holds it now: the detail page's binding context, which
+     * the title's status and the title-bar actions' visibility bind to and which follows every list
+     * refresh. `_selectedConfig` is a copy taken when the detail loaded and goes stale once another
+     * row is activated, so the title-bar actions never decide by it.
+     */
+    private _openContextRow(): ApiConfigurationRow | undefined {
+        const context = this.byId("detailDynamicPage")?.getBindingContext();
+        const row = context?.getObject() as ApiConfigurationRow | undefined;
+        return row?.ID ? row : undefined;
+    }
+
+    /**
+     * The open configuration's live row for an action on it - or, when a configuration is open but
+     * its row has left the list (a filter), nothing, after saying so. The list then drops the row's
+     * context, so the detail page has none; falling back to `_selectedConfig` would decide by a copy
+     * taken at load whose isActive can be stale, and Save writes through that context anyway.
+     */
+    private _openRowOrExplain(): ApiConfigurationRow | undefined {
+        const row = this._openContextRow();
+        if (!row && this._selectedConfig) {
+            MessageBox.information(this.text("openConfigNotInList"));
+        }
+        return row;
+    }
+
+    /**
+     * Activate the open configuration (the detail's title bar), judged by its live row state
+     */
+    public onActivateOpenConfiguration(): void {
+        const config = this._openRowOrExplain();
+        if (!config || !activeState(config.isActive === true, this._detailEdits()).canActivate) {
+            return;
+        }
+        void this._confirmActivate(config);
+    }
+
+    /**
+     * Asks before activating `config`, which restarts the gateway. Activating the open
+     * configuration settles its unsaved edits first.
+     */
+    private async _confirmActivate(config: { ID: string; name: string; version: string }): Promise<void> {
+        if (config.ID === this._openContextRow()?.ID && !(await this._settleEditsBeforeActivate())) {
+            return;
+        }
+        const confirmText = this.text("confirmActivateRestart", [config.name, config.version]);
         
         MessageBox.confirm(confirmText, {
             onClose: (action: string) => {
@@ -1682,13 +1416,13 @@ export default class MainController extends Controller {
         actionBinding.execute().then(() => {
             const result = actionBinding.getBoundContext()?.getObject();
             if (result?.success) {
-                MessageToast.show("Configuration activated successfully");
+                MessageToast.show(this.text("configActivated"));
                 this._loadConfigurations();
             } else {
-                MessageBox.error("Failed to activate configuration: " + (result?.error || "Unknown error"));
+                MessageBox.error(this.text("activateFailed", [result?.error || this.text("unknownError")]));
             }
         }).catch((error: Error) => {
-            MessageBox.error("Error activating configuration: " + error.message);
+            MessageBox.error(this.text("errorActivatingConfigDetail", [error.message]));
         }).finally(() => {
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
@@ -1697,19 +1431,43 @@ export default class MainController extends Controller {
     }
 
     /**
-     * Duplicate configuration
+     * Duplicate the one ticked configuration (the toolbar). Its editor text is used only when it is
+     * the open configuration; any other row is copied from its stored document.
      */
     public onDuplicateConfiguration(): void {
+        const state = this._selectionState();
+        if (state.duplicateId === null) {
+            MessageBox.error(this.text("selectOneToDuplicate"));
+            return;
+        }
+        this._duplicateConfiguration(state.duplicateId, state.duplicateFromEditor);
+    }
+
+    /**
+     * Duplicate the open configuration (the detail's title bar), as its editor shows it
+     */
+    public onDuplicateOpenConfiguration(): void {
+        const config = this._openRowOrExplain();
+        if (!config) {
+            return;
+        }
+        this._duplicateConfiguration(config.ID, true);
+    }
+
+    /**
+     * Opens the create dialog on a copy of `selectedConfigId`. `fromEditor`: the copy takes the
+     * open editor's text (possibly unsaved) - only for the open configuration, and only once the
+     * editor holds that configuration's document.
+     */
+    private _duplicateConfiguration(selectedConfigId: string, fromEditor: boolean): void {
         const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
-        const selectedConfigIds = viewModel?.getProperty("/selectedConfigIds") || [];
-        
-        if (selectedConfigIds.length !== 1) {
-            MessageBox.error("Please select exactly one configuration to duplicate");
+
+        // In the form view the edits live in the form's document; put them into the editor first,
+        // verified, as Save does - otherwise the copy would miss them. Refused -> nothing opens.
+        if (fromEditor && this._editorConfigId === selectedConfigId && this._configForm && !this._configForm.syncEditor()) {
             return;
         }
 
-        const selectedConfigId = selectedConfigIds[0];
-        
         if (viewModel) {
             viewModel.setProperty("/busy", true);
         }
@@ -1724,9 +1482,9 @@ export default class MainController extends Controller {
             // Get configData, either from editor (if detail view is open) or from server
             let configData = fullConfig.configData || "{}";
             
-            // If detail view is open and editor has content, prefer the editor content
+            // The open configuration's editor content (possibly unsaved) wins over its stored copy
             const editor = this.byId("jsonEditor") as CodeEditor;
-            if (editor && this._selectedConfig && this._selectedConfig.ID === selectedConfigId) {
+            if (editor && fromEditor && this._editorConfigId === selectedConfigId) {
                 const editorValue = editor.getValue();
                 if (editorValue && editorValue.trim()) {
                     configData = editorValue;
@@ -1744,9 +1502,9 @@ export default class MainController extends Controller {
             
             if (viewModel) {
                 viewModel.setProperty("/dialogMode", "duplicate");
-                viewModel.setProperty("/dialogTitle", "Duplicate Configuration");
+                viewModel.setProperty("/dialogTitle", this.text("duplicateConfigTitle"));
                 viewModel.setProperty("/newConfig", {
-                    name: fullConfig.name + " (Copy)",
+                    name: this.text("duplicateName", [fullConfig.name]),
                     version: fullConfig.version,
                     description: fullConfig.description || "",
                     configData: formattedConfigData
@@ -1764,7 +1522,7 @@ export default class MainController extends Controller {
             
         }).catch((error: any) => {
             console.error("Error loading configuration for duplication:", error);
-            MessageBox.error("Failed to load configuration data for duplication: " + error.message);
+            MessageBox.error(this.text("duplicateLoadFailed", [error.message]));
         }).finally(() => {
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
@@ -1773,32 +1531,31 @@ export default class MainController extends Controller {
     }
 
     /**
-     * Delete configuration
+     * Delete the ticked configurations (the toolbar). Offered only while none of them is active.
      */
     public onDeleteConfiguration(): void {
-        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
-        const selectedConfigIds = viewModel?.getProperty("/selectedConfigIds") || [];
-        
-        if (selectedConfigIds.length === 0) {
-            MessageBox.error("Please select configurations to delete");
+        const state = this._selectionState();
+        if (!state.canDelete) {
+            MessageBox.error(this.text("selectConfigsToDelete"));
             return;
         }
 
-        const confirmText = `Delete ${selectedConfigIds.length} configuration(s)?\n\nThis action cannot be undone.`;
+        const confirmText = this.text("confirmDeleteCount", [state.deleteIds.length]);
         
         MessageBox.confirm(confirmText, {
             onClose: (action: string) => {
                 if (action === MessageBox.Action.OK) {
-                    this._deleteConfigurations(selectedConfigIds);
+                    this._deleteConfigurations(state.deleteIds, state.deleteClosesDetail);
                 }
             }
         });
     }
 
     /**
-     * Internal method to delete configurations by IDs
+     * Internal method to delete configurations by IDs. `closesDetail`: the open configuration is
+     * one of them, so the detail column closes with it.
      */
-    private _deleteConfigurations(configIds: string[]): void {
+    private _deleteConfigurations(configIds: string[], closesDetail: boolean): void {
         const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
         if (viewModel) {
             viewModel.setProperty("/busy", true);
@@ -1806,10 +1563,10 @@ export default class MainController extends Controller {
 
         // Find the contexts for the selected configurations
         const table = this.byId("configTable") as Table;
-        const binding = table.getBinding("items");
+        const binding = table.getBinding("items") as ODataListBinding | undefined;
         const contexts = binding?.getCurrentContexts();
         
-        const targetContexts = [];
+        const targetContexts: ODataContext[] = [];
         if (contexts) {
             for (const context of contexts) {
                 const config = context.getObject();
@@ -1820,7 +1577,7 @@ export default class MainController extends Controller {
         }
 
         if (targetContexts.length === 0) {
-            MessageBox.error("Cannot delete configurations: Contexts not found");
+            MessageBox.error(this.text("deleteContextsNotFound"));
             if (viewModel) {
                 viewModel.setProperty("/busy", false);
             }
@@ -1829,27 +1586,12 @@ export default class MainController extends Controller {
 
         // Delete all selected configurations
         Promise.all(targetContexts.map(context => context.delete())).then(() => {
-            MessageToast.show(`${targetContexts.length} configuration(s) deleted successfully`);
-            
-            // Clear selection
+            MessageToast.show(this.text("configsDeleted", [targetContexts.length]));
+
             table.removeSelections();
-            this._selectedConfig = null;
-            if (viewModel) {
-                viewModel.setProperty("/selectedConfigId", null);
-                viewModel.setProperty("/selectedConfigIds", []);
-                viewModel.setProperty("/selectedConfigCanActivate", false);
-                viewModel.setProperty("/selectedConfigCanDelete", false);
-            }
-            
-            // Clear binding context from detail page
-            const detailPage = this.byId("detailDynamicPage");
-            if (detailPage) {
-                detailPage.setBindingContext(null);
-            }
-            
-            const fcl = this.byId("fcl") as FlexibleColumnLayoutControl;
-            if (fcl) {
-                fcl.setLayout("OneColumn");
+            this._updateToolbar();
+            if (closesDetail) {
+                this._resetDetail();
             }
             
             // Refresh the list
@@ -1858,7 +1600,7 @@ export default class MainController extends Controller {
             console.error("Delete error:", error);
             
             // Extract more meaningful error message from OData error structure
-            let errorMessage = "Error deleting configurations";
+            let errorMessage = this.text("errorDeletingConfigs");
             
             if (error && (error as any).response && (error as any).response.body) {
                 const errorBody = (error as any).response.body;
@@ -1870,7 +1612,7 @@ export default class MainController extends Controller {
             } else if (error.message) {
                 // Check if it's a generic "Forbidden" and provide better context
                 if (error.message.toLowerCase().includes('forbidden')) {
-                    errorMessage = "Cannot delete the selected configuration(s). Active configurations cannot be deleted - please deactivate them first.";
+                    errorMessage = this.text("deleteActiveForbidden");
                 } else {
                     errorMessage = error.message;
                 }
@@ -1891,6 +1633,11 @@ export default class MainController extends Controller {
         // Could add auto-validation or change tracking here
     }
 
+    /** The cockpit language as a BCP 47 tag: dates follow it, not the browser's language. */
+    private locale(): string {
+        return Localization.getLanguageTag().toString();
+    }
+
     /**
      * Format date for display
      */
@@ -1898,7 +1645,7 @@ export default class MainController extends Controller {
         if (!dateValue) return "";
         try {
             const date = new Date(dateValue);
-            return date.toLocaleDateString() + " " + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            return date.toLocaleDateString(this.locale()) + " " + date.toLocaleTimeString(this.locale(), {hour: '2-digit', minute:'2-digit'});
         } catch (e) {
             return dateValue;
         }
@@ -1907,14 +1654,32 @@ export default class MainController extends Controller {
     /**
      * Format datetime for display with more detail
      */
-    public formatDateTime(dateValue: string): string {
+    public formatDateTime(dateValue: string, pattern: string): string {
         if (!dateValue) return "";
         try {
             const date = new Date(dateValue);
-            return date.toLocaleDateString() + " at " + date.toLocaleTimeString();
+            return formatMessage(pattern, [date.toLocaleDateString(this.locale()), date.toLocaleTimeString(this.locale())]);
         } catch (e) {
             return dateValue;
         }
+    }
+
+    /**
+     * "{date} at {time} by {user}" for the detail page, from the bundle's two patterns; just
+     * "{date} at {time}" when the row has no modifier, never a dangling "by"
+     */
+    public formatModifiedAtBy(pattern: string, dateTimePattern: string, dateValue: string, user: string): string {
+        if (!pattern || !dateTimePattern) return "";
+        const when = this.formatDateTime(dateValue, dateTimePattern);
+        return user ? formatMessage(pattern, [when, user]) : when;
+    }
+
+    /**
+     * Fills a bundle pattern bound as the first part with the remaining parts
+     */
+    public formatPattern(pattern: string, ...args: unknown[]): string {
+        if (!pattern) return "";
+        return formatMessage(pattern, args.map((arg) => arg ?? ""));
     }
 
     /**
@@ -1936,8 +1701,8 @@ export default class MainController extends Controller {
     /**
      * Format active status text
      */
-    public activeText(v: any): string {
-        return this.bool(v) ? "Active" : "Inactive";
+    public activeText(v: any, activeLabel: string, inactiveLabel: string): string {
+        return this.bool(v) ? activeLabel : inactiveLabel;
     }
 
     /**
@@ -2002,7 +1767,7 @@ export default class MainController extends Controller {
         
         // Validate reason is provided
         if (!rollbackReason) {
-            MessageBox.error("Rollback reason is mandatory");
+            MessageBox.error(this.text("rollbackReasonRequired"));
             return;
         }
 
@@ -2023,10 +1788,10 @@ export default class MainController extends Controller {
             const result = actionBinding.getBoundContext()?.getObject();
             
             if (result?.success) {
-                const message = `Rollback successful!\n\nRolled back from: ${result.rolledBackFrom}\nRolled back to: ${result.rolledBackTo}\nReason: ${result.reason}\nRolled back at: ${new Date(result.rolledBackAt).toLocaleString()}`;
+                const message = this.text("rollbackSuccess", [result.rolledBackFrom, result.rolledBackTo, result.reason, new Date(result.rolledBackAt).toLocaleString(this.locale())]);
                 MessageBox.success(message);
             } else {
-                MessageBox.error("Rollback failed: " + (result?.error || "Unknown error"));
+                MessageBox.error(this.text("rollbackFailed", [result?.error || this.text("unknownError")]));
             }
             
             // Always refresh the table after rollback attempt
@@ -2035,7 +1800,7 @@ export default class MainController extends Controller {
             console.error("Rollback error:", error);
             
             // Extract meaningful error message
-            let errorMessage = "Error during rollback";
+            let errorMessage = this.text("errorDuringRollback");
             if (error && (error as any).response && (error as any).response.body) {
                 const errorBody = (error as any).response.body;
                 if (errorBody.error && errorBody.error.message) {
@@ -2146,7 +1911,7 @@ export default class MainController extends Controller {
         editor.setHeight(heightPx);
         
         // Also set height on the DOM element directly
-        const editorDom = editor.getDomRef();
+        const editorDom = editor.getDomRef() as HTMLElement | null;
         if (editorDom) {
             editorDom.style.height = heightPx;
             editorDom.style.minHeight = heightPx;
@@ -2226,9 +1991,9 @@ export default class MainController extends Controller {
     /**
      * Format the configuration title for display
      */
-    public formatConfigTitle(name: string, version: string): string {
+    public formatConfigTitle(name: string, version: string, detailsTitle: string): string {
         if (!name || !version) {
-            return "Configuration Details";
+            return detailsTitle;
         }
         return `${name} (${version})`;
     }

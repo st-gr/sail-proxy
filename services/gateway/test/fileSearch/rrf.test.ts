@@ -1,4 +1,4 @@
-import { fuseRrf } from '../../src/fileSearch/rrf';
+import { fuseRrf, parseHybridSearch } from '../../src/fileSearch/rrf';
 
 describe('fuseRrf', () => {
   it('ranks a document appearing in both lists above one appearing in either alone', () => {
@@ -49,5 +49,80 @@ describe('fuseRrf', () => {
     fuseRrf([list1, list2], 60);
     expect(list1).toEqual(['a', 'b']);
     expect(list2).toEqual(['b', 'a']);
+  });
+});
+
+describe('fuseRrf weights', () => {
+  const lists = [['a', 'b', 'c'], ['c', 'a', 'd']];
+
+  it('default weights reproduce the unweighted output exactly', () => {
+    expect(fuseRrf(lists, 60, [1, 1])).toEqual(fuseRrf(lists, 60));
+    expect(fuseRrf(lists, 60, undefined)).toEqual(fuseRrf(lists, 60));
+  });
+
+  it('a 0 weight removes that list entirely: its ids neither score nor appear', () => {
+    const fused = fuseRrf(lists, 60, [1, 0]);
+    expect(fused.find((r) => r.id === 'c')!.score).toBeCloseTo(1 / 63, 10);
+    expect(fused.map((r) => r.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a 0-weighted list does not decide tie-breaks among the others', () => {
+    // 'd' and 'a' tie in the weighted list; 'a' would be first seen via the 0-weighted list.
+    expect(fuseRrf([['a'], ['d'], ['a']], 60, [0, 1, 1]).map((r) => r.id)).toEqual(['d', 'a']);
+  });
+
+  it('shifting weight reorders the fused ranking', () => {
+    expect(fuseRrf(lists, 60, [10, 1])[0].id).toBe('a');
+    expect(fuseRrf(lists, 60, [1, 10])[0].id).toBe('c');
+  });
+});
+
+describe('parseHybridSearch', () => {
+  it('returns no weights when absent', () => {
+    expect(parseHybridSearch(undefined)).toEqual({ ok: true });
+  });
+  it('defaults a missing field to 1', () => {
+    expect(parseHybridSearch({ text_weight: 3 })).toEqual({ ok: true, weights: { embedding: 1, text: 3 } });
+  });
+  it('accepts a single 0 weight', () => {
+    expect(parseHybridSearch({ embedding_weight: 0 })).toEqual({ ok: true, weights: { embedding: 0, text: 1 } });
+  });
+  it.each([
+    [{ embedding_weight: -1 }],
+    [{ text_weight: 'x' }],
+    [{ text_weight: Infinity }],
+    [{ embedding_weight: NaN }],
+    [{ embedding_weight: 0, text_weight: 0 }],
+    ['nope'],
+    [[1]],
+  ])('rejects %j', (raw) => {
+    expect(parseHybridSearch(raw).ok).toBe(false);
+  });
+});
+
+describe('parseHybridSearch — the retrieval guide\'s rrf_* spellings', () => {
+  it('accepts rrf_embedding_weight and rrf_text_weight as the same weights', () => {
+    expect(parseHybridSearch({ rrf_embedding_weight: 0.7, rrf_text_weight: 0.3 }))
+      .toEqual({ ok: true, weights: { embedding: 0.7, text: 0.3 } });
+  });
+  it('mixes the two spellings across the two weights', () => {
+    expect(parseHybridSearch({ embedding_weight: 2, rrf_text_weight: 0.5 }))
+      .toEqual({ ok: true, weights: { embedding: 2, text: 0.5 } });
+  });
+  it('validates an alias like the documented field, naming the field the caller sent', () => {
+    const parsed = parseHybridSearch({ rrf_text_weight: -1 });
+    expect(parsed).toEqual({
+      ok: false, message: 'ranking_options.hybrid_search.rrf_text_weight must be a number greater than or equal to 0',
+    });
+    expect(parseHybridSearch({ rrf_embedding_weight: 0, rrf_text_weight: 0 }).ok).toBe(false);
+  });
+  it.each([
+    [{ embedding_weight: 1, rrf_embedding_weight: 1 }, 'embedding_weight'],
+    [{ text_weight: 1, rrf_text_weight: 2 }, 'text_weight'],
+  ])('rejects both spellings of one weight together (%j): ambiguous, never silently picked', (raw, field) => {
+    expect(parseHybridSearch(raw)).toEqual({
+      ok: false,
+      message: `ranking_options.hybrid_search: give one of ${field} and rrf_${field}, not both`,
+    });
   });
 });

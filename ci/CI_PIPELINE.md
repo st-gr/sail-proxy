@@ -61,6 +61,15 @@ pnpm run ci          # = node ci/preflight.js && node ci/ci-pipeline.js
 The run backs up and restores your `.env` files, `admin.db`, and the postgres/valkey
 volumes (Phases 1 and 10), so it leaves your environment as it found it. Set
 `FORCE_DOCKER_BUILD=1` to force the image build when change-detection would otherwise skip it.
+`SKIP_DOCKER_BUILD=true` (or `1`) does the opposite: it skips Phases 7–9 (the image build, the admin
+container boot on Postgres and the Trivy image scans). `FORCE_DOCKER_BUILD` wins when both are set.
+The GitHub workflow (`.github/workflows/ci.yml`) sets it to save Actions minutes, so pushes and pull
+requests there do not build images; the local `pnpm run ci` is unaffected. To build and scan the images
+on GitHub, for example before a release: Actions → CI Pipeline → Run workflow → tick `build_images`.
+A local run skips Phases 7–9 when nothing image-relevant changed since the last local image
+build it recorded (see Phase 7). It records that build only when the run **started with no
+uncommitted changes** and **Phase 8 (container runtime validation) passed**; a run that built
+uncommitted edits, failed in Phase 7 or 8, or skipped the build leaves the record as it was.
 
 Before backing up `admin.db`, the pipeline checkpoints its SQLite WAL (folding any
 committed writes sitting in `admin.db-wal` into the main file) and aborts the run rather
@@ -96,6 +105,11 @@ document said while the code had already moved on.
 ### Phase 4: Unit Testing
 - 🧪 `pnpm run test:unit` per service — deliberately narrow: the gateway's
   `test:unit` matches only `test/(clients|config)/`. The full suite is Phase 6.
+- 🌐 `node ci/scripts/i18n-literals.js` — fails on hard-coded cockpit text that is not allowlisted
+- 🔎 `node ci/scripts/ui5-typecheck.js` — `tsc --noEmit` per cockpit app; fails on any error in an app
+  listed in `ci/scripts/ui5-typecheck.gated.json` and on TS2688 (UI5 types not installed) anywhere.
+  All 11 apps are gated, so every app stays at 0 errors; a new app joins the list once it is clean.
+  Locally: `pnpm run typecheck:ui5` (`--verbose` lists every error, app names narrow the run)
 
 ### Phase 5: Integration Test Environment
 - 🚀 Starts Admin, Gateway and Ollama as HOST processes (not containers)
@@ -114,6 +128,28 @@ document said while the code had already moved on.
 - The four services are named explicitly: the compose file has FIVE build
   definitions but only four images, because `gateway` and `gateway-migrate`
   share a tag. Building both raced to write it under `--no-cache`.
+- **When it is skipped.** Phases 7–9 run only when a file under `docker/`, `services/`,
+  `libs/`, `ci/` or `.github/`, or `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml` or
+  `.dockerignore`, changed since the comparison base
+  (`ci/scripts/docker-build-decision.js`, tested by `docker-build-decision.test.js` in Phase 2):
+  - GitHub Actions: the PR's base branch, else the push's `before` commit, else `HEAD~1`.
+  - Generic `CI=true`: `HEAD~1`.
+  - Local run: the commit of the last successful local image build, recorded in the
+    gitignored `ci-logs/last-local-docker-build`, plus uncommitted and untracked changes
+    (`git diff --name-only HEAD` and `git ls-files --others --exclude-standard`). The build runs when
+    the marker is missing, unreadable, or not an ancestor of HEAD (for example after a rebase).
+    The run records the commit it started from, and only when it started with a clean tree
+    (no uncommitted or untracked change to an image path, by the same check) and Phase 8 succeeded after the build (Phase 9
+    is advisory and does not count). A skipped build, a Phase 7 or 8 failure, or a run that
+    built uncommitted edits leaves the marker where it was: those images are not HEAD's tree,
+    or were never validated. So a multi-commit merge whose last commit only touches docs still
+    builds when an earlier commit changed an image, and a rerun after a Phase 8 failure builds
+    and validates again.
+  - The decision's log line names the comparison base (or why there is none).
+  - `FORCE_DOCKER_BUILD=1` always builds; a forced local build records the marker under the
+    same two conditions.
+  - `SKIP_DOCKER_BUILD=true` (or `1`) skips Phases 7–9 without looking at the changes; `FORCE_DOCKER_BUILD`
+    wins. The GitHub workflow sets it unless a manual run ticks `build_images`; a local run does not set it.
 
 ### Phase 8: Docker Container Runtime Validation
 - 🐳 Starts postgres and the **admin** container, and checks schema deployment
@@ -186,6 +222,16 @@ docker-compose -f docker/docker-compose.yml build --no-cache
 | `SAP_AI_CORE_SERVICE_KEY` | SAP AI Core service credentials (JSON) | ✅ **REQUIRED** | 🔒 Must be real credentials, validated |
 | `NODE_ENV` | Node environment | Optional | `development` |
 | `CI` | CI environment flag | Optional | `false` |
+
+#### Optional: SAP_RELAY_BASE
+
+When the `SAP_RELAY_BASE` secret is set, the gateways started in Phase 5 and Phase 6.5 reach SAP AI Core through the SAP relay
+(see `ci/sap-relay/README.md`) instead of directly. It is optional: without it, for example on forks or local
+runs, SAP is reached directly and nothing else changes. The GitHub Actions workflow checks the relay's health
+in a step before the pipeline and fails early, with a message, when the relay is not running. The value is
+never printed.
+On every run, a step before the `test-results` and `service-logs` uploads replaces the relay base and its key with
+`<sap-relay>` in the files those artifacts upload.
 
 #### Security Requirements for SAP_AI_CORE_SERVICE_KEY
 

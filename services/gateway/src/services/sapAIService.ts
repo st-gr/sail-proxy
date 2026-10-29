@@ -10,6 +10,7 @@ import type {
   SapV2CompletionRequest,
   SapV2CompletionResponse,
 } from './sapOrchestrationTypes';
+import { currentSapTarget } from '../sap/sapTarget';
 const logger = getDefaultLogger();
 
 // Replace destinationService with centralized configuration
@@ -104,7 +105,7 @@ export const completeChat = async (payload: SAPPayload, debugRequestId?: string)
     const destination = await getDestinationConfig() as DestinationConfig;
     const url = `${destination.url}/v2/inference/deployments/${deploymentId}/v2/completion`;
     const headers = {
-      'AI-Resource-Group': 'default',
+      'AI-Resource-Group': currentSapTarget().resourceGroup,
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'Authorization': destination.authToken
@@ -199,7 +200,7 @@ export const callSAPAIOrchestration = async (payload: SAPPayload, debugRequestId
     const response: AxiosResponse = await axios.post(apiUrl, wirePayload, {
       headers: {
         'Authorization': authToken,
-        'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+        'AI-Resource-Group': currentSapTarget().resourceGroup,
         'Content-Type': 'application/json'
       }
     });
@@ -244,7 +245,7 @@ export const getOrchestrationEndpoint = async (): Promise<{ url: string; headers
     url: `${destination.url}/v2/inference/deployments/${deploymentId}/v2/completion`,
     headers: {
       Authorization: destination.authToken,
-      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+      'AI-Resource-Group': currentSapTarget().resourceGroup,
       'Content-Type': 'application/json',
     },
   };
@@ -366,7 +367,7 @@ export const streamChatCompletion = async (
               'Content-Type': 'application/json',
               'Authorization': destination!.authToken,
               'Accept': 'application/json', // Request JSON instead of SSE
-              'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+              'AI-Resource-Group': currentSapTarget().resourceGroup,
               'X-Request-ID': requestId
             },
             responseType: 'json', // Get parsed JSON
@@ -421,7 +422,7 @@ export const streamChatCompletion = async (
           'Content-Type': 'application/json',
           'Authorization': destination!.authToken,
           'Accept': 'text/event-stream',
-          'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+          'AI-Resource-Group': currentSapTarget().resourceGroup,
           'X-Request-ID': requestId
         },
         responseType: 'stream',
@@ -802,7 +803,7 @@ const createEmbedding = async (sapRequest: any, modelId: string): Promise<any> =
     const headers = {
       'Authorization': config.authToken,
       'Content-Type': 'application/json',
-      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default'
+      'AI-Resource-Group': currentSapTarget().resourceGroup
     };
 
     logger.debug('SAPAIService', `Creating embedding for model ${modelId} via deployment ${deploymentId}`);
@@ -823,7 +824,10 @@ const createEmbedding = async (sapRequest: any, modelId: string): Promise<any> =
     
     if (error.response) {
       logger.error('SAPAIService', `SAP AI Core error response: ${JSON.stringify(error.response.data)}`);
-      throw new Error(`SAP AI Core embedding error: ${error.response.data?.error?.message || error.response.statusText}`);
+      throw Object.assign(
+        new Error(`SAP AI Core embedding error: ${error.response.data?.error?.message || error.response.statusText}`),
+        { status: error.response.status }
+      );
     }
     
     throw error;

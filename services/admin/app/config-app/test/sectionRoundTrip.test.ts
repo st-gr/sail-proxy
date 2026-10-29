@@ -811,14 +811,14 @@ describe('models.overrides - openMap tolerates an undeclared key and nothing els
   it('tolerates a key $defs/modelOverride does not declare - the merge passes it through', () => {
     const { pointer, schema } = resolveSection('models', 'overrides');
     const data = shippedSection('models', 'overrides');
-    data['anthropic--claude-3-haiku--deployed'].some_passthrough_key = { copied: 'onto the model' };
+    data['anthropic--claude-4.5-haiku--deployed'].some_passthrough_key = { copied: 'onto the model' };
     const ds = buildDescriptors(schema, data, pointer, pluginFor);
 
     // It really does degrade to raw - the tolerance is not vacuous ...
     const raws = flatten(ds).filter(d => d.kind === 'raw');
     expect(raws).toHaveLength(1);
     expect(raws[0].pointer).toBe(
-      '/api_config/models/overrides/anthropic--claude-3-haiku--deployed/some_passthrough_key'
+      '/api_config/models/overrides/anthropic--claude-4.5-haiku--deployed/some_passthrough_key'
     );
     // ... `openMap` is what lets it through ...
     expect(unexplainedRaws(ds, true)).toEqual([]);
@@ -830,13 +830,13 @@ describe('models.overrides - openMap tolerates an undeclared key and nothing els
     const { pointer, schema } = resolveSection('models', 'overrides');
     const data = shippedSection('models', 'overrides');
     // subpaths_native is declared as an array; an object cannot be rendered as one.
-    data['anthropic--claude-3-haiku--deployed'].subpaths_native = { invoke: true };
+    data['anthropic--claude-4.5-haiku--deployed'].subpaths_native = { invoke: true };
     const ds = buildDescriptors(schema, data, pointer, pluginFor);
 
     const unexplained = unexplainedRaws(ds, true);
     expect(unexplained).toHaveLength(1);
     expect(unexplained[0].pointer).toBe(
-      '/api_config/models/overrides/anthropic--claude-3-haiku--deployed/subpaths_native'
+      '/api_config/models/overrides/anthropic--claude-4.5-haiku--deployed/subpaths_native'
     );
   });
 });
@@ -949,7 +949,7 @@ describe('models.overrides - streamingSupported is a strict boolean', () => {
   it('rejects a non-boolean streamingSupported', () => {
     const { pointer, schema } = resolveSection('models', 'overrides');
     const data = shippedSection('models', 'overrides');
-    data['anthropic--claude-3-haiku--deployed'].streamingSupported = 'false';
+    data['anthropic--claude-4.5-haiku--deployed'].streamingSupported = 'false';
     const errors = validateSection(schema, data, pointer);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.join(' ')).toContain('streamingSupported');
@@ -962,7 +962,7 @@ describe('models.overrides - a model entry stays open, and the merge is why', ()
   it('accepts a key nothing declares under one model', () => {
     const { pointer, schema } = resolveSection('models', 'overrides');
     const data = shippedSection('models', 'overrides');
-    data['anthropic--claude-3-haiku--deployed'].some_passthrough_key = { copied: 'onto the model' };
+    data['anthropic--claude-4.5-haiku--deployed'].some_passthrough_key = { copied: 'onto the model' };
     expect(validateSection(schema, data, pointer)).toEqual([]);
   });
 });
@@ -1005,7 +1005,6 @@ describe('hooks.defaults - a hook list renders as one section per hook, not a ta
       'section /api_config/hooks/defaults/anthropic/invoke/0/request',
       'section /api_config/hooks/defaults/anthropic/invoke/0/request/callback',
       'text /api_config/hooks/defaults/anthropic/invoke/0/request/callback/id',
-      'select /api_config/hooks/defaults/anthropic/invoke/0/request/callback/strategy',
       'list /api_config/hooks/defaults/anthropic/invoke/0/request/match',
     ]);
     const list = invoke();
@@ -1073,6 +1072,14 @@ describe('hooks.definitions - type is what matchRuleOptimized switches on', () =
 // matchHeader falsy-checks `name`, and both regex matchers falsy-check `regex`: an empty one is
 // not "match anything", it is a rule that can never fire. An operator who clears the field has
 // disabled every hook that names the rule without being told.
+// No shipped rule is a `json-path` one, so the tests that need one bring their own: the shape
+// the gateway's matchJsonPath reads, comparing the request's max_tokens with the number 512.
+const JSON_PATH_RULE = 'payload:maxTokens512';
+const withJsonPathRule = (data: any): any => {
+  data[JSON_PATH_RULE] = { equals: 512, path: '$.max_tokens', type: 'json-path' };
+  return data;
+};
+
 describe('hooks.definitions - the fields the matcher falsy-checks cannot be empty', () => {
   it('rejects an empty header name', () => {
     const { pointer, schema } = resolveSection('hooks', 'definitions');
@@ -1085,8 +1092,8 @@ describe('hooks.definitions - the fields the matcher falsy-checks cannot be empt
 
   it('rejects an empty json path', () => {
     const { pointer, schema } = resolveSection('hooks', 'definitions');
-    const data = shippedSection('hooks', 'definitions');
-    data['payload:maxTokens512'].path = '';
+    const data = withJsonPathRule(shippedSection('hooks', 'definitions'));
+    data[JSON_PATH_RULE].path = '';
     const errors = validateSection(schema, data, pointer);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.join(' ')).toContain('payload:maxTokens512/path');
@@ -1118,12 +1125,12 @@ describe('hooks.definitions - flags are RegExp flag letters, not a word', () => 
 
 // The one union in this schema, and it is not a convenience: a `header` rule's `equals` is compared
 // as a media type against a header string, a `json-path` rule's with `===` against the parsed body,
-// where the shipped `payload:maxTokens512` compares against the number 512. Typing it as either one
-// alone would reject the shipped configuration; leaving it untyped is what made it render raw.
+// where a rule on `$.max_tokens` compares against the number 512. Typing it as either one alone
+// would reject the other kind of rule; leaving it untyped is what made it render raw.
 describe('hooks.definitions - equals is the scalar the comparison actually uses', () => {
   it('renders a string equals as text and a numeric one as a number, not as JSON blobs', () => {
     const { pointer, schema } = resolveSection('hooks', 'definitions');
-    const data = shippedSection('hooks', 'definitions');
+    const data = withJsonPathRule(shippedSection('hooks', 'definitions'));
     const ds = flatten(buildDescriptors(schema, data, pointer, pluginFor));
     expect(ds.find(d => d.pointer === '/api_config/hooks/definitions/header:contentTypeJson/equals'))
       .toMatchObject({ kind: 'text', value: 'application/json' });
@@ -1133,8 +1140,8 @@ describe('hooks.definitions - equals is the scalar the comparison actually uses'
 
   it('rejects an object - matchJsonPath compares with ===, which no two objects satisfy', () => {
     const { pointer, schema } = resolveSection('hooks', 'definitions');
-    const data = shippedSection('hooks', 'definitions');
-    data['payload:maxTokens512'].equals = { value: 512 };
+    const data = withJsonPathRule(shippedSection('hooks', 'definitions'));
+    data[JSON_PATH_RULE].equals = { value: 512 };
     const errors = validateSection(schema, data, pointer);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.join(' ')).toContain('payload:maxTokens512/equals');
@@ -1146,7 +1153,7 @@ describe('hooks.definitions - equals is the scalar the comparison actually uses'
 // offers the field on every rule (an absent union leaf still renders a control), which is exactly
 // when a schema has to say the value would be ignored. No shipped rule of either type carries one.
 describe('hooks.definitions - equals is refused where the matcher would ignore it', () => {
-  it.each(['anthropic:all', 'system:whimsicalPrompt'])('rejects equals on %s', ruleId => {
+  it.each(['anthropic:all', 'tools:hasFileSearch'])('rejects equals on %s', ruleId => {
     const { pointer, schema } = resolveSection('hooks', 'definitions');
     const data = shippedSection('hooks', 'definitions');
     data[ruleId].equals = 'ignored by the regex matchers';
@@ -1272,7 +1279,7 @@ describe('hooks.defaults - pseudonymization is not swallowed by the subpath patt
 describe('hooks.defaults and models.overrides.*.hooks are one shape', () => {
   it.each([
     ['hooks', 'defaults', (d: any) => d.anthropic.invoke[0]],
-    ['models', 'overrides', (d: any) => d['anthropic--claude-3-haiku--deployed'].hooks.invoke[0]],
+    ['models', 'overrides', (d: any) => d['anthropic--claude-4.5-haiku--deployed'].hooks.invoke[0]],
   ])('rejects a hook with no callback under %s.%s', (group, section, hook) => {
     const { pointer, schema } = resolveSection(group, section);
     const data = shippedSection(group, section);

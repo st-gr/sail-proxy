@@ -1,7 +1,7 @@
 /**
  * WHEN, IN THE STREAM, A `file_citation` IS ALLOWED TO APPEAR.
  *
- * `docs/developer/chapter-16-file-search-tool.md` makes a specific, client-visible promise
+ * `docs/developer/file-search-tool.md` makes a specific, client-visible promise
  * about ordering:
  *
  *   "Annotations arrive AFTER `response.output_text.done`, not interleaved before it. OpenAI

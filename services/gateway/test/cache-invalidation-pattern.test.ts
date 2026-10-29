@@ -133,3 +133,75 @@ describe('invalidatePattern publishes as well as deleting', () => {
     expect(publish).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('a raw credential never reaches a log line, only a hash-based label', () => {
+  // A realistic-looking raw API key. If any log call's arguments were serialized and this
+  // string showed up, the credential leaked verbatim into whatever transport the logger feeds
+  // (console, a log shipper, SIEM, etc.) - the same defect class as the branch's logger fix.
+  const RAW_KEY = 'sk-fixture-9d2c7b4a1e6f0035bd88c1a9e0f7d3b2';
+  const RAW_AWS_CRED = 'FIXTUREAWSACCESSKEY0042';
+
+  const assertNoRawCredentialLogged = (raw: string) => {
+    for (const call of [...logger.info.mock.calls, ...logger.warn.mock.calls, ...logger.debug.mock.calls]) {
+      expect(JSON.stringify(call)).not.toContain(raw);
+    }
+  };
+
+  beforeEach(() => {
+    logger.info.mockClear();
+    logger.warn.mockClear();
+    logger.debug.mockClear();
+  });
+
+  it('invalidateApiKey logs a label, not the raw key (admin side)', async () => {
+    const admin = new CacheInvalidationService({ channelName: 'cache-invalidation', enableLogging: true, serviceName: 'admin' }, logger);
+
+    await admin.invalidateApiKey(RAW_KEY, 'disabled');
+
+    expect(logger.info).toHaveBeenCalled();
+    assertNoRawCredentialLogged(RAW_KEY);
+  });
+
+  it('invalidateAwsCredential logs a label, not the raw credential id (admin side)', async () => {
+    const admin = new CacheInvalidationService({ channelName: 'cache-invalidation', enableLogging: true, serviceName: 'admin' }, logger);
+
+    await admin.invalidateAwsCredential(RAW_AWS_CRED, 'deleted');
+
+    expect(logger.info).toHaveBeenCalled();
+    assertNoRawCredentialLogged(RAW_AWS_CRED);
+  });
+
+  it('receiving and processing a credential invalidation event never logs the raw credentialId (gateway side)', async () => {
+    const svc = gateway();
+    const clearByCredentialId = jest.fn<any>().mockResolvedValue(true);
+    svc.registerCacheService({ name: 'UnifiedValidationCache', clearByCredentialId });
+
+    const message = JSON.stringify({ type: 'api_key_deleted', credentialId: RAW_KEY, authType: 'api_key', timestamp: Date.now() });
+    await (svc as any).handleInvalidationEvent('cache-invalidation', message);
+
+    expect(clearByCredentialId).toHaveBeenCalledWith(RAW_KEY, 'api_key');
+    assertNoRawCredentialLogged(RAW_KEY);
+  });
+
+  it('publishing a credential invalidation event never logs the raw credentialId', async () => {
+    const admin = new CacheInvalidationService({ channelName: 'cache-invalidation', enableLogging: true, serviceName: 'admin' }, logger);
+    (admin as any).commandClient = { publish: jest.fn<any>(async () => 1) };
+    (admin as any).isCommandConnected = true;
+
+    await (admin as any).publishInvalidationEvent({ type: 'api_key_deleted', credentialId: RAW_KEY, authType: 'api_key', timestamp: Date.now() });
+
+    assertNoRawCredentialLogged(RAW_KEY);
+  });
+
+  it('a malformed pub/sub message still logs no raw credential, even carrying one in unparsable JSON', async () => {
+    const svc = gateway();
+    // Truncated JSON: still contains the raw credential as a substring, but json.parse throws
+    // and the failure handler used to dump the whole message into a warn log.
+    const malformed = `{"type":"api_key_deleted","credentialId":"${RAW_KEY}"`;
+
+    await (svc as any).handleInvalidationEvent('cache-invalidation', malformed);
+
+    expect(logger.warn).toHaveBeenCalled();
+    assertNoRawCredentialLogged(RAW_KEY);
+  });
+});

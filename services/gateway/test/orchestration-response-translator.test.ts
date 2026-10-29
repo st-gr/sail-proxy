@@ -8,7 +8,7 @@
 import { describe, it, expect } from '@jest/globals';
 import { translateOrchestrationResponse } from '../src/responses/orchestrationBridge/responseTranslator';
 
-const OPTS = { model: 'anthropic--claude-4.8-opus', responseId: 'resp_test' };
+const OPTS = { model: 'anthropic--claude-4.8-opus', sapModel: 'anthropic--claude-4.8-opus', responseId: 'resp_test' };
 
 describe('translateOrchestrationResponse', () => {
   it('turns assistant text into a Responses message item', () => {

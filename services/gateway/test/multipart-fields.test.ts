@@ -69,21 +69,30 @@ describe('parseMultipartFields', () => {
     expect(parsed.truncated).toEqual([]);
     expect(parsed.fields.prompt).toHaveLength(3000);
   });
-  it('refuses a file part over maxFileBytes DURING the stream, destroying the request', async () => {
+  it('refuses a file part over maxFileBytes DURING the stream, pausing (not destroying) the request', async () => {
     // 5 KB of image bytes fed in 7-byte chunks against a 1 KB per-file cap: the parse has to
-    // settle (and tear the request down) long before the body ends, or the cap is post-hoc.
+    // settle (and stop reading) long before the body ends, or the cap is post-hoc.
+    //
+    // Pausing rather than destroying is B11's fix: the caller still has to write its "too
+    // large" response on this same connection a few microticks later (see
+    // filesController-http.test.ts / imagesController-http.test.ts for the real-socket case)
+    // — destroying the request here raced that response and delivered ECONNRESET/EPIPE
+    // instead of the JSON body.
     const big = Buffer.alloc(5 * 1024, 0x41);
     const src = stream(body([{ name: 'prompt', data: 'x' }, { name: 'image', filename: 'big.png', type: 'image/png', data: big }]));
+    let paused = false;
     let destroyed = false;
     const readBytes: number[] = [];
     src.on('data', (c: Buffer) => readBytes.push(c.length));
-    // The real destroy is kept (so the stream genuinely stops being read), only observed.
-    const realDestroy = src.destroy.bind(src);
-    (src as any).destroy = (...a: any[]) => { destroyed = true; return (realDestroy as any)(...a); };
+    // The real pause is kept (so the stream genuinely stops being read), only observed.
+    const realPause = src.pause.bind(src);
+    (src as any).pause = (...a: any[]) => { paused = true; return (realPause as any)(...a); };
+    (src as any).destroy = (...a: any[]) => { destroyed = true; return src; };
     const parsed = await parseMultipartFields(src, BOUNDARY, { ...opts, maxFileBytes: 1024 });
     expect(parsed.tooLarge).toBe(true);
     expect(parsed.tooLargeField).toBe('image');
-    expect(destroyed).toBe(true);
+    expect(paused).toBe(true);
+    expect(destroyed).toBe(false);
     // Settled mid-body: far fewer than the ~740 seven-byte chunks the whole body holds.
     expect(readBytes.reduce((a, b) => a + b, 0)).toBeLessThan(2 * 1024);
   });

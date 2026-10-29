@@ -88,7 +88,17 @@ export function evaluate(
   forced: ToolIdentity | null,
   sources: ToolIdentity[] = []
 ): EvaluationResult {
-  const blocks = [user, key].filter((b): b is ToolPolicyBlock => !!b);
+  return evaluateBlocks(declared, [user, key].filter((b): b is ToolPolicyBlock => !!b), forced, sources);
+}
+
+/** The merge over any number of blocks (team, user, key): the first block supplies `policyId`. */
+export function evaluateBlocks(
+  declared: ToolIdentity[],
+  allBlocks: ToolPolicyBlock[],
+  forced: ToolIdentity | null,
+  sources: ToolIdentity[] = []
+): EvaluationResult {
+  const blocks = allBlocks.filter((b) => !!b);
   const decisions = new Map<ToolIdentity, Decision>();
   const reasons = new Map<ToolIdentity, DecisionReason>();
   const unique = [...new Set(declared)];
@@ -149,7 +159,7 @@ export function evaluate(
   }
   const result: EvaluationResult = {
     mode, decisions, blocked: mode === 'strip' ? denied : [], reject: false,
-    policyNames: blocks.map((b) => b.policyName), policyId: (user ?? key)!.policyId, narrow, reasons, taintedBy
+    policyNames: blocks.map((b) => b.policyName), policyId: blocks[0].policyId, narrow, reasons, taintedBy
   };
   const byPolicy = denied.filter((id) => reasons.get(id) === 'policy');
   const byTrust = denied.filter((id) => reasons.get(id) === 'trust_chain');

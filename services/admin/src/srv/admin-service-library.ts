@@ -142,7 +142,10 @@ export function registerLibraryHandlers(service: any): void {
     if (catalog.isDefault) {
       const { SELECT } = cds.ql;
       const excluded = (await db.run(SELECT.from('sap.llm.gateway.admin.ModelCatalogExclusions').columns('modelId').where({ catalog_ID: catalog.ID }))).map((r: any) => r.modelId);
-      if (excluded.length > 0) req.query.where({ modelId: { 'not in': excluded } });
+      // Connection models are opt-in (spec 2026-10-23 §4.3): the default catalog never grants them.
+      const external = (await db.run(SELECT.from('sap.llm.gateway.admin.LibraryModels').columns('modelId').where({ origin: 'external' }))).map((r: any) => r.modelId);
+      const hidden = [...excluded, ...external];
+      if (hidden.length > 0) req.query.where({ modelId: { 'not in': hidden } });
     } else {
       const ids = [...await ent.effectiveModelIds(db, catalog)];
       req.query.where({ modelId: { in: ids.length ? ids : ['__none__'] } });
@@ -367,7 +370,16 @@ export function registerLibraryHandlers(service: any): void {
 
   // The audit call sits outside the guarded block on purpose: only the write itself may turn
   // into an error status, so a failing audit can never be reported as a rejected price change.
+  /** A Connection model is priced by its list price (Connections, setListPrice); the Library shows it read-only. */
+  const refuseConnectionModel = async (req: any): Promise<boolean> => {
+    const lib = await cds.run(cds.ql.SELECT.one.from('sap.llm.gateway.admin.LibraryModels').columns('origin').where({ modelId: modelIdOf(req) }));
+    if (lib?.origin !== 'external') return false;
+    req.reject(409, `${modelIdOf(req)} is a connection model; set its price on the connection (setListPrice)`);
+    return true;
+  };
+
   service.on('setPrice', 'LibraryModels', async (req: any) => {
+    if (await refuseConnectionModel(req)) return;
     const db = await cds.connect.to('db');
     let row: any;
     try {
@@ -378,6 +390,7 @@ export function registerLibraryHandlers(service: any): void {
   });
 
   service.on('revertToSapPrice', 'LibraryModels', async (req: any) => {
+    if (await refuseConnectionModel(req)) return;
     const db = await cds.connect.to('db');
     let row: any;
     try {

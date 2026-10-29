@@ -145,6 +145,7 @@ const baseInput = (): teacherLogger.TeacherLogInput => {
     candidatesRequested: 50,
     rrfK: 60,
     lexicalEnabled: true,
+    lexicalQuery: 'any',
   };
 };
 
@@ -213,6 +214,27 @@ describe('teacherLogger.record', () => {
     expect(captured.labelRows.length).toBe(3);
     expect(captured.labelRows.every((r) => r.chunk_text === null)).toBe(true);
     expect(captured.labelRows.every((r) => typeof r.chunk_hash === 'string' && r.chunk_hash.length > 0)).toBe(true);
+  });
+
+  it('records the hybrid_search weights in the event metadata, null when the search had none', async () => {
+    mockConfig({ enabled: true });
+    let captured = captureInsertParams();
+    teacherLogger.record({ ...baseInput(), hybridWeights: { embedding: 0.5, text: 1 } });
+    await flushMicrotasks();
+    expect(captured.eventRow!.metadata).toEqual({ hybrid_weights: { embedding: 0.5, text: 1 }, lexical_query: 'any' });
+
+    captured = captureInsertParams();
+    teacherLogger.record(baseInput());
+    await flushMicrotasks();
+    expect(captured.eventRow!.metadata).toEqual({ hybrid_weights: null, lexical_query: 'any' });
+  });
+
+  it('records the full-text query mode (hybrid.lexical_query) in the event metadata', async () => {
+    mockConfig({ enabled: true });
+    const captured = captureInsertParams();
+    teacherLogger.record({ ...baseInput(), lexicalQuery: 'all' });
+    await flushMicrotasks();
+    expect(captured.eventRow!.metadata).toEqual({ hybrid_weights: null, lexical_query: 'all' });
   });
 
   it('stores chunk_text when store_chunk_text is true', async () => {

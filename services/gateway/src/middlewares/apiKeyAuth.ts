@@ -1,12 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import apiKeyService from '../services/apiKeyService';
 import securityEventEmitter from '../services/securityEventEmitter';
-import { credentialIdentity } from '../utils/credentialIdentity';
+import { credentialIdentity, resolvedCredentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
-import { queryString } from '../utils/queryParam';
+import { extractApiKey, API_KEY_HEADERS } from '../utils/extractApiKey';
+import { redactUrl } from '../utils/redactUrl';
+import { isStandaloneMode, STANDALONE_OWNER_EMAIL } from '../config/unifiedAuthConfig';
 const logger = getDefaultLogger();
 
 interface AuthenticatedRequest extends Request {
@@ -25,11 +27,9 @@ interface AuthenticatedRequest extends Request {
  */
 const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // Get API key from header or query param. Headers are string | string[]; a query
-    // value can also be a null-prototype object (`?api_key[a]=1`, express >= 4.22) -
-    // queryString narrows all of them to a string or null, so a non-string key is
-    // simply "no key" and never reaches the validation service or credentialIdentity.
-    let apiKey: string | null = queryString(req.headers['x-api-key']) || queryString(req.headers['x-stainless-key']) || queryString(req.query.api_key);
+    // The key sources and their order are shared with the unified path (utils/extractApiKey.ts);
+    // a non-string value counts as no key.
+    const apiKey: string | null = extractApiKey(req);
     
     // Debug mode: show more extensive header information for troubleshooting
     if (process.env.DEBUG === 'true') {
@@ -40,7 +40,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
           // Only show type and format of auth header, not the value
           const authType = (value as string)?.split(' ')[0] || 'unknown';
           safeHeaders[key] = `${authType} ...`;
-        } else if (key === 'x-api-key' || key === 'x-stainless-key') {
+        } else if ((API_KEY_HEADERS as readonly string[]).includes(key)) {
           // Show part of API key if present
           if (typeof value === 'string') {
             safeHeaders[key] = value ? `${value.substring(0, 3)}...${value.substring(value.length - 3)}` : undefined;
@@ -50,6 +50,8 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
           } else {
             safeHeaders[key] = value;
           }
+        } else if (key === 'referer' || key === 'referrer') {
+          safeHeaders[key] = typeof value === 'string' ? redactUrl(value) : value;
         } else {
           // Format array values for better readability
           if (Array.isArray(value)) {
@@ -63,7 +65,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
       
       // Ensure headers are properly formatted for logging
       logger.debug('ApiKeyAuth', 'DEBUG - Request headers:', { headers: safeHeaders });
-      logger.debug('ApiKeyAuth', `DEBUG - URL: ${req.method} ${req.originalUrl}`);
+      logger.debug('ApiKeyAuth', `DEBUG - URL: ${req.method} ${redactUrl(req.originalUrl)}`);
       
       // Log body sample for debugging payload format
       if (req.body && Object.keys(req.body).length > 0) {
@@ -89,30 +91,14 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
 
     // Minimal logging for OpenRouter endpoints - only log the URL path
     if (req.originalUrl && req.originalUrl.startsWith('/openrouter/')) {
-      logger.info('ApiKeyAuth', `OpenRouter request: ${req.method} ${req.originalUrl}`);
+      logger.info('ApiKeyAuth', `OpenRouter request: ${req.method} ${redactUrl(req.originalUrl)}`);
     }
       
-    // Standard extraction of API key from authorization header if it uses Bearer format
-    if (!apiKey && req.headers['authorization']) {
-      const authHeader = req.headers['authorization'] as string;
-      if (authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7).trim();
-        
-        // If token looks like an API key (starts with 'sk-'), use it
-        if (token.startsWith('sk-')) {
-          apiKey = token;
-          if (process.env.DEBUG === 'true') {
-            logger.debug('ApiKeyAuth', 'DEBUG - Extracted API key from Authorization Bearer header');
-          }
-        }
-      }
-    }
-
     // Check if API key is provided
     if (!apiKey) {
       // Special handling for OpenRouter models endpoint - no authentication required
       if (req.method === 'GET' && req.originalUrl && req.originalUrl.startsWith('/openrouter/api/v1/models')) {
-        logger.info('ApiKeyAuth', `Allowing unauthenticated access to models endpoint: ${req.method} ${req.originalUrl}`);
+        logger.info('ApiKeyAuth', `Allowing unauthenticated access to models endpoint: ${req.method} ${redactUrl(req.originalUrl)}`);
         
         // Create a temporary API key object for this request
         req.apiKey = { 
@@ -128,7 +114,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
       if (req.originalUrl && req.originalUrl.startsWith('/openrouter/') && 
           req.headers['user-agent'] && (req.headers['user-agent'] as string).includes('GitHubCopilot')) {
         
-        logger.info('ApiKeyAuth', `GitHub Copilot Chat request detected: ${req.method} ${req.originalUrl}`);
+        logger.info('ApiKeyAuth', `GitHub Copilot Chat request detected: ${req.method} ${redactUrl(req.originalUrl)}`);
         
         // For endpoints like model endpoints, allow unauthenticated access
         if (req.method === 'GET' && req.originalUrl.includes('/endpoints')) {
@@ -147,7 +133,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
       
       // Log additional info for other OpenRouter endpoints with missing auth
       if (req.originalUrl && req.originalUrl.startsWith('/openrouter/')) {
-        logger.warn('ApiKeyAuth', `Authentication failed for OpenRouter request: ${req.method} ${req.originalUrl}`);
+        logger.warn('ApiKeyAuth', `Authentication failed for OpenRouter request: ${req.method} ${redactUrl(req.originalUrl)}`);
         logger.warn('ApiKeyAuth', 'OpenRouter requires proper authentication. Please provide a valid API key.');
       }
       
@@ -179,7 +165,7 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
         reason: 'No API key provided',
         clientIP: getClientIp(req, getTrustForwardedFor()),
         userAgent: req.get('User-Agent'),
-        endpoint: req.originalUrl,
+        endpoint: redactUrl(req.originalUrl),
         method: req.method,
         requestId: (req as any).debugRequestId,
         statusCode: 401
@@ -225,15 +211,18 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
 
       // Emit security event for invalid API key (only if not already emitted by unified auth)
       if (!(req as any).unifiedAuthAttempted) {
+        // A stored but inactive key is named by its ID; any other key did not resolve to a
+        // stored row, so never ship it as-is — hash + hint it (see utils/credentialIdentity.ts).
+        // The local store's IDs are the gateway's own, not admin rows: named only in standalone
+        // mode, where no admin receives the event; elsewhere they would link nothing.
+        const inactiveKeyId = isStandaloneMode() ? await apiKeyService.findInactiveApiKeyId(apiKey as string) : null;
         await securityEventEmitter.emitFailedAuth({
-          // This key did not resolve to a stored row, so never ship it as-is — hash +
-          // hint it (see utils/credentialIdentity.ts).
-          ...credentialIdentity(apiKey as string),
+          ...(inactiveKeyId ? resolvedCredentialIdentity(apiKey as string, inactiveKeyId) : credentialIdentity(apiKey as string)),
           authType: 'api_key',
           reason: 'Invalid API key provided',
           clientIP: getClientIp(req, getTrustForwardedFor()),
           userAgent: req.get('User-Agent'),
-          endpoint: req.originalUrl,
+          endpoint: redactUrl(req.originalUrl),
           method: req.method,
           requestId: (req as any).debugRequestId,
           statusCode: 401
@@ -249,14 +238,18 @@ const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFu
       return;
     }
 
+    // A standalone gateway (the npm-dist CLI) gives its keys the one owner the unified local
+    // path uses, so files, vector stores and file_search find an owner e-mail.
+    const keyInfo = process.env.GATEWAY_STANDALONE === 'true' ? { ...validKey, email: STANDALONE_OWNER_EMAIL } : validKey;
+
     // Store API key info in request object for later use
-    req.apiKey = { 
+    req.apiKey = {
       key: apiKey as string,  // Store the actual key string
-      ...validKey   // Include the rest of the validation info
+      ...keyInfo   // Include the rest of the validation info
     };
 
     // Also keep the original property for backward compatibility
-    req.apiKeyInfo = validKey;
+    req.apiKeyInfo = keyInfo;
     
     // Continue to next middleware
     next();

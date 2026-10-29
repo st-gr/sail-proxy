@@ -12,11 +12,14 @@ sap.ui.define([
 				var oFx = expectations.expect.fixtures;
 				var bCardVisible = expectations.expect.quota.cardVisible;
 				// the real shell page (its own bootstrap + ushell mock), relative to this test page
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../../index.html?sap-language=EN");
 				Then.onTheShell.iSeeTheProfile(expectations.email, expectations.expect.shell.userRoleLabel);
 				// The popover is open (the fragment renders regardless of the home card's role-driven
 				// visibility): every role has an effective tool policy, monitor/strip/reject.
 				Then.onTheShell.iSeeToolPolicyLine();
+				if (expectations.expect.teams && expectations.expect.teams.inPopover) {
+					Then.onTheShell.iSeeTeamLine(expectations.expect.fixtures.team.name);
+				}
 				// roles.js quota.cardVisible drives the card: false asserts it stays hidden. The admin
 				// has no seeded constraints (platform defaults are unlimited), so only the card's
 				// presence is asserted for that role - the row values are checked for the user role,

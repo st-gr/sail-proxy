@@ -22,6 +22,31 @@ const readline = require('readline');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const os = require('os');
+const {
+  DEFAULT_NAMESPACE,
+  isDefaultNamespace,
+  validateNamespace,
+  outputRoot,
+  istioSystemName,
+  istioSystemPrefix,
+  namespaceLabels,
+  parseNamespaceArg
+} = require('./kyma-namespace');
+const { dockerSetupOutputs, snapshotFiles, restoreFiles } = require('./local-config-snapshot');
+const {
+  KUBECTL_CONFIG_READS,
+  runKubectlRead,
+  stderrOf,
+  isServerNotFound,
+  isUnreachable,
+  readResourceData
+} = require('./kubectl-read');
+const { PromptSession } = require('../../docker/setup-flow/session');
+const { askKeyRegeneration, mask } = require('../../docker/setup-flow/secrets');
+const { BILLING_KEYS, askBilling, billingToWrite, billingFromEnv, isValidBillingValue } = require('../../docker/setup-flow/billing');
+const { readDockerConfigValues, isExternalLdap, usesImageRegistry, githubTeam } = require('../../docker/setup-flow/docker-config');
+const { REGISTRY_SECRET_FILE, writeRegistrySecret, readRegistrySecret } = require('./registry-secret');
 
 // RFC 1123 validation functions
 function validateRFC1123Label(label) {
@@ -72,6 +97,26 @@ function validateRFC1123Domain(domain) {
   return true;
 }
 
+/** PostgreSQL role name rules for the database username question (and its current value). */
+function validateDatabaseUsername(input) {
+  if (!input || input.trim().length === 0) {
+    return 'Database username is required';
+  }
+  // PostgreSQL identifier rules
+  if (!/^[a-zA-Z_][a-zA-Z0-9_$]*$/.test(input)) {
+    return 'Username must start with a letter or underscore, followed by letters, numbers, underscores, or dollar signs';
+  }
+  // PostgreSQL restriction: role names cannot start with "pg_"
+  if (input.toLowerCase().startsWith('pg_')) {
+    return 'Username cannot start with "pg_" (reserved for PostgreSQL system roles)';
+  }
+  // Length limit (PostgreSQL NAMEDATALEN = 63 bytes)
+  if (input.length > 63) {
+    return 'Username cannot exceed 63 characters';
+  }
+  return true;
+}
+
 // Check for help/version flags BEFORE loading inquirer
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h') || args.includes('help')) {
@@ -88,6 +133,11 @@ Options:
   --version, -v  Show version information
   --force, -f    Force overwrite existing manifests
   --ci           CI/CD mode - use default options (local auth, internal deployment)
+  --namespace <ns>
+                 Kubernetes namespace to deploy into (default: sail-proxy; asked
+                 interactively unless --ci). Any namespace other than sail-proxy
+                 renders into kyma/deployments/<ns>/ and prefixes the names of its
+                 istio-system and cluster-scoped objects with <ns>-
 
 Examples:
   From kyma directory:
@@ -95,6 +145,7 @@ Examples:
     node scripts/setup-kyma.js --force
     node scripts/setup-kyma.js --ci
     node scripts/setup-kyma.js --ci --force
+    node scripts/setup-kyma.js --namespace sail-proxy-test
 
   From project root:
     node kyma/scripts/setup-kyma.js
@@ -154,7 +205,9 @@ function tryLoadPackage(packageName) {
 inquirer = tryLoadPackage('inquirer');
 yaml = tryLoadPackage('js-yaml');
 
-if (!inquirer || !yaml) {
+// Only when run as a script: a caller that requires this module (the tests)
+// supplies what it needs and must never be prompted or have packages installed.
+if ((!inquirer || !yaml) && require.main === module) {
   const missingPackages = [];
   if (!inquirer) missingPackages.push('inquirer@8.2.6 (for interactive setup prompts)');
   if (!yaml) missingPackages.push('js-yaml@4.1.0 (for YAML configuration processing)');
@@ -205,7 +258,9 @@ if (!inquirer || !yaml) {
         
         // Re-run the script with the installed packages
         const { spawn } = require('child_process');
-        const child = spawn(process.argv[0], [__filename], {
+        // Pass the original arguments on: dropping --namespace here would re-run
+        // setup against the default (production) namespace.
+        const child = spawn(process.argv[0], [__filename, ...args], {
           stdio: 'inherit',
           shell: false
         });
@@ -267,9 +322,10 @@ const PROVIDER_PROMPTS = {
   github: [
     { key: 'GITHUB_CLIENT_ID', prompt: 'GitHub OAuth App Client ID', required: true },
     { key: 'GITHUB_CLIENT_SECRET', prompt: 'GitHub OAuth App Client Secret', required: true, secret: true },
-    { key: 'GITHUB_ORG', prompt: 'GitHub Organization name', required: true },
-    { key: 'GITHUB_ADMIN_TEAM', prompt: 'Admin team name', default: 'admins' },
-    { key: 'GITHUB_USER_TEAM', prompt: 'User team name', default: 'users' },
+    // Dex matches team names inside the organization, so "my-org/admins" never matches.
+    { key: 'GITHUB_ORG', prompt: 'GitHub Organization name (the org that owns the teams, not a team)', required: true },
+    { key: 'GITHUB_ADMIN_TEAM', prompt: 'Admin team name (inside that org, without the org prefix)', default: 'admins' },
+    { key: 'GITHUB_USER_TEAM', prompt: 'User team name (inside that org, without the org prefix)', default: 'users' },
     { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
   ],
   ldap: [
@@ -305,18 +361,112 @@ const PROVIDER_PROMPTS = {
   ]
 };
 
+// Keys that protect data a running deployment has stored, by the live
+// Secret that holds them. loadExistingKeys carries them over.
+const LIVE_SECRET_KEYS = {
+  'admin-env': ['VALIDATION_TOKEN_SECRET', 'METADATA_ENCRYPTION_KEY', 'AWS_SECRET_ENCRYPTION_KEY', 'SIEM_CREDENTIAL_KEY', 'CONNECTION_CREDENTIAL_KEY'],
+  'gateway-env': ['VALIDATION_TOKEN_SECRET', 'METADATA_ENCRYPTION_KEY']
+};
+
+// The optional Secret with the file_search S3 credentials (see loadLiveS3Env).
+const S3_ENV_SECRET = 'gateway-s3-env';
+const S3_ENV_KEYS = ['FILE_SEARCH_S3_ACCESS_KEY_ID', 'FILE_SEARCH_S3_SECRET_ACCESS_KEY'];
+
 class KymaSetup {
   constructor(options = {}) {
     this.kymaDir = path.resolve(__dirname, '..');
     this.scriptsDir = path.join(this.kymaDir, 'scripts');
     this.configsDir = path.join(this.kymaDir, 'configs');
-    this.manifestsDir = path.join(this.kymaDir, 'manifests');
+    // Source templates (templates/manifests/*) are always read from here;
+    // rendered output goes to the namespace's folder (see setNamespace).
     this.templatesDir = path.join(this.kymaDir, 'templates');
+    // Base of the rendered output; injectable so tests render into a temp dir.
+    this.outputBaseDir = options.outputRoot || this.kymaDir;
     this.projectRoot = path.resolve(this.kymaDir, '..');
     this.sharedSecrets = {};
+    // Generated secrets of the namespace's earlier render that a re-run keeps unless they are
+    // regenerated (interactive, without --force; see loadCurrentSecrets).
+    this.currentSecrets = {};
     this.forceOverwrite = options.forceOverwrite || false;
     this.ciMode = options.ciMode || false;
-    this.namespace = 'sail-proxy';
+    this.setNamespace(options.namespace || DEFAULT_NAMESPACE);
+  }
+
+  /**
+   * Every question goes through here: the prompt session of an interactive run (Back, review
+   * screen), else inquirer directly (callers outside run(), e.g. tests of single steps).
+   */
+  prompt(questions) {
+    return this.session ? this.session.ask(questions) : inquirer.prompt(questions);
+  }
+
+  /** The prompt session for an interactive run (replaced in tests by a scripted one). */
+  createSession() {
+    return new PromptSession({ inquirer });
+  }
+
+  /**
+   * Read-only work (cluster reads, registry lookups, metadata fetches) runs once per session, so
+   * Back and review jumps do not repeat it; outside a session it simply runs.
+   */
+  once(key, fn) {
+    return this.session ? this.session.once(key, fn) : Promise.resolve().then(fn);
+  }
+
+  /** A value generated during the questions stays the same across Back and review jumps. */
+  generatedOnce(key, generate) {
+    if (!this.session) return generate();
+    if (!this.session.generated.has(key)) this.session.generated.set(key, generate());
+    return this.session.generated.get(key);
+  }
+
+  /**
+   * Select the Kubernetes namespace and the output folders that go with it.
+   * The default namespace keeps kyma/manifests/ and kyma/templates/{secrets,configmaps}/;
+   * any other renders into kyma/deployments/<ns>/, so it can never overwrite
+   * the default deployment's gitignored renders.
+   */
+  setNamespace(namespace) {
+    const labelValidation = validateRFC1123Label(namespace);
+    const validation = labelValidation === true ? validateNamespace(namespace) : labelValidation;
+    if (validation !== true) {
+      throw new Error(`Invalid Kubernetes namespace "${namespace}": ${validation}`);
+    }
+    this.namespace = namespace;
+    const root = outputRoot(this.outputBaseDir, namespace);
+    this.manifestsDir = path.join(root, 'manifests');
+    this.secretsDir = path.join(root, 'templates', 'secrets');
+    this.configmapsDir = path.join(root, 'templates', 'configmaps');
+  }
+
+  namespaceQuestion() {
+    return {
+      type: 'input',
+      name: 'namespace',
+      message: 'Kubernetes namespace to deploy into:',
+      default: this.namespace,
+      validate: (input) => {
+        const value = String(input).trim();
+        const labelValidation = validateRFC1123Label(value);
+        return labelValidation === true ? validateNamespace(value) : labelValidation;
+      }
+    };
+  }
+
+  async selectNamespace() {
+    if (!this.ciMode) {
+      const { namespace } = await this.prompt([this.namespaceQuestion()]);
+      this.setNamespace(String(namespace).trim());
+    }
+
+    if (isDefaultNamespace(this.namespace)) {
+      console.log(`Kubernetes namespace: ${this.namespace}\n`);
+    } else {
+      console.log(`Kubernetes namespace: ${this.namespace} (not the default ${DEFAULT_NAMESPACE})`);
+      console.log(`   Output: ${path.relative(process.cwd(), outputRoot(this.outputBaseDir, this.namespace)) || '.'}`);
+      console.log(`   istio-system and cluster-scoped objects are prefixed "${istioSystemPrefix(this.namespace)}"\n`);
+    }
+    return this.namespace;
   }
 
   /**
@@ -395,6 +545,10 @@ class KymaSetup {
     return crypto.randomBytes(32).toString('hex');
   }
 
+  generateSiemCredentialKey() {
+    return crypto.randomBytes(32).toString('hex'); // 64 chars hex
+  }
+
   /**
    * Generate OAuth2 Proxy Client Secret (64 characters hex)
    * Must match the exact length of current hardcoded secret
@@ -448,6 +602,45 @@ class KymaSetup {
     return /^\d+\.\d+\.\d+$/.test(version.replace(/^v/, ''));
   }
 
+  /** A valid Docker image tag: [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}. */
+  isValidDockerTag(tag) {
+    return /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag);
+  }
+
+  /**
+   * Validation for a typed image version. Any valid Docker tag is accepted
+   * (release, v-prefixed release, or a branch tag like review-fixes-d697e0eb).
+   * A semver release must not be below the lowest listed one; any other tag
+   * must be in the registry listing of sail-proxy-gateway when that listing
+   * succeeded (fetchImageTags records it) - an unlisted one cannot be verified
+   * and is accepted with a warning after the prompt.
+   */
+  validateCustomTag(input, semverTags, registryLabel) {
+    const tag = String(input || '').trim();
+    if (!this.isValidDockerTag(tag)) {
+      return 'Please enter a valid image tag: up to 128 letters, digits, "_", "." or "-", not starting with "." or "-" (e.g., 1.2.3 or review-fixes-d697e0eb)';
+    }
+    if (this.isValidSemver(tag)) {
+      if (semverTags.length > 0) {
+        const lowestAvailable = semverTags[semverTags.length - 1];
+        if (this.compareSemver(tag, lowestAvailable) < 0) {
+          return `Version must be ${lowestAvailable} or higher`;
+        }
+      }
+      return true;
+    }
+    if (this.listedTags && !this.listedTags.has(tag)) {
+      return `Tag "${tag}" was not found for sail-proxy-gateway in ${registryLabel}`;
+    }
+    return true;
+  }
+
+  warnIfTagUnverified(tag, registryLabel) {
+    if (!this.isValidSemver(tag) && !this.listedTags) {
+      console.warn(`⚠️  Tag "${tag}" could not be verified: the tags of ${registryLabel} could not be listed. Make sure it exists for all images.`);
+    }
+  }
+
   /**
    * Fetch available image tags from registry
    */
@@ -455,7 +648,9 @@ class KymaSetup {
     const { registry, organization, dockerUsername, dockerPassword } = config;
     
     console.log('\n🔍 Fetching available versions...');
-    
+    // Every tag the listing returned (for validateCustomTag); null = listing failed.
+    this.listedTags = null;
+
     try {
       let tags = [];
       
@@ -499,7 +694,7 @@ class KymaSetup {
 
             // Build the appropriate URL based on the account type
             const urlPath = isOrganization ? 'orgs' : 'users';
-            const url = `https://api.github.com/${urlPath}/${organization}/packages/container/sail-proxy-gateway/versions`;
+            const url = `https://api.github.com/${urlPath}/${organization}/packages/container/sail-proxy-gateway/versions?per_page=100`;
 
             const options = {
               headers: {
@@ -516,8 +711,7 @@ class KymaSetup {
             // Extract tags from GitHub response
             tags = versions
               .filter(v => v.metadata && v.metadata.container && v.metadata.container.tags && v.metadata.container.tags.length > 0)
-              .flatMap(v => v.metadata.container.tags)
-              .filter(tag => this.isValidSemver(tag));
+              .flatMap(v => v.metadata.container.tags);
           } catch (error) {
             // Provided token may lack read:packages — the registry API with
             // Basic auth (or anonymously, for public packages) can still work.
@@ -553,8 +747,7 @@ class KymaSetup {
         
         // Extract tags from Docker Hub response
         tags = data.results
-          .map(r => r.name)
-          .filter(tag => this.isValidSemver(tag));
+          .map(r => r.name);
           
       } else {
         // Generic Docker Registry V2 API
@@ -575,11 +768,12 @@ class KymaSetup {
         
         const response = await this.makeHttpRequest(url, options);
         const data = JSON.parse(response);
-        tags = (data.tags || []).filter(tag => this.isValidSemver(tag));
+        tags = data.tags || [];
       }
-      
-      // Remove duplicates and sort
-      tags = [...new Set(tags)].sort((a, b) => -this.compareSemver(a, b));
+
+      // Keep the full listing; offer only releases, newest first
+      this.listedTags = new Set(tags);
+      tags = [...new Set(tags)].filter(tag => this.isValidSemver(tag)).sort((a, b) => -this.compareSemver(a, b));
       
       return tags;
       
@@ -629,7 +823,7 @@ class KymaSetup {
       }
     });
     const data = JSON.parse(response);
-    return (data.tags || []).filter(tag => this.isValidSemver(tag));
+    return data.tags || [];
   }
 
   /**
@@ -846,15 +1040,55 @@ class KymaSetup {
     });
   }
 
+  /** Identifies a registry lookup; the password only as a hash (never kept or shown in clear). */
+  registryLookupKey(config) {
+    const password = config.dockerPassword
+      ? crypto.createHash('sha256').update(String(config.dockerPassword)).digest('hex')
+      : '';
+    return JSON.stringify([config.registry, config.organization, config.dockerUsername || '', password]);
+  }
+
   /**
    * Select image version with digest support
    */
   async selectImageVersion(config) {
-    const availableTags = await this.fetchImageTags(config);
+    // Read-only registry lookups run once per registry, organization and
+    // credentials in a session; listedTags (validateCustomTag) goes with them.
+    const lookupKey = this.registryLookupKey(config);
+    const listing = await this.once(`image-tags:${lookupKey}`, async () => {
+      const tags = await this.fetchImageTags(config);
+      return { tags, listedTags: this.listedTags };
+    });
+    const availableTags = listing.tags;
+    this.listedTags = listing.listedTags;
+    const registryLabel = `${config.registry}/${config.organization}`;
     
     let selectedVersion;
     let useDigests = false;
     const imageDigests = {};
+    // A re-run's current image tag (loadCurrentValues): the listed version, else a custom one.
+    let currentTag = this.session ? this.session.current.imageTag : undefined;
+    // Images pinned by digest carry no tag: the listed tag with that digest is the current
+    // version (read-only lookups, cached like the digest fetch below). Without a match the
+    // version must be chosen explicitly - never default to the newest one.
+    let pinnedUnmatched = false;
+    const pinned = this.session ? this.session.current.imageDigest : undefined;
+    if (currentTag === undefined && pinned && availableTags.length > 0) {
+      const [image, digest] = pinned.split('@');
+      for (const tag of availableTags) {
+        const tagDigest = await this.once(`image-digest:${lookupKey}:${image}:${tag}`, () =>
+          this.fetchImageDigest(config, image, tag)
+        );
+        if (tagDigest === digest) {
+          currentTag = tag;
+          break;
+        }
+      }
+      if (currentTag === undefined) {
+        pinnedUnmatched = true;
+        console.log(`ℹ️  The current ${image} image is pinned by a digest that none of the listed versions has; choose the version explicitly.`);
+      }
+    }
     
     if (availableTags.length > 0) {
       console.log('\nChoose image version:');
@@ -866,39 +1100,29 @@ class KymaSetup {
       
       choices.push({ name: 'Enter custom version...', value: 'custom' });
       
-      const { version } = await inquirer.prompt([
+      const { version } = await this.prompt([
         {
           type: 'list',
           name: 'version',
           message: 'Select version:',
-          choices: choices
+          choices: choices,
+          default: pinnedUnmatched ? 'custom' : currentTag === undefined ? undefined : (availableTags.includes(currentTag) ? currentTag : 'custom')
         }
       ]);
       
       if (version === 'custom') {
-        const { customVersion } = await inquirer.prompt([
+        const { customVersion } = await this.prompt([
           {
             type: 'input',
             name: 'customVersion',
-            message: 'Enter version (e.g., 1.2.3):',
-            validate: (input) => {
-              if (!this.isValidSemver(input)) {
-                return 'Please enter a valid semantic version (e.g., 1.2.3)';
-              }
-              
-              // Check if version is lower than lowest available
-              if (availableTags.length > 0) {
-                const lowestAvailable = availableTags[availableTags.length - 1];
-                if (this.compareSemver(input, lowestAvailable) < 0) {
-                  return `Version must be ${lowestAvailable} or higher`;
-                }
-              }
-              
-              return true;
-            }
+            message: 'Enter version or image tag (e.g., 1.2.3 or review-fixes-d697e0eb):',
+            default: currentTag,
+            validate: (input) => this.validateCustomTag(input, availableTags, registryLabel),
+            filter: (input) => String(input || '').trim()
           }
         ]);
         selectedVersion = customVersion;
+        this.warnIfTagUnverified(selectedVersion, registryLabel);
       } else {
         selectedVersion = version;
         useDigests = true; // Use digests for available versions
@@ -906,21 +1130,18 @@ class KymaSetup {
       
     } else {
       // No tags found, ask for manual version
-      const { customVersion } = await inquirer.prompt([
+      const { customVersion } = await this.prompt([
         {
           type: 'input',
           name: 'customVersion',
-          message: 'Enter image version (e.g., 1.0.0):',
-          default: '1.0.0',
-          validate: (input) => {
-            if (!this.isValidSemver(input)) {
-              return 'Please enter a valid semantic version (e.g., 1.0.0)';
-            }
-            return true;
-          }
+          message: 'Enter image version or tag (e.g., 1.0.0 or review-fixes-d697e0eb):',
+          default: currentTag || '1.0.0',
+          validate: (input) => this.validateCustomTag(input, availableTags, registryLabel),
+          filter: (input) => String(input || '').trim()
         }
       ]);
       selectedVersion = customVersion;
+      this.warnIfTagUnverified(selectedVersion, registryLabel);
     }
     
     // If using digests, fetch them for all three images
@@ -929,7 +1150,9 @@ class KymaSetup {
       const images = ['sail-proxy-admin', 'sail-proxy-gateway', 'sail-proxy-nginx'];
       
       for (const image of images) {
-        const digest = await this.fetchImageDigest(config, image, selectedVersion);
+        const digest = await this.once(`image-digest:${lookupKey}:${image}:${selectedVersion}`, () =>
+          this.fetchImageDigest(config, image, selectedVersion)
+        );
         if (digest) {
           imageDigests[image] = digest;
           console.log(`✅ ${image}@${digest.substring(0, 19)}...`);
@@ -993,18 +1216,378 @@ class KymaSetup {
     return envVars;
   }
 
+  /**
+   * Read-only kubectl (`get`, or one of the two config reads) - see
+   * kubectl-read.js, shared with deploy-kyma.js. A method so tests can mock it.
+   */
+  runKubectl(args) {
+    return runKubectlRead(args);
+  }
+
+  /** Current kube context and its cluster server, for display; 'unknown' when unreadable. */
+  describeKubeContext() {
+    const read = (args) => {
+      try {
+        return String(this.runKubectl(args)).trim() || 'unknown';
+      } catch (error) {
+        return 'unknown';
+      }
+    };
+    return { context: read(KUBECTL_CONFIG_READS[0]), server: read(KUBECTL_CONFIG_READS[1]) };
+  }
+
+  /**
+   * Carry the encryption keys of an existing namespace over instead of
+   * generating new ones. They protect data the running deployment has
+   * stored - AWS credentials, SIEM sink credentials, issued tokens - so a
+   * rotation would make it unreadable. Read-only (`kubectl get`); values are
+   * never printed.
+   *
+   * - namespace does not exist: nothing to carry, generateSecrets makes new keys
+   * - namespace exists: every key present in the live Secrets is reused verbatim
+   *   (SIEM_CREDENTIAL_KEY from admin-env, or admin-config for a deployment made
+   *   before it moved into the Secret); missing ones are generated
+   * - kubectl cannot tell, or cannot read the Secrets: stop - never rotate
+   *   silently. --ci keeps generating when the cluster is unreachable.
+   */
+  async loadExistingKeys() {
+    const namespace = this.namespace;
+    // The cluster is read once per namespace and session (Back / review jumps
+    // do not read again); the questions about what was found are asked here.
+    const live = await this.once(`existing-keys:${namespace}`, () => this.readExistingKeys());
+
+    if (live.state === 'absent') {
+      await this.confirmNewNamespace(live.kubeContext);
+      return { carried: [] };
+    }
+    if (live.state === 'unreachable') {
+      const { context, server } = live.kubeContext;
+      console.log(`🤖 CI Mode: cluster not reachable (${live.reason}; context ${context}, server ${server}) - generating new encryption keys\n`);
+      return { carried: [] };
+    }
+
+    if (live.absentKeySecrets.length > 0) {
+      await this.confirmGenerateInExistingNamespace(live.absentKeySecrets);
+    }
+
+    Object.assign(this.sharedSecrets, live.found);
+    if (live.db) {
+      this.liveDbCredentials = live.db;
+      console.log(`🔑 Namespace ${namespace} exists - carrying over its Postgres credentials`);
+    }
+    if (live.runtime) {
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_USER = live.runtime.user;
+      this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD = live.runtime.password;
+    }
+    if (live.s3) {
+      this.liveS3Env = live.s3;
+      console.log(`🔑 Namespace ${namespace} has a ${S3_ENV_SECRET} Secret - carrying over its values`);
+    }
+    const carried = Object.keys(live.found);
+    const missing = [...new Set(Object.values(LIVE_SECRET_KEYS).flat())].filter(k => !live.found[k]);
+    console.log(`🔑 Namespace ${namespace} exists - carrying over its encryption keys: ${carried.join(', ') || 'none found'}`);
+    if (missing.length > 0) {
+      console.log(`   Not found in the live namespace, generated new: ${missing.join(', ')}`);
+    }
+    console.log('');
+    return { carried };
+  }
+
+  /**
+   * The read-only half of loadExistingKeys: what the live namespace holds,
+   * without asking or changing anything. Returns
+   * - { state: 'absent', kubeContext } - the namespace does not exist
+   * - { state: 'unreachable', kubeContext, reason } - --ci only, cluster unreachable
+   * - { state: 'exists', found, absentKeySecrets, db, runtime, s3, secrets }
+   *   (secrets: the data of every Secret read, by name - the source of the current values a
+   *   re-run falls back to; never printed)
+   * and throws where setup must stop. --ci stops on an absent key Secret
+   * right here, before reading further, as it always has.
+   */
+  async readExistingKeys() {
+    const namespace = this.namespace;
+    // isServerNotFound / isUnreachable (kubectl-read.js): only the API
+    // server's own NotFound for exactly this object means "absent", and --ci
+    // treats the cluster as unreachable only when it positively is.
+
+    try {
+      this.runKubectl(['get', 'namespace', namespace, '-o', 'name']);
+    } catch (error) {
+      if (isServerNotFound(error, 'namespaces', namespace)) {
+        return { state: 'absent', kubeContext: this.describeKubeContext() };
+      }
+      if (this.ciMode && isUnreachable(error)) {
+        return { state: 'unreachable', kubeContext: this.describeKubeContext(), reason: stderrOf(error) };
+      }
+      throw new Error(
+        `Cannot tell whether namespace ${namespace} already exists (kubectl: ${stderrOf(error)}). ` +
+        'Its encryption keys must be carried over, not generated anew - an existing deployment would lose ' +
+        'access to its stored credentials. Point kubectl at the cluster (context, access) and run setup again.'
+      );
+    }
+
+    const readData = (kind, name) => {
+      try {
+        return readResourceData((args) => this.runKubectl(args), kind, name, namespace);
+      } catch (error) {
+        throw new Error(`${error.message} Refusing to generate new encryption keys for an existing deployment.`);
+      }
+    };
+
+    const secretCache = {};
+    const absentSecrets = [];
+    const secretData = (name) => {
+      if (!(name in secretCache)) {
+        const data = readData('secret', name);
+        if (data === null) absentSecrets.push(name);
+        secretCache[name] = data || {};
+      }
+      return secretCache[name];
+    };
+
+    const found = {};
+    for (const [secret, keys] of Object.entries(LIVE_SECRET_KEYS)) {
+      const data = secretData(secret);
+      for (const key of keys) {
+        if (!data[key]) continue;
+        if (found[key] !== undefined && found[key] !== data[key]) {
+          throw new Error(
+            `The live Secrets in namespace ${namespace} disagree on ${key} (admin-env vs gateway-env). ` +
+            'Resolve that first; setup will not pick one.'
+          );
+        }
+        found[key] = data[key];
+      }
+    }
+    // An existing namespace whose admin-env or gateway-env is gone would get
+    // new keys for everything that Secret held - never quietly. --ci stops
+    // here; interactively loadExistingKeys asks.
+    const absentKeySecrets = Object.keys(LIVE_SECRET_KEYS).filter(name => absentSecrets.includes(name));
+    if (absentKeySecrets.length > 0 && this.ciMode) {
+      await this.confirmGenerateInExistingNamespace(absentKeySecrets);
+    }
+
+    // Deployed before SIEM_CREDENTIAL_KEY moved into admin-env, it is only in
+    // admin-config; during the move it can be in both, and then must agree.
+    const configMapSiem = (readData('configmap', 'admin-config') || {}).SIEM_CREDENTIAL_KEY;
+    if (configMapSiem) {
+      if (found.SIEM_CREDENTIAL_KEY && found.SIEM_CREDENTIAL_KEY !== configMapSiem) {
+        throw new Error(
+          `The live admin-env Secret and admin-config ConfigMap in namespace ${namespace} disagree on ` +
+          'SIEM_CREDENTIAL_KEY. Resolve that first; setup will not pick one.'
+        );
+      }
+      found.SIEM_CREDENTIAL_KEY = configMapSiem;
+    }
+
+    const { db, runtime } = this.readLiveDbCredentials(secretData);
+    const s3 = this.readLiveS3Env();
+    return { state: 'exists', found, absentKeySecrets, db, runtime, s3, secrets: { ...secretCache } };
+  }
+
+  /**
+   * The Postgres credentials of the live namespace: the volume keeps the user
+   * and password it was initialised with, so a re-run must render exactly
+   * those. Sources, which must all agree where present: postgres-env
+   * (POSTGRES_USER/PASSWORD), admin-env (DATABASE_URL and
+   * cds.requires.db.credentials.password) and gateway-migration-env
+   * (FILE_SEARCH_MIGRATION_DATABASE_URL). The file_search runtime role's
+   * credentials (gateway-env FILE_SEARCH_DATABASE_URL) are carried too, so
+   * running gateway pods keep working while new ones start. Never printed.
+   * @returns {{ db: object|null, runtime: object|null }}
+   */
+  readLiveDbCredentials(secretData) {
+    const namespace = this.namespace;
+    const parseUrl = (url, encoded) => {
+      const match = /^postgres(?:ql)?:\/\/(.*)@[^@]*$/.exec(url || '');
+      if (!match) return null;
+      const separator = match[1].indexOf(':');
+      if (separator < 0) return null;
+      const decode = encoded ? decodeURIComponent : (v) => v;
+      return { user: decode(match[1].slice(0, separator)), password: decode(match[1].slice(separator + 1)) };
+    };
+
+    const postgres = secretData('postgres-env');
+    const admin = secretData('admin-env');
+    const migration = secretData('gateway-migration-env');
+    const sources = [
+      ['postgres-env', { user: postgres.POSTGRES_USER, password: postgres.POSTGRES_PASSWORD }],
+      ['admin-env DATABASE_URL', parseUrl(admin.DATABASE_URL, false)],
+      ['admin-env cds.requires.db.credentials.password', { password: admin['cds.requires.db.credentials.password'] }],
+      ['gateway-migration-env', parseUrl(migration.FILE_SEARCH_MIGRATION_DATABASE_URL, true)]
+    ];
+
+    let user;
+    let password;
+    for (const [source, creds] of sources) {
+      if (!creds) continue;
+      for (const [field, value] of [['user', creds.user], ['password', creds.password]]) {
+        if (!value) continue;
+        const current = field === 'user' ? user : password;
+        if (current !== undefined && current !== value) {
+          throw new Error(
+            `The live Secrets in namespace ${namespace} disagree on the Postgres credentials (${field}, at ${source}). ` +
+            'Resolve that first; setup will not pick one.'
+          );
+        }
+        if (field === 'user') user = value; else password = value;
+      }
+    }
+
+    let db = null;
+    if (user && password) {
+      db = { POSTGRES_USER: user, POSTGRES_PASSWORD: password };
+    } else if (user || password) {
+      throw new Error(
+        `The live Secrets in namespace ${namespace} hold only part of the Postgres credentials. ` +
+        'Resolve that first; setup will not guess the rest.'
+      );
+    }
+
+    const parsed = parseUrl(secretData('gateway-env').FILE_SEARCH_DATABASE_URL, true);
+    const runtime = parsed && parsed.user && parsed.password ? parsed : null;
+    return { db, runtime };
+  }
+
+  /**
+   * The optional gateway-s3-env Secret (file_search blobs in S3): the operator
+   * creates it by hand, so nothing here generates it. A re-run renders the
+   * live values unchanged as gateway-s3-env.yaml, which deploy-kyma.js applies
+   * like the other Secrets; without this the rendered secrets would be all a
+   * re-run knows, and an operator restoring from them would lose the keys.
+   * Absent: nothing is rendered and the gateway runs without S3 credentials.
+   * Never printed.
+   * @returns {object|null} the values to carry over
+   */
+  readLiveS3Env() {
+    let data;
+    try {
+      data = readResourceData((args) => this.runKubectl(args), 'secret', S3_ENV_SECRET, this.namespace);
+    } catch (error) {
+      throw new Error(`${error.message} Cannot carry over the file_search S3 credentials; fix access and run setup again.`);
+    }
+    if (!data) return null;
+    const values = {};
+    for (const key of S3_ENV_KEYS) {
+      if (data[key]) values[key] = data[key];
+    }
+    return Object.keys(values).length === 0 ? null : values;
+  }
+
+  /** The gateway-s3-env Secret manifest for the carried-over values, or null. */
+  renderS3EnvSecret(namespace) {
+    if (!this.liveS3Env) return null;
+    const lines = S3_ENV_KEYS.filter((key) => this.liveS3Env[key])
+      .map((key) => `  ${key}: ${this.yamlQuote(this.liveS3Env[key])}`);
+    return `apiVersion: v1
+kind: Secret
+metadata:
+  name: ${S3_ENV_SECRET}
+  namespace: ${namespace}
+type: Opaque
+stringData:
+${lines.join('\n')}
+`;
+  }
+
+  /**
+   * An existing namespace's Postgres volume only accepts the credentials it
+   * was created with. Anything else stops the setup; values are not printed.
+   */
+  assertDbCredentialsMatchLive(dbConfig) {
+    const live = this.liveDbCredentials;
+    if (!live) return;
+    if (dbConfig.POSTGRES_USER !== live.POSTGRES_USER || dbConfig.POSTGRES_PASSWORD !== live.POSTGRES_PASSWORD) {
+      throw new Error(
+        `Namespace ${this.namespace} already has a Postgres database, and its volume keeps the user and password ` +
+        'it was created with - different credentials cannot work. Leave the database prompts at their defaults ' +
+        '(empty password) to keep the existing credentials.'
+      );
+    }
+  }
+
+  /**
+   * The namespace does not exist on the current context: show which context
+   * and cluster that is - a wrong context would otherwise look like a new
+   * namespace - and, interactively, ask before generating new keys.
+   */
+  async confirmNewNamespace({ context, server } = this.describeKubeContext()) {
+    console.log(`🔑 Namespace ${this.namespace} does not exist yet on kube context ${context} (${server})`);
+    if (!this.ciMode) {
+      const { confirmNewNamespace } = await this.prompt([
+        {
+          type: 'confirm',
+          name: 'confirmNewNamespace',
+          message: `Is this the right cluster? Generate new encryption keys and database credentials for namespace ${this.namespace}?`,
+          default: false
+        }
+      ]);
+      if (!confirmNewNamespace) {
+        throw new Error(
+          `Setup stopped: namespace ${this.namespace} was not found on kube context ${context}. ` +
+          'Switch to the right context and run setup again.'
+        );
+      }
+    }
+    console.log(`   Generating new encryption keys for namespace ${this.namespace}\n`);
+  }
+
+  /**
+   * Namespace exists, but a Secret holding its keys does not: generating
+   * would replace keys the deployment may still have data encrypted with.
+   * Interactive: ask (default no). --ci: stop.
+   */
+  async confirmGenerateInExistingNamespace(absentKeySecrets) {
+    const names = absentKeySecrets.join(', ');
+    const message = `Namespace ${this.namespace} exists but has no ${names} Secret, so its encryption keys ` +
+      'would be generated anew - data the deployment stored with the old keys would become unreadable.';
+    if (this.ciMode) {
+      throw new Error(`${message} Stopping (--ci never generates keys for an existing namespace).`);
+    }
+    console.log(`⚠️  ${message}`);
+    const { confirmGenerateInExistingNamespace } = await this.prompt([
+      {
+        type: 'confirm',
+        name: 'confirmGenerateInExistingNamespace',
+        message: `Generate new keys for the ones missing from ${names} in namespace ${this.namespace}?`,
+        default: false
+      }
+    ]);
+    if (!confirmGenerateInExistingNamespace) {
+      throw new Error(`Setup stopped: namespace ${this.namespace} has no ${names} Secret and new keys were not confirmed.`);
+    }
+  }
+
   generateSecrets() {
+    // Each key only when missing: loadExistingKeys may already have carried
+    // some over from the live namespace, and those must never be replaced.
+    // Core service secrets (64 chars hex each)
     if (!this.sharedSecrets.VALIDATION_TOKEN_SECRET) {
-      // Core service secrets (64 chars hex each)
       this.sharedSecrets.VALIDATION_TOKEN_SECRET = this.generateSecureToken();
+    }
+    if (!this.sharedSecrets.METADATA_ENCRYPTION_KEY) {
       this.sharedSecrets.METADATA_ENCRYPTION_KEY = this.generateSecureToken();
+    }
+    if (!this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY) {
       this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY = this.generateSecureToken();
-      
-      // OAuth2 Proxy secrets (matching current hardcoded lengths)
+    }
+    // Encrypts the admin's SiemCredentials rows (admin-env Secret).
+    if (!this.sharedSecrets.SIEM_CREDENTIAL_KEY) {
+      this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSiemCredentialKey();
+    }
+    // Encrypts the admin's ConnectionCredentials rows (admin-env Secret); same shape as the SIEM key.
+    if (!this.sharedSecrets.CONNECTION_CREDENTIAL_KEY) {
+      this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = this.generateSiemCredentialKey();
+    }
+
+    // OAuth2 Proxy secrets (matching current hardcoded lengths)
+    if (!this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET) {
       this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET = this.generateOAuth2ClientSecret(); // 64 chars
+    }
+    if (!this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET) {
       this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET = this.generateOAuth2CookieSecret(); // 32 chars
     }
-    
+
     // Database password: only generate if not already set by user
     if (!this.sharedSecrets.POSTGRES_PASSWORD) {
       this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
@@ -1099,7 +1682,7 @@ class KymaSetup {
           return existingConfig;
         }
         
-        const { useExisting } = await inquirer.prompt([
+        const { useExisting } = await this.prompt([
           {
             type: 'confirm',
             name: 'useExisting',
@@ -1112,35 +1695,11 @@ class KymaSetup {
           console.log('\n🔄 Using existing configuration from gateway .env file');
           return existingConfig;
         } else {
-          console.log('\n⚠️  WARNING: Providing new configuration will delete existing .env files!');
-          console.log('   This ensures docker/setup-docker.js creates fresh configuration.');
-          
-          const { confirmDelete } = await inquirer.prompt([
-            {
-              type: 'confirm',
-              name: 'confirmDelete',
-              message: 'Delete services/gateway/.env and services/admin/.env files?',
-              default: false
-            }
-          ]);
-          
-          if (confirmDelete) {
-            // Delete existing .env files
-            const adminEnvPath = path.join(this.projectRoot, 'services/admin/.env');
-            if (fs.existsSync(gatewayEnvPath)) {
-              fs.unlinkSync(gatewayEnvPath);
-              console.log('   ✅ Deleted services/gateway/.env');
-            }
-            if (fs.existsSync(adminEnvPath)) {
-              fs.unlinkSync(adminEnvPath);
-              console.log('   ✅ Deleted services/admin/.env');
-            }
-            console.log('');
-          } else {
-            console.log('\n❌ Cannot proceed without deleting existing .env files.');
-            console.log('   Please manually delete them and run setup again.');
-            process.exit(1);
-          }
+          // Nothing to delete: every Kyma render starts from fresh .env files
+          // (see withLocalConfigRestored in generateManifests), and the
+          // local ones are restored afterwards.
+          console.log('\nℹ️  The Kyma configuration is built from fresh .env files; your local');
+          console.log('   services/gateway/.env and services/admin/.env are left as they are.');
         }
       }
     }
@@ -1153,7 +1712,7 @@ class KymaSetup {
       return envConfig;
     }
     
-    const { configMethod } = await inquirer.prompt([
+    const { configMethod } = await this.prompt([
       {
         type: 'list',
         name: 'configMethod',
@@ -1171,7 +1730,7 @@ class KymaSetup {
     }
     
     if (configMethod === 'json') {
-      const { serviceKeyJson } = await inquirer.prompt([
+      const { serviceKeyJson } = await this.prompt([
         {
           type: 'editor',
           name: 'serviceKeyJson',
@@ -1213,7 +1772,7 @@ class KymaSetup {
       }
     } else {
       // Manual entry
-      const sapConfig = await inquirer.prompt([
+      const sapConfig = await this.prompt([
         {
           type: 'input',
           name: 'SAP_AI_CORE_URL',
@@ -1261,8 +1820,18 @@ class KymaSetup {
    * @returns {Object} Database configuration object
    */
   async promptForDatabaseCredentials() {
+    if (this.ciMode && this.liveDbCredentials) {
+      console.log('🤖 CI Mode: using the database credentials of the existing namespace');
+      this.sharedSecrets.POSTGRES_PASSWORD = this.liveDbCredentials.POSTGRES_PASSWORD;
+      return { ...this.liveDbCredentials, useGeneratedSecrets: false, passwordWasGenerated: false };
+    }
     if (this.ciMode) {
-      // CI mode: use secure generated defaults
+      // CI mode: use secure generated defaults. This runs before
+      // generateSecrets, so the password must be generated here - it used to
+      // be read while still unset and rendered as an empty password.
+      if (!this.sharedSecrets.POSTGRES_PASSWORD) {
+        this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
+      }
       return {
         POSTGRES_USER: 'admin_user',
         POSTGRES_PASSWORD: this.sharedSecrets.POSTGRES_PASSWORD,
@@ -1276,30 +1845,13 @@ class KymaSetup {
     console.log('💡 Tip: Leave password empty to auto-generate a secure random password');
     
     // First, get the username
-    const usernameConfig = await inquirer.prompt([
+    const usernameConfig = await this.prompt([
       {
         type: 'input',
         name: 'POSTGRES_USER',
         message: 'Database username:',
-        default: 'admin_user',
-        validate: (input) => {
-          if (!input || input.trim().length === 0) {
-            return 'Database username is required';
-          }
-          // PostgreSQL identifier rules
-          if (!/^[a-zA-Z_][a-zA-Z0-9_$]*$/.test(input)) {
-            return 'Username must start with a letter or underscore, followed by letters, numbers, underscores, or dollar signs';
-          }
-          // PostgreSQL restriction: role names cannot start with "pg_"
-          if (input.toLowerCase().startsWith('pg_')) {
-            return 'Username cannot start with "pg_" (reserved for PostgreSQL system roles)';
-          }
-          // Length limit (PostgreSQL NAMEDATALEN = 63 bytes)
-          if (input.length > 63) {
-            return 'Username cannot exceed 63 characters';
-          }
-          return true;
-        }
+        default: this.liveDbCredentials ? this.liveDbCredentials.POSTGRES_USER : 'admin_user',
+        validate: validateDatabaseUsername
       }
     ]);
 
@@ -1308,12 +1860,15 @@ class KymaSetup {
     let passwordConfirmed = false;
     
     while (!passwordConfirmed) {
-      passwordConfig = await inquirer.prompt([
+      passwordConfig = await this.prompt([
         {
           type: 'password',
           name: 'POSTGRES_PASSWORD',
-          message: 'Database password (leave empty for auto-generated):',
+          message: this.liveDbCredentials
+            ? 'Database password (leave empty to keep the existing one):'
+            : 'Database password (leave empty for auto-generated):',
           mask: '*',
+          review: false, // one review entry for the password step, see recordDatabasePassword
           validate: (input) => {
             if (input && input.length > 0 && input.length < 8) {
               return 'Password must be at least 8 characters long if provided';
@@ -1333,12 +1888,13 @@ class KymaSetup {
       }
       
       // User provided a password - require confirmation
-      const confirmConfig = await inquirer.prompt([
+      const confirmConfig = await this.prompt([
         {
           type: 'password',
           name: 'POSTGRES_PASSWORD_CONFIRM',
           message: 'Confirm database password:',
-          mask: '*'
+          mask: '*',
+          review: false
         }
       ]);
       
@@ -1358,15 +1914,32 @@ class KymaSetup {
       ...passwordConfig
     };
 
+    // An existing namespace keeps its credentials: empty means "the live
+    // password", anything that differs from it stops the setup.
+    if (this.liveDbCredentials) {
+      if (!dbConfig.POSTGRES_PASSWORD || dbConfig.POSTGRES_PASSWORD.trim().length === 0) {
+        dbConfig.POSTGRES_PASSWORD = this.liveDbCredentials.POSTGRES_PASSWORD;
+      }
+      this.assertDbCredentialsMatchLive(dbConfig);
+      dbConfig.useGeneratedSecrets = false;
+      dbConfig.passwordWasGenerated = false;
+      this.recordDatabasePassword('set');
+      console.log('   ✅ Using the existing database credentials');
+      this.sharedSecrets.POSTGRES_PASSWORD = dbConfig.POSTGRES_PASSWORD;
+      return dbConfig;
+    }
+
     // Use generated password if user didn't provide one
     if (!dbConfig.POSTGRES_PASSWORD || dbConfig.POSTGRES_PASSWORD.trim().length === 0) {
-      dbConfig.POSTGRES_PASSWORD = this.generateDatabasePassword();
+      dbConfig.POSTGRES_PASSWORD = this.generatedOnce('POSTGRES_PASSWORD', () => this.generateDatabasePassword());
       dbConfig.useGeneratedSecrets = true;
       dbConfig.passwordWasGenerated = true;
-      console.log(`   ✅ Using auto-generated secure password: ${dbConfig.POSTGRES_PASSWORD}`);
+      this.recordDatabasePassword('generated');
+      console.log(`   ✅ Using auto-generated secure password: ${mask(dbConfig.POSTGRES_PASSWORD)}`);
     } else {
       dbConfig.useGeneratedSecrets = false;
       dbConfig.passwordWasGenerated = false;
+      this.recordDatabasePassword('new');
       console.log('   ✅ Using provided password');
     }
     
@@ -1374,6 +1947,19 @@ class KymaSetup {
     this.sharedSecrets.POSTGRES_PASSWORD = dbConfig.POSTGRES_PASSWORD;
 
     return dbConfig;
+  }
+
+  /** The review screen's one entry for the database password step: its origin, never the value. */
+  recordDatabasePassword(display) {
+    if (!this.session) return;
+    this.session.record({
+      id: 'POSTGRES_PASSWORD',
+      label: 'Database password',
+      value: display,
+      display,
+      secret: true,
+      changed: display !== 'set'
+    });
   }
 
   async fetchSamlCertificateFromMetadata(metadataUrl) {
@@ -1458,7 +2044,7 @@ class KymaSetup {
     
     console.log('Deployment Options:\n');
     
-    const { deploymentType } = await inquirer.prompt([
+    const { deploymentType } = await this.prompt([
       {
         type: 'list',
         name: 'deploymentType',
@@ -1503,7 +2089,7 @@ class KymaSetup {
       };
     });
 
-    const { provider } = await inquirer.prompt([
+    const { provider } = await this.prompt([
       {
         type: 'list',
         name: 'provider',
@@ -1586,7 +2172,7 @@ class KymaSetup {
     }
     
     // Collect all answers at once
-    const answers = await inquirer.prompt(inquirerPrompts);
+    const answers = await this.prompt(inquirerPrompts);
     
     // Process answers (similar to Docker setup)
     for (const [key, value] of Object.entries(answers)) {
@@ -1595,7 +2181,14 @@ class KymaSetup {
         if (answers.OKTA_METADATA_URL) {
           try {
             console.log('Auto-fetching SAML certificate from metadata...');
-            const metadataInfo = await this.fetchSamlCertificateFromMetadata(answers.OKTA_METADATA_URL);
+            const fetched = await this.once(`saml-metadata:${answers.OKTA_METADATA_URL}`, () =>
+              this.fetchSamlCertificateFromMetadata(answers.OKTA_METADATA_URL).then(
+                (info) => ({ info }),
+                (error) => ({ error })
+              )
+            );
+            if (fetched.error) throw fetched.error;
+            const metadataInfo = fetched.info;
             config[key] = metadataInfo.certificate;
             
             // Auto-populate SSO URL
@@ -1606,7 +2199,7 @@ class KymaSetup {
           } catch (error) {
             console.log(`❌ Auto-fetch failed: ${error.message}`);
             // Ask for manual input
-            const { manualCert } = await inquirer.prompt([
+            const { manualCert } = await this.prompt([
               {
                 type: 'editor',
                 name: 'manualCert',
@@ -1618,7 +2211,7 @@ class KymaSetup {
           }
         } else {
           console.log('❌ Metadata URL required for auto-fetch.');
-          const { manualCert } = await inquirer.prompt([
+          const { manualCert } = await this.prompt([
             {
               type: 'editor',
               name: 'manualCert',
@@ -1630,7 +2223,7 @@ class KymaSetup {
         }
       } else if (key === 'OKTA_SAML_CA_DATA' && value === 'manual') {
         // Ask for manual input
-        const { manualCert } = await inquirer.prompt([
+        const { manualCert } = await this.prompt([
           {
             type: 'editor',
             name: 'manualCert',
@@ -1678,7 +2271,7 @@ class KymaSetup {
       });
       
       // Collect external LDAP configuration
-      const externalAnswers = await inquirer.prompt(inquirerExternalPrompts);
+      const externalAnswers = await this.prompt(inquirerExternalPrompts);
       Object.assign(config, externalAnswers);
     }
     
@@ -1740,7 +2333,7 @@ class KymaSetup {
     
     console.log('\nContainer Registry Configuration:');
     
-    const config = await inquirer.prompt([
+    const config = await this.prompt([
       {
         type: 'list',
         name: 'registry',
@@ -1756,7 +2349,7 @@ class KymaSetup {
     ]);
     
     if (config.registry === 'custom' || config.registry === 'custom-acr') {
-      const { customRegistry } = await inquirer.prompt([
+      const { customRegistry } = await this.prompt([
         {
           type: 'input',
           name: 'customRegistry',
@@ -1771,7 +2364,7 @@ class KymaSetup {
       config.registry = customRegistry;
     }
     
-    const orgAndAuthConfig = await inquirer.prompt([
+    const orgAndAuthConfig = await this.prompt([
       {
         type: 'input',
         name: 'organization',
@@ -1790,11 +2383,29 @@ class KymaSetup {
     config.organization = orgAndAuthConfig.organization;
     config.imagePullSecrets = orgAndAuthConfig.imagePullSecrets;
     
-    // If image pull secrets are required, collect the credentials
+    // If image pull secrets are required, collect the credentials. A re-run offers the login
+    // stored in the namespace's registry-secret.yaml as current values, only for the registry it
+    // was made for: the session shows the token as set, Enter keeps it, and the review marks it
+    // set. A login answered for another registry (before Back or a review jump) is forgotten.
     let registryCredentials = {};
     if (config.imagePullSecrets) {
+      const stored = this.forceOverwrite ? null : readRegistrySecret(this.secretsDir);
+      const storedLogin = stored && stored.server === config.registry ? stored : null;
+      if (this.session) {
+        if (this.loginRegistry !== undefined && this.loginRegistry !== config.registry) {
+          this.session.forget(['dockerUsername', 'dockerPassword']);
+        }
+        this.loginRegistry = config.registry;
+        if (storedLogin) {
+          this.session.current.dockerUsername = storedLogin.username;
+          this.session.current.dockerPassword = storedLogin.password;
+        } else {
+          delete this.session.current.dockerUsername;
+          delete this.session.current.dockerPassword;
+        }
+      }
       console.log('\nDocker Registry Authentication:');
-      registryCredentials = await inquirer.prompt([
+      registryCredentials = await this.prompt([
         {
           type: 'input',
           name: 'dockerUsername',
@@ -1822,30 +2433,79 @@ class KymaSetup {
     };
   }
 
-  async getPublicConfig() {
-    if (this.ciMode) {
-      console.log('🤖 CI Mode: Using localhost for development\n');
-      return {
-        domain: 'sail-proxy',
-        clusterSubdomain: 'c-XXXXX',
-        ipAllowlist: [],
-        sccTunnel: true
-        // allowIstioSystemChanges not set - will skip IP restrictions in CI mode
-      };
+  /**
+   * A non-default namespace must not claim production's host: two
+   * VirtualServices for one host on the shared kyma-gateway would split
+   * production's traffic between the two deployments.
+   */
+  validateOwnHost(host) {
+    if (!isDefaultNamespace(this.namespace) && host === DEFAULT_NAMESPACE) {
+      return `"${host}" is production's host name; namespace ${this.namespace} needs a host of its own (e.g. ${this.namespace})`;
     }
-    
-    console.log('\nPublic HTTPS Configuration:');
-    
-    const config = await inquirer.prompt([
+    return true;
+  }
+
+  /**
+   * Does the shared Istio ingress gateway already have an ALLOW policy? Any
+   * ALLOW selecting it makes it deny-by-default for every host no ALLOW
+   * matches. Counts policies in istio-system whose action is ALLOW (Istio's
+   * default when unset) and that select the ingress gateway, or select
+   * nothing (istio-system is the root namespace: mesh-wide). Read-only
+   * (`kubectl get`); null when the policies cannot be read.
+   */
+  detectIngressAllowPolicies() {
+    try {
+      const items = JSON.parse(this.runKubectl(['get', 'authorizationpolicies', '-n', 'istio-system', '-o', 'json'])).items || [];
+      return items.some(policy => {
+        const spec = policy.spec || {};
+        const labels = (spec.selector && spec.selector.matchLabels) || null;
+        const selectsGateway = !labels || labels.istio === 'ingressgateway' || labels.app === 'istio-ingressgateway';
+        return (spec.action === undefined || spec.action === 'ALLOW') && selectsGateway;
+      });
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Shown at the IP allowlist prompt of a non-default namespace. On a gateway
+   * that already has ALLOW policies (production's IP allowlist, others) a new
+   * host without its own ALLOW is refused for everyone; only on a gateway
+   * without any does adding one make every other host deny-by-default.
+   * this.ingressHasAllowPolicies (detectIngressAllowPolicies) picks the
+   * sentence; unknown states the rule for both.
+   */
+  ipAllowlistWarning() {
+    if (isDefaultNamespace(this.namespace)) return null;
+    const needsOwn = `namespace ${this.namespace} NEEDS its own IP allowlist - enter the client IPs that should reach ` +
+      'it - or its host is refused for everyone.';
+    const locksOthers = `an IP allowlist here makes the gateway deny-by-default for every other host on the cluster, ` +
+      `production (${DEFAULT_NAMESPACE}) included, unless another allowlist admits their clients.`;
+    if (this.ingressHasAllowPolicies === true) {
+      return `⚠️  The shared Istio ingress gateway already has ALLOW policies (e.g. production's IP allowlist), so ` +
+        `it is deny-by-default:\n  ${needsOwn}`;
+    }
+    if (this.ingressHasAllowPolicies === false) {
+      return `⚠️  The shared Istio ingress gateway has no ALLOW policies yet: ${locksOthers}`;
+    }
+    return `⚠️  If the shared ingress gateway already has ALLOW policies (e.g. production uses an IP allowlist), ` +
+      `${needsOwn}\n  Only on a gateway with no ALLOW policies does adding one make every other host on the ` +
+      `cluster, production (${DEFAULT_NAMESPACE}) included, deny-by-default.`;
+  }
+
+  publicConfigQuestions() {
+    return [
       {
         type: 'input',
         name: 'domain',
         message: 'APIRule host name (e.g., sail-proxy):',
-        default: 'sail-proxy',
+        // A second namespace needs a host of its own: two VirtualServices for
+        // one host on the shared kyma-gateway would split production's traffic.
+        default: this.namespace,
         validate: (input) => {
           if (!input.trim()) return 'Domain is required';
           const validation = validateRFC1123Label(input.trim());
-          return validation === true ? true : validation;
+          return validation === true ? this.validateOwnHost(input.trim()) : validation;
         }
       },
       {
@@ -1862,7 +2522,8 @@ class KymaSetup {
       {
         type: 'input',
         name: 'ipAllowlist',
-        message: 'IP allowlist (comma-separated CIDRs, e.g., 198.51.100.0/24,203.0.113.12/32):',
+        message: (this.ipAllowlistWarning() ? `${this.ipAllowlistWarning()}\n  ` : '') +
+          'IP allowlist (comma-separated CIDRs, e.g., 198.51.100.0/24,203.0.113.12/32):',
         default: '',
         validate: (input) => {
           if (!input.trim()) return true; // Allow empty (no IP restrictions)
@@ -1890,7 +2551,28 @@ class KymaSetup {
         message: 'Does this cluster use the SAP Cloud Connector / Connectivity Proxy tunnel? (keeps cp.* reachable)',
         default: true
       }
-    ]);
+    ];
+  }
+
+  async getPublicConfig() {
+    if (this.ciMode) {
+      console.log('🤖 CI Mode: Using localhost for development\n');
+      return {
+        domain: this.namespace,
+        clusterSubdomain: 'c-XXXXX',
+        ipAllowlist: [],
+        sccTunnel: true
+        // allowIstioSystemChanges not set - will skip IP restrictions in CI mode
+      };
+    }
+    
+    console.log('\nPublic HTTPS Configuration:');
+    if (!isDefaultNamespace(this.namespace)) {
+      // Picks the IP allowlist warning that applies to this cluster.
+      this.ingressHasAllowPolicies = await this.once('ingress-allow-policies', () => this.detectIngressAllowPolicies());
+    }
+
+    const config = await this.prompt(this.publicConfigQuestions());
     
     // Process IP allowlist
     config.ipAllowlist = config.ipAllowlist 
@@ -1909,7 +2591,19 @@ class KymaSetup {
 
   async generateManifests(deploymentType, provider, providerConfig, publicConfig, containerConfig, dbConfig, sapConfig) {
     console.log('\nGenerating Kubernetes manifests...\n');
-    
+
+    // Never render other database credentials than the live namespace's.
+    this.assertDbCredentialsMatchLive(dbConfig || {});
+
+    // Also enforced here, not only at the prompt, so no path (--ci included)
+    // renders a second namespace onto production's host.
+    if (deploymentType === 'public' && publicConfig) {
+      const hostValidation = this.validateOwnHost(publicConfig.domain);
+      if (hostValidation !== true) {
+        throw new Error(hostValidation);
+      }
+    }
+
     // Generate shared secrets
     this.generateSecrets();
     
@@ -1964,9 +2658,14 @@ class KymaSetup {
       await this.createNetworkingManifests(config);
     }
     
-    // Run setup-docker.js with matching configuration to prepare nginx build
-    await this.runDockerSetup(config);
-    
+    // Run setup-docker.js with matching configuration to prepare nginx build.
+    // It writes the checkout's local .env/docker files; put them back once the
+    // ConfigMaps have been built from them.
+    await this.withLocalConfigRestored(async () => {
+      this.removeServiceEnvFiles();
+      await this.runDockerSetup(config);
+    });
+
     return config;
   }
 
@@ -2008,7 +2707,7 @@ stringData:
     // the separate gateway-migration-env Secret below, consumed only by
     // the gateway Deployment's migrate-file-search initContainer — never
     // by the long-running `gateway` container. See
-    // docs/developer/chapter-14-release.md.
+    // docs/developer/release.md.
     let gatewayEnvData = `VALKEY_URL: redis://valkey:6379
 PORT: "8080"
 DEPLOY_TARGET: docker
@@ -2052,19 +2751,26 @@ stringData:
 `;
 
     // Admin secret
-    const adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway`)}
+    let adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway`)}
 VALKEY_URL: redis://valkey:6379
 PORT: "4004"
 VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
 METADATA_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}
 AWS_SECRET_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY)}
+SIEM_CREDENTIAL_KEY: ${this.yamlQuote(this.sharedSecrets.SIEM_CREDENTIAL_KEY)}
+CONNECTION_CREDENTIAL_KEY: ${this.yamlQuote(this.sharedSecrets.CONNECTION_CREDENTIAL_KEY)}
 cds.requires.db.credentials.password: ${this.yamlQuote(config.POSTGRES_PASSWORD)}
 ROLE_MAPPING: ${this.yamlQuote(config.ROLE_MAPPING || '{}')}
 IDENTITY_PROVIDER: ${this.yamlQuote(config.provider || 'github')}
 JWT_ISSUER: ${this.yamlQuote(`${config.baseUrl}/dex`)}
 BASE_URL: ${this.yamlQuote(config.baseUrl)}
 LOGOUT_REDIRECT_URL: ${this.yamlQuote(`${config.baseUrl}/admin/app/shell/`)}`;
-    
+    // Billing answers (interactive runs only): the admin reads them from its environment.
+    if (this.billing) {
+      adminEnvData += BILLING_KEYS.filter((key) => this.billing[key] !== undefined)
+        .map((key) => `\n${key}: ${this.yamlQuote(this.billing[key])}`).join('');
+    }
+
     const adminSecret = `apiVersion: v1
 kind: Secret
 metadata:
@@ -2075,8 +2781,9 @@ stringData:
 ${adminEnvData.split('\n').map(line => '  ' + line).join('\n')}
 `;
     
-    // OAuth2-Proxy secret - cookie-secret must be exactly 32 bytes for AES-256
-    const cookieSecret = this.generateSecureToken().substring(0, 32);
+    // OAuth2-Proxy secret - cookie-secret must be exactly 32 bytes for AES-256. A re-run keeps
+    // the earlier render's value (loadCurrentSecrets); a new one signs every user out.
+    const cookieSecret = this.currentSecrets.OAUTH2_PROXY_COOKIE_SECRET || this.generateSecureToken().substring(0, 32);
     const oauth2ProxySecret = `apiVersion: v1
 kind: Secret
 metadata:
@@ -2089,18 +2796,41 @@ stringData:
 `;
     
     // Ensure directories exist
-    fs.mkdirSync(path.join(this.templatesDir, 'secrets'), { recursive: true });
-    fs.mkdirSync(path.join(this.templatesDir, 'configmaps'), { recursive: true });
+    fs.mkdirSync(this.secretsDir, { recursive: true });
+    fs.mkdirSync(this.configmapsDir, { recursive: true });
     
     // Write secrets
-    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'postgres-env.yaml'), postgresSecret);
-    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'gateway-env.yaml'), gatewaySecret);
-    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'gateway-migration-env.yaml'), gatewayMigrationSecret);
-    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'admin-env.yaml'), adminSecret);
-    fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'oauth2-proxy-secrets.yaml'), oauth2ProxySecret);
-    
+    fs.writeFileSync(path.join(this.secretsDir, 'postgres-env.yaml'), postgresSecret);
+    fs.writeFileSync(path.join(this.secretsDir, 'gateway-env.yaml'), gatewaySecret);
+    fs.writeFileSync(path.join(this.secretsDir, 'gateway-migration-env.yaml'), gatewayMigrationSecret);
+    fs.writeFileSync(path.join(this.secretsDir, 'admin-env.yaml'), adminSecret);
+    fs.writeFileSync(path.join(this.secretsDir, 'oauth2-proxy-secrets.yaml'), oauth2ProxySecret);
+    const s3EnvSecret = this.renderS3EnvSecret(config.namespace);
+    const s3EnvPath = path.join(this.secretsDir, `${S3_ENV_SECRET}.yaml`);
+    if (s3EnvSecret) {
+      fs.writeFileSync(s3EnvPath, s3EnvSecret);
+    } else if (fs.existsSync(s3EnvPath)) {
+      // No live gateway-s3-env: a file left by an earlier render would make deploy-kyma.js re-apply
+      // credentials that were deleted from the cluster.
+      fs.unlinkSync(s3EnvPath);
+      console.log(`🧹 Removed the stale rendered ${S3_ENV_SECRET}.yaml (the namespace has no ${S3_ENV_SECRET} Secret)`);
+    }
+
     // Create image pull secret if needed
-    if (config.imagePullSecrets) {
+    const registrySecretFile = path.join(this.secretsDir, REGISTRY_SECRET_FILE);
+    const registryTemplateFile = path.join(this.secretsDir, 'registry-secret.yaml.template');
+    if (!config.imagePullSecrets) {
+      // A registry that no longer needs a pull secret leaves no token behind.
+      fs.rmSync(registrySecretFile, { force: true });
+    } else if (config.dockerUsername && config.dockerPassword) {
+      writeRegistrySecret(this.secretsDir, {
+        namespace: config.namespace,
+        server: config.containerRegistry,
+        username: config.dockerUsername,
+        password: config.dockerPassword
+      });
+      console.log(`✅ ${REGISTRY_SECRET_FILE} created (image pull secret)`);
+    } else {
       const imagePullSecret = `# Image Pull Secret Template
 # IMPORTANT: You must create this secret manually with your registry credentials
 # 
@@ -2123,7 +2853,7 @@ data:
   .dockerconfigjson: <base64-encoded-docker-config>
 `;
       
-      fs.writeFileSync(path.join(this.templatesDir, 'secrets', 'registry-secret.yaml.template'), imagePullSecret);
+      fs.writeFileSync(registryTemplateFile, imagePullSecret);
       console.log('✅ Image pull secret template created as registry-secret.yaml.template (requires manual configuration)');
     }
     
@@ -2217,8 +2947,8 @@ ${dexConfig.split('\n').map(line => '    ' + line).join('\n')}
 `;
     
     // Write ConfigMaps
-    fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'nginx-conf.yaml'), nginxConfigMap);
-    fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'dex-config.yaml'), dexConfigMap);
+    fs.writeFileSync(path.join(this.configmapsDir, 'nginx-conf.yaml'), nginxConfigMap);
+    fs.writeFileSync(path.join(this.configmapsDir, 'dex-config.yaml'), dexConfigMap);
     
     // Create SAML certificate ConfigMap for Okta provider
     if (config.provider === 'okta' && config.OKTA_SAML_CA_DATA) {
@@ -2231,7 +2961,7 @@ data:
   saml-ca.pem: |
 ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
 `;
-      fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'dex-saml-cert.yaml'), samlCertConfigMap);
+      fs.writeFileSync(path.join(this.configmapsDir, 'dex-saml-cert.yaml'), samlCertConfigMap);
       console.log('✅ SAML certificate ConfigMap created for Okta');
     }
     
@@ -2483,7 +3213,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
           content = content.replace(/__CONTAINER_TAG__/g, config.containerTag);
         }
         
-        // For nginx.yaml, update BASE_URL and JWT_ISSUER_URL for public deployments
+        // For nginx.yaml, update BASE_URL for public deployments
         if (manifestFile === 'nginx.yaml' && config.deploymentType === 'public') {
           const fullDomain = `${config.domain}.${config.clusterSubdomain}.kyma.ondemand.com`;
           const baseUrl = `https://${fullDomain}`;
@@ -2491,10 +3221,6 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
           // Replace BASE_URL
           content = content.replace(/- name: BASE_URL\s*\n\s*value: ".*"/g, 
             `- name: BASE_URL\n          value: "${baseUrl}"`);
-          
-          // Replace JWT_ISSUER_URL
-          content = content.replace(/- name: JWT_ISSUER_URL\s*\n\s*value: ".*"/g, 
-            `- name: JWT_ISSUER_URL\n          value: "${baseUrl}/dex"`);
         }
         
         // Add image pull secrets if needed (per SAP research best practice)
@@ -2621,7 +3347,11 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       .replace(/__CONTAINER_REGISTRY__/g, config.containerRegistry)
       .replace(/__CONTAINER_ORGANIZATION__/g, config.containerOrganization)
       .replace(/__CONTAINER_TAG__/g, config.containerTag)
-      .replace(/__NAMESPACE__/g, config.namespace);
+      .replace(/__NAMESPACE__/g, config.namespace)
+      .replace(/__ISTIO_SYSTEM_PREFIX__/g, istioSystemPrefix(config.namespace))
+      // The ownership label line of an istio-system object: gone for the default namespace
+      .replace(/^([ \t]*)__ISTIO_SYSTEM_NAMESPACE_LABEL__\n/gm, (_line, indent) =>
+        Object.entries(namespaceLabels(config.namespace)).map(([k, v]) => `${indent}${k}: ${v}\n`).join(''));
   }
 
   // Helper method to safely replace placeholders in nested objects
@@ -2656,7 +3386,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       console.log('⏭️  Skipping networking manifests (internal-only deployment)');
       
       // Clean up any existing istio-system directory from previous deployments
-      const istioSystemDir = path.join(this.kymaDir, 'manifests', 'istio-system');
+      const istioSystemDir = path.join(this.manifestsDir, 'istio-system');
       if (fs.existsSync(istioSystemDir)) {
         fs.rmSync(istioSystemDir, { recursive: true, force: true });
         console.log('✅ Cleaned up istio-system manifests (not needed for internal-only deployment)');
@@ -2734,7 +3464,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       this.generateIstioSystemAuthPolicy(config);
     } else {
       // Clean up any existing istio-system directory if no IP allowlist or permission denied
-      const istioSystemDir = path.join(this.kymaDir, 'manifests', 'istio-system');
+      const istioSystemDir = path.join(this.manifestsDir, 'istio-system');
       if (fs.existsSync(istioSystemDir)) {
         fs.rmSync(istioSystemDir, { recursive: true, force: true });
         console.log('✅ Cleaned up existing istio-system manifests (no IP allowlist configured)');
@@ -2746,7 +3476,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
   
   generateIstioSystemAuthPolicy(config) {
     // Clean up and create istio-system directory in manifests
-    const istioSystemDir = path.join(this.kymaDir, 'manifests', 'istio-system');
+    const istioSystemDir = path.join(this.manifestsDir, 'istio-system');
     
     // Remove existing istio-system directory to ensure clean state
     if (fs.existsSync(istioSystemDir)) {
@@ -2761,8 +3491,11 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       apiVersion: 'security.istio.io/v1',
       kind: 'AuthorizationPolicy',
       metadata: {
-        name: `allowlist-${config.domain || 'sail-proxy'}`,
-        namespace: 'istio-system'
+        name: istioSystemName(config.namespace, `allowlist-${config.domain || 'sail-proxy'}`),
+        namespace: 'istio-system',
+        // Only a non-default namespace gets the ownership label; the default
+        // keeps its policy exactly as it always was.
+        ...(isDefaultNamespace(config.namespace) ? {} : { labels: namespaceLabels(config.namespace) })
       },
       spec: {
         action: 'ALLOW',
@@ -2832,11 +3565,11 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
     const sel = { matchLabels: { istio: 'ingressgateway' } };
     const docs = [
       { apiVersion: 'security.istio.io/v1', kind: 'AuthorizationPolicy',
-        metadata: { name: 'allowlist-cp-tunnel', namespace: 'istio-system', labels: { app: 'connectivity-proxy' } },
+        metadata: { name: istioSystemName(config.namespace, 'allowlist-cp-tunnel'), namespace: 'istio-system', labels: { app: 'connectivity-proxy', ...namespaceLabels(config.namespace) } },
         spec: { selector: sel, action: 'ALLOW',
           rules: [{ to: [{ operation: { hosts: [cpHost, `${cpHost}:443`] } }] }] } },
       { apiVersion: 'security.istio.io/v1', kind: 'AuthorizationPolicy',
-        metadata: { name: 'allowlist-cp-healthcheck', namespace: 'istio-system', labels: { app: 'connectivity-proxy' } },
+        metadata: { name: istioSystemName(config.namespace, 'allowlist-cp-healthcheck'), namespace: 'istio-system', labels: { app: 'connectivity-proxy', ...namespaceLabels(config.namespace) } },
         spec: { selector: sel, action: 'ALLOW',
           rules: [{ to: [{ operation: {
             hosts: [hcHost, `${hcHost}:443`], methods: ['GET', 'HEAD'], paths: ['/healthcheck', '/'] } }] }] } },
@@ -2844,6 +3577,120 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
     const content = docs.map(d => yaml.dump(d, { indent: 2, lineWidth: -1, noRefs: true })).join('---\n');
     fs.writeFileSync(path.join(istioSystemDir, 'connectivity-proxy-allow.yaml'), content);
     console.log(`✅ manifests/istio-system/connectivity-proxy-allow.yaml created for SCC tunnel (${cpHost})`);
+  }
+
+  /**
+   * Remove the service .env files so setup-docker.js builds them from their
+   * .env.sample plus the configuration and shared secrets setup-kyma.js
+   * passes. setup-docker.js keeps an existing .env (and adopts its secrets),
+   * which would carry a developer's local values into the Kyma ConfigMaps.
+   * Only ever called inside withLocalConfigRestored, after the snapshot.
+   */
+  removeServiceEnvFiles() {
+    for (const rel of ['services/gateway/.env', 'services/admin/.env', 'services/ollama/.env']) {
+      const full = path.join(this.projectRoot, rel);
+      if (fs.existsSync(full)) {
+        fs.unlinkSync(full);
+        console.log(`   Moved aside ${rel} (restored when setup finishes)`);
+      }
+    }
+  }
+
+  /**
+   * Run fn, then restore every file docker/setup-docker.js may have written or
+   * deleted in the checkout (the services' .env files, docker/.env*, dex.config.yaml,
+   * docker-compose files, the Okta certificate) to its state before — also
+   * when fn fails. setup-docker.js is only needed for the .env files
+   * postProcessEnvFiles turns into ConfigMaps; left in place they would switch
+   * local development to Postgres and replace the Docker stack's passwords.
+   */
+  async withLocalConfigRestored(fn) {
+    const snapshot = snapshotFiles(this.projectRoot, dockerSetupOutputs(this.projectRoot));
+    console.log(`🔒 Local .env and docker configuration backed up to ${snapshot.backupDir}`);
+    console.log('   (restored automatically when setup finishes; copy back from there if setup is killed)');
+
+    // Ctrl-C reaches setup-docker.js (inherited stdio) and this process
+    // alike, and node's default would exit without the restore below.
+    const onSignal = this.signalRestorer(snapshot);
+    let signalHandling = null;
+    const signalListener = (signal) => {
+      if (!signalHandling) signalHandling = onSignal(signal);
+    };
+    process.on('SIGINT', signalListener);
+    process.on('SIGTERM', signalListener);
+
+    let result;
+    let failure;
+    try {
+      result = await fn();
+    } catch (error) {
+      failure = error;
+    }
+    if (signalHandling) {
+      // The signal handler restores and exits; do not restore twice.
+      await signalHandling;
+    }
+    process.removeListener('SIGINT', signalListener);
+    process.removeListener('SIGTERM', signalListener);
+
+    let restoreError;
+    try {
+      this.logRestore(restoreFiles(snapshot));
+    } catch (error) {
+      restoreError = error;
+    }
+
+    // Neither error may hide the other: the setup error says what went wrong,
+    // the restore error says where the original files still are.
+    if (failure && restoreError) {
+      console.error(`❌ Restoring the local configuration also failed: ${restoreError.message}`);
+      throw new AggregateError(
+        [failure, restoreError],
+        `${failure.message} (restoring the local configuration also failed: ${restoreError.message})`
+      );
+    }
+    if (failure) throw failure;
+    if (restoreError) throw restoreError;
+    return result;
+  }
+
+  /**
+   * Signal handler for withLocalConfigRestored: stop setup-docker.js if it is
+   * still running (so it cannot write after the restore), restore the
+   * snapshot, then exit with the signal's conventional code (128 + number).
+   */
+  signalRestorer(snapshot, exit = (code) => process.exit(code)) {
+    return async (signal) => {
+      console.log(`\n⚠️  ${signal} received - restoring the local configuration before exiting...`);
+      await this.stopDockerSetupProcess(signal);
+      try {
+        this.logRestore(restoreFiles(snapshot));
+      } catch (error) {
+        console.error(`❌ ${error.message}`);
+      }
+      exit(128 + (os.constants.signals[signal] || 0));
+    };
+  }
+
+  stopDockerSetupProcess(signal) {
+    const child = this.dockerSetupProcess;
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, 5000);
+      child.once('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.kill(signal);
+    });
+  }
+
+  logRestore(changed) {
+    console.log(changed.length > 0
+      ? `🔒 Restored local configuration: ${changed.join(', ')}`
+      : '🔒 Local configuration unchanged');
   }
 
   async runDockerSetup(config) {
@@ -2864,6 +3711,10 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       providerConfig: config.providerConfig,
       baseUrl: config.baseUrl,
       sharedSecrets: this.sharedSecrets,
+      // Its local files are restored afterwards (withLocalConfigRestored), so
+      // the old Postgres password stays in use: deleting the local Docker
+      // volumes, as its unattended mode otherwise does, would only lose data.
+      keepDockerVolumes: true,
       // Pass database credentials to ensure Docker script uses the correct user
       POSTGRES_USER: config.POSTGRES_USER,
       POSTGRES_PASSWORD: config.POSTGRES_PASSWORD,
@@ -2884,42 +3735,43 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       }
     });
     
-    // If no SAP config provided, set to null
-    if (Object.keys(dockerConfig.sapConfig).length === 0) {
-      dockerConfig.sapConfig = null;
+    // No SAP config (skipped) stays an empty object: null would make
+    // setup-docker.js, now always starting without a gateway .env, ask again.
+    
+    console.log('   Running: node docker/setup-docker.js --config <configuration>');
+    const code = await this.spawnDockerSetup(dockerSetupPath, dockerConfig);
+    if (code !== 0) {
+      console.error(`❌ Docker setup failed with code ${code}`);
+      throw new Error('Docker setup failed');
     }
-    
-    // Run setup-docker.js with --config flag
+
+    console.log('✅ Docker setup completed successfully');
+    console.log('   Using matching configuration from Kyma setup');
+    console.log('   The nginx image will work with both Docker and Kyma deployments');
+
+    // Post-process: read generated .env files and create additional ConfigMaps
+    try {
+      await this.postProcessEnvFiles(config);
+    } catch (error) {
+      console.error('❌ Failed to post-process environment files:', error);
+      throw error;
+    }
+  }
+
+  /** Run setup-docker.js with --config; resolves with its exit code. */
+  spawnDockerSetup(dockerSetupPath, dockerConfig) {
     const { spawn } = require('child_process');
-    
+
     return new Promise((resolve, reject) => {
-      console.log('   Running: node docker/setup-docker.js --config <configuration>');
-      
       const setupProcess = spawn('node', [dockerSetupPath, '--config', JSON.stringify(dockerConfig)], {
         cwd: this.projectRoot,
         stdio: 'inherit'
       });
-      
-      setupProcess.on('close', async (code) => {
-        if (code === 0) {
-          console.log('✅ Docker setup completed successfully');
-          console.log('   Using matching configuration from Kyma setup');
-          console.log('   The nginx image will work with both Docker and Kyma deployments');
-          
-          // Post-process: read generated .env files and create additional ConfigMaps
-          try {
-            await this.postProcessEnvFiles(config);
-            resolve();
-          } catch (error) {
-            console.error('❌ Failed to post-process environment files:', error);
-            reject(error);
-          }
-        } else {
-          console.error(`❌ Docker setup failed with code ${code}`);
-          reject(new Error('Docker setup failed'));
-        }
-      });
-      
+      // Tracked so a signal handler can stop it before restoring files.
+      this.dockerSetupProcess = setupProcess;
+
+      setupProcess.on('close', resolve);
+
       setupProcess.on('error', (err) => {
         console.error('❌ Failed to run docker setup:', err);
         reject(err);
@@ -2969,7 +3821,9 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       'CLIENT_SECRET', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'CLIENT_ID', 'AUTH_URL',
       'VALKEY_URL', 'REDIS_URL', 'ADMIN_SERVICE_URL', 'FILE_SEARCH_DATABASE_URL',  // Connection URLs should come from Secrets with K8s service names
       'PORT',  // PORT is already set in the Secret and should not be duplicated in ConfigMap
-      'ROLE_MAPPING'  // ROLE_MAPPING is already set in the Secret and must not be overridden by ConfigMap
+      'ROLE_MAPPING',  // ROLE_MAPPING is already set in the Secret and must not be overridden by ConfigMap
+      'SIEM_CREDENTIAL_KEY',  // in the admin-env Secret; a ConfigMap copy would override it (envFrom order)
+      'CONNECTION_CREDENTIAL_KEY'  // likewise
     ];
     
     // Gateway ConfigMap - non-sensitive environment variables
@@ -3002,7 +3856,7 @@ ${Object.entries(gatewayConfigData).map(([key, value]) => {
 }).join('\n')}
 `;
       
-      fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'gateway-config.yaml'), gatewayConfigMap);
+      fs.writeFileSync(path.join(this.configmapsDir, 'gateway-config.yaml'), gatewayConfigMap);
       console.log('✅ gateway-config.yaml created');
     }
     
@@ -3022,6 +3876,8 @@ ${Object.entries(gatewayConfigData).map(([key, value]) => {
           }
         }
       } else if (!secretKeys.includes(key) && !key.includes('SECRET') && !key.includes('PASSWORD')) {
+        // The billing answers are in the admin-env Secret; a ConfigMap copy would override them.
+        if (this.billing && BILLING_KEYS.includes(key)) return;
         adminConfigData[key] = adminEnv[key];
       }
     });
@@ -3062,7 +3918,7 @@ ${Object.keys(capDbConfig).length > 0 ? '\n  # CAP Database Configuration\n' + O
 }).join('\n') : ''}
 `;
     
-    fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'admin-config.yaml'), adminConfigMap);
+    fs.writeFileSync(path.join(this.configmapsDir, 'admin-config.yaml'), adminConfigMap);
     console.log('✅ admin-config.yaml created');
   }
 
@@ -3084,7 +3940,7 @@ data:
 ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
 `;
     
-    fs.writeFileSync(path.join(this.templatesDir, 'configmaps', 'admin-api-config.yaml'), apiConfigMap);
+    fs.writeFileSync(path.join(this.configmapsDir, 'admin-api-config.yaml'), apiConfigMap);
     console.log('✅ admin-api-config.yaml created');
   }
 
@@ -3247,7 +4103,7 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     if (config.passwordWasGenerated) {
       console.log('   📊 Database Credentials:');
       console.log(`   - Username: ${config.POSTGRES_USER}`);
-      console.log(`   - Password: ${this.sharedSecrets.POSTGRES_PASSWORD}`);
+      console.log(`   - Password: ${mask(this.sharedSecrets.POSTGRES_PASSWORD)}`);
       console.log('');
     } else {
       console.log('   📊 Database Configuration:');
@@ -3257,11 +4113,11 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     }
     
     console.log('   🔐 Security Secrets:');
-    console.log(`   - Validation Token: ${this.sharedSecrets.VALIDATION_TOKEN_SECRET}`);
-    console.log(`   - Metadata Encryption Key: ${this.sharedSecrets.METADATA_ENCRYPTION_KEY}`);
-    console.log(`   - AWS Secret Encryption Key: ${this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY}`);
-    console.log(`   - OAuth2 Client Secret: ${this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET}`);
-    console.log(`   - OAuth2 Cookie Secret: ${this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET}`);
+    console.log(`   - Validation Token: ${mask(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}`);
+    console.log(`   - Metadata Encryption Key: ${mask(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}`);
+    console.log(`   - AWS Secret Encryption Key: ${mask(this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY)}`);
+    console.log(`   - OAuth2 Client Secret: ${mask(this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET)}`);
+    console.log(`   - OAuth2 Cookie Secret: ${mask(this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET)}`);
     console.log('');
     console.log('   These credentials are stored in Kubernetes Secrets and used by the services.');
     if (config.passwordWasGenerated) {
@@ -3274,7 +4130,9 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     console.log('  Kubernetes Manifests:');
     console.log('  - manifests/core/namespace.yaml');
     console.log('  - templates/secrets/*.yaml (PostgreSQL, Gateway, Admin, OAuth2-Proxy secrets)');
-    if (config.imagePullSecrets) {
+    if (config.imagePullSecrets && config.dockerUsername && config.dockerPassword) {
+      console.log(`  - templates/secrets/${REGISTRY_SECRET_FILE} (image pull secret, applied by deploy-kyma.js)`);
+    } else if (config.imagePullSecrets) {
       console.log('  - templates/secrets/registry-secret.yaml.template (Manual creation required)');
     }
     console.log('  - templates/configmaps/*.yaml (NGINX, Dex, Gateway, Admin, API configs)');
@@ -3289,17 +4147,10 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     const usingDefaultImages = config.containerRegistry === 'ghcr.io' && 
                               config.containerOrganization === 'st-gr' && 
                               config.containerTag === '0.0.1';
-    
-    // Create deployment config with minimal necessary fields
-    const deployConfig = {
-      imagePullSecrets: config.imagePullSecrets,
-      containerRegistry: config.containerRegistry,
-      dockerUsername: config.dockerUsername,
-      dockerPassword: config.dockerPassword
-    };
-    
-    // Encode deployment config as base64
-    const encodedConfig = Buffer.from(JSON.stringify(deployConfig)).toString('base64');
+
+
+    // deploy-kyma.js defaults to the default namespace; any other must be named.
+    const namespaceFlag = isDefaultNamespace(config.namespace) ? '' : ` --namespace ${config.namespace}`;
     
     if (usingDefaultImages) {
       console.log('✨ Using pre-built images - no Docker build required!');
@@ -3310,17 +4161,8 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
       const cwd = process.cwd();
       const deployScriptPath = path.join(__dirname, 'deploy-kyma.js');
       const relativeDeployPath = path.relative(cwd, deployScriptPath).replace(/\\/g, '/');
-      
-      if (config.imagePullSecrets && config.dockerUsername && config.dockerPassword) {
-        // Windows PowerShell
-        console.log('   # Windows PowerShell:');
-        console.log(`   $env:KYMA_DEPLOY_CONFIG="${encodedConfig}"; node ${relativeDeployPath}; Remove-Item Env:\\KYMA_DEPLOY_CONFIG`);
-        console.log('');
-        console.log('   # Linux/Mac:');
-        console.log(`   KYMA_DEPLOY_CONFIG="${encodedConfig}" node ${relativeDeployPath}`);
-      } else {
-        console.log(`   node ${relativeDeployPath}`);
-      }
+      // The registry token is in the rendered pull secret file, never in this command.
+      console.log(`   node ${relativeDeployPath}${namespaceFlag}`);
       console.log('');
     } else {
       console.log('1. Build and push Docker images:');
@@ -3337,17 +4179,7 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
       
       // Use the same relative path calculated above (it's in the parent scope)
       const deployPath = path.relative(process.cwd(), path.join(__dirname, 'deploy-kyma.js')).replace(/\\/g, '/');
-      
-      if (config.imagePullSecrets && config.dockerUsername && config.dockerPassword) {
-        // Windows PowerShell
-        console.log('   # Windows PowerShell:');
-        console.log(`   $env:KYMA_DEPLOY_CONFIG="${encodedConfig}"; node ${deployPath}; Remove-Item Env:\\KYMA_DEPLOY_CONFIG`);
-        console.log('');
-        console.log('   # Linux/Mac:');
-        console.log(`   KYMA_DEPLOY_CONFIG="${encodedConfig}" node ${deployPath}`);
-      } else {
-        console.log(`   node ${deployPath}`);
-      }
+      console.log(`   node ${deployPath}${namespaceFlag}`);
       console.log('');
     }
     
@@ -3388,89 +4220,523 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     console.log('');
   }
 
-  async run() {
-    try {
-      await this.showWelcome();
-      
-      const deploymentType = await this.selectDeploymentType();
-      const provider = await this.selectProvider();
-      const providerConfig = await this.collectProviderConfig(provider);
-      
-      let publicConfig = null;
-      if (deploymentType === 'public') {
-        publicConfig = await this.getPublicConfig();
+  /** The stringData of a Secret this script rendered (templates/secrets/<name>.yaml), or null. */
+  readRenderedSecret(root, name) {
+    const file = path.join(root, 'templates', 'secrets', `${name}.yaml`);
+    if (!fs.existsSync(file)) return null;
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    const start = lines.indexOf('stringData:');
+    if (start < 0) return null;
+    const data = {};
+    for (const line of lines.slice(start + 1)) {
+      const match = line.match(/^ {2}([^\s:#][^:]*): (.*)$/);
+      if (!match) continue;
+      let value = match[2];
+      if (value.startsWith('"')) {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          continue;
+        }
       }
-      
-      const containerConfig = await this.getContainerConfig();
-      const dbConfig = await this.promptForDatabaseCredentials();
-      const sapConfig = await this.promptForServiceKey();
-      
-      const config = await this.generateManifests(deploymentType, provider, providerConfig, publicConfig, containerConfig, dbConfig, sapConfig);
-      
-      await this.showCompletion(config);
-      
-      // Check if we can auto-deploy (using default registry and organization)
-      const usingDefaultImages = config.containerRegistry === 'ghcr.io' && 
-                                config.containerOrganization === 'st-gr';
-                                
+      data[match[1]] = value;
+    }
+    return data;
+  }
+
+  /** A YAML file (or a ConfigMap's `key: |` block of one) this script rendered, parsed; null when absent or unreadable. */
+  readRenderedYaml(file, blockKey) {
+    if (!fs.existsSync(file)) return null;
+    let text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+    if (blockKey) {
+      const lines = text.split('\n');
+      const start = lines.indexOf(`  ${blockKey}: |`);
+      if (start < 0) return null;
+      const block = [];
+      for (const line of lines.slice(start + 1)) {
+        if (line !== '' && !line.startsWith('    ')) break;
+        block.push(line.slice(4));
+      }
+      text = block.join('\n');
+    }
+    try {
+      return yaml.load(text);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Answers derivable from the admin-env, gateway-env and postgres-env Secret data - the same
+   * keys whether the data comes from the rendered files or from the live namespace.
+   */
+  valuesFromSecretData({ admin, gateway, postgres }) {
+    const values = {};
+    if (admin) {
+      const provider = admin.IDENTITY_PROVIDER;
+      values.provider = provider;
+      if (admin.BASE_URL === 'http://localhost:22001') {
+        values.deploymentType = 'internal';
+      } else {
+        const host = /^https:\/\/([^.]+)\.([^.]+)\.kyma\.ondemand\.com$/.exec(admin.BASE_URL || '');
+        if (host) {
+          values.deploymentType = 'public';
+          values.domain = host[1];
+          values.clusterSubdomain = host[2];
+        }
+      }
+      const groups = {};
+      try {
+        for (const [group, role] of Object.entries(JSON.parse(admin.ROLE_MAPPING || '{}'))) {
+          if (!groups[role]) groups[role] = group;
+        }
+      } catch {
+        // An unreadable mapping leaves the group questions at their defaults.
+      }
+      if (provider === 'github') {
+        // "<org>:<team>" (collectProviderConfig builds it that way).
+        const team = (group) => (group && group.includes(':') ? group.split(':') : [undefined, group]);
+        const [adminOrg, adminTeam] = team(groups.admin);
+        const [userOrg, userTeam] = team(groups.user);
+        values.GITHUB_ORG = adminOrg || userOrg;
+        values.GITHUB_ADMIN_TEAM = adminTeam;
+        values.GITHUB_USER_TEAM = userTeam;
+      } else if (provider === 'ldap' || provider === 'okta') {
+        const prefix = provider.toUpperCase();
+        values[`${prefix}_ADMIN_GROUP`] = groups.admin;
+        values[`${prefix}_USER_GROUP`] = groups.user;
+      }
+    }
+    if (admin) Object.assign(values, billingFromEnv(admin));
+    if (postgres) values.POSTGRES_USER = postgres.POSTGRES_USER;
+    if (gateway) {
+      if (gateway.SAP_AI_CORE_URL) {
+        values.configMethod = 'manual';
+        for (const key of ['SAP_AI_CORE_URL', 'AUTH_URL', 'CLIENT_ID', 'CLIENT_SECRET', 'SAP_AI_REGION', 'SAP_AI_RESOURCE_GROUP']) {
+          values[key] = gateway[key];
+        }
+      } else {
+        values.configMethod = 'skip';
+      }
+    }
+    return values;
+  }
+
+  /**
+   * Kyma values from the namespace's rendered output: its Secrets (above), the Dex ConfigMap
+   * (provider settings), the core manifests (images) and the istio-system policies (IP allowlist).
+   */
+  valuesFromRenderedFiles(root) {
+    const values = this.valuesFromSecretData({
+      admin: this.readRenderedSecret(root, 'admin-env'),
+      gateway: this.readRenderedSecret(root, 'gateway-env'),
+      postgres: this.readRenderedSecret(root, 'postgres-env')
+    });
+    // The pull-secret login itself is offered by getContainerConfig, for its own registry only.
+    if (readRegistrySecret(path.join(root, 'templates', 'secrets'))) values.imagePullSecrets = true;
+
+    const dex = this.readRenderedYaml(path.join(root, 'templates', 'configmaps', 'dex-config.yaml'), 'config.yaml');
+    const connector = dex && Array.isArray(dex.connectors) ? dex.connectors[0] : null;
+    const config = connector && connector.config ? connector.config : null;
+    if (config && connector.type === 'github') {
+      values.GITHUB_CLIENT_ID = config.clientID;
+      values.GITHUB_CLIENT_SECRET = config.clientSecret;
+      if (Array.isArray(config.orgs) && config.orgs[0]) values.GITHUB_ORG = config.orgs[0].name;
+    } else if (config && connector.type === 'ldap') {
+      const userSearch = config.userSearch || {};
+      const groupSearch = config.groupSearch || {};
+      const matcher = Array.isArray(groupSearch.userMatchers) ? groupSearch.userMatchers[0] || {} : {};
+      Object.assign(values, {
+        LDAP_HOST: config.host,
+        LDAP_INSECURE_NO_SSL: config.insecureNoSSL === undefined ? undefined : String(config.insecureNoSSL),
+        LDAP_BIND_DN: config.bindDN,
+        LDAP_BIND_PASSWORD: config.bindPW,
+        LDAP_USER_BASE_DN: userSearch.baseDN,
+        LDAP_USER_FILTER: userSearch.filter,
+        LDAP_USERNAME_ATTR: userSearch.username,
+        LDAP_ID_ATTR: userSearch.idAttr,
+        LDAP_EMAIL_ATTR: userSearch.emailAttr,
+        LDAP_NAME_ATTR: userSearch.nameAttr,
+        LDAP_PREFERRED_USERNAME_ATTR: userSearch.preferredUsernameAttr,
+        LDAP_GROUP_BASE_DN: groupSearch.baseDN,
+        LDAP_GROUP_FILTER: groupSearch.filter,
+        LDAP_GROUP_NAME_ATTR: groupSearch.nameAttr,
+        LDAP_GROUP_MEMBER_ATTR: matcher.groupAttr
+      });
+    } else if (config && connector.type === 'saml') {
+      values.OKTA_SSO_URL = config.ssoURL;
+    }
+
+    // Images: <registry>/<organization>/sail-proxy-<name>:<tag> (or @<digest>, which has no tag).
+    for (const name of ['admin', 'gateway', 'nginx']) {
+      const file = path.join(root, 'manifests', 'core', `${name}.yaml`);
+      if (!fs.existsSync(file)) continue;
+      const image = new RegExp(`image: (\\S+)/([^/\\s]+)/sail-proxy-${name}([:@])(\\S+)`).exec(fs.readFileSync(file, 'utf8'));
+      if (!image) continue;
+      if (values.registry === undefined) {
+        Object.assign(values, this.registryAnswers(image[1]));
+        values.organization = image[2];
+      }
+      if (image[3] === ':' && values.imageTag === undefined) values.imageTag = image[4];
+      if (image[3] === '@' && values.imageDigest === undefined) values.imageDigest = `sail-proxy-${name}@${image[4]}`;
+    }
+
+    // Public deployments: the IP allowlist lives in the istio-system policy, which exists only
+    // when istio-system changes were allowed; the SCC tunnel policy goes with it.
+    const istioDir = path.join(root, 'manifests', 'istio-system');
+    const policy = this.readRenderedYaml(path.join(istioDir, 'authorization-policy.yaml'));
+    const sources = policy && policy.spec && policy.spec.rules && policy.spec.rules[0] && policy.spec.rules[0].when;
+    if (Array.isArray(sources) && sources[0] && Array.isArray(sources[0].values)) {
+      values.ipAllowlist = sources[0].values.join(',');
+      values.allowIstioSystemChanges = true;
+      values.sccTunnel = fs.existsSync(path.join(istioDir, 'connectivity-proxy-allow.yaml'));
+    }
+    return values;
+  }
+
+  /** The registry question's answers for a registry host. */
+  registryAnswers(registry) {
+    if (registry === 'ghcr.io' || registry === 'docker.io') return { registry };
+    return { registry: registry.endsWith('.azurecr.io') ? 'custom-acr' : 'custom', customRegistry: registry };
+  }
+
+  /**
+   * Values shared with the Docker setup, from the files docker/setup-docker.js wrote (read by the
+   * same reader as its own re-run); they only fill what the Kyma files and the cluster do not
+   * hold (loadCurrentValues): database user, identity provider and its settings, and the
+   * image registry when Docker pulls from one (local builds always record ghcr.io/st-gr, which
+   * is not a choice). The logout URL is not taken: it only reaches Docker's own files.
+   */
+  valuesFromDockerFiles() {
+    const docker = readDockerConfigValues(path.join(this.projectRoot, 'docker'));
+    const groups = docker.groups;
+    const provider = docker.IDENTITY_PROVIDER;
+    const values = { POSTGRES_USER: docker.POSTGRES_USER, provider };
+    if (provider === 'github') {
+      values.GITHUB_CLIENT_ID = docker.GITHUB_CLIENT_ID;
+      values.GITHUB_CLIENT_SECRET = docker.GITHUB_CLIENT_SECRET;
+      if (docker.GITHUB_ORG !== undefined) {
+        values.GITHUB_ORG = docker.GITHUB_ORG;
+        values.GITHUB_ADMIN_TEAM = githubTeam(docker.GITHUB_ORG, groups.admin);
+        values.GITHUB_USER_TEAM = githubTeam(docker.GITHUB_ORG, groups.user);
+      }
+    } else if (provider === 'ldap') {
+      values.LDAP_ADMIN_GROUP = groups.admin;
+      values.LDAP_USER_GROUP = groups.user;
+      if (isExternalLdap(docker)) {
+        for (const key of ['LDAP_HOST', 'LDAP_BIND_DN', 'LDAP_BIND_PASSWORD', 'LDAP_USER_BASE_DN', 'LDAP_GROUP_BASE_DN']) {
+          values[key] = docker[key];
+        }
+      }
+    } else if (provider === 'okta') {
+      if (docker.OKTA_SSO_URL !== 'OKTA_SSO_URL') values.OKTA_SSO_URL = docker.OKTA_SSO_URL;
+      values.OKTA_ADMIN_GROUP = groups.admin;
+      values.OKTA_USER_GROUP = groups.user;
+    }
+    if (docker.DOCKER_REGISTRY && usesImageRegistry(docker)) {
+      Object.assign(values, this.registryAnswers(docker.DOCKER_REGISTRY));
+      values.organization = docker.DOCKER_ORGANIZATION;
+    }
+    return values;
+  }
+
+  /** Whether a current value would pass its question (choices, validate); invalid ones are dropped. */
+  isValidCurrentValue(id, value) {
+    const booleans = ['allowIstioSystemChanges', 'sccTunnel', 'imagePullSecrets'];
+    if (booleans.includes(id)) return typeof value === 'boolean';
+    if (typeof value !== 'string') return false;
+    const required = (v) => v.trim() !== '';
+    const publicQuestion = (name) => (v) => this.publicConfigQuestions().find((q) => q.name === name).validate(v) === true;
+    const checks = {
+      deploymentType: (v) => ['public', 'internal'].includes(v),
+      provider: (v) => Object.keys(PROVIDERS).includes(v),
+      domain: publicQuestion('domain'),
+      clusterSubdomain: publicQuestion('clusterSubdomain'),
+      ipAllowlist: publicQuestion('ipAllowlist'),
+      registry: (v) => ['ghcr.io', 'docker.io', 'custom-acr', 'custom'].includes(v),
+      customRegistry: required,
+      organization: required,
+      imageTag: (v) => this.isValidDockerTag(v),
+      imageDigest: (v) => /^sail-proxy-(admin|gateway|nginx)@sha256:[0-9a-f]{64}$/.test(v),
+      POSTGRES_USER: (v) => validateDatabaseUsername(v) === true,
+      ...Object.fromEntries(BILLING_KEYS.map((key) => [key, (v) => isValidBillingValue(key, v)])),
+      configMethod: (v) => ['json', 'manual', 'skip'].includes(v),
+      SAP_AI_CORE_URL: required,
+      AUTH_URL: required,
+      CLIENT_ID: required,
+      CLIENT_SECRET: required,
+      SAP_AI_REGION: required,
+      SAP_AI_RESOURCE_GROUP: required
+    };
+    if (checks[id]) return checks[id](value);
+    const prompt = Object.values(PROVIDER_PROMPTS).flat().find((p) => p.key === id);
+    if (!prompt) return false;
+    if (prompt.options && !prompt.options.includes(value)) return false;
+    if (prompt.required && !required(value)) return false;
+    return true;
+  }
+
+  /**
+   * The current configuration's answers for this namespace, keyed by question id (plus imageTag
+   * for the version question). Per value, the first source holding a valid one wins (the
+   * maintainer's ruling: Kyma files win, the Docker .env only fills the gaps):
+   * 1. the namespace's rendered output (valuesFromRenderedFiles);
+   * 2. the live namespace's Secrets, as loadExistingKeys already read them;
+   * 3. values shared with Docker, from the Docker files (valuesFromDockerFiles);
+   * else the question keeps today's default. An existing namespace's database user is never
+   * offered from here: its volume only accepts the live user, which the question defaults to.
+   * Secrets among them (provider client secrets, bind password, SAP client secret) are only
+   * ever given to password questions, which never show them. {} with --force.
+   * Not read back (no file holds them): the Okta metadata URL and certificate choice, and the
+   * tag of images pinned by digest. The registry login is read by getContainerConfig.
+   */
+  async loadCurrentValues(namespace) {
+    if (this.forceOverwrite) return {};
+    const live = await this.once(`existing-keys:${namespace}`, () => this.readExistingKeys());
+    const liveSecrets = live.state === 'exists' ? live.secrets || {} : {};
+    const sources = [
+      this.valuesFromRenderedFiles(outputRoot(this.outputBaseDir, namespace)),
+      this.valuesFromSecretData({
+        admin: liveSecrets['admin-env'],
+        gateway: liveSecrets['gateway-env'],
+        postgres: liveSecrets['postgres-env']
+      }),
+      this.valuesFromDockerFiles()
+    ];
+    const current = {};
+    for (const values of sources) {
+      for (const [id, value] of Object.entries(values)) {
+        if (id in current || value === undefined || value === null) continue;
+        if (id === 'POSTGRES_USER' && live.db) continue;
+        if (this.isValidCurrentValue(id, value)) current[id] = value;
+      }
+    }
+    return current;
+  }
+
+  /**
+   * Generated secrets of the namespace's earlier render that a re-run keeps unless they are
+   * regenerated: the OAuth2 proxy client and cookie secrets (templates/secrets/
+   * oauth2-proxy-secrets.yaml; the cluster read does not include them). The encryption keys and
+   * database credentials are carried from the live namespace instead (loadExistingKeys). {} with
+   * --force.
+   */
+  loadCurrentSecrets(namespace) {
+    if (this.forceOverwrite) return {};
+    const data = this.readRenderedSecret(outputRoot(this.outputBaseDir, namespace), 'oauth2-proxy-secrets') || {};
+    const secrets = {};
+    if (data['client-secret']) secrets.OAUTH2_PROXY_CLIENT_SECRET = data['client-secret'];
+    if (data['cookie-secret']) secrets.OAUTH2_PROXY_COOKIE_SECRET = data['cookie-secret'];
+    return secrets;
+  }
+
+  /**
+   * Interactive: every question, the deploy question included, is asked inside the prompt
+   * session (Back, review screen); nothing is rendered, applied or deployed before the review's
+   * "Write configuration". Only read-only work runs while asking (cluster reads, registry
+   * lookups, metadata fetches), once per session.
+   * @returns {Promise<KymaAnswers>}
+   */
+  async collectAnswers(session) {
+    this.session = session;
+    // State the questions derive (keys carried from the cluster, the database password) is
+    // rebuilt on every replay, so a namespace changed after Back keeps nothing of the old one.
+    this.sharedSecrets = {};
+    this.currentSecrets = {};
+    this.liveDbCredentials = undefined;
+    this.liveS3Env = undefined;
+    return this.askQuestions();
+  }
+
+  /** --ci: the same steps, each deciding without a prompt as before. */
+  async unattendedAnswers() {
+    this.session = null;
+    this.currentSecrets = {};
+    return this.askQuestions();
+  }
+
+  /**
+   * The questions in today's order. Interactive runs also ask, at the end, which carried keys to
+   * regenerate and whether to deploy now (only offered for the default images).
+   * @typedef {object} KymaAnswers
+   * @property {string} namespace
+   * @property {string} deploymentType
+   * @property {string} provider
+   * @property {object} providerConfig
+   * @property {object|null} publicConfig
+   * @property {object} containerConfig
+   * @property {object} dbConfig
+   * @property {object|null} sapConfig
+   * @property {boolean|null} autoDeploy  null when not asked (--ci, or not the default images)
+   * @property {string[]} regenerateKeys
+   * @property {object|null} billing  SAP_BILLING_CURRENCY and optional CU prices; null when not asked
+   */
+  async askQuestions() {
+    const namespace = await this.selectNamespace();
+    if (this.session) {
+      // Answers given for another namespace (before Back or a review jump changed it) are not
+      // this namespace's: forget them, so its current values are offered and marked against.
+      // Before loadExistingKeys, whose confirmations for this namespace must stay remembered.
+      if (this.answersNamespace !== undefined && this.answersNamespace !== namespace) {
+        this.session.resetExcept(['namespace']);
+      }
+      this.answersNamespace = namespace;
+    }
+    const { carried } = await this.loadExistingKeys();
+
+    if (this.session) {
+      // A re-run's defaults: the configuration this namespace already has (none with --force).
+      this.session.current = await this.once(`current-values:${namespace}`, () => this.loadCurrentValues(namespace));
+      this.currentSecrets = this.loadCurrentSecrets(namespace);
+      // Kept as they are, so generateSecrets makes no new ones (regenerated in applyAnswers).
+      Object.assign(this.sharedSecrets, this.currentSecrets);
+    }
+
+    const deploymentType = await this.selectDeploymentType();
+    const provider = await this.selectProvider();
+    const providerConfig = await this.collectProviderConfig(provider);
+
+    let publicConfig = null;
+    if (deploymentType === 'public') {
+      publicConfig = await this.getPublicConfig();
+    }
+
+    const containerConfig = await this.getContainerConfig();
+    const dbConfig = await this.promptForDatabaseCredentials();
+    const sapConfig = await this.promptForServiceKey();
+    // Asked on interactive runs only; --ci and the setup-docker child run write no billing values.
+    const billing = this.session
+      ? billingToWrite(await askBilling(this.session, this.session.current), this.session.current)
+      : null;
+
+    let regenerateKeys = [];
+    let autoDeploy = null;
+    if (this.session) {
+      // The generated keys this namespace already has (read from the cluster, the OAuth2 proxy
+      // secrets from its earlier render): kept unless regenerated here, each behind its warning.
+      const existing = [...carried];
+      if (this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD) existing.push('FILE_SEARCH_RUNTIME_PASSWORD');
+      existing.push(...Object.keys(this.currentSecrets));
+      if (existing.length > 0) {
+        regenerateKeys = await askKeyRegeneration(this.session, existing);
+      }
+
       // Auto-deployment is only available in interactive mode with default images
-      if (usingDefaultImages && !this.ciMode) {
-        const { autoDeploy } = await inquirer.prompt([
+      const usingDefaultImages = containerConfig.registry === 'ghcr.io' &&
+                                 containerConfig.organization === 'st-gr';
+      if (usingDefaultImages) {
+        ({ autoDeploy } = await this.prompt([
           {
             type: 'confirm',
             name: 'autoDeploy',
             message: '\nWould you like to deploy to Kyma now?',
+            reviewLabel: 'Deploy to Kyma now',
             default: true
           }
-        ]);
-        
-        if (autoDeploy) {
-          // Final safety check: never deploy in CI mode
-          if (this.ciMode) {
-            console.log('❌ Deployment is disabled in CI mode');
-            return;
-          }
-          console.log('\n🚀 Starting deployment...\n');
-          
-          // Set environment variable with config (including user-selected tag)
-          const deployConfig = {
-            imagePullSecrets: config.imagePullSecrets,
-            containerRegistry: config.containerRegistry,
-            containerOrganization: config.containerOrganization,
-            containerTag: config.containerTag,
-            dockerUsername: config.dockerUsername,
-            dockerPassword: config.dockerPassword
-          };
-          
-          process.env.KYMA_DEPLOY_CONFIG = Buffer.from(JSON.stringify(deployConfig)).toString('base64');
-          
-          // Run deploy script with proper path
-          const { spawn } = require('child_process');
-          const deployScriptAbsPath = path.join(__dirname, 'deploy-kyma.js');
-          const deployProcess = spawn('node', [deployScriptAbsPath], {
-            stdio: 'inherit',
-            env: process.env
-          });
-          
-          deployProcess.on('close', (code) => {
-            // Clear environment variable
-            delete process.env.KYMA_DEPLOY_CONFIG;
-            
-            if (code === 0) {
-              console.log('\n✅ Deployment completed successfully!');
-              process.exit(0);
-            } else {
-              console.log('\n❌ Deployment failed with code:', code);
-              process.exit(code);
-            }
-          });
-        } else {
-          // User opted out - clear any sensitive data
-          console.log('\n📌 You can deploy later using the command shown above.');
-          process.exit(0);
-        }
+        ]));
       }
-      
+    }
+
+    return {
+      namespace,
+      deploymentType,
+      provider,
+      providerConfig,
+      publicConfig,
+      containerConfig,
+      dbConfig,
+      sapConfig,
+      autoDeploy,
+      regenerateKeys,
+      billing
+    };
+  }
+
+  /** Renders the manifests, shows the summary, then deploys or not as answered. */
+  async applyAnswers(answers) {
+    // Regenerate means "do not carry over": generateSecrets makes a new value for each.
+    for (const key of answers.regenerateKeys) {
+      delete this.sharedSecrets[key];
+      delete this.currentSecrets[key];
+    }
+
+    this.billing = answers.billing;
+    const config = await this.generateManifests(
+      answers.deploymentType,
+      answers.provider,
+      answers.providerConfig,
+      answers.publicConfig,
+      answers.containerConfig,
+      answers.dbConfig,
+      answers.sapConfig
+    );
+
+    await this.showCompletion(config);
+
+    if (answers.autoDeploy === null) return;
+
+    if (answers.autoDeploy) {
+      // Final safety check: never deploy in CI mode
+      if (this.ciMode) {
+        console.log('❌ Deployment is disabled in CI mode');
+        return;
+      }
+      console.log('\n🚀 Starting deployment...\n');
+
+      // Set environment variable with config (including user-selected tag). The
+      // registry credentials are not handed over: deploy applies the rendered
+      // pull secret file.
+      const deployConfig = {
+        namespace: config.namespace,
+        imagePullSecrets: config.imagePullSecrets,
+        containerRegistry: config.containerRegistry,
+        containerOrganization: config.containerOrganization,
+        containerTag: config.containerTag
+      };
+
+      process.env.KYMA_DEPLOY_CONFIG = Buffer.from(JSON.stringify(deployConfig)).toString('base64');
+
+      // Run deploy script with proper path
+      const { spawn } = require('child_process');
+      const deployScriptAbsPath = path.join(__dirname, 'deploy-kyma.js');
+      const deployProcess = spawn('node', [deployScriptAbsPath, '--namespace', config.namespace], {
+        stdio: 'inherit',
+        env: process.env
+      });
+
+      deployProcess.on('close', (code) => {
+        // Clear environment variable
+        delete process.env.KYMA_DEPLOY_CONFIG;
+
+        if (code === 0) {
+          console.log('\n✅ Deployment completed successfully!');
+          process.exit(0);
+        } else {
+          console.log('\n❌ Deployment failed with code:', code);
+          process.exit(code);
+        }
+      });
+    } else {
+      // User opted out - clear any sensitive data
+      console.log('\n📌 You can deploy later using the command shown above.');
+      process.exit(0);
+    }
+  }
+
+  async run() {
+    try {
+      await this.showWelcome();
+
+      let answers;
+      if (this.ciMode) {
+        answers = await this.unattendedAnswers();
+      } else {
+        // An abort or error before "Write configuration" ends here with nothing written.
+        const session = this.createSession();
+        this.answersNamespace = undefined;
+        answers = await session.run((s) => this.collectAnswers(s));
+      }
+      await this.applyAnswers(answers);
     } catch (error) {
       console.error('\n❌ Setup failed:', error.message);
       process.exit(1);
@@ -3482,7 +4748,13 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
 if (require.main === module) {
   // Only run if inquirer is loaded
   if (inquirer) {
-    const setup = new KymaSetup({ forceOverwrite, ciMode });
+    let setup;
+    try {
+      setup = new KymaSetup({ forceOverwrite, ciMode, namespace: parseNamespaceArg(args) });
+    } catch (error) {
+      console.error(`❌ ${error.message}`);
+      process.exit(1);
+    }
     setup.run()
       .then(() => {
         // If we get here and haven't exited yet, it means setup completed without deployment
@@ -3497,5 +4769,15 @@ if (require.main === module) {
   }
   // Otherwise, the script will exit after prompting to install inquirer
 }
+
+// Tests cannot rely on js-yaml being installed (setup installs it on demand)
+// and hand in a stand-in instead.
+KymaSetup.useYaml = (yamlLib) => {
+  yaml = yamlLib;
+};
+// Likewise for scripted prompt answers.
+KymaSetup.useInquirer = (inquirerLib) => {
+  inquirer = inquirerLib;
+};
 
 module.exports = KymaSetup;

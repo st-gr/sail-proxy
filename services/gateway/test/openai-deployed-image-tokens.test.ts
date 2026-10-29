@@ -48,6 +48,7 @@ jest.mock('../src/services/configService', () => ({
     getUnsupportedParams: () => [],
     getParamRenames: () => ({}),
     getHookConfig: () => undefined,
+    getConfig: () => ({}), // nothing forces pseudonymization
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'default' }),
     getOpenAIDeploymentApiVersion: () => undefined,
   },

@@ -8,9 +8,10 @@ sap.ui.require([
 	"admin/app/test/integration/ListJourney",
 	"admin/app/test/integration/ObjectPageJourney",
 	"admin/app/test/integration/EditJourney",
-	"admin/app/test/integration/CreateJourney"
+	"admin/app/test/integration/CreateJourney",
+	"admin/app/test/integration/TeamJourney"
 ], function (JourneyRunner, expectations, ListReport, ObjectPage,
-	RoleSanityJourney, ListJourney, ObjectPageJourney, EditJourney, CreateJourney) {
+	RoleSanityJourney, ListJourney, ObjectPageJourney, EditJourney, CreateJourney, TeamJourney) {
 	"use strict";
 
 	if (expectations.error) {
@@ -27,6 +28,6 @@ sap.ui.require([
 		pages: { onTheListReport: ListReport, onTheObjectPage: ObjectPage }
 	});
 	// run() registers the journeys' tests in microtasks; QUnit.start() begins on the next macrotask.
-	oRunner.run(RoleSanityJourney.run, ListJourney.run, ObjectPageJourney.run, EditJourney.run, CreateJourney.run);
+	oRunner.run(RoleSanityJourney.run, ListJourney.run, ObjectPageJourney.run, EditJourney.run, CreateJourney.run, TeamJourney.run);
 	QUnit.start();
 });

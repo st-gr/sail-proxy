@@ -4,11 +4,12 @@
 import { Request, Response } from 'express';
 import { sapAIService } from './sapAIService';
 import { getModelDetails } from './modelService';
-import { getConfig, getConfigAsync, getSubstitutedModel, getHookConfig } from './configService';
+import { getConfig, getConfigAsync, getSubstitutedModel, getHookConfig, getSupportsPromptCaching } from './configService';
 import { pluginExecutor } from './pluginExecutor';
 import { processAnthropicMessages } from './anthropicMessageService';
 import { transformToolsToSAPFormat, transformToolChoiceToSAPFormat } from './anthropicToolsService';
-import { extractSystemPromptText } from './anthropicUtils';
+import { systemContent, capBreakpoints, relocateBreakpoint, requestHasCacheControl, withoutCacheControl } from './anthropicCacheBreakpoints';
+import { resolvePromptCachingSupport } from '../utils/promptCachingSupport';
 import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
@@ -136,20 +137,35 @@ export const transformRequestToSAPFormat = async (
     }
   }
 
+  // The client's cache breakpoints go through only where prompt caching is on for the target model,
+  // by the Responses bridge's rule (promptCachingSupport.ts): Anthropic models by default, a
+  // supports_prompt_caching override either way. Otherwise the request is built as if unmarked.
+  const cachingRequest = !requestHasCacheControl(anthropicReq) || resolvePromptCachingSupport({
+    provider: substitutedProvider,
+    modelFlag: getSupportsPromptCaching(undefined, substitutedModelName),
+    providerFlag: getSupportsPromptCaching(substitutedProvider, undefined),
+  }) ? anthropicReq : withoutCacheControl(anthropicReq);
+
   const sapMessages: any[] = [];
-  const systemPromptText = extractSystemPromptText(anthropicReq.system);
-  if (systemPromptText) {
-    sapMessages.push({ role: 'system', content: systemPromptText });
+  // A string unless the client marked a system block for caching (anthropicCacheBreakpoints.ts).
+  const system = systemContent(cachingRequest.system);
+  if (system.length > 0) {
+    sapMessages.push({ role: 'system', content: system });
   }
 
-  const processedUserAssistantMessages = processAnthropicMessages(anthropicReq.messages);
+  const processedUserAssistantMessages = processAnthropicMessages(cachingRequest.messages);
   sapMessages.push(...processedUserAssistantMessages);
 
   // Remove has_tools property from messages before sending to SAP AI Core
-  const messagesForSAPTemplate = sapMessages.map(message => {
-    const { has_tools, ...rest } = message; // Destructure to remove has_tools
+  let cleanedMessages = sapMessages.map(message => {
+    const { has_tools, has_image, cache_breakpoint, ...rest } = message; // Destructure to remove the internal markers
     return rest;
   });
+  // A tool message cannot carry a breakpoint on orchestration; move the client's to an earlier turn.
+  sapMessages.forEach((message, i) => {
+    if (message.cache_breakpoint) cleanedMessages = relocateBreakpoint(cleanedMessages, i, message.cache_breakpoint);
+  });
+  const messagesForSAPTemplate = capBreakpoints(cleanedMessages);
 
   if (debugRequestId) {
     payloadLogger.savePayload(debugRequestId, '02a_messages_for_sap_template', messagesForSAPTemplate);
@@ -307,7 +323,7 @@ export const handleAnthropicRequest = async (
       await sapAIService.streamChatCompletion(sapPayload, async (chunk: any) => { // Changed to streamChatCompletion and pass correct params
         try {
             // Pass originalModelName, not the full anthropicReq. And await the async transform.
-            const anthropicChunk = await transformSAPChunkToAnthropic(chunk); // Added await
+            const anthropicChunk = await transformSAPChunkToAnthropic(chunk, null, sapPayload.config.modules.prompt_templating.model.name); // Added await
             if (anthropicChunk) {
                 logger.debug('AnthropicService', `Anthropic chunk for request ${debugRequestId || 'N/A'}: ${JSON.stringify(anthropicChunk).substring(0,100)}...`);
                 res.write(`data: ${JSON.stringify(anthropicChunk)}\n\n`);
@@ -381,7 +397,7 @@ export const handleAnthropicRequest = async (
       const sapResponse = await sapAIService.callSAPAIOrchestration(sapPayload, debugRequestId);
       // sapAIService.callSAPAIOrchestration will log '03_sap_response_raw'
 
-      const anthropicResponse = await transformSAPResponseToAnthropic(sapResponse, false, originalModelName); // Added await
+      const anthropicResponse = await transformSAPResponseToAnthropic(sapResponse, false, originalModelName, undefined, undefined, sapPayload.config.modules.prompt_templating.model.name); // Added await
       
       if (debugRequestId) {
         payloadLogger.savePayload(debugRequestId, '04_transformed_client_response', anthropicResponse);

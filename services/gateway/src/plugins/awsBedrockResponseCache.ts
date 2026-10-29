@@ -16,6 +16,7 @@ import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import * as sseWriter from '../utils/sseWriter';
+import { redactUrl } from '../utils/redactUrl';
 import { requestDeclaresWebSearchTool } from './webSearch/webSearchTool';
 
 // Type definitions
@@ -671,10 +672,10 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
   const cacheKey = generateCacheKey(req);
   
   // LOG THE FULL CACHE KEY and request details to debug retry issues
-  logger.info(`🔑 CACHE KEY GENERATED: ${cacheKey.substring(0, 16)}... for request: ${req.method} ${req.originalUrl || req.url}`);
+  logger.info(`🔑 CACHE KEY GENERATED: ${cacheKey.substring(0, 16)}... for request: ${req.method} ${redactUrl(req.originalUrl || req.url)}`);
   logger.debug(`🔍 CACHE KEY DEBUG:`, {
     cacheKey: cacheKey.substring(0, 32) + '...',
-    url: req.originalUrl || req.url,
+    url: redactUrl(req.originalUrl || req.url),
     method: req.method,
     hasBody: !!req.body,
     bodySize: req.body ? JSON.stringify(req.body).length : 0,
@@ -1125,7 +1126,7 @@ function cleanupPendingRequests(context: RequestContext, cacheKey: string, logge
 async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Promise<any> {
   const logger = utils.logger;
   
-  logger.debug('Plugin', `AfterHandler called for request: ${req.method} ${req.originalUrl || req.url}`);
+  logger.debug('Plugin', `AfterHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)}`);
   
   // If caching is disabled or we have no upstream response, just return
   if (!config.enableCaching) {
@@ -1849,7 +1850,7 @@ interface PluginErrorRule {
 async function errorHandler({ req, error, utils }: PluginErrorContext): Promise<Error> {
   const logger = utils.logger;
   
-  logger.debug('Plugin', `ErrorHandler called for request: ${req.method} ${req.originalUrl || req.url} - Error: ${error.message}`);
+  logger.debug('Plugin', `ErrorHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)} - Error: ${error.message}`);
   
   // Get context from WeakMap
   const context = requestContextMap.get(req);

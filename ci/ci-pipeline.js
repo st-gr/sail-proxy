@@ -18,6 +18,11 @@ const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
 const { checkpointSqliteWal } = require('./scripts/sqlite-checkpoint');
+const { ensureFileSearchTestDatabase, needsContainer, CONTAINER_NAME } = require('./scripts/file-search-test-db');
+const fileSearchTestS3 = require('./scripts/file-search-test-s3');
+const { volumesToRemoveBeforeCI, pickVolumeToBackUp } = require('./scripts/backed-up-volumes');
+const { sapRelayEnv } = require('./scripts/sap-relay-env');
+const { decideDockerBuild, headCommit, isLocalRun, markerPath, LOCAL_BUILD_MARKER } = require('./scripts/docker-build-decision');
 
 // Axios is loaded dynamically after dependencies are installed
 let axios;
@@ -53,8 +58,14 @@ const logger = {
 const state = {
   processes: [],
   containers: [],
+  fileSearch: null,
+  // MinIO for the file_search S3 suites: { container, env }; the container is removed by name in cleanup()
+  fileSearchS3: null,
+  fileSearchS3Container: null,
   startTime: Date.now(),
   backupDir: null,
+  // The volumes backupCIState saved: the only ones cleanStateBeforeCI removes
+  backedUpVolumes: null,
   volumeNames: {
     postgres: null,
     valkey: null
@@ -63,7 +74,9 @@ const state = {
   dockerComposeCmd: null,
   dockerBuildRequired: true,
   dockerBuildDecisionReason: 'Not yet determined',
-  changedFiles: []
+  changedFiles: [],
+  startHead: null,
+  startCleanTree: false
 };
 
 // Parse docker-compose.yml to extract volume and image names
@@ -86,8 +99,9 @@ async function parseDockerComposeConfig() {
       config.volumes.postgres = postgresMatch[1];
     }
 
-    // Parse valkey volume (line format: "- valkey_data:/data")
-    const valkeyMatch = content.match(/^\s+-\s+(\w+):\s*\/data/m);
+    // Parse valkey volume (line format: "- valkey_data:/data"); anchored on the name, since other
+    // services (the optional minio) also mount a volume at /data
+    const valkeyMatch = content.match(/^\s+-\s+(\w*valkey\w*):\s*\/data/m);
     if (valkeyMatch) {
       config.volumes.valkey = valkeyMatch[1];
     }
@@ -129,197 +143,43 @@ async function parseDockerComposeConfig() {
 
 /**
  * Determines if Docker build testing should run based on changed files
+ * (ci/scripts/docker-build-decision.js; a local run compares against the last local image build).
  * @returns {Promise<{required: boolean, reason: string, files: string[]}>}
  */
 async function shouldRunDockerBuild() {
-  const dockerRelevantPaths = [
-    'docker/',
-    'services/',
-    'libs/',
-    'ci/',
-    '.github/',
-    'package.json',
-    'pnpm-workspace.yaml',
-    'pnpm-lock.yaml',
-    '.dockerignore'
-  ];
+  return decideDockerBuild({
+    exec: execAsync,
+    env: process.env,
+    logger,
+    readMarker: () => fs.readFile(markerPath(path.join(__dirname, '..')), 'utf8')
+  });
+}
 
+/**
+ * After a successful local Phase 8 (images built in Phase 7 and the admin container validated),
+ * records the commit the run started from as the last local image build, but only when the run
+ * started with a clean tree. Starting HEAD, not current HEAD: a commit made while the run builds
+ * is not in it.
+ */
+async function recordLocalDockerBuild() {
+  if (!isLocalRun(process.env)) return;
+  if (state.startCleanTree !== true) {
+    // The images contain uncommitted edits, so HEAD's own tree was never built: recording HEAD
+    // would let the next run skip after those edits are discarded.
+    logger.info('The run started with uncommitted changes; the last local image build is not recorded');
+    return;
+  }
+  if (!state.startHead) {
+    logger.warning('HEAD was unknown when the run started; the last local image build is not recorded');
+    return;
+  }
+  const file = markerPath(path.join(__dirname, '..'));
   try {
-    // Allow override via environment variable
-    if (process.env.FORCE_DOCKER_BUILD === 'true' || process.env.FORCE_DOCKER_BUILD === '1') {
-      logger.info('FORCE_DOCKER_BUILD environment variable is set');
-      return {
-        required: true,
-        reason: 'Forced via FORCE_DOCKER_BUILD environment variable',
-        files: []
-      };
-    }
-
-    // Check if we're in a git repository
-    try {
-      await execAsync('git rev-parse --is-inside-work-tree');
-    } catch (error) {
-      logger.warning('Not in a git repository - running full Docker build');
-      return {
-        required: true,
-        reason: 'Not a git repository (fail-safe)',
-        files: []
-      };
-    }
-
-    // Determine the comparison base
-    let gitDiffCommand;
-    let changedFiles = [];
-
-    if (process.env.GITHUB_ACTIONS === 'true') {
-      // For PRs, use the base ref; for pushes, use the before/after commits or HEAD~1
-      let baseBranch;
-      if (process.env.GITHUB_BASE_REF) {
-        // Pull request: compare against the base branch
-        baseBranch = `origin/${process.env.GITHUB_BASE_REF}`;
-        logger.info(`GitHub Actions PR mode: comparing against ${baseBranch}`);
-      } else if (process.env.GITHUB_EVENT_BEFORE && process.env.GITHUB_EVENT_BEFORE !== '0000000000000000000000000000000000000000') {
-        // Push event with valid before commit
-        baseBranch = process.env.GITHUB_EVENT_BEFORE;
-        logger.info(`GitHub Actions push mode: comparing ${baseBranch}...${process.env.GITHUB_SHA}`);
-      } else {
-        // Fallback to HEAD~1 (requires fetch-depth >= 2)
-        baseBranch = 'HEAD~1';
-        logger.info(`GitHub Actions mode: comparing against ${baseBranch}`);
-      }
-
-      gitDiffCommand = `git diff --name-only ${baseBranch}...HEAD`;
-
-      try {
-        const { stdout } = await execAsync(gitDiffCommand);
-        changedFiles = stdout.trim().split('\n').filter(f => f.length > 0);
-      } catch (error) {
-        logger.warning(`Failed to detect changed files: ${error.message}`);
-        logger.warning('Tip: Ensure GitHub Actions workflow uses checkout with fetch-depth: 2 or greater');
-        return {
-          required: true,
-          reason: `Git diff failed: ${error.message} (fail-safe)`,
-          files: []
-        };
-      }
-    } else if (process.env.CI === 'true') {
-      gitDiffCommand = 'git diff --name-only HEAD~1 HEAD';
-      logger.info('Generic CI mode: comparing HEAD~1...HEAD');
-
-      try {
-        const { stdout } = await execAsync(gitDiffCommand);
-        changedFiles = stdout.trim().split('\n').filter(f => f.length > 0);
-      } catch (error) {
-        logger.warning(`Failed to detect changed files: ${error.message}`);
-        return {
-          required: true,
-          reason: `Git diff failed: ${error.message} (fail-safe)`,
-          files: []
-        };
-      }
-    } else {
-      // Local mode: Check uncommitted changes first, then fall back to last commit
-      logger.info('Local mode: checking for uncommitted changes...');
-
-      try {
-        const { stdout: uncommittedStdout } = await execAsync('git diff --name-only HEAD');
-        changedFiles = uncommittedStdout.trim().split('\n').filter(f => f.length > 0);
-
-        if (changedFiles.length > 0) {
-          logger.info(`Found ${changedFiles.length} uncommitted change(s)`);
-        } else {
-          // No uncommitted changes, check the last commit
-          logger.info('No uncommitted changes, checking last commit...');
-          try {
-            const { stdout: lastCommitStdout } = await execAsync('git diff --name-only HEAD~1 HEAD');
-            changedFiles = lastCommitStdout.trim().split('\n').filter(f => f.length > 0);
-
-            if (changedFiles.length > 0) {
-              logger.info(`Found ${changedFiles.length} file(s) in last commit`);
-            } else {
-              // Last commit is empty (might be initial commit or merge)
-              logger.warning('No files in last commit - checking if this is initial commit...');
-              try {
-                await execAsync('git rev-parse HEAD~1');
-                // HEAD~1 exists, so this is just an empty commit
-                logger.info('Empty commit detected - skipping Docker build');
-                return {
-                  required: false,
-                  reason: 'Empty commit (no files changed)',
-                  files: []
-                };
-              } catch {
-                // HEAD~1 doesn't exist, this is the initial commit
-                logger.warning('Initial commit detected - running full Docker build (fail-safe)');
-                return {
-                  required: true,
-                  reason: 'Initial commit (fail-safe)',
-                  files: []
-                };
-              }
-            }
-          } catch (error) {
-            logger.warning(`Failed to check last commit: ${error.message}`);
-            return {
-              required: true,
-              reason: `Git diff failed: ${error.message} (fail-safe)`,
-              files: []
-            };
-          }
-        }
-      } catch (error) {
-        logger.warning(`Failed to detect changed files: ${error.message}`);
-        return {
-          required: true,
-          reason: `Git diff failed: ${error.message} (fail-safe)`,
-          files: []
-        };
-      }
-    }
-
-    // If we still have no files (shouldn't happen after the above logic), fail-safe
-    if (changedFiles.length === 0) {
-      logger.warning('No changed files detected - running full Docker build (fail-safe)');
-      return {
-        required: true,
-        reason: 'No changed files detected (fail-safe)',
-        files: []
-      };
-    }
-
-    // Check if any changed file matches Docker-relevant paths
-    const dockerRelevantFiles = changedFiles.filter(file => {
-      return dockerRelevantPaths.some(path => {
-        if (path.endsWith('/')) {
-          return file.startsWith(path);
-        } else {
-          return file === path;
-        }
-      });
-    });
-
-    // Make decision
-    if (dockerRelevantFiles.length > 0) {
-      return {
-        required: true,
-        reason: `Docker-related files changed (${dockerRelevantFiles.length} files)`,
-        files: dockerRelevantFiles
-      };
-    } else {
-      return {
-        required: false,
-        reason: `No Docker-related files changed (${changedFiles.length} files checked)`,
-        files: changedFiles
-      };
-    }
-
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `${state.startHead}\n`);
+    logger.info(`Recorded the last local image build: ${state.startHead.slice(0, 8)} (${LOCAL_BUILD_MARKER})`);
   } catch (error) {
-    logger.error(`Unexpected error in shouldRunDockerBuild: ${error.message}`);
-    return {
-      required: true,
-      reason: `Unexpected error: ${error.message} (fail-safe)`,
-      files: []
-    };
+    logger.warning(`Could not record the last local image build: ${error.message}; the next local run builds again`);
   }
 }
 
@@ -465,9 +325,7 @@ async function backupCIState() {
     const baseVolumeName = state.volumeNames.postgres;
 
     // Find postgres volume (could be postgres_data, docker_postgres_data, or <project>_postgres_data)
-    const postgresVolume = volumes.find(v =>
-      v === baseVolumeName || v === `docker_${baseVolumeName}` || v.endsWith(`_${baseVolumeName}`)
-    );
+    const postgresVolume = pickVolumeToBackUp(volumes, baseVolumeName);
 
     if (postgresVolume) {
       logger.info(`${postgresVolume} volume found, backing up...`);
@@ -507,9 +365,7 @@ async function backupCIState() {
     const baseVolumeName = state.volumeNames.valkey;
 
     // Find valkey volume (could be valkey_data, docker_valkey_data, or <project>_valkey_data)
-    const valkeyVolume = volumes.find(v =>
-      v === baseVolumeName || v === `docker_${baseVolumeName}` || v.endsWith(`_${baseVolumeName}`)
-    );
+    const valkeyVolume = pickVolumeToBackUp(volumes, baseVolumeName);
 
     if (valkeyVolume) {
       logger.info(`${valkeyVolume} volume found, backing up...`);
@@ -576,6 +432,7 @@ async function backupCIState() {
   logger.info(`Backup location written to: ${backupLocationFile}`);
 
   state.backupDir = backupDir;
+  state.backedUpVolumes = volumeMetadata;
   logger.success(`State backed up to: ${backupDir}`);
 
   return backupDir;
@@ -601,42 +458,16 @@ async function cleanStateBeforeCI() {
   // 2. Remove postgres and valkey volumes to force fresh initialization
   logger.info('Removing postgres and valkey volumes...');
 
-  // Get all volumes and find postgres/valkey volumes (with or without docker_ prefix)
-  try {
-    const { stdout: volumeList } = await execAsync('docker volume ls --format "{{.Name}}"');
-    const volumes = volumeList.split('\n').map(v => v.trim()).filter(Boolean);
-
-    const postgresBaseName = state.volumeNames.postgres;
-    const valkeyBaseName = state.volumeNames.valkey;
-
-    // Find volumes that match the parsed volume names (with or without docker_ prefix)
-    const postgresVolumes = volumes.filter(v =>
-      v === postgresBaseName || v === `docker_${postgresBaseName}` || v.endsWith(`_${postgresBaseName}`)
-    );
-    const valkeyVolumes = volumes.filter(v =>
-      v === valkeyBaseName || v === `docker_${valkeyBaseName}` || v.endsWith(`_${valkeyBaseName}`)
-    );
-
-    // Remove all matching volumes
-    for (const vol of postgresVolumes) {
-      await executeCommand(`docker volume rm ${vol}`, {
-        description: `Removing ${vol} volume...`,
-        ignoreError: true
-      });
-    }
-
-    for (const vol of valkeyVolumes) {
-      await executeCommand(`docker volume rm ${vol}`, {
-        description: `Removing ${vol} volume...`,
-        ignoreError: true
-      });
-    }
-
-    if (postgresVolumes.length === 0 && valkeyVolumes.length === 0) {
-      logger.info('No postgres or valkey volumes found to remove');
-    }
-  } catch (error) {
-    logger.warning(`Failed to list/remove volumes: ${error.message}`);
+  // Only the volumes the backup saved (and the restore puts back); another Compose project's volumes stay.
+  const backedUp = volumesToRemoveBeforeCI(state.backedUpVolumes);
+  for (const vol of backedUp) {
+    await executeCommand(`docker volume rm ${vol}`, {
+      description: `Removing ${vol} volume...`,
+      ignoreError: true
+    });
+  }
+  if (backedUp.length === 0) {
+    logger.info('No backed-up postgres or valkey volumes to remove');
   }
 
   // 3. Remove generated files in docker/
@@ -824,6 +655,12 @@ async function restoreCIState(backupDir) {
       if (fsSync.existsSync(backupPath)) {
         await fs.copyFile(backupPath, originalPath);
         logger.info(`✅ Restored ${original}`);
+      } else if (fsSync.existsSync(originalPath)) {
+        // No backup: the checkout had no such file before this run (backupCIState copies every
+        // existing one), so the file now there is CI's own. Leaving it switches a worktree's
+        // later cds.test runs to the CI Postgres settings.
+        await fs.unlink(originalPath);
+        logger.info(`🧹 Removed CI-created ${original} (there was none before the run)`);
       } else {
         logger.info(`No backup for ${original}`);
       }
@@ -977,6 +814,12 @@ async function cleanup() {
     }
   }
   
+  // The file_search test MinIO, by name (docker rm -f -v), not through the stop/rm loop above
+  if (state.fileSearchS3Container) {
+    logger.info(`Removing Docker container: ${state.fileSearchS3Container}`);
+    await fileSearchTestS3.stopMinio({ exec: execAsync, name: state.fileSearchS3Container });
+  }
+
   // Restore user's environment state
   if (state.backupDir) {
     try {
@@ -1005,7 +848,7 @@ async function cleanup() {
   }
   
   // Check if containers are still running
-  for (const container of state.containers) {
+  for (const container of [...state.containers, ...(state.fileSearchS3Container ? [state.fileSearchS3Container] : [])]) {
     try {
       const { stdout } = await execAsync(`docker ps -q --filter "name=${container}"`);
       if (stdout.trim()) {
@@ -1305,9 +1148,11 @@ async function runCIPipeline() {
     // CRITICAL: Determine if Docker build is required BEFORE any file operations
     // This must run first to capture the true state before setup scripts modify files
     logger.step('Analyzing changed files to determine if Docker build is needed...');
+    state.startHead = await headCommit(execAsync);
     const dockerBuildDecision = await shouldRunDockerBuild();
     state.dockerBuildRequired = dockerBuildDecision.required;
     state.dockerBuildDecisionReason = dockerBuildDecision.reason;
+    state.startCleanTree = dockerBuildDecision.cleanTree === true;
     state.changedFiles = dockerBuildDecision.files;
 
     // Log the decision
@@ -1471,71 +1316,94 @@ async function runCIPipeline() {
     }
 
     state.containers.push('valkey');
+
+    // A Postgres with pgvector for the file_search suites and the Phase 5 gateway.
+    // See ci/scripts/file-search-test-db.js for why it is two databases, and why port 55434.
+    logger.step('Preparing the file_search test database...');
+    // Registered before the container exists: cleanup() must also remove it if setup fails or is interrupted.
+    if (needsContainer(process.env)) state.containers.push(CONTAINER_NAME);
+    state.fileSearch = await ensureFileSearchTestDatabase({
+      env: process.env,
+      exec: execAsync,
+      log: (message) => logger.info(message)
+    });
+    logger.success(`file_search test database ready (${state.fileSearch.container ? 'own container' : 'provided DSN'})`);
+
+    // MinIO for the file_search S3 suites (Phase 6 only; the Phase 5 gateway and the journeys stay on
+    // the db backend). See ci/scripts/file-search-test-s3.js for the port and the loopback-only guard.
+    logger.step('Preparing the file_search test S3 (MinIO)...');
+    // Named and registered before the container exists: cleanup() must also remove it if setup fails or is interrupted.
+    const minioName = fileSearchTestS3.needsContainer(process.env) ? fileSearchTestS3.containerName() : null;
+    state.fileSearchS3Container = minioName;
+    state.fileSearchS3 = await fileSearchTestS3.ensureFileSearchTestS3({
+      env: process.env,
+      exec: execAsync,
+      log: (message) => logger.info(message),
+      name: minioName || undefined
+    });
+    logger.success(`file_search test S3 ready (${state.fileSearchS3.container ? 'own container' : 'provided endpoint'})`);
     
     // Phase 2: Security Validation (Fail Fast)
     logger.phase('Phase 2: Security Validation');
     
-    // Use cross-platform Node.js security scanner
+    // Fails closed. The previous version fell back to "SKIPPED" whenever the scanner threw anything
+    // it did not recognise - including a detected supply-chain indicator, whose message matched
+    // neither of the two it re-threw - and its dependency audit read pnpm audit's exit code, which
+    // made it report "No vulnerabilities found" exactly when there were some (ci/audit-gate.test.js).
     logger.step('Running cross-platform security validation...');
-    
-    try {
-      // Load the security scanner module
-      const { runSecretDetection, runDependencyAudit, checkSupplyChainIOCs } = require('./security-scanner.js');
+    const { runSecretDetection, checkSupplyChainIOCs } = require('./security-scanner.js');
 
-      // Run secret detection
-      const secretIssues = await runSecretDetection();
-
-      if (secretIssues > 0) {
-        throw new Error(`Security validation failed: ${secretIssues} critical issue(s) found. Please fix before proceeding.`);
-      }
-
-      logger.success('✅ Secret detection: PASSED');
-
-      // Run supply chain IOC detection
-      const supplyChainIssues = await checkSupplyChainIOCs();
-
-      if (supplyChainIssues > 0) {
-        throw new Error(`Supply chain attack detected: ${supplyChainIssues} indicator(s) found. Do NOT proceed.`);
-      }
-
-      logger.success('✅ Supply chain check: PASSED');
-
-      // Run dependency audit
-      const auditIssues = await runDependencyAudit();
-      
-      if (auditIssues > 0) {
-        throw new Error('CRITICAL vulnerabilities found in dependencies. Fix before proceeding.');
-      }
-      
-      logger.success('✅ Dependency audit: PASSED');
-      
-    } catch (error) {
-      // If it's a security validation error, re-throw it
-      if (error.message.includes('Security validation failed') || error.message.includes('CRITICAL')) {
-        throw error;
-      }
-      
-      // Fallback to basic checks if security scanner fails
-      logger.warning('Security scanner failed, falling back to basic validation...');
-      logger.warning(`Scanner error: ${error.message}`);
-      
-      // Try basic audit check as fallback
-      try {
-        const { stdout } = await executeCommand('pnpm audit --audit-level high', {
-          ignoreError: true
-        });
-        
-        if (stdout.includes('critical')) {
-          throw new Error('CRITICAL vulnerabilities found in dependencies. Fix before proceeding.');
-        }
-        
-        logger.success('✅ Basic security validation: PASSED (with fallback)');
-      } catch (auditError) {
-        logger.warning('Both security scanner and fallback audit failed - continuing with warning');
-        logger.success('✅ Security validation: SKIPPED (scanner unavailable)');
-      }
+    const secretIssues = await runSecretDetection();
+    if (secretIssues > 0) {
+      throw new Error(`Security validation failed: ${secretIssues} critical issue(s) found. Please fix before proceeding.`);
     }
-    
+    logger.success('✅ Secret detection: PASSED');
+
+    const supplyChainIssues = await checkSupplyChainIOCs();
+    if (supplyChainIssues > 0) {
+      throw new Error(`Supply chain attack detected: ${supplyChainIssues} indicator(s) found. Do NOT proceed.`);
+    }
+    logger.success('✅ Supply chain check: PASSED');
+
+    await executeCommand('node ci/audit-gate.test.js', {
+      description: 'Testing the dependency gate...'
+    });
+    await executeCommand('node ci/scripts/backed-up-volumes.test.js', {
+      description: 'Testing which volumes the CI may remove...'
+    });
+    await executeCommand('node cli-tools/sync-commits.test.js', {
+      description: 'Testing that the commit sync replays large files...'
+    });
+    await executeCommand('node cli-tools/sync-version.test.js', {
+      description: 'Testing that the version sync covers the OpenAPI documents...'
+    });
+    await executeCommand('node ci/scripts/docker-build-decision.test.js', {
+      description: 'Testing the Docker build decision...'
+    });
+    await executeCommand('node ci/scripts/sap-relay-env.test.js', {
+      description: 'Testing the SAP relay settings...'
+    });
+    await executeCommand('node ci/sap-relay/relay.test.js', {
+      description: 'Testing the SAP relay renderer...'
+    });
+    await executeCommand('node ci/file-search-eval/build-corpus.test.js', {
+      description: 'Checking the file_search evaluation corpus...'
+    });
+    await executeCommand('node ci/file-search-eval/question-set.test.js', {
+      description: 'Testing the file_search question generator...'
+    });
+    await executeCommand('node ci/file-search-eval/sap-client.test.js', {
+      description: 'Testing the file_search question generator SAP client...'
+    });
+    await executeCommand('node ci/file-search-eval/questions.test.js', {
+      description: 'Checking the file_search evaluation questions...'
+    });
+    const gate = await executeCommand('node ci/audit-gate.js', {
+      description: 'Dependency gate (pnpm audit: high/critical not on ci/audit-allowlist.json block)...'
+    });
+    gate.stdout.trim().split('\n').forEach(line => logger.info(line));
+    logger.success('✅ Dependency gate: PASSED');
+
     // Phase 3: Service Compilation
     logger.phase('Phase 3: Service Compilation');
     
@@ -1631,6 +1499,20 @@ async function runCIPipeline() {
       description: 'Running Admin unit tests (cold ts-jest cache)...'
     });
 
+    // The text inventory: fails on any hard-coded user-visible literal in a cockpit view,
+    // controller or model that is not in ci/scripts/i18n-literals.allowlist.json (exit 1).
+    // It skips node_modules, dist, test, i18n, localService, annotations and mockData.
+    await executeCommand('node ci/scripts/i18n-literals.js', {
+      description: 'Checking the cockpit for hard-coded (untranslated) text...'
+    });
+
+    // The UI5 type check: `tsc --noEmit` per cockpit app (the ui5 build transpiles with babel and
+    // never type-checks). Fails on any error in an app listed in ci/scripts/ui5-typecheck.gated.json
+    // and on TS2688 anywhere (the @sapui5/types devDependency is missing; tsc then checks nothing).
+    await executeCommand('node ci/scripts/ui5-typecheck.js', {
+      description: 'Type-checking the cockpit UI5 apps...'
+    });
+
     await executeCommand('pnpm run test', {
       cwd: 'libs/test-utils',
       description: 'Running test-utils unit tests...'
@@ -1676,12 +1558,15 @@ async function runCIPipeline() {
     // Database is already initialized and service is responding
     
     // Start Gateway service
+    logger.info(`SAP via relay: ${process.env.SAP_RELAY_BASE ? 'yes' : 'no'}`);
     const gatewayService = await spawnService('pnpm', ['run', 'dev'], {
       cwd: 'services/gateway',
       name: 'gateway-service',
-      env: { NODE_ENV: 'development' }
+      // Overrides both FILE_SEARCH_DATABASE_URL and FILE_SEARCH_MIGRATION_DATABASE_URL: an explicit variable wins over
+      // services/gateway/.env, which may point at a developer's own database, so neither can divert the CI gateway.
+      env: { NODE_ENV: 'development', FILE_SEARCH_DATABASE_URL: state.fileSearch.gatewayDsn, FILE_SEARCH_MIGRATION_DATABASE_URL: state.fileSearch.gatewayDsn, ...sapRelayEnv(process.env.SAP_RELAY_BASE) }
     });
-    
+
     // Wait for Gateway service
     logger.info('Waiting 10 seconds for Gateway service to initialize...');
     await new Promise(resolve => setTimeout(resolve, 10000));
@@ -1719,7 +1604,15 @@ async function runCIPipeline() {
     
     await executeCommand('pnpm run test', {
       cwd: 'services/gateway',
-      description: 'Running Gateway full test suite...'
+      description: 'Running Gateway full test suite...',
+      // The Postgres integration suites skip without this, the S3 suites without FILE_SEARCH_TEST_S3_*.
+      // FILE_SEARCH_TEST_BINARIES is passed on only if the caller set it: the extractor suites need
+      // pandoc, pdftotext, tesseract (eng) and antiword installed. The blob race suite runs 60 iterations here (300 when run on
+      // its own) so its load does not crowd the timing tests beside it; the caller may override.
+      env: {
+        ...process.env, FILE_SEARCH_TEST_DSN: state.fileSearch.testDsn, ...state.fileSearchS3.env,
+        FILE_SEARCH_RACE_ITERATIONS: process.env.FILE_SEARCH_RACE_ITERATIONS || '60',
+      }
     });
     
     await executeCommand('pnpm run test', {
@@ -1828,7 +1721,10 @@ async function runCIPipeline() {
       // ~14 GB ubuntu-latest guarantees. Locally the cache — including the SAPUI5
       // framework cache mount the admin build relies on — is left alone.
       for (const service of ['gateway', 'admin', 'ollama', 'nginx']) {
-        await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache ${service}`, {
+        // --pull: the base images are floating tags (node:24-alpine, nginx:alpine). Without it the local
+        // image store's copy is reused however old it is, and the Phase 9 scan reports CVEs a release
+        // build (buildx, which resolves the tag in the registry) would not ship.
+        await executeCommand(`${state.dockerComposeCmd} -f ${dockerComposeFile} build --no-cache --pull ${service}`, {
           description: `Testing Docker build process: ${service} (this may take several minutes)...`,
           cwd: projectRoot,
           env: ciEnv
@@ -2246,6 +2142,10 @@ async function runCIPipeline() {
 
       throw error;
     }
+
+    // Only now, with the images built (Phase 7) and the admin container validated (Phase 8):
+    // a Phase 8 failure followed by a plain rerun must build and validate again.
+    await recordLocalDockerBuild();
     }  // End of conditional Docker container validation
 
     // Phase 9: Docker Security Scanning
@@ -2269,6 +2169,10 @@ async function runCIPipeline() {
     
     if (trivyAvailable) {
       let vulnerabilitiesFound = false;
+      // Blocking: a CRITICAL finding that has a fixed version (someone can act on it) and any scan
+      // whose output cannot be read. HIGH and unfixed CRITICAL findings are reported only. Until
+      // 2026-09 every outcome here, parse failures included, ended in "COMPLETED (warnings noted)".
+      const blocking = [];
 
       for (const imageInfo of state.images) {
         const imageName = imageInfo.ciTag;
@@ -2298,6 +2202,7 @@ async function runCIPipeline() {
             const scanResult = JSON.parse(jsonOutput);
             let highCount = 0;
             let criticalCount = 0;
+            const fixableCritical = [];
             
             // Count vulnerabilities across all targets
             if (scanResult.Results) {
@@ -2305,7 +2210,10 @@ async function runCIPipeline() {
                 if (result.Vulnerabilities) {
                   for (const vuln of result.Vulnerabilities) {
                     if (vuln.Severity === 'HIGH') highCount++;
-                    if (vuln.Severity === 'CRITICAL') criticalCount++;
+                    if (vuln.Severity === 'CRITICAL') {
+                      criticalCount++;
+                      if (vuln.FixedVersion) fixableCritical.push(`${vuln.PkgName} ${vuln.InstalledVersion} -> ${vuln.FixedVersion} (${vuln.VulnerabilityID})`);
+                    }
                   }
                 }
               }
@@ -2322,16 +2230,21 @@ async function runCIPipeline() {
               });
               console.log(tableOutput);
               vulnerabilitiesFound = true;
+              fixableCritical.forEach(f => blocking.push(`${imageName}: ${f}`));
             }
           } catch (parseError) {
             logger.error(`Failed to parse Trivy output for ${imageName}: ${parseError.message}`);
-            vulnerabilitiesFound = true;
+            blocking.push(`${imageName}: Trivy output unreadable (${parseError.message})`);
           }
         } catch (error) {
           logger.info(`Skipping ${imageName} - image not found or scan failed`);
         }
       }
       
+      if (blocking.length > 0) {
+        blocking.forEach(b => logger.error(`BLOCKED ${b}`));
+        throw new Error(`Docker security scan: ${blocking.length} fixable CRITICAL finding(s) or unreadable scan(s)`);
+      }
       if (vulnerabilitiesFound) {
         logger.warning('Docker security scan completed with vulnerabilities found');
         logger.warning('Review scan results and consider updating base images or dependencies');

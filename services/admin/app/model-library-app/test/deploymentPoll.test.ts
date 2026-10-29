@@ -30,4 +30,7 @@ describe('pollUntilSettled', () => {
     expect(messageFor({ status: 'DEAD', elapsedSeconds: 10, outcome: 'failed' })).toBe('Deployment failed with status: DEAD');
     expect(messageFor({ status: 'PENDING', elapsedSeconds: 300, outcome: 'timeout' })).toBe('Timeout reached after 300 seconds. Last known status: PENDING');
   });
+  it('the timeout message names the seconds actually waited', () => {
+    expect(messageFor({ status: 'PENDING', elapsedSeconds: 15, outcome: 'timeout' })).toBe('Timeout reached after 15 seconds. Last known status: PENDING');
+  });
 });

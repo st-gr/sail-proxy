@@ -22,6 +22,10 @@
  */
 
 const { execSync, spawn } = require('child_process');
+const zlib = require('zlib');
+const {
+  podTempPath, readPodFileVerified, writePodFileVerified, removePodFiles, assertCompleteDump,
+} = require('./kyma-pod-files');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -56,6 +60,28 @@ function redactSecrets(message) {
     if (secret) result = result.split(secret).join('***');
   }
   return result;
+}
+
+/** Masks registered secrets and any PGPASSWORD=… assignment (a command line echoed in an error). */
+function scrubText(text) {
+  return redactSecrets(text).replace(/PGPASSWORD=('[^']*'|"[^"]*"|\S+)/g, 'PGPASSWORD=***');
+}
+
+/**
+ * A printable summary of a failure, never the command line: execSync's error.message starts with
+ * "Command failed: <the whole command>", which embeds PGPASSWORD. A failed command is reported by
+ * its exit status and the first line of its stderr; any other error by its first message line.
+ */
+function failureSummary(error) {
+  if (!error) return 'unknown error';
+  const stderr = error.stderr ? String(error.stderr).trim().split('\n')[0] : '';
+  const message = String(error.message || '');
+  if (typeof error.status === 'number' || message.startsWith('Command failed')) {
+    const status = typeof error.status === 'number' ? `exit code ${error.status}` : 'command failed';
+    return scrubText(stderr ? `${status}: ${stderr}` : status);
+  }
+  if (error.code && !message) return scrubText(String(error.code));
+  return scrubText(message.split('\n')[0] || 'unknown error');
 }
 
 function log(message, color = colors.reset) {
@@ -119,7 +145,7 @@ function getKubernetesCredentials(namespace) {
     logSuccess('Credentials retrieved successfully');
     return credentials;
   } catch (error) {
-    logError(`Failed to retrieve credentials: ${error.message}`);
+    logError(`Failed to retrieve credentials: ${failureSummary(error)}`);
     logInfo('Make sure kubectl is configured and you have access to the namespace');
     process.exit(1);
   }
@@ -140,7 +166,7 @@ function getReplicaCount(namespace, deployment) {
     const count = parseInt(result.replace(/['"]/g, '').trim(), 10);
     return isNaN(count) ? 0 : count;
   } catch (error) {
-    logWarning(`Could not get replica count for ${deployment}: ${error.message}`);
+    logWarning(`Could not get replica count for ${deployment}: ${failureSummary(error)}`);
     return 0;
   }
 }
@@ -159,7 +185,7 @@ function scaleDeployment(namespace, deployment, replicas) {
     );
     logSuccess(`Scaled ${deployment} to ${replicas} replicas`);
   } catch (error) {
-    logError(`Failed to scale ${deployment}: ${error.message}`);
+    logError(`Failed to scale ${deployment}: ${failureSummary(error)}`);
     throw error;
   }
 }
@@ -195,8 +221,46 @@ function waitForDeployment(namespace, deployment, replicas, timeoutSeconds = 300
       );
       logSuccess(`${deployment} is ready`);
     } catch (error) {
-      logWarning(`Timeout waiting for ${deployment}: ${error.message}`);
+      logWarning(`Timeout waiting for ${deployment}: ${failureSummary(error)}`);
     }
+  }
+}
+
+/** The label of the file_search `rebuild-index` Job (docs/developer/file-search-tool.md). */
+const INDEX_REBUILD_SELECTOR = 'app=file-search-rebuild';
+
+function buildIndexRebuildProbeCommand(namespace) {
+  return `kubectl -n ${namespace} get pods -l ${INDEX_REBUILD_SELECTOR} `
+    + '--field-selector=status.phase!=Succeeded,status.phase!=Failed -o name';
+}
+
+/**
+ * The pods of a file_search `rebuild-index` Job that has not finished, or null when kubectl could not tell.
+ * Such a Job writes to the database (an index build, then a swap) and is not part of the gateway Deployment, so
+ * pausing the deployments does not stop it: a backup, restore or reset meanwhile is not quiesced.
+ */
+function indexRebuildPods(namespace, exec = execSync) {
+  try {
+    const out = exec(buildIndexRebuildProbeCommand(namespace), { encoding: 'utf8', stdio: 'pipe' });
+    return String(out).split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch (error) {
+    return null;
+  }
+}
+
+/** Exits when a rebuild-index Job is running; warns when that cannot be checked. */
+function refuseWhileIndexRebuildRuns(namespace, exec = execSync) {
+  const pods = indexRebuildPods(namespace, exec);
+  if (pods === null) {
+    logWarning(`Could not check for a running file_search rebuild-index Job (-l ${INDEX_REBUILD_SELECTOR}); `
+      + 'make sure none is running.');
+    return;
+  }
+  if (pods.length > 0) {
+    logError(`A file_search rebuild-index Job is running (${pods.join(', ')}). It writes to the database and is not `
+      + 'paused with the deployments. Wait for it to finish (kubectl logs -f job/file-search-rebuild-index) or delete '
+      + 'the Job, then retry.');
+    process.exit(1);
   }
 }
 
@@ -279,7 +343,7 @@ function verifyPodRunning(namespace) {
 
     logSuccess('PostgreSQL pod is running');
   } catch (error) {
-    logError(`Failed to verify pod status: ${error.message}`);
+    logError(`Failed to verify pod status: ${failureSummary(error)}`);
     process.exit(1);
   }
 }
@@ -335,6 +399,19 @@ function buildEnsureVectorCommand(namespace, credentials) {
 }
 
 /**
+ * The psql that a restore pipes the dump into. ON_ERROR_STOP makes the first failing statement end
+ * the run with a non-zero exit (without it psql carried on and exited 0, so a restore that lost
+ * tables reported "completed successfully"), and --single-transaction rolls the whole restore back
+ * when that happens instead of leaving a half-restored database.
+ * (No --no-owner: that is a pg_restore/pg_dump flag — psql does not recognize it and exits
+ * immediately, breaking the stdin pipe.)
+ */
+function buildRestorePsqlCommand(credentials) {
+  return `psql -U ${credentials.user} -d ${credentials.database} --no-password --echo-errors `
+    + `-v ON_ERROR_STOP=1 --single-transaction`;
+}
+
+/**
  * One line: `<available>/<installed>` for the pgvector extension.
  *
  * The two are genuinely different states and the distinction is the point of
@@ -352,6 +429,127 @@ function buildPgvectorProbeCommand(namespace, credentials) {
     + "|| '/' || (SELECT count(*) FROM pg_extension WHERE extname = 'vector')";
   return `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} `
     + `psql -U ${credentials.user} -d ${credentials.database} -t -A -c "${query}"`;
+}
+
+/**
+ * One line per file_search storage other than 'db': `<storage>|<blobs>|<bytes>`.
+ *
+ * With blob_storage.backend = s3 (or after a migration to s3) a file_blobs row
+ * keeps only a key; the bytes live in the S3 bucket configured for file_search,
+ * and pg_dump cannot reach them. Released rows (ref_count 0, awaiting the
+ * sweeper) are counted too: their objects still exist until it runs.
+ *
+ * The query fails when file_blobs does not exist (file_search never ran); the
+ * callers treat any failure as "could not count" and say so.
+ */
+function buildExternalBlobCountCommand(namespace, credentials) {
+  const query = "SELECT storage || '|' || count(*) || '|' || coalesce(sum(size_bytes), 0) "
+    + "FROM file_blobs WHERE storage <> 'db' GROUP BY storage ORDER BY storage";
+  return `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} `
+    + `psql -U ${credentials.user} -d ${credentials.database} -t -A -c "${query}"`;
+}
+
+/** Pure: parses buildExternalBlobCountCommand's output into [{ storage, blobs, bytes }]. */
+function parseExternalBlobCounts(output) {
+  return String(output)
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [storage, blobs, bytes] = line.split('|');
+      return { storage, blobs: Number(blobs), bytes: Number(bytes) };
+    })
+    .filter((row) => row.storage && Number.isFinite(row.blobs) && row.blobs > 0);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} bytes`;
+}
+
+/**
+ * Pure: the warning a backup (and info) prints when blobs live outside the
+ * database, or null when every blob is in it. Names no bucket: the operator
+ * knows which one blob_storage.s3 points at, and a log line is the wrong place
+ * to repeat it.
+ */
+function externalBlobBackupWarning(counts) {
+  if (!counts || counts.length === 0) return null;
+  const parts = counts.map((c) => `${c.blobs} blob(s), ${formatBytes(c.bytes)} in "${c.storage}"`);
+  return `file_search: ${parts.join('; ')} live outside the database. `
+    + 'A database backup does NOT contain their bytes - they are in the S3 bucket configured '
+    + 'for file_search (blob_storage.s3), which needs its own backup.';
+}
+
+/**
+ * Pure: counts the file_blobs rows in a plain-SQL dump whose storage is not
+ * 'db', per storage. Reads only the `COPY public.file_blobs (...) FROM stdin;`
+ * block, locating the storage column by name from its column list. Returns []
+ * when the dump has no file_blobs data (or was taken with --exclude-blobs).
+ */
+function countExternalBlobsInDump(sql) {
+  const header = /^COPY\s+(?:public\.)?"?file_blobs"?\s+\(([^)]*)\)\s+FROM stdin;$/m.exec(sql);
+  if (!header) return [];
+  const columns = header[1].split(',').map((c) => c.trim().replace(/"/g, ''));
+  const storageAt = columns.indexOf('storage');
+  if (storageAt < 0) return [];
+  const sizeAt = columns.indexOf('size_bytes');
+  const start = header.index + header[0].length + 1;
+  const end = sql.indexOf('\n\\.', start - 1);
+  const block = sql.slice(start, end < 0 ? sql.length : end);
+  const counts = new Map();
+  for (const line of block.split('\n')) {
+    if (!line) continue;
+    const fields = line.split('\t');
+    const storage = fields[storageAt];
+    if (!storage || storage === 'db') continue;
+    const entry = counts.get(storage) || { storage, blobs: 0, bytes: 0 };
+    entry.blobs += 1;
+    entry.bytes += sizeAt >= 0 ? Number(fields[sizeAt]) || 0 : 0;
+    counts.set(storage, entry);
+  }
+  return [...counts.values()].sort((a, b) => a.storage.localeCompare(b.storage));
+}
+
+/**
+ * Pure: the warning a restore prints when the dump holds blob rows whose bytes
+ * live outside the database, or null.
+ */
+function externalBlobRestoreWarning(counts) {
+  if (!counts || counts.length === 0) return null;
+  const total = counts.reduce((sum, c) => sum + c.blobs, 0);
+  return `file_search: this backup lists ${total} blob(s) whose bytes live outside the database `
+    + `(${counts.map((c) => `"${c.storage}": ${c.blobs}`).join(', ')}). The restore brings back their rows only; `
+    + 'the bytes must still exist in the S3 bucket configured for file_search. Objects deleted from the bucket '
+    + 'since the backup was taken cannot be downloaded (503), and objects written since stay in the bucket '
+    + 'unreferenced.';
+}
+
+/**
+ * Impure: counts the blobs outside the database and warns when there are any.
+ * Never fatal: a database without file_search tables, or a failed count, only
+ * says that the count is unknown. Returns the counts, or null when unknown.
+ */
+function reportExternalBlobs(namespace, credentials, exec = execSync) {
+  try {
+    const raw = exec(buildExternalBlobCountCommand(namespace, credentials), { encoding: 'utf8', stdio: 'pipe' });
+    const counts = parseExternalBlobCounts(raw);
+    const warning = externalBlobBackupWarning(counts);
+    if (warning) {
+      logWarning(warning);
+    } else {
+      logInfo('file_search: every blob is stored in the database (no blobs in external storage).');
+    }
+    return counts;
+  } catch (error) {
+    // A fixed message: the error's own text would start with the command line (PGPASSWORD).
+    logInfo('file_search: could not count blobs outside the database (no file_search tables yet, '
+      + 'or the query failed).');
+    return null;
+  }
 }
 
 function buildPgDumpCommand(credentials, options) {
@@ -379,9 +577,12 @@ function buildPgDumpCommand(credentials, options) {
   // (services/gateway/src/fileSearch/schema.sql.ts), so a dump built that way
   // fails on restore the moment fs_files is created. This keeps the empty
   // table and its constraints and drops only the bytea payload, which is what
-  // makes the backup smaller.
+  // makes the backup smaller. The staged parts of the Uploads API
+  // (fs_upload_parts) are transient bytea too: a pending upload is lost to a
+  // restore either way (it expires an hour after creation), so their data goes
+  // with the blobs.
   if (excludeBlobs) {
-    cmd += ' --exclude-table-data=file_blobs';
+    cmd += ' --exclude-table-data=file_blobs --exclude-table-data=fs_upload_parts';
   }
 
   // Always add --clean and --if-exists for safer restores
@@ -398,6 +599,8 @@ async function executePgDump(namespace, credentials, options) {
   const { output, compress, pauseDeployments: shouldPause, yes } = options;
 
   let originalCounts = null;
+
+  refuseWhileIndexRebuildRuns(namespace);
 
   // Show downtime warning if deployments will be paused
   if (shouldPause) {
@@ -421,18 +624,24 @@ async function executePgDump(namespace, credentials, options) {
 
   logInfo('Starting database backup...');
 
+  reportExternalBlobs(namespace, credentials);
+
   const pgDumpCmd = buildPgDumpCommand(credentials, options);
+  // pg_dump writes into the pod and the file crosses kubectl verified (see kyma-pod-files.js):
+  // a streamed dump lost its tail and still reported success.
+  const podSqlPath = podTempPath('backup');
 
   try {
     // Set PGPASSWORD environment variable for kubectl exec
-    const kubectlCmd = `kubectl -n ${namespace} exec -i postgres-0 -- sh -c "PGPASSWORD='${credentials.password}' ${pgDumpCmd}"`;
+    const kubectlCmd = `kubectl -n ${namespace} exec postgres-0 -- sh -c "PGPASSWORD='${credentials.password}' ${pgDumpCmd} -f ${podSqlPath} && gzip -1 ${podSqlPath}"`;
 
     logInfo(`Executing: pg_dump (via kubectl)`);
 
-    const backupData = execSync(kubectlCmd, {
-      encoding: 'utf8',
-      maxBuffer: 500 * 1024 * 1024 // 500MB buffer for large databases
-    });
+    execSync(kubectlCmd, { stdio: 'pipe' });
+    const backupData = zlib.gunzipSync(
+      readPodFileVerified(namespace, `${podSqlPath}.gz`, { log: logWarning })
+    ).toString('utf8');
+    assertCompleteDump(backupData);
 
     // Write to file
     const outputPath = path.resolve(output);
@@ -462,38 +671,98 @@ async function executePgDump(namespace, credentials, options) {
 
         logSuccess(`Compressed backup: ${compressedPath} (${compressedSizeMB} MB)`);
       } catch (error) {
-        logWarning(`Compression failed: ${error.message}`);
+        logWarning(`Compression failed: ${failureSummary(error)}`);
         logInfo(`Backup saved uncompressed: ${outputPath}`);
       }
     }
 
   } catch (error) {
-    logError(`Backup failed: ${error.message}`);
+    logError(`Backup failed: ${failureSummary(error)}`);
 
     // Resume deployments if they were paused
     if (originalCounts) {
       try {
         resumeDeployments(namespace, originalCounts);
       } catch (resumeError) {
-        logError(`Failed to resume deployments: ${resumeError.message}`);
+        logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
       }
     }
 
     process.exit(1);
   } finally {
+    removePodFiles(namespace, [podSqlPath, `${podSqlPath}.gz`]);
     // Resume deployments if they were paused
     if (originalCounts) {
       try {
         resumeDeployments(namespace, originalCounts);
       } catch (resumeError) {
-        logError(`Failed to resume deployments: ${resumeError.message}`);
+        logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
       }
     }
   }
 }
 
 /**
- * Truncate all data tables while preserving schema
+ * Runs the SELECT that lists user tables to truncate, applying the exclude
+ * filter. Impure (shells out via kubectl). Split out from truncateAllTables so
+ * the restore path can list the tables without also running the TRUNCATE as
+ * its own autocommitting statement (see buildTruncateStatement).
+ */
+function listTablesToTruncate(namespace, credentials, excludeTables = []) {
+  // Get list of all user tables (excluding system tables)
+  const listTablesQuery = "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;";
+  const listCmd = `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} psql -U ${credentials.user} -d ${credentials.database} -t -A -c "${listTablesQuery}"`;
+
+  const tableList = execSync(listCmd, { encoding: 'utf8' });
+  let tables = tableList.split('\n').filter(t => t.trim() !== '');
+
+  // Exclude specified tables
+  if (excludeTables.length > 0) {
+    const originalCount = tables.length;
+    tables = tables.filter(t => !excludeTables.includes(t));
+    const excludedCount = originalCount - tables.length;
+    if (excludedCount > 0) {
+      logInfo(`Excluding ${excludedCount} table(s) from truncate: ${excludeTables.join(', ')}`);
+    }
+  }
+
+  return tables;
+}
+
+/**
+ * Pure: `TRUNCATE TABLE <tables> CASCADE;` for the given table list, or ''
+ * when there are none — `TRUNCATE TABLE` with no tables is a syntax error, and
+ * callers treat the empty string as "nothing to run".
+ *
+ * Exported so the restore path's ordering (truncate SQL ahead of the dump,
+ * inside the one --single-transaction psql call) can be asserted without a
+ * cluster.
+ */
+function buildTruncateStatement(tables) {
+  if (tables.length === 0) {
+    return '';
+  }
+  return `TRUNCATE TABLE ${tables.join(', ')} CASCADE;`;
+}
+
+/**
+ * Pure: the exact content executePsql writes to psql's one stdin stream during
+ * a restore — the truncate statement (if any) ahead of the dump, so both run
+ * inside the same --single-transaction psql invocation (see
+ * buildRestorePsqlCommand). An empty truncateSql (no --truncate-first, or no
+ * tables to truncate) returns dumpSql unchanged.
+ *
+ * Kept as its own exported function, rather than an inline `if` in
+ * executePsql, so the ordering it guarantees — truncate strictly before the
+ * dump, nothing silently dropped — can be asserted directly against real
+ * input/output instead of by reading executePsql's source.
+ */
+function buildRestoreInput(truncateSql, dumpSql) {
+  return truncateSql ? `${truncateSql}\n${dumpSql}` : dumpSql;
+}
+
+/**
+ * Truncate all data tables while preserving schema.
  * @param {string} namespace - Kubernetes namespace
  * @param {Object} credentials - Database credentials
  * @param {Array<string>} excludeTables - Tables to exclude from truncation (optional)
@@ -502,22 +771,7 @@ function truncateAllTables(namespace, credentials, excludeTables = []) {
   logInfo('Truncating all data tables...');
 
   try {
-    // Get list of all user tables (excluding system tables)
-    const listTablesQuery = "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;";
-    const listCmd = `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} psql -U ${credentials.user} -d ${credentials.database} -t -A -c "${listTablesQuery}"`;
-
-    const tableList = execSync(listCmd, { encoding: 'utf8' });
-    let tables = tableList.split('\n').filter(t => t.trim() !== '');
-
-    // Exclude specified tables
-    if (excludeTables.length > 0) {
-      const originalCount = tables.length;
-      tables = tables.filter(t => !excludeTables.includes(t));
-      const excludedCount = originalCount - tables.length;
-      if (excludedCount > 0) {
-        logInfo(`Excluding ${excludedCount} table(s) from truncate: ${excludeTables.join(', ')}`);
-      }
-    }
+    const tables = listTablesToTruncate(namespace, credentials, excludeTables);
 
     if (tables.length === 0) {
       logWarning('No tables found to truncate');
@@ -527,7 +781,7 @@ function truncateAllTables(namespace, credentials, excludeTables = []) {
     logInfo(`Found ${tables.length} tables to truncate`);
 
     // Truncate all tables with CASCADE to handle foreign key constraints
-    const truncateQuery = `TRUNCATE TABLE ${tables.join(', ')} CASCADE;`;
+    const truncateQuery = buildTruncateStatement(tables);
     const truncateCmd = `kubectl -n ${namespace} exec postgres-0 -- env PGPASSWORD=${credentials.password} psql -U ${credentials.user} -d ${credentials.database} -c "${truncateQuery}"`;
 
     execSync(truncateCmd, { encoding: 'utf8' });
@@ -535,7 +789,7 @@ function truncateAllTables(namespace, credentials, excludeTables = []) {
     logSuccess(`Successfully truncated ${tables.length} tables`);
 
   } catch (error) {
-    logError(`Failed to truncate tables: ${error.message}`);
+    logError(`Failed to truncate tables: ${failureSummary(error)}`);
     throw error;
   }
 }
@@ -549,6 +803,8 @@ function truncateAllTables(namespace, credentials, excludeTables = []) {
 async function executeReset(namespace, credentials, options) {
   const { pauseDeployments: shouldPause, yes } = options;
   let originalCounts = null;
+
+  refuseWhileIndexRebuildRuns(namespace);
 
   try {
     // Show downtime warning if deployments will be paused
@@ -596,7 +852,7 @@ async function executeReset(namespace, credentials, options) {
     logSuccess('Database reset completed - all tables truncated');
 
   } catch (error) {
-    logError(`Reset failed: ${error.message}`);
+    logError(`Reset failed: ${failureSummary(error)}`);
     process.exit(1);
   } finally {
     // Resume deployments if they were paused
@@ -604,7 +860,7 @@ async function executeReset(namespace, credentials, options) {
       try {
         resumeDeployments(namespace, originalCounts);
       } catch (resumeError) {
-        logError(`Failed to resume deployments: ${resumeError.message}`);
+        logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
       }
     }
   }
@@ -654,7 +910,7 @@ async function executePsql(namespace, credentials, options) {
       inputPath = tempExtractedPath;
       logSuccess(`Backup extracted: ${inputPath}`);
     } catch (error) {
-      logError(`Failed to extract compressed backup: ${error.message}`);
+      logError(`Failed to extract compressed backup: ${failureSummary(error)}`);
       process.exit(1);
     }
   }
@@ -683,7 +939,7 @@ async function executePsql(namespace, credentials, options) {
         });
         logSuccess(`Safety backup created: ${safetyBackupPath}`);
       } catch (error) {
-        logError(`Failed to create safety backup: ${error.message}`);
+        logError(`Failed to create safety backup: ${failureSummary(error)}`);
         if (!yes) {
           const proceed = await promptConfirmation('Continue without safety backup?');
           if (!proceed) {
@@ -744,6 +1000,10 @@ async function executePsql(namespace, credentials, options) {
     logInfo(`  - Read SQL from: ${inputPath}`);
     logInfo(`  - Restore to database: ${credentials.database}`);
     logInfo(`  - Options: dataOnly=${dataOnly}, clean=${clean}, truncateFirst=${truncateFirst}`);
+    const dryRunBlobWarning = externalBlobRestoreWarning(countExternalBlobsInDump(fs.readFileSync(inputPath, 'utf8')));
+    if (dryRunBlobWarning) {
+      logWarning(dryRunBlobWarning);
+    }
     if (shouldPause) {
       logInfo(`  - Resume deployments to original state`);
     }
@@ -751,14 +1011,22 @@ async function executePsql(namespace, credentials, options) {
     return;
   }
 
+  refuseWhileIndexRebuildRuns(namespace);
+
   // Pause deployments BEFORE any database operations (truncate or restore)
   if (shouldPause) {
     originalCounts = pauseDeployments(namespace);
   }
 
-  // Truncate tables if requested (after pausing deployments)
+  // Truncate tables if requested (after pausing deployments). The TRUNCATE is
+  // not run here as its own statement — that would commit on return, and a
+  // restore failure below would then leave the database empty instead of
+  // rolled back (C9). Instead we only list the tables and build the TRUNCATE
+  // SQL; it is prepended to the restore input further down so it shares the
+  // restore's single --single-transaction psql invocation.
+  let truncateSql = '';
   if (truncateFirst) {
-    logWarning('⚠️  TRUNCATE MODE: Removing all existing data from tables...');
+    logWarning('⚠️  TRUNCATE MODE: All existing data will be removed as part of the restore transaction...');
 
     // When using --data-only, exclude cds_model from truncate to preserve schema metadata
     const excludeTables = (dataOnly && !options.includeCdsModel) ? ['cds_model'] : [];
@@ -773,15 +1041,21 @@ async function executePsql(namespace, credentials, options) {
     }
 
     try {
-      truncateAllTables(namespace, credentials, excludeTables);
+      const tables = listTablesToTruncate(namespace, credentials, excludeTables);
+      if (tables.length === 0) {
+        logWarning('No tables found to truncate');
+      } else {
+        logInfo(`Found ${tables.length} tables to truncate`);
+      }
+      truncateSql = buildTruncateStatement(tables);
     } catch (error) {
-      logError('Failed to truncate tables. Aborting restore.');
+      logError('Failed to list tables to truncate. Aborting restore.');
       // Resume deployments before exiting
       if (originalCounts) {
         try {
           resumeDeployments(namespace, originalCounts);
         } catch (resumeError) {
-          logError(`Failed to resume deployments: ${resumeError.message}`);
+          logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
         }
       }
       process.exit(1);
@@ -848,6 +1122,11 @@ async function executePsql(namespace, credentials, options) {
     logInfo(`Found ${tableNames.length} tables in backup file`);
   }
 
+  const externalBlobWarning = externalBlobRestoreWarning(countExternalBlobsInDump(filteredSqlContent));
+  if (externalBlobWarning) {
+    logWarning(externalBlobWarning);
+  }
+
   // Best-effort, and deliberately NOT fatal. A database whose role cannot
   // CREATE EXTENSION, or a cluster without pgvector installed at all, must not
   // lose the ability to restore dumps that contain no vector columns. If the
@@ -856,24 +1135,29 @@ async function executePsql(namespace, credentials, options) {
     execSync(buildEnsureVectorCommand(namespace, credentials), { encoding: 'utf8', stdio: 'pipe' });
     logInfo('Ensured the vector extension exists (required by file_search dumps)');
   } catch (error) {
-    logWarning(`Could not create the vector extension: ${String(error.message).split('\n')[0]}. `
+    logWarning(`Could not create the vector extension: ${failureSummary(error)}. `
       + 'A backup containing file_search tables will fail to restore.');
   }
 
-  // Build psql command with echo-all to show table names.
-  // (No --no-owner here: that is a pg_restore/pg_dump flag — psql does not
-  // recognize it and exits immediately, breaking the stdin pipe.)
-  let psqlCmd = `psql -U ${credentials.user} -d ${credentials.database} --no-password --echo-errors`;
+  let psqlCmd = buildRestorePsqlCommand(credentials);
+  // The restore input crosses kubectl as a pod file, verified by sha256, and psql reads that file:
+  // streamed through stdin, a cut transfer ends the COPY early and psql commits the partial table
+  // (see kyma-pod-files.js).
+  const podSqlPath = podTempPath('restore');
 
   try {
-    // Execute psql via kubectl with stdin pipe
-    const kubectlCmd = `kubectl -n ${namespace} exec -i postgres-0 -- sh -c "PGPASSWORD='${credentials.password}' ${psqlCmd}"`;
+    // The truncate statement, if any, ahead of the dump (filteredSqlContent already reflects any
+    // cds_model / api-config exclusion), both inside this one --single-transaction psql call.
+    writePodFileVerified(namespace, `${podSqlPath}.gz`,
+      zlib.gzipSync(Buffer.from(buildRestoreInput(truncateSql, filteredSqlContent), 'utf8')),
+      { log: logWarning });
+
+    const kubectlCmd = `kubectl -n ${namespace} exec postgres-0 -- sh -c "gunzip ${podSqlPath}.gz && PGPASSWORD='${credentials.password}' ${psqlCmd} -f ${podSqlPath}"`;
 
     logInfo(`Executing: psql (via kubectl)`);
 
-    // Use spawn for streaming stdin
     const child = spawn('sh', ['-c', kubectlCmd], {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
     let stdout = '';
@@ -887,30 +1171,20 @@ async function executePsql(namespace, credentials, options) {
       stderr += data.toString();
     });
 
-    // If psql/kubectl exits early (bad flag, auth failure, dropped exec
-    // channel), writing the remaining SQL raises EPIPE on stdin. Without a
-    // handler that is an unhandled 'error' event and kills the whole process
-    // BEFORE the close-handler can resume paused deployments — swallow it
-    // here and let the child's exit code + stderr report the real failure.
-    child.stdin.on('error', (err) => {
-      logWarning(`psql stdin closed early (${err.code || err.message}) — waiting for exit status...`);
-    });
     child.on('error', (err) => {
-      logError(`Failed to launch restore command: ${err.message}`);
+      logError(`Failed to launch restore command: ${failureSummary(err)}`);
     });
-
-    // Write SQL to stdin (use filtered content if cds_model was excluded)
-    child.stdin.write(filteredSqlContent);
-    child.stdin.end();
 
     child.on('close', (code) => {
+      removePodFiles(namespace, [podSqlPath, `${podSqlPath}.gz`]);
+
       // Cleanup temporary extracted file if it was created
       if (tempExtractedPath && fs.existsSync(tempExtractedPath)) {
         try {
           fs.unlinkSync(tempExtractedPath);
           logInfo('Cleaned up temporary extracted file');
         } catch (cleanupError) {
-          logWarning(`Failed to cleanup temporary file: ${cleanupError.message}`);
+          logWarning(`Failed to cleanup temporary file: ${failureSummary(cleanupError)}`);
         }
       }
 
@@ -919,12 +1193,16 @@ async function executePsql(namespace, credentials, options) {
         try {
           resumeDeployments(namespace, originalCounts);
         } catch (resumeError) {
-          logError(`Failed to resume deployments: ${resumeError.message}`);
+          logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
         }
       }
 
       if (code === 0) {
         logSuccess('Database restore completed successfully');
+        if (stderr.trim()) {
+          logWarning('psql reported notices or warnings:');
+          console.error(scrubText(stderr));
+        }
 
         // Parse and display restore summary
         const copyLines = stdout.match(/^COPY \d+$/gm);
@@ -957,23 +1235,24 @@ async function executePsql(namespace, credentials, options) {
           console.log(stdout);
         }
       } else {
-        logError(`Restore failed with exit code ${code}`);
+        logError(`Restore failed with exit code ${code} - the transaction was rolled back, nothing was restored`
+          + (truncateFirst ? ' (the truncate was part of that transaction and was rolled back too)' : ''));
         if (stderr) {
-          console.error(stderr);
+          console.error(scrubText(stderr));
         }
         process.exit(1);
       }
     });
 
   } catch (error) {
-    logError(`Restore failed: ${error.message}`);
+    logError(`Restore failed: ${failureSummary(error)}`);
 
     // Resume deployments if they were paused
     if (originalCounts) {
       try {
         resumeDeployments(namespace, originalCounts);
       } catch (resumeError) {
-        logError(`Failed to resume deployments: ${resumeError.message}`);
+        logError(`Failed to resume deployments: ${failureSummary(resumeError)}`);
       }
     }
 
@@ -1075,13 +1354,16 @@ function getDatabaseInfo(namespace, credentials) {
           + 'next boot provided its role may create extensions.');
       }
     } catch (error) {
-      logWarning(`Could not determine pgvector status: ${String(error.message).split('\n')[0]}`);
+      logWarning(`Could not determine pgvector status: ${failureSummary(error)}`);
     }
+
+    log('\n' + colors.bright + '=== file_search blobs outside the database ===' + colors.reset);
+    reportExternalBlobs(namespace, credentials);
 
     logSuccess('Database information retrieved successfully');
 
   } catch (error) {
-    logError(`Failed to retrieve database info: ${error.message}`);
+    logError(`Failed to retrieve database info: ${failureSummary(error)}`);
     process.exit(1);
   }
 }
@@ -1101,7 +1383,7 @@ program
   .option('--data-only', 'Backup only data (no schema)', false)
   .option('--schema-only', 'Backup only schema (no data)', false)
   .option('--exclude-table <tables>', 'Comma-separated list of tables to exclude')
-  .option('--exclude-blobs', 'Skip file_blobs DATA (large bytea payloads; keeps the table and its constraints)', false)
+  .option('--exclude-blobs', 'Skip file_blobs and fs_upload_parts DATA (large bytea payloads; keeps the tables and their constraints)', false)
   .option('--compress', 'Compress backup with tar.gz', false)
   .option('--pause-deployments', 'Pause gateway and admin deployments during backup', false)
   .option('-y, --yes', 'Assume yes to all prompts (unattended mode)', false)
@@ -1170,4 +1452,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildPgDumpCommand, buildEnsureVectorCommand, buildPgvectorProbeCommand };
+module.exports = {
+  buildPgDumpCommand, buildEnsureVectorCommand, buildPgvectorProbeCommand, buildRestorePsqlCommand,
+  buildTruncateStatement, buildRestoreInput,
+  buildExternalBlobCountCommand, parseExternalBlobCounts, externalBlobBackupWarning,
+  countExternalBlobsInDump, externalBlobRestoreWarning, reportExternalBlobs, failureSummary,
+  buildIndexRebuildProbeCommand, indexRebuildPods,
+};

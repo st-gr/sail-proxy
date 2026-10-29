@@ -26,6 +26,7 @@ jest.mock('../src/services/apiKeyService', () => ({
   default: {
     validateApiKey: (...args: any[]) => mockValidateApiKey(...args),
     listApiKeys: (...args: any[]) => mockListApiKeys(...args),
+    findInactiveApiKeyId: async () => null,
   },
 }));
 
@@ -116,5 +117,18 @@ describe('apiKeyAuth never logs the raw or partial API key', () => {
 
     // The label must still show up, so the log line keeps its diagnostic value.
     expect(strings.some((s) => /[0-9a-f]{8}/.test(s))).toBe(true);
+  });
+
+  it('does not log the x-goog-api-key value under DEBUG', async () => {
+    mockValidateApiKey.mockResolvedValue(null);
+    mockListApiKeys.mockResolvedValue([]);
+    const googKey = 'sk-test-FAKE-GOOGLE-HEADER-5566778899';
+    const req = makeReq({ headers: { 'x-api-key': undefined, 'x-goog-api-key': googKey } });
+    await apiKeyAuth(req, makeRes(), jest.fn());
+    const strings = loggedStrings();
+    for (let start = 0; start + 8 <= googKey.length; start++) {
+      const chunk = googKey.slice(start, start + 8);
+      expect(strings.some((s) => s.includes(chunk))).toBe(false);
+    }
   });
 });

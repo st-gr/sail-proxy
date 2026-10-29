@@ -15,6 +15,8 @@ export const QUOTA_DOCUMENT_TTL_SECONDS = 86_400;
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 export const quotaKeyFor = (email: string) => `quota:user:${sha(email)}`;
 export const userMinuteKey = (email: string, minuteEpoch: number) => `rl:user:${sha(email)}:${minuteEpoch}`;
+export const teamQuotaKeyFor = (teamId: string) => `quota:team:${teamId}`;
+export const teamMinuteKey = (teamId: string, minuteEpoch: number) => `rl:team:${teamId}:${minuteEpoch}`;
 
 class QuotaStateStore {
   private client: any = null;
@@ -38,6 +40,17 @@ class QuotaStateStore {
   async getNumber(key: string): Promise<number> {
     if (!this.available()) return 0;
     try { const raw = await this.client.get(key); return raw ? Number(raw) || 0 : 0; } catch { return 0; }
+  }
+  async del(key: string): Promise<boolean> {
+    if (!this.available()) return false;
+    try { await this.client.del(key); return true; }
+    catch (error) { logger.warn('QuotaStateStore', `DEL ${key} failed: ${error instanceof Error ? error.message : String(error)}`); return false; }
+  }
+  /** Valkey pub/sub on the same client (the Connections change marker). false when unavailable; never throws. */
+  async publish(channel: string, message: string): Promise<boolean> {
+    if (!this.available()) return false;
+    try { await this.client.publish(channel, message); return true; }
+    catch (error) { logger.warn('QuotaStateStore', `PUBLISH ${channel} failed: ${error instanceof Error ? error.message : String(error)}`); return false; }
   }
   async shutdown(): Promise<void> {
     if (this.client) { try { await this.client.quit(); } catch { /* closing */ } this.client = null; }

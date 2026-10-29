@@ -5,10 +5,11 @@
  */
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
-import { evaluate } from './evaluate';
+import { evaluateBlocks } from './evaluate';
 import { conventionFor, normaliseIdentity, isContainerTool, nestedCallsIn } from './mcpNaming';
 import { mcpNamingConfig } from './mcpNamingConfig';
 import { toolName } from './identity';
@@ -37,11 +38,12 @@ const withLabels = (b: ToolPolicyBlock): ToolPolicyBlock => ({
  * tool policy is a security control, and one assigned to a user or to a key must bind whoever holds
  * it. An administrator who blocks themselves can still edit the policy in the cockpit.
  */
-export function policyBlocksFromRequest(req: any): { user: ToolPolicyBlock | null; key: ToolPolicyBlock | null } {
+export function policyBlocksFromRequest(req: any): { user: ToolPolicyBlock | null; key: ToolPolicyBlock | null; team: ToolPolicyBlock | null } {
   const data = req?.unifiedAuth?.data ?? {};
   return {
     user: isBlock(data.toolPolicy) ? withLabels(data.toolPolicy) : null,
-    key: isBlock(data.keyToolPolicy) ? withLabels(data.keyToolPolicy) : null
+    key: isBlock(data.keyToolPolicy) ? withLabels(data.keyToolPolicy) : null,
+    team: isBlock(data.teamToolPolicy) ? withLabels(data.teamToolPolicy) : null
   };
 }
 
@@ -70,7 +72,7 @@ export function emitToolPolicyEvent(req: any, result: EvaluationResult, identiti
       model: typeof req?.body?.model === 'string' ? req.body.model : undefined,
       clientIP: getClientIp(req, getTrustForwardedFor()),
       userAgent: typeof req?.get === 'function' ? req.get('user-agent') : undefined,
-      endpoint: req?.originalUrl, method: req?.method, requestId: req?.debugRequestId
+      endpoint: redactUrl(req?.originalUrl), method: req?.method, requestId: req?.debugRequestId
     })).catch((e) => logger.warn('ToolGovernance', `security event failed: ${e instanceof Error ? e.message : String(e)}`));
   } catch (e) {
     logger.warn('ToolGovernance', `security event failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -87,7 +89,8 @@ export function toolGovernance(adapter: ToolAdapter): RequestHandler {
     // crashes with "Cannot set headers after they are sent".
     let rejection: string | null = null;
     try {
-      const { user, key } = policyBlocksFromRequest(req);
+      const { user, key, team } = policyBlocksFromRequest(req);
+      const blocks = [user, key, team].filter((b): b is ToolPolicyBlock => !!b);
       // A client that hosts its own MCP servers declares their tools as ordinary function tools
       // named `mcp__server__tool` (Claude Code does exactly this). Normalising that name into the
       // `mcp:server/tool` identity is what lets ONE policy pattern cover a locally hosted server
@@ -110,9 +113,8 @@ export function toolGovernance(adapter: ToolAdapter): RequestHandler {
         const normalised = normaliseIdentity(identity, convention);
         return isContainerTool(toolName(identity), convention) ? [normalised, ...nestedCallsIn(argsText(args), convention)] : [normalised];
       });
-      const result = evaluate(declared, user, key, forced === null ? null : normaliseIdentity(forced, convention), sources);
-      const state: ToolGovernanceState = { result, declared, invoked: new Map(), family: adapter.family, convention, sources,
-        blocks: [user, key].filter((b): b is ToolPolicyBlock => !!b) };
+      const result = evaluateBlocks(declared, blocks, forced === null ? null : normaliseIdentity(forced, convention), sources);
+      const state: ToolGovernanceState = { result, declared, invoked: new Map(), family: adapter.family, convention, sources, blocks };
       (req as any).toolGovernance = state;
       const policyName = result.policyNames.join(' + ');
       if (result.reject) {

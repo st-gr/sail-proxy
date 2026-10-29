@@ -10,8 +10,8 @@
 		"start": "ui5 serve --open /index.html"
 	},
 	"devDependencies": {
-		"@ui5/cli": "^4.0.16",
-		"ui5-tooling-transpile": "^3.8.0"
+		"@ui5/cli": "^4.0.69",
+		"ui5-tooling-transpile": "^3.13.1"
 	},
 	"main": "index.js",
 	"keywords": []

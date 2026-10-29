@@ -12,7 +12,7 @@ const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').repl
 
 // file → number of guard positions that must name quotaEnforcement
 const EXPECTED: Array<[string, number]> = [
-  ['chatRoutes.ts', 1], ['responsesRoutes.ts', 1], ['embeddingRoutes.ts', 1], ['filesRoutes.ts', 1],
+  ['chatRoutes.ts', 1], ['responsesRoutes.ts', 1], ['embeddingRoutes.ts', 1], ['filesRoutes.ts', 1], ['uploadsRoutes.ts', 1],
   ['vectorStoresRoutes.ts', 1], ['anthropicRoutes.ts', 3], ['awsBedrockRoutes.ts', 1],
   // openRouterRoutes: one guard position per tool-carrying route chain (the router-level mount
   // that covers the remaining endpoints takes no comma and is not counted).
@@ -27,6 +27,14 @@ describe('every LLM-serving router mounts quotaEnforcement', () => {
     const mounts = [...cleaned.matchAll(/,\s*quotaEnforcement\s*[,\]\)]/g)];
     expect(mounts).toHaveLength(expected);
     expect(cleaned).not.toMatch(/rateLimiter|createUnifiedRateLimitMiddleware/);
+  });
+  it('the owner check of the cockpit routes stays off the /v1 routers, which keep their one quotaEnforcement', () => {
+    for (const file of fs.readdirSync(ROUTES).filter((f) => f !== 'groundingRoutes.ts')) {
+      expect([file, /groundingQuota/.test(stripComments(fs.readFileSync(path.join(ROUTES, file), 'utf8')))]).toEqual([file, false]);
+    }
+    const grounding = stripComments(fs.readFileSync(path.join(ROUTES, 'groundingRoutes.ts'), 'utf8'));
+    expect(grounding).not.toMatch(/quotaEnforcement/);
+    expect(grounding).toContain("from '../middlewares/groundingQuota'");
   });
   it('the retired limiter is gone', () => {
     expect(fs.existsSync(path.join(__dirname, '..', 'src', 'middlewares', 'rateLimiter.ts'))).toBe(false);

@@ -44,7 +44,7 @@ VALIDATION_TOKEN_SECRET=dev-secret-change-in-production
 # ========================================
 # Logging Configuration
 # ========================================
-# Read by @libs/logger (libs/logger/index.ts:161), not by admin directly.
+# Read by @libs/logger (`loadConfigurationFromFile` in libs/logger/index.ts), not by admin directly.
 # Options: ERROR, WARN, INFO, DEBUG, TRACE
 LOG_LEVEL=debug
 

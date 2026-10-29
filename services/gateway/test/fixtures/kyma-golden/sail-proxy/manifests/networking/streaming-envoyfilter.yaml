@@ -1,0 +1,31 @@
+# EnvoyFilter to optimize streaming responses for AI clients like Claude Code
+# Disables Envoy's default 5-minute stream idle timeout which causes client disconnects
+# Applied to istio-ingressgateway to affect all incoming requests
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: streaming-timeouts
+  namespace: istio-system
+  labels:
+    app: sail-proxy
+    purpose: streaming-optimization
+    issue: claude-code-timeouts
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: MERGE
+      value:
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stream_idle_timeout: 0s     # Disable per-stream idle timeout for SSE/streaming
+          # Removed codec_type: HTTP1 to allow natural protocol negotiation (HTTP/2 faster for most clients)

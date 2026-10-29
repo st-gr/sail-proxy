@@ -3,7 +3,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: valkey-config
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 data:
   valkey.conf: |
     # Enable binding to all interfaces
@@ -27,7 +27,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: valkey
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: valkey
 spec:
@@ -44,7 +44,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: valkey
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: valkey
 spec:

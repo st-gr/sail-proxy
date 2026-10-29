@@ -1,5 +1,8 @@
 // Test setup file for Admin service
-import { getAdminServiceUrl, getGatewayUrl } from '@libs/test-utils';
+import { getAdminServiceUrl, getGatewayUrl, pinEphemeralServersToLoopback } from '@libs/test-utils';
+
+// Ephemeral test servers bind 127.0.0.1, where their clients dial (libs/test-utils/src/loopback-listen.ts).
+pinEphemeralServersToLoopback();
 
 // Increase timeout for CAP operations
 jest.setTimeout(30000);

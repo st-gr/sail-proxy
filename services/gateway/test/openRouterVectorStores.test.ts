@@ -9,7 +9,7 @@
  *      the `file_search` tool, but could not create the vector store that
  *      tool needs. Self-contradictory, not merely partial.
  *
- *   2. The app-level `nulByteGuard` in src/index.ts was mounted on the four
+ *   2. The app-level `nulByteGuard` in src/app.ts was mounted on the four
  *      `/openai/...` prefixes only. `/openrouter/api/v1/files` therefore had
  *      unguarded NUL bytes in `?after`/`?before` and in body identifier
  *      fields — only `:id` was guarded, via `router.param` inside
@@ -25,15 +25,15 @@
  *   below goes through a real Express app running the real
  *   `openRouterRoutes` module.
  *
- * Why the guard mount list is READ OUT OF src/index.ts rather than repeated:
+ * Why the guard mount list is READ OUT OF src/app.ts rather than repeated:
  *
  *   src/index.ts cannot be imported from a test — it calls `app.listen()` and
  *   runs migrations at module load. A test that hard-codes the prefix list
- *   would stay green after the prefix was deleted from index.ts, i.e. it
+ *   would stay green after the prefix was deleted from app.ts, i.e. it
  *   would pin nothing. So the array literal passed to `app.use(..., nulByteGuard)`
  *   is parsed out of the source and used to mount the guard here. Delete
  *   `/openrouter/api/v1/files` and `/openrouter/api/v1/vector_stores` from
- *   that list in index.ts and the NUL cases below go red, while the
+ *   that list in app.ts and the NUL cases below go red, while the
  *   clean-request cases stay green.
  *
  * NB: never write a literal NUL byte into this file — cli-tools/check-nul-bytes.js
@@ -121,27 +121,27 @@ jest.mock('../src/controllers/vectorStoresController', () => mockControllerModul
 jest.mock('../src/controllers/openRouterController', () => mockControllerModule('openRouterController'));
 jest.mock('../src/controllers/responsesController', () => mockControllerModule('responsesController'));
 
-const INDEX_PATH = path.join(__dirname, '..', 'src', 'index.ts');
+const APP_PATH = path.join(__dirname, '..', 'src', 'app.ts');
 
 /**
  * Extracts the array literal passed to `app.use([...], nulByteGuard)` in
- * src/index.ts. Throws loudly rather than returning a default: a silent
+ * src/app.ts. Throws loudly rather than returning a default: a silent
  * fallback here would turn "the prefix was deleted" into a green run, which
  * is precisely the failure mode this file exists to prevent.
  */
 function readGuardMountPaths(): string[] {
-  const source = readFileSync(INDEX_PATH, 'utf8');
+  const source = readFileSync(APP_PATH, 'utf8');
   const call = source.match(/app\.use\(\s*(\[[\s\S]*?\])\s*,\s*nulByteGuard\s*,?\s*\)/);
   if (!call) {
     throw new Error(
-      `Could not find an \`app.use([...], nulByteGuard)\` call in ${INDEX_PATH}. ` +
+      `Could not find an \`app.use([...], nulByteGuard)\` call in ${APP_PATH}. ` +
       'The app-level NUL-byte guard mount is what this suite pins; if the mount ' +
       'was restructured, update this parser rather than deleting the tests.',
     );
   }
   const paths = Array.from(call[1].matchAll(/['"]([^'"]+)['"]/g)).map((m) => m[1]);
   if (paths.length === 0) {
-    throw new Error(`The nulByteGuard mount list in ${INDEX_PATH} is empty.`);
+    throw new Error(`The nulByteGuard mount list in ${APP_PATH} is empty.`);
   }
   return paths;
 }
@@ -167,8 +167,8 @@ describe('OpenRouter vector stores + NUL-byte guard, driven through real Express
     /* eslint-enable @typescript-eslint/no-var-requires */
 
     app = express();
-    // Mirrors src/index.ts: body parsing, then the app-level guard, then the
-    // routers. The guard's mount list comes from index.ts itself (above).
+    // Mirrors src/app.ts: body parsing, then the app-level guard, then the
+    // routers. The guard's mount list comes from app.ts itself (above).
     app.use(express.json());
     app.use(guardMountPaths, nulByteGuard);
     app.use('/openrouter/api/v1', openRouterRoutes);
@@ -234,24 +234,27 @@ describe('OpenRouter vector stores + NUL-byte guard, driven through real Express
   // -------------------------------------------------------------------------
   // 2. The guard. Removing '/openrouter/api/v1/files' and
   //    '/openrouter/api/v1/vector_stores' from the nulByteGuard mount list in
-  //    src/index.ts turns these red, while the clean-request cases below stay
+  //    src/app.ts turns these red, while the clean-request cases below stay
   //    green — that pairing is what proves the guard is reached and selective.
   // -------------------------------------------------------------------------
   describe('NUL bytes on the OpenRouter prefix are rejected with 400', () => {
-    it('lists EVERY guarded prefix in the app-level nulByteGuard mount in src/index.ts', () => {
+    it('lists EVERY guarded prefix in the app-level nulByteGuard mount in src/app.ts', () => {
       // Exact equality, not arrayContaining. The /openrouter entries were the
       // only ones this file pinned, and nothing else in the tree pinned the
       // /openai ones: nul-byte-guard.test.ts and nul-byte-guard-routers.test.ts
-      // both carry a "mirrors src/index.ts" comment and then hard-code their own
+      // both carry a "mirrors src/app.ts" comment and then hard-code their own
       // mounts, so deleting the /openai prefixes from that array left the whole
       // suite green. A set comparison is what makes this file the single place
       // that fails when the mount list changes.
       expect([...guardMountPaths].sort()).toEqual([
         '/openai/api/v1/files',
+        '/openai/api/v1/uploads',
         '/openai/api/v1/vector_stores',
         '/openai/v1/files',
+        '/openai/v1/uploads',
         '/openai/v1/vector_stores',
         '/openrouter/api/v1/files',
+        '/openrouter/api/v1/uploads',
         '/openrouter/api/v1/vector_stores',
       ]);
     });

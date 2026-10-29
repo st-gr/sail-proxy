@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { parsePageParams, buildPage } from '../../src/fileSearch/pagination';
+import { parsePageParams, buildPage, FILES_PAGE_LIMITS } from '../../src/fileSearch/pagination';
 
 describe('parsePageParams', () => {
   it('defaults to limit 20 descending', () => {
@@ -9,6 +9,15 @@ describe('parsePageParams', () => {
   it('clamps limit to 1..100', () => {
     expect(parsePageParams({ limit: '0' }).limit).toBe(1);
     expect(parsePageParams({ limit: '1000' }).limit).toBe(100);
+  });
+
+  it("takes the files list's own default and maximum (OpenAI's 10,000) when given them", () => {
+    expect(FILES_PAGE_LIMITS).toEqual({ defaultLimit: 10000, maxLimit: 10000 });
+    expect(parsePageParams({}, FILES_PAGE_LIMITS).limit).toBe(10000);
+    expect(parsePageParams({ limit: '250' }, FILES_PAGE_LIMITS).limit).toBe(250);
+    expect(parsePageParams({ limit: '99999' }, FILES_PAGE_LIMITS).limit).toBe(10000);
+    expect(parsePageParams({ limit: 'x' }, FILES_PAGE_LIMITS).limit).toBe(10000);
+    expect(parsePageParams({ limit: '0' }, FILES_PAGE_LIMITS).limit).toBe(1);
   });
 
   it('clamps negative limits to 1', () => {

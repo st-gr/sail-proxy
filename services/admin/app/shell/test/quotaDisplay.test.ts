@@ -49,6 +49,13 @@ describe('toQuotaView', () => {
       .toBe('Requests this minute: 1,234 / 2,000');
     expect(toQuotaView(null).minuteText).toBe('');
   });
+  it('groups counts with the injected formatter (the controller passes the cockpit language)', () => {
+    const de = (n: number) => Math.round(n).toLocaleString('de');
+    const v = toQuotaView(status({ limits: { ...status().limits, requestsPerMinute: 2000 }, used: { ...status().used, minuteRequests: 1234 } }), undefined, undefined, undefined, de);
+    expect(v.minuteText).toBe('Requests this minute: 1.234 / 2.000');
+    const tokens = toQuotaView(status({ used: { minuteRequests: 0, day: { requests: 0, tokens: 1300, sapCost: 0 }, week: { requests: 0, tokens: 0, sapCost: 0 }, month: { requests: 0, tokens: 0, sapCost: 0 } } }), undefined, undefined, undefined, de);
+    expect(tokens.rows.find((r) => r.key === 'tokensDay')).toMatchObject({ used: '1.300', limit: '1.000' });
+  });
   it('a deactivated account and a missing status', () => {
     expect(toQuotaView(status({ status: 'deactivated' }))).toMatchObject({ deactivated: true, statusText: 'Your account is deactivated. Contact an administrator.' });
     expect(toQuotaView(null)).toMatchObject({ available: false, rows: [] });

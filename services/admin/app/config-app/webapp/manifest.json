@@ -5,7 +5,7 @@
         "type": "application",
         "i18n": {
             "bundleUrl": "i18n/i18n.properties",
-            "supportedLocales": ["", "en"],
+            "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
             "fallbackLocale": "en"
         },
         "title": "Configuration Management",
@@ -87,7 +87,7 @@
                 "type": "sap.ui.model.resource.ResourceModel",
                 "settings": {
                     "bundleName": "admin.config.i18n.i18n",
-                    "supportedLocales": ["", "en"],
+                    "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
                     "fallbackLocale": "en",
                     "async": true
                 }

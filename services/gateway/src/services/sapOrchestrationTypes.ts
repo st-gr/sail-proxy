@@ -131,11 +131,19 @@ export interface SapV2CacheCreationTokenDetails {
  *   arm A0 in the same fixture reproduces the old inclusive shape from the
  *   duplicated payload, 15903 = 15892 + 11).
  *
- * So both endpoints are EXCLUSIVE today. Still do not assume a regime for a
- * SapV2Usage object from a path neither capture covers — the lesson of the era
- * split is that the payload can decide it. See `cacheBreakpoints.ts`'s file
- * header and `recordOrchestrationUsage` for the full numbers and the reasoning
- * each consumer applies.
+ * So both endpoints are EXCLUSIVE — FOR CLAUDE. Every capture above was on
+ * anthropic--claude-4.8-opus, and the regime turned out to belong to the model
+ * family behind orchestration, not to the endpoint: a probe on 2026-09-30
+ * (gpt-4.1-nano, `/openai/v1/chat/completions` and `/anthropic/v1/messages`)
+ * measured INCLUSIVE — prompt_tokens 1978 on the cold and the cached call while
+ * cached_tokens went 0 -> 1792, total_tokens 1979 — which is OpenAI's own
+ * convention. The same re-probe measured gpt-5-nano and gemini-2.5-flash-lite
+ * INCLUSIVE and Amazon Nova (amazon--nova-lite) EXCLUSIVE: prompt_tokens 7 with
+ * cache_creation_tokens 9811, then 7 with cached_tokens 9811. Families never
+ * measured are assumed inclusive. `cacheRegimeFor`
+ * in utils/usageFolding.ts holds that decision; every consumer of a SapV2Usage
+ * goes through it rather than assuming a regime. See `cacheBreakpoints.ts`'s
+ * file header and `recordOrchestrationUsage` for the Claude numbers.
  */
 export interface SapV2PromptTokensDetails {
   /** Non-zero on a cache HIT — tokens read from an existing cache entry. */

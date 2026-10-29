@@ -20,8 +20,10 @@ import { getDefaultLogger } from '@libs/logger';
 import configService from '../services/configService';
 import modelService from '../services/modelService';
 import { executeBeforePlugins } from '../services/pluginExecutor';
+import { exemptFromPseudonymization, refuseIfForcedWithoutPlugin } from '../plugins/pseudonymization/forcedRun';
 import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
 import { emitNotEntitled, entitlementFromRequest, isModelEntitled, logEntitlementDecision } from '../utils/modelEntitlement';
+import { resolveExternalTarget } from '../upstreams/externalTarget';
 import { sseBlock } from '../utils/sseFraming';
 import { geminiFailure, refuse } from './googleWire';
 import {
@@ -180,6 +182,9 @@ export const handleGemini = async (req: Request, res: Response, _next: NextFunct
 
     const { method } = parsed;
     const model = configService.getSubstitutedModel('google', parsed.model);
+    // This route serves no Connection model (spec 2026-10-23 §5.3): refused before the catalogue
+    // lookup, which lists Connection models too, could route it to SAP.
+    if ((await resolveExternalTarget(req, res, model, null, 'gemini')).kind !== 'sap') return;
     const wantsImageOutput = requestsImageOutput(req.body);
     const route = await chooseRoute(model, method, catalogueReader(), wantsImageOutput);
     const imageHint = `Model ${model} has no deployment; image output (responseModalities IMAGE) needs a deployment of the model on SAP AI Core.`;
@@ -227,7 +232,19 @@ export const handleGemini = async (req: Request, res: Response, _next: NextFunct
     req.body = req.body || {};
     req.body.model = accountedId;
 
-    const hookConfig = configService.getHookConfig(accountedId, method, 'google');
+    const resolvedHooks = configService.getHookConfig(accountedId, method, 'google');
+    let hookConfig = resolvedHooks;
+    if (method === 'embedContent') {
+      // Embeddings are never pseudonymized, forced or not: a masked input would be embedded
+      // instead of the real text. The other plugins in the chain still run.
+      hookConfig = exemptFromPseudonymization(req, resolvedHooks);
+    } else {
+      // Fail closed: with pseudonymization forced and no hook chain that runs the plugin, the
+      // request would reach SAP unmasked.
+      if (refuseIfForcedWithoutPlugin(req, res, resolvedHooks, {
+        endpoint: 'google', subPaths: [method], servedModel: accountedId, component: 'googleController',
+      })) return;
+    }
     if (hookConfig) {
       const pluginResult: any = await executeBeforePlugins(req, res, hookConfig);
       if (pluginResult?.stop) {

@@ -1,0 +1,10 @@
+# PeerAuthentication for namespace-level PERMISSIVE mTLS
+# This allows services with and without sidecars to communicate
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: sail-proxy
+spec:
+  mtls:
+    mode: PERMISSIVE

@@ -12,7 +12,7 @@
 // makes the teacher's ordering CONTROLLABLE — several tests below need the
 // teacher order to be the exact reverse of the retrieval order, which no
 // live cross-encoder would reliably produce. Nothing else is mocked away:
-// not `pg`, not repository.ts, not teacherLogger.ts.
+// not `pg`, not the repository modules, not teacherLogger.ts.
 //
 // WAITING FOR A FIRE-AND-FORGET WRITE. `record()` returns void and the
 // transaction commits after `searchVectorStores` has already resolved, so
@@ -72,6 +72,8 @@ jest.mock('../../../src/services/configService', () => ({
 
 const embedMock: any = jest.fn();
 jest.mock('../../../src/fileSearch/embedder', () => ({
+  // The real error classes (search and ingestion test for them with instanceof).
+  ...jest.requireActual<any>('../../../src/fileSearch/embedder'),
   __esModule: true,
   embed: (...a: any[]) => embedMock(...a),
 }));
@@ -89,6 +91,10 @@ jest.mock('../../../src/fileSearch/reranker', () => ({
 import { searchVectorStores, SearchResponse, SearchStoreNotFoundError } from '../../../src/fileSearch/search';
 // eslint-disable-next-line import/first
 import * as teacherLogger from '../../../src/fileSearch/teacherLogger';
+// eslint-disable-next-line import/first
+import { OR_QUERY_SQL } from '../../../src/fileSearch/repository';
+// eslint-disable-next-line import/first
+import { STOP_WORDS } from '../../../src/fileSearch/stopWords';
 
 const QUERY = 'how does the widened recall feed the teacher';
 const QUERY_EMBEDDING = [1, 0, 0];
@@ -159,7 +165,7 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
 
   beforeAll(async () => {
     fixture = await createIsolatedSchema(DSN!, EMBED_DIM);
-    // search.ts, repository.ts AND teacherLogger.ts all reach the database
+    // search.ts, the repository modules AND teacherLogger.ts all reach the database
     // through db.ts's getPool() singleton, which builds its own Pool from
     // this env var rather than accepting one. Pointing it at the isolated
     // schema is what makes the logger write where this suite can read.
@@ -184,6 +190,7 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
       hybrid: {
         rrfK: 60,
         lexicalEnabled: false,
+        lexicalQuery: 'any',
         candidates: 50,
         rerank: { enabled: true, model: 'test-reranker-model' },
       },
@@ -457,6 +464,7 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
     expect(e.query_rewritten).toBeNull();
     expect(e.rrf_k).toBe(60);
     expect(e.lexical_enabled).toBe(false);
+    expect(e.metadata).toEqual({ hybrid_weights: null, lexical_query: 'any' });
     expect(e.embedding_model).toBe('test-embedding-model');
     expect(e.embedding_dim).toBe(EMBED_DIM);
     expect(e.reranker_model).toBe('test-reranker-model');
@@ -572,12 +580,14 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
     // (bypassing recallCandidates entirely) and require the stored columns to
     // equal them. A constant, a sign flip, or the wrong arm's value written
     // into the column would all still be "not null" and would all fail here.
+    // The full-text arm's query (hybrid.lexical_query "any"): the OR of the question's terms.
+    const orQuery = (await pool.query(OR_QUERY_SQL, [QUERY, STOP_WORDS])).rows[0].q;
     const arms = await pool.query<{ file_id: string; distance: number; ts: number }>(
       `SELECT c.file_id,
               (c.embedding <=> $1::vector) AS distance,
-              ts_rank(c.tsv, plainto_tsquery('simple', $2)) AS ts
+              ts_rank(c.tsv, $2::tsquery) AS ts
          FROM vector_store_chunks c WHERE c.store_id = $3`,
-      [`[${QUERY_EMBEDDING.join(',')}]`, QUERY, storeId],
+      [`[${QUERY_EMBEDDING.join(',')}]`, orQuery, storeId],
     );
     const armsById = new Map(arms.rows.map((r) => [r.file_id, r]));
     expect(both.vector_score).toBeCloseTo(armsById.get('f-both')!.distance, 6);
@@ -729,13 +739,15 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
     // Pinned ABSOLUTELY, not just enabled-vs-disabled. Equality alone cannot
     // see a probe added to BOTH paths (verified: a `getPool().query('SELECT
     // 1')` placed above record()'s `enabled` check leaves an equality-only
-    // assertion green). The disabled search must issue exactly these three:
+    // assertion green). The disabled search must issue exactly these two:
     //   1. search.ts's ownership SELECT on vector_stores
-    //   2. recallCandidates' fused recall
-    //   3. touchStoreActivity
-    // If a legitimate change adds a fourth, update this number deliberately —
+    //   2. touchStoreActivity
+    // recallCandidates' fused recall is not among them: it runs on a checked-out
+    // client in its own transaction (for SET LOCAL hnsw.ef_search), so it is
+    // one pool.connect(), present in both windows and cancelled out below.
+    // If a legitimate change adds a third, update this number deliberately —
     // that is the point of pinning it.
-    expect(disabled.query).toBe(3);
+    expect(disabled.query).toBe(2);
     expect(enabled.query).toBe(disabled.query);  // logging adds no query to the search path
 
     // ...and the meter is demonstrably SENSITIVE to teacher-logging traffic:
@@ -758,7 +770,7 @@ d('teacher logging against live Postgres (requires FILE_SEARCH_TEST_DSN pointing
   // ownership SELECT and throws SearchStoreNotFoundError BEFORE recall, so
   // record() is never reached and nothing is logged. That pre-check is the
   // only thing this test pins: neutralizing recallCandidates' own ownership
-  // predicate in repository.ts leaves this suite fully green, because control
+  // predicate in recall.ts leaves this suite fully green, because control
   // never gets that far.
   //
   // The label-level tenant boundary — that recall itself cannot return

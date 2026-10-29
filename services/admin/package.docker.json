@@ -1,6 +1,6 @@
 {
   "name": "admin",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP - Docker Optimized",
   "private": true,
   "main": "dist/index.js",
@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "mkdir -p dist/db dist/srv dist/schemas dist/config dist/utils dist/services/admin/src/polyfills && CDS_CONFIG=.cdsrc.docker.json cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"src/config/**\" dist/config/ && cpy \"src/polyfills/**\" dist/services/admin/src/polyfills/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/config/*.js\" dist/config/ && cpy \"dist/services/admin/src/db/**/*.js\" dist/db/ && cpy \"dist/services/admin/src/utils/*.js\" dist/utils/",
+    "build": "mkdir -p dist/db dist/srv dist/schemas dist/config dist/utils dist/services/admin/src/polyfills && CDS_CONFIG=.cdsrc.docker.json cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"src/config/**\" dist/config/ && cpy \"src/polyfills/**\" dist/services/admin/src/polyfills/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/config/*.js\" dist/config/ && cpy \"dist/services/admin/src/db/**/*.js\" dist/db/ && cpy \"dist/services/admin/src/utils/*.js\" dist/utils/ && node ../../cli-tools/copy-api-docs.js dist/api-docs ../../openapi/gateway.yaml ../../openapi/admin-odata.json ../../openapi/admin-rest.yaml ../../openapi/ollama.yaml",
     "start": "node dist/services/admin/src/index.js",
     "start:cds": "cds-serve",
     "watch": "cds watch --profile pg",
@@ -38,6 +38,7 @@
     "@types/node": "^20.0.0",
     "@types/express": "^4.17.21",
     "cpy-cli": "^5.0.0",
+    "swagger-ui-dist": "5.33.1",
     "typescript": "^5.8.3"
   },
   "cds": {

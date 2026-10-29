@@ -146,6 +146,15 @@ describe('fileSearchDescriptor.execute: what reaches searchVectorStores', () => 
     }));
   });
 
+  it('translates ranking_options.hybrid_search into hybridWeights, and drops an invalid one', async () => {
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { hybrid_search: { embedding_weight: 0.5 } } } }));
+    expect((searchSpy.mock.calls[0][0] as any).rankingOptions).toEqual({ hybridWeights: { embedding: 0.5, text: 1 } });
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { hybrid_search: { text_weight: -1 } } } }));
+    expect((searchSpy.mock.calls[1][0] as any).rankingOptions).toBeUndefined();
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { ranker: null } } }));
+    expect((searchSpy.mock.calls[2][0] as any).rankingOptions).toBeUndefined();
+  });
+
   it('converts ranking_options.score_threshold into the scoreThreshold shape searchVectorStores reads', async () => {
     // The seam: prepare() freezes the caller's snake_case `{ score_threshold: 0.4 }` (pinned
     // by Task 6's suite), while SearchOptions.rankingOptions is `{ scoreThreshold?: number }`.
@@ -163,10 +172,29 @@ describe('fileSearchDescriptor.execute: what reaches searchVectorStores', () => 
     expect((searchSpy.mock.calls[0][0] as any).rankingOptions).toBeUndefined();
   });
 
+  it('translates ranking_options.ranker "none" into rerank: false (no rerank call), and auto into nothing', async () => {
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { ranker: 'none', score_threshold: 0.01 } } }));
+    expect((searchSpy.mock.calls[0][0] as any).rankingOptions).toEqual({ scoreThreshold: 0.01, rerank: false });
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { ranker: 'default-2024-11-15' } } }));
+    expect((searchSpy.mock.calls[1][0] as any).rankingOptions).toBeUndefined();
+  });
+
+  it('reads the retrieval guide\'s rrf_* weight spellings too', async () => {
+    await exec(call('x'), ctx({ prepared: { ...PREPARED, rankingOptions: { hybrid_search: { rrf_text_weight: 2 } } } }));
+    expect((searchSpy.mock.calls[0][0] as any).rankingOptions).toEqual({ hybridWeights: { embedding: 1, text: 2 } });
+  });
+
   it('carries the prepared max_num_results and filters through untouched', async () => {
     const filters = { type: 'eq', key: 'dept', value: 'legal' };
     await exec(call('x'), ctx({ prepared: { ...PREPARED, maxNumResults: 25, filters } }));
     expect(searchSpy).toHaveBeenCalledWith(expect.objectContaining({ maxNumResults: 25, filters }));
+  });
+
+  it('hands the engine-bound usage recorder to the search as its sink', async () => {
+    resolvesWith([]);
+    const recordUsage = jest.fn();
+    await exec(call('x'), ctx({ recordUsage }));
+    expect((searchSpy.mock.calls[0][0] as any).usage).toBe(recordUsage);
   });
 
   it('refuses to search when prepare() left no configuration, and never falls back to store ids off the call', async () => {
@@ -606,5 +634,25 @@ describe('file_search: results we no longer hold', () => {
       call, status: 'failed', payload: null,
     } as any).output);
     expect(generic.error.code).toBe('file_search_unavailable');
+  });
+});
+
+describe('fileSearchDescriptor: page numbers', () => {
+  const PAGED = { pages: { first: 4, last: 5 } };
+
+  it('the model-facing output, the client results and the dump carry a hit\'s pages; a hit without pages carries none', async () => {
+    resolvesWith([hit('On pages four and five.', PAGED), hit('One page.', { fileId: 'file_2', pages: { first: 7, last: 7 } }),
+      hit('No pages.', { fileId: 'file_3', filename: 'notes.md' })]);
+    const r = await exec(call('q'), ctx());
+    const model = JSON.parse(fileSearchDescriptor.renderOutput(r).output).results;
+    expect(model.map((x: any) => x.pages)).toEqual([{ first: 4, last: 5 }, { first: 7, last: 7 }, undefined]);
+    expect(Object.keys(model[2]).sort()).toEqual(['attributes', 'file_id', 'filename', 'score', 'text']);
+    expect(model[0].attributes).toEqual({ dept: 'finance' }); // never in the user's attributes
+    const client = fileSearchDescriptor.renderCallItem(r, { includeResults: true } as any).results;
+    expect(client.map((x: any) => x.pages)).toEqual([{ first: 4, last: 5 }, { first: 7, last: 7 }, undefined]);
+    const text = fileSearchDescriptor.renderResultMessage(r).content[0].text;
+    expect(text).toContain('1. q3-report.pdf, p. 4–5 (score 0.912)');
+    expect(text).toContain('2. q3-report.pdf, p. 7 (score 0.912)');
+    expect(text).toContain('3. notes.md (score 0.912)');
   });
 });

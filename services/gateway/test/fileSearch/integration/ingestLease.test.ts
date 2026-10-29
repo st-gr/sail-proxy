@@ -49,15 +49,16 @@ interface CapturedQuery { sql: string; params: any[]; }
  *  every query it receives (returning an empty row set each time, so
  *  claimNext resolves null without needing any seeded data). claimNext
  *  itself issues exactly two queries in this order: reapZombies's UPDATE
- *  first, then its own claiming UPDATE -- both captured here, unmodified. */
+ *  first, then its own claiming UPDATE -- both captured here, unmodified.
+ *  reapZombies runs in a transaction on a pooled client (it settles the jobs
+ *  of the batches it reaps); its BEGIN/COMMIT are left out of the capture. */
 async function captureClaimQueries(): Promise<CapturedQuery[]> {
   const calls: CapturedQuery[] = [];
-  mockPool = {
-    query: jest.fn(async (sql: string, params: any[] = []) => {
-      calls.push({ sql, params });
-      return { rows: [] };
-    }),
-  };
+  const query = jest.fn(async (sql: string, params: any[] = []) => {
+    if (sql !== 'BEGIN' && sql !== 'COMMIT') calls.push({ sql, params });
+    return { rows: [] };
+  });
+  mockPool = { query, connect: jest.fn(async () => ({ query, release: jest.fn() })) };
   const result = await claimNext();
   expect(result).toBeNull(); // no rows in the mocked pool -- confirms both queries actually ran to completion
   return calls;

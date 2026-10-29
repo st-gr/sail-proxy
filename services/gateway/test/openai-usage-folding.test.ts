@@ -55,6 +55,7 @@ jest.mock('../src/services/configService', () => ({
     getUnsupportedParams: () => [],
     getParamRenames: () => ({}),
     getHookConfig: () => undefined,
+    getConfig: () => ({}), // nothing forces pseudonymization
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'default' }),
     getOpenAIDeploymentApiVersion: () => undefined,
   },
@@ -272,6 +273,72 @@ describe('openaiController: chat-completions orchestration fold sites (T5)', () 
     expect(metrics.inputTokens).toBe(28);
     expect(metrics.outputTokens).toBe(8);
     expect(metrics.cacheReadInputTokens).toBe(58128);
+    expect(metrics.cacheCreationInputTokens).toBe(0);
+  });
+
+  // INCLUSIVE regime: OpenAI-family models behind SAP orchestration count the cached prefix
+  // INSIDE prompt_tokens (live probe of 2026-09-30, gpt-4.1-nano: prompt_tokens 1978 on the
+  // cold and the cached call, cached_tokens 0 -> 1792). Folding that exclusively billed the
+  // 1792 cached tokens twice — once at the full input rate, once at the cache-read rate.
+  it('non-streaming, OpenAI-family model (inclusive): bills prompt - cached as full-rate input, cache once', async () => {
+    const usage = {
+      completion_tokens: 1, prompt_tokens: 1978, total_tokens: 1979,
+      prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+    };
+    mockCompleteChat = () => Promise.resolve({
+      final_result: {
+        id: 'chatcmpl-2', created: 1786000000, model: 'gpt-4.1-nano-2025-04-14',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage,
+      },
+    });
+
+    const req = mockReq({ model: 'gpt-4.1-nano', messages: [{ role: 'user', content: 'hi' }] });
+    const res = mockRes();
+    await handleChatCompletion(req, res, () => {});
+
+    expect(usageEvents).toHaveLength(1);
+    const metrics = usageEvents[0][1];
+    expect(metrics.inputTokens).toBe(186);
+    expect(metrics.outputTokens).toBe(1);
+    expect(metrics.cacheReadInputTokens).toBe(1792);
+    expect(metrics.cacheCreationInputTokens).toBe(0);
+    // The client gets OpenAI's own convention verbatim — already inclusive.
+    expect(res.body.usage).toEqual(usage);
+  });
+
+  it('streaming, OpenAI-family model (inclusive): bills prompt - cached as full-rate input, cache once', async () => {
+    const req = mockReq({ model: 'gpt-4.1-nano', messages: [{ role: 'user', content: 'hi' }], stream: true });
+    const res = mockRes();
+
+    await handleChatCompletion(req, res, () => {});
+    await flushUntil(() => capturedOnChunk !== null);
+
+    await capturedOnChunk!({
+      final_result: {
+        id: 'chatcmpl-2', created: 1786000000, model: 'gpt-4.1-nano-2025-04-14',
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }],
+      },
+    });
+    await capturedOnChunk!({
+      final_result: {
+        id: 'chatcmpl-2', created: 1786000000, model: 'gpt-4.1-nano-2025-04-14',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: {
+          completion_tokens: 1, prompt_tokens: 1978, total_tokens: 1979,
+          prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+        },
+      },
+    });
+
+    resolveStreamingPromise!();
+    await flushUntil(() => usageEvents.length > 0);
+
+    expect(usageEvents).toHaveLength(1);
+    const metrics = usageEvents[0][1];
+    expect(metrics.inputTokens).toBe(186);
+    expect(metrics.outputTokens).toBe(1);
+    expect(metrics.cacheReadInputTokens).toBe(1792);
     expect(metrics.cacheCreationInputTokens).toBe(0);
   });
 

@@ -5,6 +5,7 @@
  * Runs bare — never touches db/admin.db or :4004.
  */
 import path from 'path';
+import { affectedEmails } from '../../../src/services/modelEntitlementService';
 
 process.env.CDS_TYPESCRIPT = 'true';
 const cds = require('@sap/cds');
@@ -75,6 +76,14 @@ describe('LibraryModels entitlement filter', () => {
     expect(a2.data['@odata.count']).toBe(3);   // admins keep the full view
     const filtered = await GET('/odata/v4/admin/LibraryModels?$filter=capReasoning eq true', USER);
     expect(filtered.data.value.map((m: any) => m.modelId)).toEqual(['m3']);
+  });
+
+  it('a default-catalog user does not see connection models; an admin does (spec 2026-10-23 §4.3)', async () => {
+    await cds.db.run(cds.ql.INSERT.into(LIB).entries(model('gpt-4o--oa', { origin: 'external', connection: 'oa', accessType: 'external' })));
+    const u = await GET('/odata/v4/admin/LibraryModels?$orderby=modelId', USER);
+    expect(u.data.value.map((m: any) => m.modelId)).toEqual(['m1', 'm2', 'm3']);
+    const a = await GET('/odata/v4/admin/LibraryModels?$orderby=modelId', ADMIN);
+    expect(a.data.value.map((m: any) => m.modelId)).toContain('gpt-4o--oa');
   });
 
   it('supports the `in` operator that webapp/model/idFilters.ts relies on (no id-count cap)', async () => {
@@ -287,6 +296,17 @@ describe('prices and config context', () => {
     expect((await ok(POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 1, outputCost: 1 }, USER))).status).toBe(403);
   });
 
+  it('setPrice and revertToSapPrice refuse a connection model and leave its list price alone', async () => {
+    await cds.db.run(cds.ql.INSERT.into(LIB).entries(model('gpt-4o--oa', { origin: 'external', connection: 'oa', accessType: 'external' })));
+    await cds.db.run(cds.ql.INSERT.into(COSTS).entries({ model: 'gpt-4o--oa', dateFrom: '2026-01-01T00:00:00.000Z', dateTo: '9999-12-31T00:00:00.000Z', inputCost: 1, outputCost: 2, source: 'manual', pricingKind: 'list_price', currency: 'USD' }));
+    expect((await ok(POST(`/odata/v4/admin/LibraryModels('gpt-4o--oa')/AdminService.setPrice`, { inputCost: 5, outputCost: 6 }, ADMIN))).status).toBe(409);
+    expect((await ok(POST(`/odata/v4/admin/LibraryModels('gpt-4o--oa')/AdminService.revertToSapPrice`, {}, ADMIN))).status).toBe(409);
+    const rows = await cds.db.run(cds.ql.SELECT.from(COSTS).where({ model: 'gpt-4o--oa' }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ pricingKind: 'list_price', currency: 'USD' });
+    expect(String(rows[0].dateTo)).toMatch(/^9999-12-31/);
+  });
+
   it('setPrice rejects a negative imageOutputCost', async () => {
     const bad = await ok(POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01, imageOutputCost: -1 }, ADMIN));
     expect(bad.status).toBe(400);
@@ -425,5 +445,19 @@ describe('an audit write never decides the outcome', () => {
     jest.spyOn(audits, 'recordAuditEvent').mockRejectedValue(new Error('audit table is gone'));
     expect((await POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.setPrice`, { inputCost: 0.005, outputCost: 0.01 }, ADMIN)).data.source).toBe('manual');
     expect((await POST(`/odata/v4/admin/LibraryModels('m1')/AdminService.revertToSapPrice`, {}, ADMIN)).data.source).toBe('sap');
+  });
+});
+
+describe('teams that reference a catalog', () => {
+  it('a catalog assigned to a team cannot be deleted, and changing it invalidates the team\'s members', async () => {
+    const TEAMS = 'sap.llm.gateway.admin.Teams'; const MEMBERS = 'sap.llm.gateway.admin.TeamMembers';
+    const catalog = (await POST(`/odata/v4/admin/ModelCatalogs`, { name: 'Team cat' }, ADMIN)).data;
+    await cds.db.run(cds.ql.INSERT.into(TEAMS).entries({ ID: 't-c', name: 'Gamma', entitlementCatalog_ID: catalog.ID }));
+    await cds.db.run(cds.ql.INSERT.into(MEMBERS).entries({ ID: 'm-c', team_ID: 't-c', email: 'lib-user@test.com', role: 'member', isPrimary: true }));
+    const refused = await ok(DELETE(`/odata/v4/admin/ModelCatalogs(${catalog.ID})`, ADMIN));
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(refused.data)).toMatch(/team|Gamma/);
+    expect(await affectedEmails(cds.db, catalog.ID)).toEqual(['lib-user@test.com']);
+    await cds.db.run(cds.ql.DELETE.from(MEMBERS)); await cds.db.run(cds.ql.DELETE.from(TEAMS));
   });
 });

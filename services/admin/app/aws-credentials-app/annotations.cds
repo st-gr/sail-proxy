@@ -10,61 +10,61 @@ annotate AdminService.AwsCredentials with @(
         { 
             $Type: 'UI.DataField', 
             Value: name, 
-            Label: 'Name',
+            Label: '{i18n>common.name}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: email, 
-            Label: 'Owner Email',
+            Label: '{i18n>common.ownerEmail}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: userId, 
-            Label: 'User ID',
+            Label: '{i18n>awsCredentials.userId}',
             ![@UI.Importance]: #Medium
         },
         { 
             $Type: 'UI.DataField', 
             Value: accessKeyId, 
-            Label: 'Access Key ID',
+            Label: '{i18n>common.accessKeyId}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: region, 
-            Label: 'Region',
+            Label: '{i18n>common.region}',
             ![@UI.Importance]: #Medium
         },
         { 
             $Type: 'UI.DataField', 
             Value: isActive, 
-            Label: 'Active',
+            Label: '{i18n>common.active}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: lastUsed, 
-            Label: 'Last Used',
+            Label: '{i18n>common.lastUsed}',
             ![@UI.Importance]: #Low
         },
         { 
             $Type: 'UI.DataField', 
             Value: usageCount, 
-            Label: 'Usage Count',
+            Label: '{i18n>common.usageCount}',
             ![@UI.Importance]: #Low
         },
         { 
             $Type: 'UI.DataField', 
             Value: expiresAt, 
-            Label: 'Expires',
+            Label: '{i18n>awsCredentials.expires}',
             ![@UI.Importance]: #Medium
         },
         { 
             $Type: 'UI.DataField', 
             Value: neverExpires, 
-            Label: 'Never Expires',
+            Label: '{i18n>common.neverExpires}',
             ![@UI.Importance]: #Medium
         }
     ],
@@ -82,8 +82,8 @@ annotate AdminService.AwsCredentials with @(
 annotate AdminService.AwsCredentials with @(
     // Header Information
     UI.HeaderInfo: {
-        TypeName: 'AWS Credentials',
-        TypeNamePlural: 'AWS Credentials', 
+        TypeName: '{i18n>common.awsCredentials}',
+        TypeNamePlural: '{i18n>common.awsCredentials}', 
         Title: { Value: name },
         Description: { Value: email },
         ImageUrl: 'sap-icon://cloud'
@@ -93,7 +93,7 @@ annotate AdminService.AwsCredentials with @(
     UI.HeaderFacets: [
         { 
             $Type: 'UI.ReferenceFacet', 
-            Label: 'Status',
+            Label: '{i18n>common.status}',
             Target: '@UI.FieldGroup#HeaderSummary' 
         }
     ],
@@ -102,12 +102,12 @@ annotate AdminService.AwsCredentials with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: isActive, 
-                Label: 'Active'
+                Label: '{i18n>common.active}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: region, 
-                Label: 'AWS Region'
+                Label: '{i18n>awsCredentials.awsRegion}'
             }
         ]
     },
@@ -116,28 +116,28 @@ annotate AdminService.AwsCredentials with @(
     UI.Facets: [
         {
             $Type: 'UI.ReferenceFacet',
-            Label: 'General Information',
+            Label: '{i18n>awsCredentials.generalInformation}',
             Target: '@UI.FieldGroup#General'
         },
         {
             $Type: 'UI.ReferenceFacet', 
             Target: '@UI.FieldGroup#AWS',
-            Label: 'AWS Configuration'
+            Label: '{i18n>awsCredentials.awsConfiguration}'
         },
         {
             $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#Security', 
-            Label: 'Security & Usage'
+            Label: '{i18n>awsCredentials.securityUsage}'
         },
         {
             $Type: 'UI.ReferenceFacet',
-            Label: 'Rate Limits',
+            Label: '{i18n>common.rateLimits}',
             Target: '@UI.FieldGroup#RateLimits'
         },
         {
             $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#Metadata', 
-            Label: 'Record Information'
+            Label: '{i18n>common.recordInformation}'
         }
     ],
     
@@ -147,28 +147,30 @@ annotate AdminService.AwsCredentials with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: name,
-                Label: 'Credential Name'
+                Label: '{i18n>awsCredentials.credentialName}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: email,
-                Label: 'Owner Email'
+                Label: '{i18n>common.ownerEmail}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: userId,
-                Label: 'User ID'
+                Label: '{i18n>awsCredentials.userId}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: description,
-                Label: 'Description'
+                Label: '{i18n>common.description}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: isActive,
-                Label: 'Active'
-            }
+                Label: '{i18n>common.active}'
+            },
+            { $Type: 'UI.DataField', Value: effectiveTeamName, Label: '{i18n>teams.effectiveTeam}' },
+            { $Type: 'UI.DataField', Value: followsPrimaryTeam, Label: '{i18n>teams.followsPrimaryTeam}' }
         ]
     },
     
@@ -178,27 +180,27 @@ annotate AdminService.AwsCredentials with @(
             { 
                 $Type: 'UI.DataField',
                 Value: accessKeyId,
-                Label: 'Access Key ID'
+                Label: '{i18n>common.accessKeyId}'
             },
             { 
                 $Type: 'UI.DataField',
                 Value: secretAccessKey,
-                Label: 'Secret Access Key'
+                Label: '{i18n>awsCredentials.secretAccessKey}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: region,
-                Label: 'AWS Region'
+                Label: '{i18n>awsCredentials.awsRegion}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: expiresAt,
-                Label: 'Expires At'
+                Label: '{i18n>common.expiresAt}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: neverExpires,
-                Label: 'Never Expires'
+                Label: '{i18n>common.neverExpires}'
             }
         ]
     },
@@ -209,28 +211,28 @@ annotate AdminService.AwsCredentials with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: lastUsed,
-                Label: 'Last Used'
+                Label: '{i18n>common.lastUsed}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: usageCount,
-                Label: 'Usage Count'
+                Label: '{i18n>common.usageCount}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: createdBy,
-                Label: 'Created By'
+                Label: '{i18n>common.createdBy}'
             }
         ]
     },
 
     // Rate Limits Field Group (spec §4) - read-only, changed only through setRateLimits
     UI.FieldGroup#RateLimits: { Data: [
-        { $Type: 'UI.DataField', Value: requestsPerMinute, Label: 'Requests per Minute' },
-        { $Type: 'UI.DataField', Value: requestsPerHour, Label: 'Requests per Hour' },
-        { $Type: 'UI.DataField', Value: requestsPerDay, Label: 'Requests per Day' },
-        { $Type: 'UI.DataField', Value: ownerRequestsPerMinuteText, Label: 'Owner''s Limit per Minute' },
-        { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: 'Set Rate Limits' }
+        { $Type: 'UI.DataField', Value: requestsPerMinute, Label: '{i18n>common.requestsPerMinute}' },
+        { $Type: 'UI.DataField', Value: requestsPerHour, Label: '{i18n>common.requestsPerHour}' },
+        { $Type: 'UI.DataField', Value: requestsPerDay, Label: '{i18n>common.requestsPerDay}' },
+        { $Type: 'UI.DataField', Value: ownerRequestsPerMinuteText, Label: '{i18n>common.ownerLimitPerMinute}' },
+        { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: '{i18n>common.setRateLimits}' }
     ] },
     
     // Metadata Field Group  
@@ -239,17 +241,17 @@ annotate AdminService.AwsCredentials with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: createdAt,
-                Label: 'Created At'
+                Label: '{i18n>common.createdAt}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: modifiedAt,
-                Label: 'Modified At' 
+                Label: '{i18n>common.modifiedAt}' 
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: modifiedBy,
-                Label: 'Modified By'
+                Label: '{i18n>common.modifiedBy}'
             }
         ]
     },
@@ -259,12 +261,12 @@ annotate AdminService.AwsCredentials with @(
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.rotateAwsCredentials', 
-            Label: 'Rotate Credentials'
+            Label: '{i18n>awsCredentials.rotateCredentials}'
         },
         {
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.setRateLimits',
-            Label: 'Set Rate Limits'
+            Label: '{i18n>common.setRateLimits}'
         }
     ]
 );
@@ -276,14 +278,14 @@ annotate AdminService.AwsCredentials with @(
 annotate AdminService.AwsCredentials with {
     // Core Identity Fields
     name @(
-        Common.Label: 'Credential Name',
+        Common.Label: '{i18n>awsCredentials.credentialName}',
         Common.FieldControl: #Mandatory,
         UI.MultiLineText: false
     );
     
     // Owner Email - mandatory field for notifications and user access
     email @(
-        Common.Label: 'Owner Email',
+        Common.Label: '{i18n>common.ownerEmail}',
         Common.FieldControl: #Mandatory,
         UI.MultiLineText: false,
         Communication.IsEmailAddress: true
@@ -291,98 +293,101 @@ annotate AdminService.AwsCredentials with {
     
     // User Identity - legacy field, kept for compatibility
     userId @(
-        Common.Label: 'User ID',
+        Common.Label: '{i18n>awsCredentials.userId}',
         UI.MultiLineText: false
     );
     
+    effectiveTeamName @(Common.Label: '{i18n>teams.effectiveTeam}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>teams.effectiveTeamInfo}');
+    followsPrimaryTeam @(Common.Label: '{i18n>teams.followsPrimaryTeam}', Common.FieldControl: #ReadOnly);
+
     // Description
     description @(
-        Common.Label: 'Description',
+        Common.Label: '{i18n>common.description}',
         UI.MultiLineText: true
     );
     
     // AWS Access Key ID - visible but never editable after creation
     accessKeyId @(
         Core.Computed: true,
-        Common.Label: 'Access Key ID',
+        Common.Label: '{i18n>common.accessKeyId}',
         UI.MultiLineText: false
     );
     
     // AWS Secret Access Key - visible but never editable after creation
     secretAccessKey @(
         Core.Computed: true,
-        Common.Label: 'Secret Access Key',
+        Common.Label: '{i18n>awsCredentials.secretAccessKey}',
         UI.MultiLineText: false
     );
     
     // AWS Region Configuration
     region @(
-        Common.Label: 'AWS Region',
+        Common.Label: '{i18n>awsCredentials.awsRegion}',
         UI.MultiLineText: false
     );
     
     sapAiRegion @(
-        Common.Label: 'SAP AI Region',
+        Common.Label: '{i18n>awsCredentials.sapAiRegion}',
         UI.MultiLineText: false,
         UI.Hidden: true
     );
     
     // Expiration - admin-only editable field
     expiresAt @(
-        Common.Label: 'Expires At',
+        Common.Label: '{i18n>common.expiresAt}',
         Common.FieldControl: expiresAtFC
     );
 
     // Never expires - administrators only (FieldControl 1 renders the checkbox read-only
     // for everyone else). When set, the credential ignores Expires At entirely.
     neverExpires @(
-        Common.Label: 'Never Expires',
+        Common.Label: '{i18n>common.neverExpires}',
         Common.FieldControl: neverExpiresFC
     );
 
-    lockedByUserDeactivation @(Common.Label: 'Locked by Deactivation', Common.FieldControl: #ReadOnly);
+    lockedByUserDeactivation @(Common.Label: '{i18n>common.lockedByDeactivation}', Common.FieldControl: #ReadOnly);
 
     // Per-credential rate limits (spec §4), enforced by the gateway alongside the user-level limit.
-    requestsPerMinute @(Common.Label: 'Requests per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; the owner''s user-level limit (below) applies as well. Empty = no per-credential limit. Change with Set Rate Limits.');
-    requestsPerHour @(Common.Label: 'Requests per Hour', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
-    requestsPerDay @(Common.Label: 'Requests per Day', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
-    ownerRequestsPerMinuteText @(Common.Label: 'Owner''s Limit per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'The requests-per-minute limit of the credential''s owner, applied on top of this credential''s own limits: their own constraint, else their quota profile, else the platform default. Change it in Users & Quotas or Entitlements & Quotas.');
+    requestsPerMinute @(Common.Label: '{i18n>common.requestsPerMinute}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerMinuteInfo}');
+    requestsPerHour @(Common.Label: '{i18n>common.requestsPerHour}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerPeriodInfo}');
+    requestsPerDay @(Common.Label: '{i18n>common.requestsPerDay}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerPeriodInfo}');
+    ownerRequestsPerMinuteText @(Common.Label: '{i18n>common.ownerLimitPerMinute}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>awsCredentials.ownerLimitPerMinuteInfo}');
 
     // Status - field control handled in TypeScript handlers
     isActive @(
-        Common.Label: 'Active',
+        Common.Label: '{i18n>common.active}',
         UI.TextArrangement: #TextOnly,
         Common.FieldControl: isActiveFC
     );
     
     // System Metadata - all read-only
     createdAt @(
-        Common.Label: 'Created At',
+        Common.Label: '{i18n>common.createdAt}',
         Common.FieldControl: #ReadOnly
     );
     
     modifiedAt @(
-        Common.Label: 'Last Modified',
+        Common.Label: '{i18n>common.lastModified}',
         Common.FieldControl: #ReadOnly
     );
     
     createdBy @(
-        Common.Label: 'Created By',
+        Common.Label: '{i18n>common.createdBy}',
         Common.FieldControl: #ReadOnly
     );
     
     modifiedBy @(
-        Common.Label: 'Modified By', 
+        Common.Label: '{i18n>common.modifiedBy}', 
         Common.FieldControl: #ReadOnly
     );
     
     lastUsed @(
-        Common.Label: 'Last Used',
+        Common.Label: '{i18n>common.lastUsed}',
         Common.FieldControl: #ReadOnly
     );
     
     usageCount @(
-        Common.Label: 'Total Usage',
+        Common.Label: '{i18n>common.totalUsage}',
         Common.FieldControl: #ReadOnly
     );
 };

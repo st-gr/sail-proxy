@@ -99,7 +99,8 @@ export interface EntityConfig {
 
 export interface CustomEntity {
   pattern: string;
-  placeholder: string;
+  /** Placeholder prefix; absent (e.g. dropped from a caller's entry on a forced request) uses the default. */
+  placeholder?: string;
   flags?: string;
 }
 

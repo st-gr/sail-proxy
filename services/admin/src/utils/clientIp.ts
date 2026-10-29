@@ -7,8 +7,7 @@
  * Untrusted: the socket peer, never req.ip (Express derives it from X-Forwarded-For whenever
  * `trust proxy` is on). IPv4-mapped IPv6 peers (::ffff:a.b.c.d) are stored as IPv4.
  */
-import fs from 'fs';
-import path from 'path';
+import { readApiConfigBlock } from './apiConfigFile';
 
 let _trust: boolean | null = null;
 
@@ -16,8 +15,7 @@ let _trust: boolean | null = null;
 export function trustForwardedFor(): boolean {
   if (_trust === null) {
     try {
-      const p = path.resolve(__dirname, '../../api_config.json');
-      const cfg = JSON.parse(fs.readFileSync(p, 'utf8')).api_config ?? {};
+      const cfg = readApiConfigBlock();
       _trust = cfg?.platform?.security?.trust_forwarded_for === true;
     } catch {
       _trust = false;

@@ -77,6 +77,8 @@ jest.mock('../../../src/fileSearch/extractors/registry', () => {
 });
 
 jest.mock('../../../src/fileSearch/embedder', () => ({
+  // The real error classes (search and ingestion test for them with instanceof).
+  ...jest.requireActual<any>('../../../src/fileSearch/embedder'),
   __esModule: true,
   embed: jest.fn(),
 }));

@@ -25,6 +25,7 @@ A command-line tool to run a local proxy for SAP AI Core Foundation Models, enab
         There is also the script `sail-model-deploy.js` in the `/cli-tools` folder that provides a fast and easy way to list and deploy foundation models on SAP AI Core in case you operate without SAP AI Launchpad to save costs.
   - Once the deployment is complete, you can access the orchestration service via the `deploymentUrl`.
 - Create and download a service key for SAP AI Core on your BTP subaccount (you'll be guided through this during setup).
+- Optional, for file search document uploads: `pandoc` (.docx, .odt, .epub, .rst, .html, .tex) and `pdftotext` from poppler (.pdf) on your PATH; PowerPoint (.pptx) and Excel (.xlsx) files need no tool. The standalone CLI does not read scanned PDFs (pages without a text layer) and does not transcribe PDF pages with a vision model: text recognition (OCR) and vision transcription are only available in the Docker and Kyma deployments, so `tesseract` is not needed here.
 
 ## Installation
 
@@ -89,6 +90,38 @@ npm install -g @st-gr/sail-proxy
 
 **Note**: AWS credentials are automatically persisted to `~/.sail-proxy/aws-credentials.json` and restored when the gateway starts. This ensures your AWS credentials survive gateway restarts in standalone mode.
 
+### Connections (external providers)
+
+Publish models from your own OpenAI, Azure OpenAI, Anthropic or AWS Bedrock account through the gateway. Each model is served as `<upstreamModel>--<name>`.
+
+- `sail-proxy connection add <name> --type <openai|azure-openai|anthropic|bedrock>` - Add a connection (provider settings as options, see `--help`)
+- `sail-proxy connection list` - List connections, how their secret is kept and their model ids
+- `sail-proxy connection remove <name>` - Remove a connection and its models (prints the model ids withdrawn)
+- `sail-proxy connection model add <name> <upstreamModel>` - Publish an upstream model
+- `sail-proxy connection model remove <name> <upstreamModel>` - Withdraw it
+- `sail-proxy connection test <name>` - Test the connection through the running gateway
+- `sail-proxy connection models <name>` - List the models the provider offers
+
+Example:
+
+```bash
+export MY_OPENAI_KEY=...                       # or put MY_OPENAI_KEY=... in ~/.sail-proxy/.env
+sail-proxy connection add my-openai --type openai --secret-env MY_OPENAI_KEY
+sail-proxy connection model add my-openai gpt-4o-mini
+sail-proxy connection test my-openai
+# Use the model id gpt-4o-mini--my-openai on /openai/v1/chat/completions
+```
+
+Azure OpenAI example: `sail-proxy connection add my-azure --type azure-openai --endpoint https://my-resource.openai.azure.com --secret-env MY_AZURE_KEY`.
+
+**Notes**:
+- The secret is never passed on the command line. Use `--secret-env NAME` to have the gateway read it from that environment variable (from your shell or `~/.sail-proxy/.env`), or leave the option out: the CLI asks for the secret with a hidden prompt (or reads it from stdin) and stores it in `connections.json`. After you set or change the environment variable a `--secret-env` connection uses, restart the gateway (`sail-proxy stop`, then `sail-proxy run`); a running gateway does not see the new value otherwise.
+- Running the interactive setup again (`sail-proxy config reset`) writes `~/.sail-proxy/.env` anew from the service key, so a variable you added there for `--secret-env` is gone afterwards: add it again, then restart the gateway.
+- `connection add` also takes `--session-token-env NAME` (Bedrock with access-key auth: read a session token from an environment variable) and `--inactive` (add the connection switched off).
+- Changes apply at once when the gateway is running, otherwise when it starts. If you edit `connections.json` by hand, a running gateway picks it up within 60 seconds.
+- OpenAI-family models are served on `/openai/v1/chat/completions`, `/openai/v1/responses` and `/openai/v1/embeddings`; Claude models (Anthropic, Bedrock) on `/anthropic/v1/messages`.
+- Standalone mode does not track prices or usage for connections, every connection model is usable, and every API key sees every connection model. SAP AI Core is not a connection here: the standalone gateway uses its own SAP service key.
+
 ### Models
 
 - `sail-proxy models list` - List 38+ available models with rich details
@@ -110,6 +143,16 @@ npm install -g @st-gr/sail-proxy
 - `sail-proxy logs --since <time>` - Show logs since specific time
 - `sail-proxy logs --clear` - Clear all log files
 
+### File Search
+
+All API keys of a standalone gateway share one file-search owner: they see the same files and vector stores.
+
+- `sail-proxy file-search rebuild-index --dry-run` - Show the file search database's vector index, the index approximate search needs, its estimated size and build time; changes nothing
+- `sail-proxy file-search rebuild-index` - Build that index while ingestion and searches go on, then put it in place (minutes to hours on a large database; Ctrl-C cancels and keeps the current index)
+- `sail-proxy file-search rebuild-index --help` - Options (`--ef-construction`, `--m`, `--parallel`, `--maintenance-work-mem`)
+
+It uses the database settings in `.env`: `FILE_SEARCH_MIGRATION_DATABASE_URL` when the role in `FILE_SEARCH_DATABASE_URL` does not own the file search tables, else `FILE_SEARCH_DATABASE_URL`. It needs pgvector 0.7 or later on the database server. Approximate search itself (`capabilities.file_search.ann` in `api_config.json`, off by default) also needs pgvector 0.8 or later and the new index (a new database gets it; a database used by an earlier version needs `rebuild-index`); without them every search stays exact. Measure recall on your own data before switching approximate search on: it can return a full list of passages that still misses some of the best ones.
+
 ### Updates
 
 - `sail-proxy update` - Check for and install updates from npm registry
@@ -126,6 +169,7 @@ Configuration files are stored in:
 
 - `apikeys.json` - Persisted API keys (automatically restored on startup)
 - `aws-credentials.json` - Persisted AWS credentials (automatically restored on startup)
+- `connections.json` - Connections to external providers (mode 0600, may hold secrets)
 - `.env` - Main configuration and SAP BTP service key settings
 - `api_config.json` - Advanced gateway configuration
 - `ollama.env` - Ollama service configuration
@@ -191,7 +235,7 @@ Two tool types that SAP AI Core rejects are handled for you, so no Codex flags a
 - **Hosted `web_search`** is emulated gateway-side through Perplexity `sonar-pro`; the model then answers from the results.
 - **Sub-agent tools** (`multi_agent`) arrive wrapped in a `namespace` entry SAP refuses — the gateway flattens it outbound and restores the routing namespace on the way back.
 
-Verified against Codex CLI 0.145.0 and 0.146.0. See the project's `docs/user/chapter-2-features.md` for the full `config.toml`.
+Verified against Codex CLI 0.145.0 and 0.146.0. See the [Codex CLI guide](https://st-gr.github.io/sail-proxy/guide/clients/codex) for the full `config.toml`.
 
 ## Launch a coding harness
 
@@ -214,7 +258,10 @@ sail-proxy codex --dry-run "…"                 # preview what will run, change
 - `endpoint set` chooses which gateway (local or remote) the harnesses use; `endpoint show`
   prints it and the key source.
 - `codex`, `claude`, `opencode`, `gemini`, and `pi` configure the tool and launch it against that
-  endpoint. `gemini` sets `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, selects the API-key auth
+  endpoint. `claude` sets the base URL and the key for the session and pins Claude Code's main
+  model and its opus, sonnet and haiku defaults to the newest Claude models the gateway lists (a
+  deployment's model first), so Claude Code's own default, which SAP AI Core may not serve, is never
+  sent; `--model` or a model variable you exported wins. `gemini` sets `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, selects the API-key auth
   type in `~/.gemini/settings.json` (backed up first), and defaults the model to
   `gemini-3.5-flash`; headless runs (`-p`) also need `--skip-trust` or a folder trusted once
   interactively. `pi` reads the gateway's model list, writes one `sail-proxy` provider (Responses
@@ -272,7 +319,7 @@ export AWS_SECRET_ACCESS_KEY='...'  # From sail-proxy awscred create
 
 aws bedrock-runtime invoke-model \
   --endpoint-url http://localhost:3000/aws-bedrock \
-  --model-id anthropic.claude-3-haiku-20240307-v1:0 \
+  --model-id us.anthropic.claude-haiku-4-5-20251001-v1:0 \
   --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}' \
   output.json
 ```

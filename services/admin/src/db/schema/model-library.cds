@@ -46,6 +46,8 @@ entity LibraryModels : managed {
   sapCacheCreationCost : Decimal(10,6);
   lastSeenAt         : Timestamp;
   absent             : Boolean default false;
+  origin             : String(8) default 'sap';  // sap | external (a Connection model, spec 2026-10-23 §4.3)
+  connection         : String(31);               // the Connection name of an external row
 }
 
 /**

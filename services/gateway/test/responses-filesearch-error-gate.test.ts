@@ -55,7 +55,9 @@ jest.mock('../src/services/configService', () => ({
 }));
 
 import { fileSearchDescriptor } from '../src/plugins/fileSearch/descriptor';
-import { SearchStoreNotFoundError, SearchQueryTooLongError } from '../src/fileSearch/search';
+import {
+  SearchStoreNotFoundError, SearchQueryTooLongError, StoreModelUnavailableError,
+} from '../src/fileSearch/search';
 import {
   RecallInputError, StoreExpiredError, StoreDimensionMismatchError, recallCandidates,
 } from '../src/fileSearch/repository';
@@ -252,6 +254,7 @@ describe('execute still logs the message of this stack\'s OWN errors', () => {
     ['StoreExpiredError', () => new StoreExpiredError('vs_old')],
     ['StoreDimensionMismatchError',
       () => new StoreDimensionMismatchError('Vector store vs_drift is pinned to 1536 dimensions')],
+    ['StoreModelUnavailableError', () => new StoreModelUnavailableError(['vs_retired'], 'text-embedding-old')],
   ];
 
   it.each(ours)('%s: its message is preserved in the log line', async (_name, make) => {
@@ -269,5 +272,16 @@ describe('execute still logs the message of this stack\'s OWN errors', () => {
 
     searchSpy.mockRejectedValue(new SearchQueryTooLongError(9001));
     expect((await fileSearchDescriptor.execute(call(), ctx()) as any).error.code).toBe('query_too_long');
+  });
+
+  it('returns a store whose model is no longer served as a failed tool call naming the store, not a thrown error', async () => {
+    searchSpy.mockRejectedValue(new StoreModelUnavailableError(['vs_retired'], 'text-embedding-old'));
+
+    const result: any = await fileSearchDescriptor.execute(call(), ctx());
+
+    expect(result.status).toBe('failed');
+    expect(result.error.code).toBe('store_model_unavailable');
+    expect(result.error.message).toContain('vs_retired');
+    expect(result.error.message).toMatch(/re-embed/i);
   });
 });

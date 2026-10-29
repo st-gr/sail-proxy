@@ -83,5 +83,6 @@ entity UserUsageDaily {
   requests     : Integer64 default 0;
   tokens       : Integer64 default 0;   // input + output + cacheCreationInput (fresh tokens; cache reads are priced, not counted)
   sapCost      : Decimal(12,6) default 0;
+  externalCost : Decimal(14,6) default 0;   // Connection list cost, kept apart from sapCost (it counts toward spend quotas)
   updatedAt    : Timestamp;
 }

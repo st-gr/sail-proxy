@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>layer</title>
+<link rel="stylesheet" href="layers.css">
+</head>
+<body>
+<div id="l"></div>
+<script>
+  // window.__render(model) draws one still layer from the model teaser/layers.mjs made; the title turns
+  // "rendered" once the fonts and images are in, so the screenshot never catches a fallback font.
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  window.__render = async (m) => {
+    const l = document.getElementById('l'); l.className = (m.opaque ? 'opaque ' : '') + m.kind; l.textContent = '';
+    if (m.kind === 'logo') { const i = el('img', 'logo-big'); i.src = m.logo; l.append(i); }
+    else if (m.kind === 'diagram') { const p = el('div', 'panel'); const i = el('img', ''); i.src = m.src; p.append(i); l.append(p); }
+    else if (m.kind === 'tagline') {
+      const t = el('div', 'tag');
+      m.words.forEach((w, i) => { const s = el('span', i < m.shown ? 'on' : '', w); if (i === m.shown - 1) s.classList.add('last'); t.append(s, document.createTextNode(' ')); });
+      l.append(t);
+    } else if (m.kind === 'word') l.append(el('div', 'word', m.text));
+    else if (m.kind === 'text') { const b = el('div', 'lower ' + m.style); for (const line of m.lines) b.append(el('div', '', line)); l.append(b); }
+    else if (m.kind === 'end') {
+      const c = el('div', 'col');
+      c.append(el('h1', '', m.lines[0]), el('h1', 'free', m.lines[1]), el('h2', '', m.lines[2]), el('div', 'cta', m.cta), el('div', 'cmd', m.install), el('div', 'edition', m.edition));
+      for (const [k, v] of [['Docs', m.site], ['Code', m.repo]]) { const ln = el('div', 'ln'); ln.append(el('b', '', k), document.createTextNode(v)); c.append(ln); }
+      c.append(el('p', 'fine', m.fine)); l.append(c);
+      const i = el('img', 'logo'); i.src = m.logo; l.append(i);
+      const q = el('div', 'qr'); const qi = el('img', ''); qi.src = m.qr; qi.alt = ''; q.append(qi, el('span', '', m.qrLabel)); l.append(q);
+    }
+    await document.fonts.ready;
+    await Promise.all([...document.images].map((i) => (i.complete ? null : new Promise((r) => { i.onload = r; i.onerror = r; }))));
+    document.title = 'rendered';
+  };
+</script>
+</body>
+</html>

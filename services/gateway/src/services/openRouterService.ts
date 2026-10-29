@@ -112,10 +112,17 @@ interface OpenRouterEndpointsResponse {
  * Transform models from SAP AI Core format to OpenRouter format
  * @returns OpenRouter models response
  */
-export async function getModels(): Promise<OpenRouterModelsResponse> {
+/** Which list entries a caller may see; the controller passes the caller's entitlement for Connection models. */
+export type ModelVisibility = (model: { id: string; [key: string]: any }) => boolean;
+
+function visibleModels<T extends { data: any[] }>(models: T, visible?: ModelVisibility): T {
+  return visible && models && Array.isArray(models.data) ? { ...models, data: models.data.filter(visible) } : models;
+}
+
+export async function getModels(visible?: ModelVisibility): Promise<OpenRouterModelsResponse> {
   try {
     // Get models from the model service
-    const sapModels = await modelService.getModels();
+    const sapModels = visibleModels(await modelService.getModels(), visible);
     
     // Transform to OpenRouter format
     const transformedModels = transformModelsToOpenRouterFormat(sapModels);
@@ -135,14 +142,14 @@ export async function getModels(): Promise<OpenRouterModelsResponse> {
  * @param slug - The model slug/name
  * @returns OpenRouter model endpoints response
  */
-export async function getModelEndpoints(author: string, slug: string): Promise<OpenRouterEndpointsResponse> {
+export async function getModelEndpoints(author: string, slug: string, visible?: ModelVisibility): Promise<OpenRouterEndpointsResponse> {
   try {
     // Form the canonical slug
     const canonicalSlug = `${author}/${slug}`;
     logger.info('OpenRouterService', `Getting endpoints for model ${canonicalSlug}`);
     
     // Get a specific model with that slug if available
-    const sapModels = await modelService.getModels();
+    const sapModels = visibleModels(await modelService.getModels(), visible);
     const modelData = findModelByCanonicalSlug(sapModels, canonicalSlug);
     
     if (!modelData) {
@@ -492,12 +499,12 @@ function getModelInputModalities(model: SAPModel): string[] {
 }
 
 class OpenRouterService {
-  async getModels(): Promise<OpenRouterModelsResponse> {
-    return getModels();
+  async getModels(visible?: ModelVisibility): Promise<OpenRouterModelsResponse> {
+    return getModels(visible);
   }
 
-  async getModelEndpoints(author: string, slug: string): Promise<OpenRouterEndpointsResponse> {
-    return getModelEndpoints(author, slug);
+  async getModelEndpoints(author: string, slug: string, visible?: ModelVisibility): Promise<OpenRouterEndpointsResponse> {
+    return getModelEndpoints(author, slug, visible);
   }
 }
 

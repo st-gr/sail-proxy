@@ -5,7 +5,7 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, liveModels } = require('@libs/test-utils');
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 
@@ -45,7 +45,7 @@ describe('OpenAI Compatibility Integration', () => {
       const modelIds = response.data.data.map(m => m.id);
       
       // Should include some standard models
-      const commonModels = ['gpt-4.1-nano', 'gpt-4.1-nano'];
+      const commonModels = [liveModels.cheapChat];
       const hasCommonModel = commonModels.some(model => modelIds.includes(model));
       
       expect(hasCommonModel).toBe(true);
@@ -55,7 +55,7 @@ describe('OpenAI Compatibility Integration', () => {
   describe('Chat Completions Endpoint', () => {
     it('should handle basic chat completions', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'user', content: 'Say "Hello OpenAI compatibility!" and nothing else.' }
         ],
@@ -68,7 +68,7 @@ describe('OpenAI Compatibility Integration', () => {
       expect(response.data.id).toBeDefined();
       expect(response.data.object).toBe('chat.completion');
       expect(typeof response.data.created).toBe('number');
-      expect(response.data.model).toBe('gpt-4.1-nano');
+      expect(response.data.model).toBe(liveModels.cheapChat);
       
       // Choices validation
       expect(Array.isArray(response.data.choices)).toBe(true);
@@ -94,7 +94,7 @@ describe('OpenAI Compatibility Integration', () => {
 
     it('should handle system messages', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'system', content: 'You are a helpful assistant that only responds with "OK".' },
           { role: 'user', content: 'Hello there!' }
@@ -108,7 +108,7 @@ describe('OpenAI Compatibility Integration', () => {
 
     it('should handle temperature parameter', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'user', content: 'Say hello' }
         ],
@@ -122,7 +122,7 @@ describe('OpenAI Compatibility Integration', () => {
 
     it('should handle max_tokens parameter', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'user', content: 'Write a long essay about artificial intelligence' }
         ],
@@ -136,7 +136,7 @@ describe('OpenAI Compatibility Integration', () => {
 
     it('should handle stop parameter', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'user', content: 'Count: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10' }
         ],
@@ -154,7 +154,7 @@ describe('OpenAI Compatibility Integration', () => {
     it('should handle embeddings requests or return proper error', async () => {
       try {
         const response = await axiosInstance.post('/v1/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           input: 'Test embedding text'
         });
         
@@ -192,7 +192,7 @@ describe('OpenAI Compatibility Integration', () => {
     it('should handle array of inputs or return proper error', async () => {
       try {
         const response = await axiosInstance.post('/v1/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           input: ['First text', 'Second text', 'Third text']
         });
         
@@ -236,7 +236,7 @@ describe('OpenAI Compatibility Integration', () => {
     it('should return OpenAI-compatible error for missing messages', async () => {
       try {
         await axiosInstance.post('/v1/chat/completions', {
-          model: 'gpt-4.1-nano'
+          model: liveModels.cheapChat
           // Missing messages field
         });
         fail('Expected error for missing messages');
@@ -249,7 +249,7 @@ describe('OpenAI Compatibility Integration', () => {
     it('should return OpenAI-compatible error for invalid temperature', async () => {
       try {
         await axiosInstance.post('/v1/chat/completions', {
-          model: 'gpt-4.1-nano',
+          model: liveModels.cheapChat,
           messages: [{ role: 'user', content: 'Hello' }],
           temperature: 5.0 // Invalid: should be between 0 and 2
         });
@@ -268,7 +268,7 @@ describe('OpenAI Compatibility Integration', () => {
   describe('Response Format Compliance', () => {
     it('should match OpenAI response structure exactly', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [{ role: 'user', content: 'Hi' }],
         stream: false
       });
@@ -302,16 +302,16 @@ describe('OpenAI Compatibility Integration', () => {
       const modelsResponse = await axiosInstance.get('/v1/models');
       const availableModels = modelsResponse.data.data.map(m => m.id);
       
-      if (availableModels.includes('gpt-4.1-nano')) {
+      if (availableModels.includes(liveModels.cheapChat)) {
         // Use the model in chat completion
         const chatResponse = await axiosInstance.post('/v1/chat/completions', {
-          model: 'gpt-4.1-nano',
+          model: liveModels.cheapChat,
           messages: [{ role: 'user', content: 'Hi' }],
           stream: false
         });
         
         // Model name should be consistent
-        expect(chatResponse.data.model).toBe('gpt-4.1-nano');
+        expect(chatResponse.data.model).toBe(liveModels.cheapChat);
       }
     });
   });

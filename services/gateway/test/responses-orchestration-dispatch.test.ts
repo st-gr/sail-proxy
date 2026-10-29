@@ -46,6 +46,14 @@ jest.mock('../src/services/modelService', () => ({
           ? { id: m, model: m, owned_by: 'OpenAI' }
           : m === 'anthropic--claude-4.8-opus'
             ? { id: m, model: m, owned_by: 'Anthropic' }
+            // An OpenAI-family catalogue model with no deployment: served by this bridge, and
+            // its SAP usage is INCLUSIVE (cached tokens counted inside prompt_tokens).
+            : m === 'gpt-4.1-nano'
+              ? { id: m, model: m, owned_by: 'OpenAI' }
+              // A catalogue id whose name reads as another family than the SAP-side model
+              // it resolves to: the cache regime must follow `model`, not the id.
+              : m === 'claude-house-alias'
+                ? { id: m, model: 'gpt-4.1-nano', owned_by: 'OpenAI' }
             // Deployed, but on a route this bridge does not serve — a chat-completions-only
             // deployment, standing in for "has a --deployed twin that cannot speak Responses."
             // The sibling swap must not adopt this even though it has a deploymentUrl.
@@ -76,7 +84,6 @@ jest.mock('../src/services/configService', () => ({
     getParamRenames: () => ({}),
     getTimeout: () => 1000,
     getHookConfig: () => hookConfigForRoute,
-    isPseudonymizationForced: () => false,
     getConfig: () => ({}),
   },
 }));
@@ -115,6 +122,8 @@ let orchestrationResult: any = {
   },
 };
 let orchestrationChunks: any[] = [];
+// When set, the streaming upstream delivers nothing until it resolves (a slow first token).
+let streamGate: Promise<void> | null = null;
 // When set, the corresponding transport call rejects instead of succeeding — shaped like
 // sapAIService's real CustomError (`.status`/`.details`, no `.response`), reset in beforeEach.
 let nonStreamingRejection: any = null;
@@ -133,6 +142,7 @@ jest.mock('../src/services/sapAIService', () => ({
     ) => {
       orchestrationCalls.push({ kind: 'streaming', payload, hookConfig });
       if (streamRejection) throw streamRejection;  // fails before any chunk is delivered
+      if (streamGate) await streamGate;
       for (const chunk of orchestrationChunks) {
         await onChunk(chunk);
       }
@@ -148,6 +158,7 @@ jest.mock('../src/services/sapAIService', () => ({
 }));
 
 import { handleResponses } from '../src/controllers/responsesController';
+import { noteExtraUsage } from '../src/utils/usageFolding';
 
 function mockRes() {
   const r: any = Object.assign(new EventEmitter(), {
@@ -231,6 +242,35 @@ describe('responsesController: orchestration dispatch', () => {
     expect(metrics.outputTokens).toBe(5 + 8);       // 5 base + 8 continuation
     expect(metrics.cacheCreationInputTokens).toBe(29000);
     expect(metrics.cacheReadInputTokens).toBe(21292);
+  });
+
+  it('OpenAI-family model: bills the inclusive prompt_tokens net of the cache, and the client usage stays inclusive', async () => {
+    // Live probe of 2026-09-30 (gpt-4.1-nano via orchestration): prompt_tokens 1978 on the
+    // cold and the cached call, cached_tokens 0 -> 1792 — the cache is inside prompt_tokens.
+    orchestrationResult = {
+      final_result: {
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 1978, completion_tokens: 1, total_tokens: 1979,
+          prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+        },
+      },
+    };
+    const req: any = { body: { model: 'gpt-4.1-nano', input: 'Say OK' }, headers: {} };
+    const res = mockRes();
+    await handleResponses(req, res, () => {});
+
+    expect(orchestrationCalls).toHaveLength(1);
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0][1]).toMatchObject({
+      inputTokens: 186, outputTokens: 1, cacheReadInputTokens: 1792, cacheCreationInputTokens: 0,
+    });
+    expect(res.body.usage).toEqual({
+      input_tokens: 1978,
+      input_tokens_details: { cached_tokens: 1792, cache_write_tokens: 0 },
+      output_tokens: 1,
+      total_tokens: 1979,
+    });
   });
 
   it('opens the streaming reply with response.created and closes with exactly one response.completed', async () => {
@@ -637,6 +677,48 @@ describe('responsesController: orchestration dispatch', () => {
       expect(types).toContain('response.output_text.delta');
     });
 
+    it('keys the cache regime on the SAP-side model, not the catalogue id, for the first turn AND every continuation', async () => {
+      // `claude-house-alias` resolves to gpt-4.1-nano, whose SAP usage is INCLUSIVE (probe of
+      // 2026-09-30). Billing the first turn and translating a continuation must agree on that;
+      // keying the translator on the id would read it as Claude (exclusive) and add the cache
+      // back into input_tokens, which noteExtraUsage would then bill as full-rate input.
+      const inclusiveUsage = {
+        prompt_tokens: 1978, completion_tokens: 1, total_tokens: 1979,
+        prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+      };
+      orchestrationResult = {
+        final_result: { choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }], usage: inclusiveUsage },
+      };
+      const req: any = { body: { model: 'claude-house-alias', input: 'hi' }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(orchestrationCalls[0].payload.config.modules.prompt_templating.model.name).toBe('gpt-4.1-nano');
+      expect(usageEvents[0][1]).toMatchObject({ inputTokens: 186, cacheReadInputTokens: 1792 });
+      expect(res.body.model).toBe('claude-house-alias');
+      expect(res.body.usage.input_tokens).toBe(1978);
+
+      const upstream = req.__responsesUpstream;
+      const translated = upstream.translateContinuationResponse({
+        final_result: { choices: [{ message: { content: 'continued' }, finish_reason: 'stop' }], usage: inclusiveUsage },
+      });
+      expect(translated.usage.input_tokens).toBe(1978);
+      noteExtraUsage(req, translated.usage);
+      expect(req.__responsesExtraUsage).toMatchObject({ input_tokens: 186, cache_read_tokens: 1792 });
+
+      const streamTranslator = upstream.createContinuationStreamTranslator();
+      const blocks: string[] = [
+        ...streamTranslator.onBlock(`data: ${JSON.stringify({ final_result: {
+          choices: [{ delta: { content: 'continued' }, finish_reason: 'stop' }], usage: inclusiveUsage,
+        } })}\n\n`),
+        ...streamTranslator.finish(),
+      ];
+      const completed = blocks
+        .map((b: string) => JSON.parse(b.replace(/^event: .*\n/, '').replace(/^data: /, '').trim()))
+        .find((f: any) => f.type === 'response.completed');
+      expect(completed.response.usage.input_tokens).toBe(1978);
+    });
+
     it('shares one prompt-caching verdict between the first turn and every continuation, not a fresh resolution each time', async () => {
       // `instructions` gives both the first turn and the continuation a system message to
       // mark, so a broken re-resolution can't hide behind "nothing to mark either way".
@@ -771,12 +853,65 @@ describe('responsesController: orchestration dispatch', () => {
       expect(metrics.outputTokens).toBe(4);
     });
 
-    it('still writes response.failed to the client, and no response.completed', async () => {
-      orchestrationChunks = [sapError];
+    // SAP answers HTTP 200 and sends its rejection as the first chunk after templating:
+    // nothing was streamed yet, so the client gets the status and the error envelope, the
+    // way the Responses API rejects a request it never started — not response.created,
+    // response.in_progress and response.failed inside a 200 stream.
+    it('a failure before any content is the HTTP status and the OpenAI error envelope, no frames', async () => {
+      orchestrationChunks = [
+        { intermediate_results: { templating: [] }, final_result: { choices: [{ index: 0, delta: { content: '' } }] } },
+        sapError,
+      ];
       const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
       const res = mockRes();
       await handleResponses(req, res, () => {});
 
+      expect(res.writes).toEqual([]);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error).toMatchObject({
+        message: "400 - LLM Module: openai does not support parameters: ['tool_choice'], for model=gpt-5.6-sol",
+        type: 'invalid_request_error',
+        code: 400,
+      });
+      expect(usageEvents[0][3]).toBe(400);
+    });
+
+    it('a slow first chunk: response.created + response.in_progress at the start deadline, then the turn', async () => {
+      jest.useFakeTimers();
+      try {
+        let release!: () => void;
+        streamGate = new Promise<void>((resolve) => { release = resolve; });
+        orchestrationChunks = [{ choices: [{ delta: { content: 'Hi' }, finish_reason: 'stop' }] }];
+        const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+        const res = mockRes();
+        const done = handleResponses(req, res, () => {});
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+
+        jest.advanceTimersByTime(9_999);
+        expect(res.writes).toEqual([]);
+        jest.advanceTimersByTime(1);
+        const early = res.writes.map((w: string) => JSON.parse(w.replace(/^data: /, '').trim()).type);
+        expect(early).toEqual(['response.created', 'response.in_progress']);
+
+        release();
+        await done;
+        const types = res.writes.map((w: string) => JSON.parse(w.replace(/^data: /, '').trim()).type);
+        expect(types.filter((t: string) => t === 'response.created')).toHaveLength(1);
+        expect(types[types.length - 1]).toBe('response.completed');
+        expect(types).toContain('response.output_text.delta');
+      } finally {
+        streamGate = null;
+        jest.useRealTimers();
+      }
+    });
+
+    it('a failure after content still writes response.failed, and no response.completed', async () => {
+      orchestrationChunks = [{ choices: [{ delta: { content: 'partial' } }] }, sapError];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi', stream: true }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+
+      expect(res.statusCode).toBe(200);
       const frames = res.writes.map((w: string) => JSON.parse(w.replace(/^data: /, '').trim()));
       expect(frames.filter((f: any) => f.type === 'response.failed')).toHaveLength(1);
       expect(frames.filter((f: any) => f.type === 'response.completed')).toHaveLength(0);

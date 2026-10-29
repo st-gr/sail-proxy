@@ -8,6 +8,7 @@
 
 const axios = require('axios');
 require('dotenv').config();
+const { describeRequest, describeError } = require('./logSafe');
 
 const MAIN_PROXY_URL = process.env.MAIN_PROXY_URL || 'http://localhost:3000';
 const API_KEY = process.env.MAIN_PROXY_API_KEY || process.env.OPENAI_API_KEY;
@@ -19,8 +20,10 @@ if (process.env.DEBUG === 'true') {
   console.log('[Shared] API_KEY configured:', API_KEY ? 'YES' : 'NO');
 }
 
-// Default timeout for requests to main proxy
-const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 10000; // 10 seconds default
+// Timeout for non-streaming requests to the main proxy. Such a request waits for the whole
+// completion, so this is the ceiling on any non-streaming answer: with 10 s, one-word
+// gpt-4.1-nano answers failed with a 500 while SAP AI Core took 15 s (private CI 2026-09-30).
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 120000; // 2 minutes default
 
 /**
  * Create axios instance with default configuration
@@ -46,6 +49,42 @@ const createAxiosInstance = (streaming = false) => {
 };
 
 /**
+ * Read the (small) error body of a failed streaming call as JSON; undefined when it is not readable JSON.
+ */
+const MAX_ERROR_BODY = 64 * 1024;
+const readErrorBody = (body) => {
+  if (!body || typeof body.on !== 'function') return Promise.resolve(body);
+  return new Promise((resolve) => {
+    let text = '';
+    const finish = () => {
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        resolve(undefined);
+      }
+    };
+    body.on('data', (chunk) => {
+      if (text.length < MAX_ERROR_BODY) text += chunk.toString();
+    });
+    body.on('end', finish);
+    body.on('error', finish);
+  });
+};
+
+/**
+ * A gateway call that failed without an answer (timeout, reset, DNS), as an error that keeps the
+ * name, message and code but not the AxiosError's request config: its headers carry the gateway key
+ * and its data the prompt, and every log site downstream would print them.
+ */
+const gatewayFailure = (error) => {
+  const failure = new Error(error.message);
+  failure.name = error.name || 'Error';
+  if (error.code !== undefined) failure.code = error.code;
+  failure.upstream = true;
+  return failure;
+};
+
+/**
  * Call the main proxy with a non-streaming request
  * @param {string} endpoint - The endpoint path (e.g., '/openai/v1/chat/completions')
  * @param {Object} data - Request payload
@@ -56,8 +95,7 @@ exports.callMainProxy = async (endpoint, data = {}, method = 'POST') => {
   const axiosInstance = createAxiosInstance(false);
   
   try {
-    console.log(`[Shared] Calling main proxy: ${method} ${endpoint}`);
-    console.log(`[Shared] Request data:`, JSON.stringify(data, null, 2));
+    console.log(`[Shared] Calling main proxy: ${method} ${endpoint} (${describeRequest(data)})`);
     
     let response;
     
@@ -82,21 +120,24 @@ exports.callMainProxy = async (endpoint, data = {}, method = 'POST') => {
     return response.data;
     
   } catch (error) {
-    console.error(`[Shared] Error calling main proxy:`, error.message);
+    console.error(`[Shared] Error calling main proxy:`, describeError(error));
     
     if (error.response) {
       console.error(`[Shared] Response status: ${error.response.status}`);
-      console.error(`[Shared] Response data:`, error.response.data);
       
       // Throw a more informative error
       const proxyError = new Error(`Main proxy error: ${error.response.status} ${error.response.statusText}`);
       proxyError.status = error.response.status;
       proxyError.data = error.response.data;
+      proxyError.upstream = true;
       throw proxyError;
     } else if (error.code === 'ECONNREFUSED') {
-      throw new Error(`Cannot connect to main proxy at ${MAIN_PROXY_URL}. Is it running?`);
+      const refused = new Error(`Cannot connect to main proxy at ${MAIN_PROXY_URL}. Is it running?`);
+      refused.upstream = true;
+      throw refused;
     } else {
-      throw error;
+      // A timeout, reset or DNS failure is the gateway's, not the facade's; a local error is not.
+      throw error.isAxiosError ? gatewayFailure(error) : error;
     }
   }
 };
@@ -111,8 +152,7 @@ exports.callMainProxyStreaming = async (endpoint, data) => {
   const axiosInstance = createAxiosInstance(true);
   
   try {
-    console.log(`[Shared] Calling main proxy (streaming): POST ${endpoint}`);
-    console.log(`[Shared] Request data:`, JSON.stringify(data, null, 2));
+    console.log(`[Shared] Calling main proxy (streaming): POST ${endpoint} (${describeRequest(data)})`);
     
     const response = await axiosInstance.post(endpoint, data);
     
@@ -120,19 +160,23 @@ exports.callMainProxyStreaming = async (endpoint, data) => {
     return response;
     
   } catch (error) {
-    console.error(`[Shared] Error in streaming call to main proxy:`, error.message);
+    console.error(`[Shared] Error in streaming call to main proxy:`, describeError(error));
     
     if (error.response) {
       console.error(`[Shared] Response status: ${error.response.status}`);
       
-      // For streaming, we might get error details in the stream
+      // The error body of a streaming call is itself a stream; read it so the gateway's message survives.
       const proxyError = new Error(`Main proxy streaming error: ${error.response.status}`);
       proxyError.status = error.response.status;
+      proxyError.data = await readErrorBody(error.response.data);
+      proxyError.upstream = true;
       throw proxyError;
     } else if (error.code === 'ECONNREFUSED') {
-      throw new Error(`Cannot connect to main proxy at ${MAIN_PROXY_URL}. Is it running?`);
+      const refused = new Error(`Cannot connect to main proxy at ${MAIN_PROXY_URL}. Is it running?`);
+      refused.upstream = true;
+      throw refused;
     } else {
-      throw error;
+      throw error.isAxiosError ? gatewayFailure(error) : error;
     }
   }
 };

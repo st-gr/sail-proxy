@@ -9,9 +9,8 @@
  *
  * Pure functions, no CAP dependency, so the rules are unit-tested without a server.
  */
-import fs from 'fs';
-import path from 'path';
 import { getDefaultLogger } from '@libs/logger';
+import { readApiConfigBlock } from '../utils/apiConfigFile';
 
 const logger = getDefaultLogger();
 
@@ -22,8 +21,7 @@ let _apiConfig: any = null;
 function apiConfig(): any {
   if (!_apiConfig) {
     try {
-      const p = path.resolve(__dirname, '../../api_config.json');
-      _apiConfig = JSON.parse(fs.readFileSync(p, 'utf8')).api_config ?? {};
+      _apiConfig = readApiConfigBlock();
     } catch (error) {
       logger.error('credentialLifecycle', 'Failed to load api_config.json', error instanceof Error ? error : new Error(String(error)));
       _apiConfig = {};

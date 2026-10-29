@@ -5,8 +5,11 @@
  */
 import { effectiveLimits, platformQuotaDefaults, Limits } from './quotaLimits';
 import { getProfile } from './quotaProfilesService';
+import { memberProfileLimits, teamIdsOf } from './teamLookups';
+import { getDefaultLogger } from '@libs/logger';
 
 const cds = require('@sap/cds');
+const logger = getDefaultLogger();
 
 export const USERS = 'sap.llm.gateway.admin.Users';
 const KEYS = 'sap.llm.gateway.admin.ApiKeys';
@@ -121,12 +124,26 @@ export async function migrateCatalogAssignments(db: DbLike): Promise<number> {
   return migrated;
 }
 
-/** The `user` block of a validation response (spec §2): status, roles and the effective limits. */
-export interface UserBlock { email: string; status: 'active' | 'deactivated'; roles: string[]; limits: Limits; }
+/** The `user` block of a validation response (spec §2, teams §4): status, roles, effective limits with the team step, and every team id (oldest first). */
+export interface UserBlock { email: string; status: 'active' | 'deactivated'; roles: string[]; limits: Limits; teamIds?: string[]; }
+
+/**
+ * A team lookup that fails must not take the user's own rules with it (deactivation, own limits):
+ * log it and answer `fallback`, i.e. as if the user had no team.
+ */
+export async function teamLookupOr<T>(what: string, email: string, fallback: T, read: () => Promise<T>): Promise<T> {
+  try { return await read(); }
+  catch (error) {
+    logger.warn('UsersService', `${what} failed for ${email}, continuing without the team step: ${error instanceof Error ? error.message : String(error)}`);
+    return fallback;
+  }
+}
 
 export async function wireBlock(db: DbLike, email: string): Promise<UserBlock> {
   const user = await getUser(db, email);
   const profile = user?.quotaProfile_ID ? await getProfile(db, user.quotaProfile_ID) : null;
-  const { limits } = effectiveLimits(user, profile, await platformQuotaDefaults(db));
-  return { email, status: user?.status ?? 'active', roles: parseRoles(user?.rolesSnapshot), limits };
+  const team = await teamLookupOr('member-profile lookup', email, null, () => memberProfileLimits(db, email));
+  const { limits } = effectiveLimits(user, profile, await platformQuotaDefaults(db), team);
+  const teamIds = await teamLookupOr('team-id lookup', email, [] as string[], () => teamIdsOf(db, email));
+  return { email, status: user?.status ?? 'active', roles: parseRoles(user?.rolesSnapshot), limits, teamIds };
 }

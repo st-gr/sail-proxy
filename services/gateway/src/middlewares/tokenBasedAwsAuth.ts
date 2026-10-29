@@ -8,23 +8,36 @@ import {
   ValidationResponse as TokenValidationResponse 
 } from '../../../../libs/aws-token-validation/validation-token';
 import securityEventEmitter from '../services/securityEventEmitter';
-import { credentialIdentity } from '../utils/credentialIdentity';
+import { credentialIdentity, resolvedCredentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 import { secretLabel } from '../utils/secretLabel';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
-import { queryString } from '../utils/queryParam';
-import type { EntitlementBlock, UserBlock } from '../clients/adminServiceClient';
+import type { EntitlementBlock, UserBlock, TeamBlock } from '../clients/adminServiceClient';
+import type { ToolPolicyBlock } from '../toolGovernance/identity';
+import {
+  isAwsSigV4Request,
+  isAmzDateFresh,
+  parseSigV4AuthHeader,
+  signingScopesFor,
+  verifySigV4Request,
+  ParsedSigV4Header as ParsedAuthHeader,
+  SigningKeyProvider
+} from '../utils/sigv4Verifier';
+import { adminSigningKeyProvider, localSigningKeyProvider } from '../services/awsSigningKeyProviders';
 const logger = getDefaultLogger();
 
-interface ParsedAuthHeader {
-  accessKeyId: string;
-  date: string;
-  region: string;
-  service: string;
-  signedHeaders: string[];
-  signature: string;
+/**
+ * Where the signing key for a validated request comes from: the admin service, or the
+ * local credential store (standalone mode and the local fallback).
+ */
+interface SigningKeyProviders {
+  admin: SigningKeyProvider;
+  local: SigningKeyProvider;
 }
+
+type SourcedValidationResponse = TokenValidationResponse & { keySource?: keyof SigningKeyProviders };
 
 interface AwsCredentialsExtended extends Request {
   awsCredentials?: {
@@ -42,6 +55,8 @@ interface AwsCredentialsExtended extends Request {
     credentialId?: string;
     entitlement?: EntitlementBlock;
     user?: UserBlock;
+    team?: TeamBlock;
+    teamToolPolicy?: ToolPolicyBlock;
     rateLimits?: { requestsPerMinute: number | null; requestsPerHour: number | null; requestsPerDay: number | null };
   };
   isAwsAuthenticated?: boolean;
@@ -65,8 +80,10 @@ class TokenBasedAwsAuth {
   private validationCache: ValidationCache;
   private adminServiceConfig: AdminServiceConfig;
   private fallbackToLocal: boolean;
+  private signingKeyProviders: SigningKeyProviders;
 
-  constructor() {
+  constructor(signingKeyProviders: SigningKeyProviders = { admin: adminSigningKeyProvider, local: localSigningKeyProvider }) {
+    this.signingKeyProviders = signingKeyProviders;
     this.validationCache = new ValidationCache();
     this.adminServiceConfig = {
       baseUrl: process.env.ADMIN_SERVICE_URL || 'http://localhost:4004',
@@ -89,13 +106,13 @@ class TokenBasedAwsAuth {
     try {
       // Check if this is an AWS SigV4 request
       const authHeader = req.headers.authorization as string;
-      if (!authHeader || !authHeader.startsWith('AWS4-HMAC-SHA256 ')) {
+      if (!isAwsSigV4Request(authHeader)) {
         logger.trace('TokenBasedAwsAuth', 'No AWS SigV4 authorization header found, skipping');
         return next();
       }
 
       // Parse authorization header
-      const parsed = this.parseAuthHeader(authHeader);
+      const parsed = parseSigV4AuthHeader(authHeader);
       if (!parsed) {
         logger.warn('TokenBasedAwsAuth', 'Invalid AWS authorization header format');
         return this.respondWithError(res, 401, 'INVALID_AUTH_HEADER', 'Invalid authorization header format');
@@ -103,15 +120,30 @@ class TokenBasedAwsAuth {
 
       logger.info('TokenBasedAwsAuth', `Processing AWS SigV4 request for access key: ${secretLabel(parsed.accessKeyId)}`);
 
-      // Create canonical request and string to sign
-      const { canonicalRequest, stringToSign } = this.createAwsSignatureData(req, parsed);
-      
-      // Check cache first
+      // A missing or stale x-amz-date is rejected before any credential lookup. A replay of an
+      // old request is what the owner should hear about, so the event (only) names the credential:
+      // resolved after the 401 is written, so the client never waits for the lookup.
+      if (!isAmzDateFresh(req.headers['x-amz-date'])) {
+        const reason = 'Request date missing or outside the allowed clock skew';
+        logger.warn('TokenBasedAwsAuth', `Authentication failed for ${secretLabel(parsed.accessKeyId)}: ${reason}`);
+        this.respondWithError(res, 401, 'INVALID_REQUEST_DATE', reason);
+        try {
+          await this.emitFailedAuth(req, parsed.accessKeyId, reason, requestId, 401, await this.resolveCredentialIdForEvent(req, parsed));
+        } catch (error) {
+          logger.warn('TokenBasedAwsAuth', `Failed-auth event for a refused request date not emitted: ${(error as Error).message}`);
+        }
+        return;
+      }
+
+      // Check cache first. A hit only says the credential exists; the signature is
+      // verified below on every path.
       const signatureHash = crypto.createHash('sha256').update(parsed.signature).digest('hex');
       const cacheKey = ValidationTokenUtils.createCacheKey(parsed.accessKeyId, signatureHash);
       
-      let validationResult = this.validationCache.get(cacheKey);
+      let validationResult = this.validationCache.get(cacheKey) as SourcedValidationResponse | null;
       let cacheHit = false;
+      // Set when the admin refused a credential that exists (disabled/expired): its row ID.
+      let refusedCredentialId: string | undefined;
 
       if (validationResult && validationResult.valid) {
         logger.info('TokenBasedAwsAuth', `Cache hit for access key: ${secretLabel(parsed.accessKeyId)}`);
@@ -143,7 +175,9 @@ class TokenBasedAwsAuth {
             userAgent: req.headers['user-agent'] as string,
             method: req.method,
             endpoint: req.path,
-            headers: this.sanitizeHeaders(req.headers)
+            headers: this.sanitizeHeaders(req.headers),
+            // The admin returns the signing keys for these with the validation
+            signingScopes: signingScopesFor({ date: parsed.date, region: parsed.region, service: parsed.service })
           };
           
           const unifiedResult = await unifiedAwsCredentialValidationService.validateAwsCredential(unifiedRequest);
@@ -152,6 +186,8 @@ class TokenBasedAwsAuth {
             // Convert unified result to legacy format for compatibility
             validationResult = {
               valid: true,
+              // Where the credential was validated, also for a cache hit (never guessed from 'cache')
+              keySource: unifiedResult.keySource === 'local' ? 'local' : 'admin',
               credentialMetadata: {
                 credentialId: unifiedResult.data.credentialId,
                 permissions: unifiedResult.data.permissions || [],
@@ -160,7 +196,9 @@ class TokenBasedAwsAuth {
                 userId: unifiedResult.data.userId,
                 rateLimits: unifiedResult.data.rateLimits,
                 entitlement: unifiedResult.data.entitlement,
-                user: unifiedResult.data.user
+                user: unifiedResult.data.user,
+                team: unifiedResult.data.team,
+                teamToolPolicy: unifiedResult.data.teamToolPolicy
               },
               validationToken: '',
               auditInfo: {
@@ -168,10 +206,12 @@ class TokenBasedAwsAuth {
                 validationTime: unifiedResult.auditInfo.validationTime,
                 cacheHit: unifiedResult.auditInfo.cacheHit,
                 ipAllowed: true,
-                signatureValid: true
+                // Not checked here: the signature is verified after validation, on every path.
+                signatureValid: false
               }
             };
           } else {
+            refusedCredentialId = unifiedResult.error?.credentialId;
             validationResult = {
               valid: false,
               validationToken: '',
@@ -200,7 +240,7 @@ class TokenBasedAwsAuth {
           // Fallback to local validation if enabled
           if (this.fallbackToLocal) {
             logger.warn('TokenBasedAwsAuth', 'Falling back to local validation');
-            validationResult = await this.fallbackLocalValidation(parsed, stringToSign);
+            validationResult = await this.fallbackLocalValidation(parsed);
           } else {
             return this.respondWithError(res, 503, 'VALIDATION_SERVICE_UNAVAILABLE', 'Credential validation service unavailable');
           }
@@ -213,24 +253,17 @@ class TokenBasedAwsAuth {
         const errorMessage = validationResult?.error?.message || 'Invalid AWS credentials';
         
         logger.warn('TokenBasedAwsAuth', `Authentication failed for ${secretLabel(parsed.accessKeyId)}: ${errorMessage}`);
-        
-        // Emit security event using SecurityEventEmitter. accessKeyId is a public
-        // identifier by AWS design, but this is still an unresolved credential (the
-        // signature/lookup failed) — hash + hint it the same as an unresolved API key,
-        // for consistency (see utils/credentialIdentity.ts).
-        await securityEventEmitter.emitFailedAuth({
-          ...credentialIdentity(parsed.accessKeyId),
-          authType: 'aws_credential',
-          reason: errorMessage,
-          clientIP: this.getClientIp(req),
-          userAgent: req.headers['user-agent'] || 'unknown',
-          endpoint: req.originalUrl,
-          method: req.method,
-          requestId,
-          statusCode: 403
-        });
-        
+        await this.emitFailedAuth(req, parsed.accessKeyId, errorMessage, requestId, 403, refusedCredentialId);
         return this.respondWithError(res, 403, errorCode, errorMessage);
+      }
+
+      // Verify the signature with a signing key from the source that validated the credential.
+      const keyProvider = this.signingKeyProviders[validationResult.keySource ?? 'admin'];
+      if (!(await verifySigV4Request(req, parsed, keyProvider))) {
+        const reason = 'Invalid AWS signature';
+        logger.warn('TokenBasedAwsAuth', `Authentication failed for ${secretLabel(parsed.accessKeyId)}: ${reason}`);
+        await this.emitFailedAuth(req, parsed.accessKeyId, reason, requestId, 403, validationResult.credentialMetadata?.credentialId);
+        return this.respondWithError(res, 403, 'INVALID_SIGNATURE', reason);
       }
 
       // Set authentication context
@@ -251,6 +284,8 @@ class TokenBasedAwsAuth {
         credentialId: validationResult.credentialMetadata?.credentialId,
         entitlement: validationResult.credentialMetadata?.entitlement,
         user: validationResult.credentialMetadata?.user,
+        team: validationResult.credentialMetadata?.team,
+        teamToolPolicy: validationResult.credentialMetadata?.teamToolPolicy,
         rateLimits: validationResult.credentialMetadata?.rateLimits
       };
 
@@ -272,6 +307,8 @@ class TokenBasedAwsAuth {
           credentialId: validationResult.credentialMetadata?.credentialId,
           entitlement: validationResult.credentialMetadata?.entitlement,
           user: validationResult.credentialMetadata?.user,
+          team: validationResult.credentialMetadata?.team,
+          teamToolPolicy: validationResult.credentialMetadata?.teamToolPolicy,
           rateLimits: validationResult.credentialMetadata?.rateLimits
         };
         (req as any).unifiedAuth.auditInfo.validationTime = Date.now() - startTime;
@@ -292,133 +329,17 @@ class TokenBasedAwsAuth {
     }
   }
 
-  /**
-   * Create secure signed token (JWT-style but compatible with admin service)
-   */
-  private createSecureToken(tokenData: any): string {
-    const secret = process.env.VALIDATION_TOKEN_SECRET || 'dev-secret-change-in-production';
-    
-    // Create JWT-style token but decode to simple JSON in admin service
-    const header = { alg: 'HS256', typ: 'JWT' };
-    const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
-    const encodedPayload = Buffer.from(JSON.stringify(tokenData)).toString('base64url');
-    
-    const signature = crypto
-      .createHmac('sha256', secret)
-      .update(`${encodedHeader}.${encodedPayload}`)
-      .digest('base64url');
-
-    return `${encodedHeader}.${encodedPayload}.${signature}`;
-  }
-
-  /**
-   * Parse AWS4 Authorization header
-   */
-  private parseAuthHeader(authHeader: string): ParsedAuthHeader | null {
-    if (!authHeader || !authHeader.startsWith('AWS4-HMAC-SHA256 ')) {
-      return null;
-    }
-    
-    const authString = authHeader.substring('AWS4-HMAC-SHA256 '.length);
-    const parts: { [key: string]: string } = {};
-    
-    // Parse Credential=..., SignedHeaders=..., Signature=...
-    const regex = /(\w+)=([^,]+)/g;
-    let match;
-    while ((match = regex.exec(authString)) !== null) {
-      if (match[1] && match[2]) {
-        parts[match[1]] = match[2];
-      }
-    }
-    
-    if (!parts.Credential || !parts.SignedHeaders || !parts.Signature) {
-      return null;
-    }
-    
-    // Parse credential string
-    const credentialParts = parts.Credential.split('/');
-    if (credentialParts.length !== 5) {
-      return null;
-    }
-    
-    return {
-      accessKeyId: credentialParts[0]!,
-      date: credentialParts[1]!,
-      region: credentialParts[2]!,
-      service: credentialParts[3]!,
-      signedHeaders: parts.SignedHeaders.split(';'),
-      signature: parts.Signature
-    };
-  }
-
-  /**
-   * Create AWS signature data for validation
-   */
-  private createAwsSignatureData(req: Request, parsed: ParsedAuthHeader): {
-    canonicalRequest: string;
-    stringToSign: string;
-  } {
-    const method = req.method.toUpperCase();
-    const path = req.path;
-    // Only string-valued parameters can be part of a SigV4 canonical query; a
-    // bracketed parameter arrives as a null-prototype object since express 4.22 and
-    // would make URLSearchParams throw. Such a request cannot carry a valid
-    // signature anyway, so its parameter is dropped from the canonical form here and
-    // the signature check answers 401 instead of a 500.
-    const query = new URLSearchParams(
-      Object.entries(req.query).flatMap(([name, value]) => { const s = queryString(value); return s === null ? [] : [[name, s] as [string, string]]; })
-    ).toString();
-    const payloadHash = req.headers['x-amz-content-sha256'] as string || 'UNSIGNED-PAYLOAD';
-    
-    // Create canonical request
-    const canonicalHeaders = parsed.signedHeaders
-      .sort()
-      .map(name => {
-        const value = req.headers[name.toLowerCase()] || '';
-        return `${name.toLowerCase()}:${value.toString().trim()}`;
-      })
-      .join('\n');
-    
-    const signedHeadersString = parsed.signedHeaders.sort().join(';');
-    
-    const canonicalRequest = [
-      method,
-      this.encodeUriPath(path),
-      query,
-      canonicalHeaders,
-      '',
-      signedHeadersString,
-      payloadHash
-    ].join('\n');
-
-    // Create string to sign
-    const algorithm = 'AWS4-HMAC-SHA256';
-    const timestamp = req.headers['x-amz-date'] as string;
-    const credentialScope = `${parsed.date}/${parsed.region}/${parsed.service}/aws4_request`;
-    const hashedCanonicalRequest = crypto.createHash('sha256').update(canonicalRequest).digest('hex');
-    
-    const stringToSign = [
-      algorithm,
-      timestamp,
-      credentialScope,
-      hashedCanonicalRequest
-    ].join('\n');
-
-    return { canonicalRequest, stringToSign };
-  }
-
   // Old validateWithAdminService method removed - now using unified AWS credential validation service
 
   /**
    * Fallback to local validation (for development/emergency)
    */
   private async fallbackLocalValidation(
-    parsed: ParsedAuthHeader,
-    stringToSign: string
-  ): Promise<TokenValidationResponse> {
+    parsed: ParsedAuthHeader
+  ): Promise<SourcedValidationResponse> {
     try {
       // Import local AWS credentials service
-      const { findAwsCredential, getSecretForSignature } = require('../services/awsCredentialsService');
+      const { findAwsCredential } = require('../services/awsCredentialsService');
       
       const credential = await findAwsCredential(parsed.accessKeyId);
       if (!credential) {
@@ -429,48 +350,31 @@ class TokenBasedAwsAuth {
         );
       }
 
-      const secretKey = await getSecretForSignature(credential);
-      const expectedSignature = crypto
-        .createHmac('sha256', secretKey)
-        .update(stringToSign)
-        .digest('hex');
-
-      const isValid = crypto.timingSafeEqual(
-        Buffer.from(parsed.signature.toLowerCase()),
-        Buffer.from(expectedSignature.toLowerCase())
-      );
-
-      if (isValid) {
-        return {
-          valid: true,
-          credentialMetadata: {
-            credentialId: credential.id,
-            permissions: [{ service: 'bedrock', action: 'bedrock:InvokeModel', resource: '*', effect: 'Allow' }],
-            region: credential.region || 'us-east-1',
-            sapAiRegion: credential.sapAiRegion || 'us-east-1',
-            userId: credential.userId || 'local-fallback',
-            rateLimits: {
-              requestsPerMinute: 60,
-              requestsPerHour: 1000,
-              requestsPerDay: 10000
-            }
-          },
-          validationToken: '',
-          auditInfo: {
-            requestId: ValidationTokenUtils.generateRequestId(),
-            validationTime: 0,
-            cacheHit: false,
-            ipAllowed: true,
-            signatureValid: true
+      // The signature is verified by authenticate() with the local signing-key provider.
+      return {
+        valid: true,
+        keySource: 'local',
+        credentialMetadata: {
+          credentialId: credential.id,
+          permissions: [{ service: 'bedrock', action: 'bedrock:InvokeModel', resource: '*', effect: 'Allow' }],
+          region: credential.region || 'us-east-1',
+          sapAiRegion: credential.sapAiRegion || 'us-east-1',
+          userId: credential.userId || 'local-fallback',
+          rateLimits: {
+            requestsPerMinute: 60,
+            requestsPerHour: 1000,
+            requestsPerDay: 10000
           }
-        };
-      } else {
-        return ValidationTokenUtils.createErrorResponse(
-          'INVALID_SIGNATURE',
-          'Invalid AWS signature',
-          ValidationTokenUtils.generateRequestId()
-        );
-      }
+        },
+        validationToken: '',
+        auditInfo: {
+          requestId: ValidationTokenUtils.generateRequestId(),
+          validationTime: 0,
+          cacheHit: false,
+          ipAllowed: true,
+          signatureValid: false
+        }
+      };
     } catch (error) {
       logger.error('TokenBasedAwsAuth', `Local fallback validation failed: ${(error as Error).message}`);
       return ValidationTokenUtils.createErrorResponse(
@@ -482,12 +386,50 @@ class TokenBasedAwsAuth {
   }
 
   /**
+   * The credential ID for the failed-auth event of a request refused before validation, through
+   * the unified validation (no signing keys). Undefined for an unknown key id, and when the lookup
+   * fails: the client's response never depends on it.
+   */
+  private async resolveCredentialIdForEvent(req: Request, parsed: ParsedAuthHeader): Promise<string | undefined> {
+    try {
+      const { unifiedAwsCredentialValidationService } = require('../services/unifiedAwsCredentialValidationService');
+      return await unifiedAwsCredentialValidationService.resolveCredentialId({
+        accessKeyId: parsed.accessKeyId,
+        signature: parsed.signature,
+        clientIp: this.getClientIp(req),
+        userAgent: req.headers['user-agent'] as string,
+        method: req.method,
+        endpoint: req.path,
+        headers: this.sanitizeHeaders(req.headers)
+      });
+    } catch (error) {
+      logger.debug('TokenBasedAwsAuth', `Credential lookup for the failed-auth event failed: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
    * Helper methods
    */
-  private encodeUriPath(path: string): string {
-    return path.split('/').map(segment => 
-      encodeURIComponent(segment).replace(/%2F/g, '/')
-    ).join('/');
+  // Emit security event using SecurityEventEmitter. accessKeyId is a public
+  // identifier by AWS design, but when the lookup failed it is an unresolved
+  // credential — hash + hint it the same as an unresolved API key, for consistency
+  // (see utils/credentialIdentity.ts). When the credential resolved (a later check
+  // failed, or the admin refused it as disabled/expired), its row ID replaces the hash
+  // (and the material), so the admin links the event to the credential and notifies its
+  // owner; the hint still shows which access key id was presented.
+  private async emitFailedAuth(req: Request, accessKeyId: string, reason: string, requestId: string, statusCode: number, resolvedCredentialId?: string): Promise<void> {
+    await securityEventEmitter.emitFailedAuth({
+      ...(resolvedCredentialId ? resolvedCredentialIdentity(accessKeyId, resolvedCredentialId) : credentialIdentity(accessKeyId)),
+      authType: 'aws_credential',
+      reason,
+      clientIP: this.getClientIp(req),
+      userAgent: req.headers['user-agent'] || 'unknown',
+      endpoint: redactUrl(req.originalUrl),
+      method: req.method,
+      requestId,
+      statusCode
+    });
   }
 
   // Delegates to utils/clientIp's single derivation, gated on the

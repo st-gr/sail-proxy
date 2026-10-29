@@ -4,7 +4,6 @@ import MessageBox from "sap/m/MessageBox";
 import MessageToast from "sap/m/MessageToast";
 import Panel from "sap/m/Panel";
 import VBox from "sap/m/VBox";
-import DynamicPage from "sap/f/DynamicPage";
 import CodeEditor from "sap/ui/codeeditor/CodeEditor";
 import Component from "sap/ui/core/Component";
 import Control from "sap/ui/core/Control";
@@ -35,6 +34,7 @@ import { evaluateApiConfigDocument } from "../model/documentGate";
 import { pluginFor, registerPlugin } from "../model/formPlugins";
 import { applyDescriptor, removeAt } from "../model/schemaForm";
 import { fieldErrorOf } from "../model/validateSection";
+import { Translator, messageTranslator } from "../model/validationTexts";
 import CredentialSection from "./ConfigFormCredentials";
 import MapEditor from "./ConfigFormMaps";
 import { attachTabSelection, buildTabs } from "./ConfigFormTabs";
@@ -54,6 +54,13 @@ const CREDENTIAL_PATTERN = "/api_config/observability/siem/sinks/*/*_env";
  * Cumulative ~5s; a save that landed usually answers on the first or second read.
  */
 const SAVE_POLL_DELAYS_MS = [150, 250, 400, 600, 900, 1200, 1500];
+
+/**
+ * How long a selection waits for the JSON editor to hold the selected configuration before the
+ * form opens by default (see `_openFormByDefault`). Cumulative ~2.6s; the editor usually has it on
+ * the first or second look.
+ */
+const EDITOR_READY_POLL_DELAYS_MS = [0, 50, 100, 150, 200, 300, 400, 600, 800];
 
 /**
  * A key-order-independent serialisation, used to compare what was sent with what came back.
@@ -88,6 +95,8 @@ export interface ConfigFormHost {
     getOwnerComponent(): Component | undefined;
     byId(id: string): UI5Element | undefined;
     onSaveConfiguration(): void;
+    /** The JSON editor's document is the stored one: its unsaved-changes flag is cleared. */
+    markEditorSaved(): void;
 }
 
 /**
@@ -221,7 +230,9 @@ export default class ConfigForm {
 
     /**
      * Called for every selection. Clears the form, returns the detail column to the JSON editor
-     * and re-evaluates the gate for the newly selected configuration.
+     * and re-evaluates the gate for the newly selected configuration. The form is the default
+     * view: once the gate passes it opens by itself (`_openFormByDefault`); the JSON editor stays
+     * for a configuration the form cannot represent.
      */
     public onConfigurationSelected(configId: string): void {
         try {
@@ -288,61 +299,79 @@ export default class ConfigForm {
             return;
         }
 
+        this._enterFormView();
+    }
+
+    /**
+     * Shows the form for `_document`: from the toggle, and from a selection whose gate passes.
+     * The caller has made sure the gate is open and `_document` is what the form must show.
+     */
+    private _enterFormView(): void {
+        const token = this._selectionToken;
         this._documentBaseline = JSON.stringify(this._document);
 
         void this._credentials
             .ensureLoaded(this._configId, this._getProperty("/isAdmin") === true)
             .then(() => {
-                // The form is built into the detail DynamicPageHeader, whose `visible` is bound to
-                // /formViewActive (view/Main.view.xml). While that is false the header is not in the
-                // DOM at all - an invisible UI5 control renders no box - so building the form here,
-                // BEFORE the header is shown, lays every ColumnLayout out against nothing:
+                // Another configuration was selected, or the column closed, while the credential
+                // slots loaded: that selection decides its own view.
+                if (token !== this._selectionToken) {
+                    return;
+                }
+                // The form is built into `configFormPanel` (in the detail DynamicPageHeader), whose
+                // `visible` is bound to /formViewActive (view/ConfigForm.fragment.xml). While that is
+                // false the panel is not in the DOM at all - an invisible UI5 control renders no box -
+                // so building the form here, BEFORE the panel is shown, lays every ColumnLayout out
+                // against nothing:
                 // sap.ui.layout.form.ColumnLayout measures its own width in `onAfterRendering` and
                 // bails the moment the form is not `:visible`, setting no media class, so the labels
                 // fall back to the narrow, column-less rendering instead of the wide right-aligned
-                // column. It was left to a ResizeObserver to re-measure once the header appeared, and
+                // column. It was left to a ResizeObserver to re-measure once the form appeared, and
                 // that recovery is not reliable across browsers: a scalar run after an EMPTY map
                 // (a Panel with only a toolbar, so nothing below it forced a second layout pass) was
                 // the one left narrow, and only adding a map entry put it right - because that is a
-                // second _render, by then with the header already visible.
+                // second _render, by then with the form already visible.
                 //
-                // So the header is made visible FIRST, and the form is built only once that header
-                // is actually on screen (`_renderWhenHeaderVisible`). Every ColumnLayout then measures
-                // a real width on its first layout pass and picks its column media deterministically,
-                // with no dependence on a later resize. Subsequent rebuilds (Add section / entry,
-                // remove, save) already run with the header visible, which is why only this first
-                // render needed it.
+                // So the panel is made visible FIRST, and the form is built only once that panel
+                // is actually on screen (`_renderWhenFormPanelVisible`). Every ColumnLayout then
+                // measures a real width on its first layout pass and picks its column media
+                // deterministically, with no dependence on a later resize. Subsequent rebuilds (Add
+                // section / entry, remove, save) already run with the panel visible, which is why
+                // only this first render needed it.
                 this._setProperty("/configViewMode", "form");
                 this._setProperty("/formViewActive", true);
                 this._setJsonVisible(false);
-                this._renderWhenHeaderVisible();
+                this._renderWhenFormPanelVisible();
             });
     }
 
     /**
-     * Builds the form, but not before the detail `DynamicPageHeader` that hosts it is on screen.
+     * Builds the form, but not before `configFormPanel`, the panel that hosts it, is on screen.
      *
-     * The header's `visible` is bound to /formViewActive, and an invisible UI5 control has no DOM at
-     * all - so a `_render` that runs before the header appears lays its `ColumnLayout`s out against
-     * nothing and they stay narrow (see `onViewModeChange`). The header's visibility is applied on the
-     * next rendering, not synchronously with the property write, so this waits for the header's own
+     * The panel's `visible` is bound to /formViewActive, and an invisible UI5 control has no DOM at
+     * all - so a `_render` that runs before the panel appears lays its `ColumnLayout`s out against
+     * nothing and they stay narrow (see `_enterFormView`). The panel's visibility is applied on the
+     * next rendering, not synchronously with the property write, so this waits for the panel's own
      * `onAfterRendering` and builds the form then - once, the delegate removing itself so a later
-     * re-render of the header does not rebuild the form under the operator. If the header is already
+     * re-render of the panel does not rebuild the form under the operator. If the panel is already
      * rendered (its DOM exists), there is nothing to wait for and the form is built at once.
+     *
+     * It waits for the panel, not the DynamicPageHeader around it: that header stays visible in
+     * both views (view/Main.view.xml explains why), so its DOM says nothing about the form's.
      */
-    private _renderWhenHeaderVisible(): void {
-        const header = this._host.byId("detailDynamicPageHeader");
-        if (!header || header.getDomRef()) {
+    private _renderWhenFormPanelVisible(): void {
+        const panel = this._host.byId("configFormPanel");
+        if (!panel || panel.getDomRef()) {
             this._render();
             return;
         }
         const delegate = {
             onAfterRendering: (): void => {
-                header.removeEventDelegate(delegate);
+                panel.removeEventDelegate(delegate);
                 this._render();
             }
         };
-        header.addEventDelegate(delegate);
+        panel.addEventDelegate(delegate);
     }
 
     /**
@@ -363,9 +392,9 @@ export default class ConfigForm {
 
         this._promptUnsaved("formLeaveMessage", (decision) => {
             if (decision === "save") {
-                // save() leaves the form only once the save is confirmed landed; a rejected
-                // save puts the toggle back to "form" itself.
-                this.save();
+                // Leaves the form only once the save is confirmed landed; a rejected save puts
+                // the toggle back to "form" itself.
+                void this._saveConfirmed(true);
             } else if (decision === "discard") {
                 this._discardEdits();
                 this._showJsonView();
@@ -407,23 +436,94 @@ export default class ConfigForm {
     }
 
     /**
-     * The table selection was cleared while the detail column stayed open. The toggle is hidden
-     * with the selection, so a form left open here is unreachable from the toggle.
-     *
-     * With nothing selected the existing save path refuses outright (`!this._selectedConfig`),
-     * so offering to save would be offering something that cannot work. An untouched form is
-     * simply closed. A form holding edits is kept - closing it would be the silent discard this
-     * round is here to remove - with a notice saying how to get Save back; Close still asks.
+     * Puts the form's pending edits into the JSON editor, verified, before the controller reads the
+     * editor for something other than Save (Duplicate). Edits are mirrored there as they are made,
+     * but only best effort; this is the checked reconciliation. Outside the form view there is
+     * nothing to bring over. Edits that fail validation are refused as Save refuses them - marked on
+     * their fields - since the copy would be refused when it is created. Returns false - after
+     * saying why - when the edits are invalid or the editor did not take them.
      */
-    public onSelectionCleared(): void {
-        if (this._getProperty("/formViewActive") !== true) {
+    public syncEditor(): boolean {
+        if (this._getProperty("/formViewActive") !== true || !this._document) {
+            return true;
+        }
+        const errors = this._validateEdits();
+        this._showFieldErrors = errors.length > 0;
+        this._applyFieldErrors(errors);
+        if (errors.length > 0) {
+            MessageBox.error(this._text("formInvalidBeforeDuplicate") + "\n" + errors.join("\n"));
+            return false;
+        }
+        const sync = this._writeDocumentToEditor();
+        if (sync !== "ok") {
+            MessageBox.error(this._text(sync === "no-editor" ? "formNoEditor" : "formSyncFailed"));
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * The open configuration's `isActive` changed while it is shown (Activate, Rollback, another
+     * configuration's activation). The form's controls take their editability when they are built,
+     * so a change rebuilds them - from `_document`, which holds any unsaved edits, against the
+     * unchanged `_documentBaseline`: the edits stay on screen and stay unsaved.
+     */
+    public onActiveStateChanged(isActive: boolean): void {
+        const wasEditable = this._getProperty("/formEditable") === true;
+        this._recomputeEditable(isActive);
+        const editable = this._getProperty("/formEditable") === true;
+        if (editable !== wasEditable && this._getProperty("/formViewActive") === true) {
+            this._render();
+        }
+    }
+
+    /** Whether the form holds edits that are not saved yet. */
+    public hasUnsavedEdits(): boolean {
+        return this._isFormDirty();
+    }
+
+    /**
+     * Saves the pending edits of either view and resolves true only once the stored document holds
+     * them. The form view saves its own document (`_saveConfirmed`); in the JSON view the edits are
+     * the editor's, which the host's Save stores, confirmed by the same read-back - that path says
+     * why when it refuses. Once the read-back holds the document the editor is clean, also when the
+     * host stored nothing because the edit only changed whitespace; without it, nothing activates.
+     */
+    public async saveEdits(): Promise<boolean> {
+        if (this._getProperty("/formViewActive") === true) {
+            return this._saveConfirmed();
+        }
+        let expected: string;
+        try {
+            expected = canonicalJson(JSON.parse(this._findEditor()?.getValue() ?? ""));
+        } catch (error) {
+            this._host.onSaveConfiguration(); // refuses the unparsable text, and says so
+            return false;
+        }
+        this._host.onSaveConfiguration();
+        if (!(await this._awaitPersisted(expected))) {
+            MessageBox.error(this._text("formSaveNotPersisted"));
+            return false;
+        }
+        this._host.markEditorSaved();
+        return true;
+    }
+
+    /**
+     * Drops every pending edit: the host has just put the stored document back into the JSON
+     * editor, and the form takes that document as its own and as its baseline.
+     */
+    public discardEdits(): void {
+        if (!this._document || !this._adoptEditorDocument()) {
             return;
         }
-        if (this._isFormDirty()) {
-            this._setProperty("/formNotice", this._text("formNoSelection"));
-            return;
+        if (this._documentBaseline !== null) {
+            this._documentBaseline = JSON.stringify(this._document);
         }
-        this._showJsonView();
+        this._clearFieldErrors();
+        if (this._getProperty("/formViewActive") === true) {
+            this._render();
+        }
     }
 
     /** The Save / Discard / Cancel prompt, shared by every route out of the form. */
@@ -541,13 +641,16 @@ export default class ConfigForm {
      * The existing save path reports its outcome through toasts and dialogs raised deep inside
      * async callbacks and returns nothing; it can also report success for a batch whose PATCH
      * failed. So the form decides for itself, by reading the configuration back and comparing it
-     * with what it sent. Only then does the dirty baseline advance and the column return to the
-     * JSON editor. A rejected save leaves the form open, with the edit still in it and still
-     * dirty, so no route out of here can lose it silently.
+     * with what it sent. Only then does the dirty baseline advance. A rejected save leaves the
+     * form open, with the edit still in it and still dirty, so no route out of here can lose it
+     * silently.
+     *
+     * The form is the default view, so a save from its own Save button stays in it. Only a save
+     * chosen while leaving for the JSON editor (`leaveToJson`) goes on to that editor.
      *
      * Resolves true only when the edit is in the database.
      */
-    private async _saveConfirmed(): Promise<boolean> {
+    private async _saveConfirmed(leaveToJson = false): Promise<boolean> {
         if (!this._document || this._saveInFlight) {
             return false;
         }
@@ -588,7 +691,9 @@ export default class ConfigForm {
                 return false;
             }
             this._documentBaseline = snapshot;
-            this._showJsonView();
+            if (leaveToJson) {
+                this._showJsonView();
+            }
             return true;
         } finally {
             this._saveInFlight = false;
@@ -691,11 +796,69 @@ export default class ConfigForm {
             }
 
             this._evaluateGate();
+            if (this._getProperty("/formGateEnabled") === true) {
+                void this._openFormByDefault(token);
+            }
         } catch (error) {
             if (token === this._selectionToken) {
                 this._gate(false, this._text("formGateFailed"));
             }
             console.warn("ConfigForm: gate evaluation failed", error);
+        }
+    }
+
+    /**
+     * The form is the default view: a selection whose gate passes opens it without a click.
+     *
+     * Not before the JSON editor holds this configuration, though. The host loads the editor's
+     * content with a read of its own (`Main.controller` `_loadConfigurationDetails`), in the same
+     * step that decides the editor's editability and captures its dirty baseline, and that read
+     * may answer after this one. Opening the form before that step would leave the editor stale
+     * and untracked for the whole selection - and the form's Save writes through that editor. So
+     * this waits until the editor holds the document the form loaded, and otherwise gives up
+     * quietly, leaving the JSON view and a toggle the operator can still press.
+     *
+     * And only where the toggle is on screen: it is the one way back to the JSON editor, and the
+     * title bar drops it below roughly 600px of width. A narrow screen keeps the JSON editor.
+     *
+     * Never throws: nothing here may break opening a configuration's details.
+     */
+    private async _openFormByDefault(token: number): Promise<void> {
+        try {
+            const expected = canonicalJson(this._document);
+            for (const delay of EDITOR_READY_POLL_DELAYS_MS) {
+                await new Promise<void>(resolve => setTimeout(resolve, delay));
+                // A newer selection decides its own view; a form the operator already opened by
+                // hand in the meantime needs no second render.
+                if (token !== this._selectionToken || this._getProperty("/formViewActive") === true) {
+                    return;
+                }
+                if (this._editorHolds(expected) && this._toggleOnScreen()) {
+                    this._enterFormView();
+                    return;
+                }
+            }
+        } catch (error) {
+            console.warn("ConfigForm: could not open the form by default", error);
+        }
+    }
+
+    /** True when the Form / JSON toggle is rendered, so the operator can leave the form again. */
+    private _toggleOnScreen(): boolean {
+        const dom = this._host.byId("configViewToggle")?.getDomRef() as HTMLElement | null;
+        return !!dom && dom.getClientRects().length > 0;
+    }
+
+    /** True when the JSON editor's content is the given document (canonical JSON). */
+    private _editorHolds(expected: string): boolean {
+        const value = this._findEditor()?.getValue();
+        if (!value) {
+            return false;
+        }
+        try {
+            return canonicalJson(JSON.parse(value)) === expected;
+        } catch (error) {
+            return false;
         }
     }
 
@@ -717,7 +880,7 @@ export default class ConfigForm {
      * toggle off, but is not yet shown as a form when the gate passes.
      */
     private _evaluateGate(): void {
-        const result = evaluateApiConfigDocument(apiConfigSchema, this._document);
+        const result = evaluateApiConfigDocument(apiConfigSchema, this._document, this._messages());
         if (result.valid) {
             this._gate(true, this._text("formGateReady"));
         } else {
@@ -901,7 +1064,7 @@ export default class ConfigForm {
      * on whichever tab that control lives.
      */
     private _validateEdits(): string[] {
-        return evaluateApiConfigDocument(apiConfigSchema, this._document).errors;
+        return evaluateApiConfigDocument(apiConfigSchema, this._document, this._messages()).errors;
     }
 
     /** Re-checks and re-marks. Called after every edit once a save has been refused. */
@@ -921,7 +1084,7 @@ export default class ConfigForm {
     private _applyFieldErrors(errors: string[]): void {
         const byPointer: Record<string, string> = {};
         errors.forEach(message => {
-            const field = fieldErrorOf(message);
+            const field = fieldErrorOf(message, this._messages());
             if (!field || !this._fieldControls[field.pointer]) {
                 return;
             }
@@ -1210,6 +1373,11 @@ export default class ConfigForm {
         return (this._bundle ? this._bundle.getText(key) : undefined) ?? key;
     }
 
+    /** The gate's messages in the bundle's language - the same translator writes and reads them back. */
+    private _messages(): Translator {
+        return messageTranslator(key => this._text(key));
+    }
+
     private _clearContent(): void {
         (this._host.byId("configFormContent") as VBox)?.destroyItems();
         // The registry would otherwise hold destroyed controls into the next configuration.
@@ -1237,39 +1405,25 @@ export default class ConfigForm {
         return cursor;
     }
 
-    /**
-     * The JSON editor the user actually sees is built at runtime into the detail page's content
-     * aggregation, so it is found by searching that page rather than by id.
-     */
+    /** The detail column's JSON editor, declared in view/Main.view.xml. */
     private _findEditor(): CodeEditor | null {
-        const detailPage = this._host.byId("detailDynamicPage");
-        if (!detailPage) {
-            return null;
-        }
-        const editors = detailPage.findAggregatedObjects(true)
-            .filter(control => control.getMetadata().getName() === "sap.ui.codeeditor.CodeEditor") as CodeEditor[];
-        if (editors.length === 0) {
-            return null;
-        }
-        return editors.filter(editor => !!editor.getDomRef())[0] || editors[0];
+        return (this._host.byId("jsonEditor") as CodeEditor | undefined) ?? null;
     }
 
     /**
-     * Shows or hides the JSON editor. Its container is the programmatic VBox that
-     * _createDetailContentProgrammatically installs; it is replaced on every selection, which is
-     * why the form itself lives in the page header instead.
+     * Shows or hides the JSON editor's side of the detail column: the `detailContent` wrapper,
+     * the single control in the DynamicPage's 0..1 content aggregation (the editor and its
+     * read-only strip). The form lives in the page header, so the two can be shown one at a time
+     * without either being rebuilt; the configuration's info and validation messages sit in the
+     * page title, which both views show.
+     *
+     * The header itself stays visible either way (view/Main.view.xml, at f:header, says why); with
+     * the form hidden it would still keep its own padding, so `cfgDetailHeaderIdle` takes that away
+     * while the JSON side shows.
      */
     private _setJsonVisible(visible: boolean): void {
-        const detailPage = this._host.byId("detailDynamicPage") as DynamicPage;
-        // The aggregation is 0..1, so this is a single control, not an array - see the task 4
-        // findings; every existing `content.length` test in the controller is dead code for it.
-        const content = detailPage ? detailPage.getContent() as unknown : null;
-        const items = (Array.isArray(content) ? content : (content ? [content] : [])) as Control[];
-        items.forEach(item => {
-            if (typeof item.setVisible === "function") {
-                item.setVisible(visible);
-            }
-        });
+        (this._host.byId("detailContent") as Control | undefined)?.setVisible(visible);
+        (this._host.byId("detailDynamicPageHeader") as Control | undefined)?.toggleStyleClass("cfgDetailHeaderIdle", visible);
     }
 
     /** Executes an unbound OData V4 action and returns its result object, or null. */

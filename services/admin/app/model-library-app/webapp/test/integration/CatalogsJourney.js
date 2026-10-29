@@ -18,7 +18,7 @@ sap.ui.define([
 			opaTest("Catalogs: create a child, stage and save members, discard and guard, admin tabs", function (Given, When, Then) {
 				// Animations off: the FlexibleColumnLayout otherwise waits for column transitionend
 				// events that can stay out under CI load (see ProfilesJourney).
-				Given.iStartMyAppInAFrame("../../index.html?sap-ui-animationMode=none#/catalogs");
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN&sap-ui-animationMode=none#/catalogs");
 				Then.onTheCatalogs.iSeeCatalogNamed("Default");
 				Then.onTheCatalogs.iSeeCatalogNamed(oNames.teamCatalog);
 				When.onTheCatalogs.iOpenNewCatalog();
@@ -90,6 +90,26 @@ sap.ui.define([
 				Then.onTheCatalogs.iDoNotSeeCatalogNamed(sNewCatalog);
 				Then.iTeardownMyApp();
 			});
+			// Teams polish: a team is assigned a catalog like a user - staged, then written by Save
+			// (assignTeamCatalog). The journey puts the fixture team back on the default catalog.
+			if (oLib.canAssign && oNames.team) {
+				opaTest("Catalogs: assign the fixture team to the team catalog, Save, and unassign it again", function (Given, When, Then) {
+					Given.iStartMyAppInAFrame("../app.html?sap-language=EN&sap-ui-animationMode=none#/catalogs");
+					When.onTheCatalogs.iSelectCatalogNamed(oNames.teamCatalog);
+					When.onTheCatalogs.iOpenTheAssignmentsTab();
+					When.onTheCatalogs.iPressTeamButton(oNames.team.name, "Assign");
+					Then.onTheCatalogs.iSeeTeamCell(oNames.team.name, 1, oNames.teamCatalog + " (unsaved)");
+					Then.onTheCatalogs.iSeeTheSaveButtonsEnabled(true);
+					When.onTheCatalogs.iPressSave();
+					Then.onTheCatalogs.iSeeTheCatalogSaved();
+					Then.onTheCatalogs.iSeeTeamCell(oNames.team.name, 1, oNames.teamCatalog);
+					When.onTheCatalogs.iPressTeamButton(oNames.team.name, "Unassign");
+					When.onTheCatalogs.iPressSave();
+					Then.onTheCatalogs.iSeeTheCatalogSaved();
+					Then.onTheCatalogs.iSeeTeamCell(oNames.team.name, 1, "Default");
+					Then.iTeardownMyApp();
+				});
+			}
 		}
 	};
 });

@@ -52,7 +52,7 @@ export interface LibraryModelRow {
   description: string | null;
   provider: string | null;
   executableId: string | null;
-  provisioning: 'hosted' | 'managed' | 'remote';
+  provisioning: 'hosted' | 'managed' | 'remote' | null;
   accessType: string;
   llmAccess: boolean;
   orchestration: boolean;
@@ -76,6 +76,10 @@ export interface LibraryModelRow {
   sapCacheCreationCost: string | null;
   lastSeenAt: Date;
   absent: boolean;
+  /** sap, or external for a Connection model (spec 2026-10-23 §4.3); the default catalog leaves external rows out. */
+  origin: 'sap' | 'external';
+  /** The Connection name of an external row: the id's suffix after its last '--'. */
+  connection: string | null;
 }
 
 /** SAP's "Model Provisioning" facet, derived from the executable that serves the model. */
@@ -193,7 +197,55 @@ function toDateOnly(value?: string): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+/**
+ * A Connection model the gateway merged into its list (accessType 'external'). It has no SAP
+ * versions, scenarios or costs; its capabilities are the connection's own list (chat, responses,
+ * embeddings, streaming, tools, vision).
+ */
+function mapExternalModelToLibraryRow(model: GatewayModel, seenAt: Date): LibraryModelRow {
+  const capabilities = Array.isArray(model.capabilities) ? (model.capabilities as unknown[]).filter((c): c is string => typeof c === 'string') : [];
+  const upstream = typeof model.upstreamModel === 'string' ? model.upstreamModel : model.id;
+  const connection = model.id.includes('--') ? model.id.slice(model.id.lastIndexOf('--') + 2) : null;
+  const chat = capabilities.includes('chat') || capabilities.includes('responses');
+  const vision = capabilities.includes('vision');
+  return {
+    modelId: clamp(model.id, SNAPSHOT_WIDTHS.modelId) as string,
+    baseModel: clamp(upstream, SNAPSHOT_WIDTHS.baseModel) as string,
+    displayName: clamp(model.displayName ?? upstream, SNAPSHOT_WIDTHS.displayName),
+    description: null,
+    provider: clamp(typeof model.providerType === 'string' ? model.providerType : model.owned_by ?? null, SNAPSHOT_WIDTHS.provider),
+    executableId: null,
+    provisioning: null,
+    accessType: 'external',
+    llmAccess: false,
+    orchestration: false,
+    latestVersion: null,
+    versionCount: 0,
+    contextLength: null,
+    streamingSupported: model.streamingSupported ?? true,
+    deprecated: false,
+    retirementDate: null,
+    capabilities: clampJsonArray(capabilities, SNAPSHOT_WIDTHS.capabilities),
+    inputTypes: clampJsonArray(vision ? ['text', 'image'] : ['text'], SNAPSHOT_WIDTHS.inputTypes),
+    capText: chat, capImageRecognition: vision, capImageGeneration: false,
+    capReasoning: false, capEmbedding: capabilities.includes('embeddings'), capSpeechToText: false,
+    inText: true, inImage: vision, inAudio: false, inVideo: false,
+    benchmarks: null,
+    versions: null,
+    deployment: null,
+    sapInputCost: null,
+    sapOutputCost: null,
+    sapCacheReadCost: null,
+    sapCacheCreationCost: null,
+    lastSeenAt: seenAt,
+    absent: false,
+    origin: 'external',
+    connection,
+  };
+}
+
 export function mapModelToLibraryRow(model: GatewayModel, seenAt: Date): LibraryModelRow {
+  if (model.accessType === 'external') return mapExternalModelToLibraryRow(model, seenAt);
   const versions = Array.isArray(model.versions) ? model.versions : [];
   const latest = versions.find(v => v.isLatest) || versions[0];
   const capabilities = latest?.capabilities || [];
@@ -254,7 +306,9 @@ export function mapModelToLibraryRow(model: GatewayModel, seenAt: Date): Library
     sapCacheReadCost: costOf(latest, 'cacheReadInputCost'),
     sapCacheCreationCost: costOf(latest, 'cacheCreationInputCost'),
     lastSeenAt: seenAt,
-    absent: false
+    absent: false,
+    origin: 'sap',
+    connection: null
   };
 }
 

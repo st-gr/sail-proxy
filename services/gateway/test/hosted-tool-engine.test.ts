@@ -45,7 +45,7 @@
  * @see test/responses-websearch-characterization.test.ts - the same engine through the REAL
  *      web_search descriptor, byte for byte
  */
-import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 import { Readable } from 'stream';
 
 const mockPost = jest.fn<(...args: any[]) => Promise<any>>();
@@ -68,6 +68,7 @@ import {
 // controller actually stashes in them.
 import { translateOrchestrationResponse } from '../src/responses/orchestrationBridge/responseTranslator';
 import { createOrchestrationBlockTranslator } from '../src/responses/orchestrationBridge/streamTranslator';
+import usageEmitter from '../src/services/usageEventEmitter';
 
 const utils = { logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() } };
 
@@ -108,6 +109,8 @@ function makeTool(opts: {
   /** What `prepare()` throws instead of resolving. The engine's reject-vs-degrade rule
    *  reads the ERROR, not the descriptor, so this is how both branches are driven. */
   prepareThrows?: any;
+  /** Makes `execute` report one embedding request and one rerank through `ctx.recordUsage`. */
+  recordsUsage?: boolean;
 }): FakeTool {
   const withMessage = opts.withMessage !== false;
   const state: FakeTool = {
@@ -150,6 +153,10 @@ function makeTool(opts: {
       state.executed.push({
         callId: call.callId, q: call.args?.q, prepared: ctx.prepared, isStreaming: ctx.isStreaming,
       });
+      if (opts.recordsUsage) {
+        ctx.recordUsage!({ endpoint: 'file_search/search', model: 'emb', inputTokens: 4, unit: 'tokens', responseTime: 1 });
+        ctx.recordUsage!({ endpoint: 'file_search/rerank', model: 'rr', inputTokens: 1, unit: 'units', responseTime: 1 });
+      }
       try {
         if (opts.delayMs) await new Promise(resolve => setTimeout(resolve, opts.delayMs));
         return { call, status: 'completed', payload: { echo: `${opts.type} ran ${call.args?.q}` } };
@@ -1627,10 +1634,10 @@ const ORCH_UPSTREAM = () => ({
     config: { modules: {} }, messages_history: history,
   }),
   translateContinuationResponse: (envelope: any) => translateOrchestrationResponse(envelope, {
-    model: ORCH_MODEL, responseId: 'resp_orch',
+    model: ORCH_MODEL, sapModel: ORCH_MODEL, responseId: 'resp_orch',
   }),
   createContinuationStreamTranslator: () => createOrchestrationBlockTranslator({
-    model: ORCH_MODEL, responseId: 'resp_orch',
+    model: ORCH_MODEL, sapModel: ORCH_MODEL, responseId: 'resp_orch',
   }),
 });
 
@@ -1819,5 +1826,80 @@ describe('hostedTool engine — continuation replies from orchestration', () => 
     const terminal = terminalFrame(res);
     expect(terminal.type).toBe('response.completed');
     expect(terminal.response.output).toEqual([callItem('alpha', 'c_a1', 'a1'), FINAL_MSG]);
+  });
+});
+
+// ======================================================== usage recording (phase 4b)
+
+/**
+ * `ToolExecCtx.recordUsage`: every live execute gets a recorder billed to the request's
+ * caller, whose ids carry a per-request call index, so they never equal the response's own
+ * usage event id (`debugRequestId`) and never collide across several calls in one response.
+ */
+describe('hostedTool engine — recordUsage on every live execute', () => {
+  const AUTH = { unifiedAuth: { valid: true, authType: 'api_key', data: { id: 'caller-key' } }, debugRequestId: 'req-1' };
+  let emit: any;
+  beforeEach(() => { emit = jest.spyOn(usageEmitter, 'emit').mockResolvedValue(undefined); });
+  afterEach(() => { emit.mockRestore(); });
+  const ids = (): string[] => emit.mock.calls.map((c: any[]) => c[0].requestId);
+
+  it('non-streaming: each call of a turn and of a later round gets its own index', async () => {
+    makeTool({ type: 'alpha', cap: 5, recordsUsage: true });
+    const req = Object.assign(afterReq(), AUTH);
+    mockPost
+      .mockResolvedValueOnce(reply('resp_2', [fc('alpha', 'c_3', 'a3')]))
+      .mockResolvedValueOnce(reply('resp_3', [FINAL_MSG]));
+
+    await hostedToolAfterHandler({
+      req, res: {} as any, utils, upstreamResponse: firstTurn([fc('alpha', 'c_1', 'a1'), fc('alpha', 'c_2', 'a2')]),
+    });
+
+    expect(ids()).toEqual([
+      'req-1-fs-1-embed-1', 'req-1-fs-1-rerank',
+      'req-1-fs-2-embed-1', 'req-1-fs-2-rerank',
+      'req-1-fs-3-embed-1', 'req-1-fs-3-rerank',
+    ]);
+    expect(ids()).not.toContain('req-1');
+    for (const [event] of emit.mock.calls) {
+      expect(event).toMatchObject({ credentialId: 'caller-key', authType: 'api_key' });
+      expect(event).not.toHaveProperty('onBehalfOf');
+    }
+  });
+
+  it('streaming: parallel calls and a continuation round get distinct indices', async () => {
+    makeTool({ type: 'alpha', cap: 5, recordsUsage: true });
+    const res = captureWrites();
+    const req = Object.assign(streamingReq([{ type: 'alpha' }]), AUTH);
+    mockPost
+      .mockResolvedValueOnce(upstreamStream(continuationCallFrames('resp_2', fc('alpha', 'c_3', 'a3'))))
+      .mockResolvedValueOnce(upstreamStream(continuationAnswerFrames('resp_3')));
+
+    await hostedToolBeforeHandler({ req, res, utils });
+    for (const frame of firstCallFrames([fc('alpha', 'c_1', 'a1'), fc('alpha', 'c_2', 'a2')])) {
+      res.write(sse(frame));
+    }
+    await settleStream(res);
+
+    expect(new Set(ids()).size).toBe(6);
+    expect([...ids()].sort()).toEqual([
+      'req-1-fs-1-embed-1', 'req-1-fs-1-rerank',
+      'req-1-fs-2-embed-1', 'req-1-fs-2-rerank',
+      'req-1-fs-3-embed-1', 'req-1-fs-3-rerank',
+    ]);
+    expect(emit.mock.calls.every((c: any[]) => c[0].credentialId === 'caller-key')).toBe(true);
+  });
+
+  it('a call drained by the before handler and a call of the after handler never share an index', async () => {
+    makeTool({ type: 'alpha', cap: 5, recordsUsage: true });
+    const req: any = Object.assign({
+      body: { stream: false, tools: [{ type: 'alpha' }], input: [fc('alpha', 'c_p', 'pending')] },
+    }, AUTH);
+    await hostedToolBeforeHandler({ req, res: {} as any, utils });
+    expect(ids()).toEqual(['req-1-fs-1-embed-1', 'req-1-fs-1-rerank']);
+
+    req.__responsesUpstream = UPSTREAM();
+    mockPost.mockResolvedValueOnce(reply('resp_2', [FINAL_MSG]));
+    await hostedToolAfterHandler({ req, res: {} as any, utils, upstreamResponse: firstTurn([fc('alpha', 'c_1', 'a1')]) });
+    expect(ids().slice(2)).toEqual(['req-1-fs-2-embed-1', 'req-1-fs-2-rerank']);
   });
 });

@@ -8,17 +8,23 @@ import sapAIService from '../services/sapAIService';
 import configService from '../services/configService';
 import * as sseWriter from '../utils/sseWriter';
 import anthropicService from '../services/anthropicService';
-import anthropicResponseService, { mapSapFinishReasonToAnthropic } from '../services/anthropicResponseService';
+import anthropicResponseService, { mapSapFinishReasonToAnthropic, mapSapCacheUsageToAnthropic, mapSapCacheCreationToAnthropic, AnthropicCacheCreation } from '../services/anthropicResponseService';
 import modelService from '../services/modelService';
 import * as payloadLogger from '../utils/payloadLogger';
 import { executeBeforePlugins } from '../services/pluginExecutor';
+import { refuseIfForcedWithoutPlugin } from '../plugins/pseudonymization/forcedRun';
 import awsBedrockService from '../services/awsBedrockService';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
+import { fullRatePromptTokens } from '../utils/usageFolding';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { resolveExternalTarget } from '../upstreams/externalTarget';
+import { dispatchMessages } from '../upstreams/messagesDispatch';
 import { recordInvokedTools, anthropicAdapter } from '../toolGovernance';
+import { deferStreamStart, DeferredStreamStart, StreamFailure, chunkError, failureFromChunk, failureFromError, httpStatusOr } from '../utils/streamStart';
+import { anthropicErrorBody, sendAnthropicHttpError } from '../utils/anthropicErrors';
 
 // Type definitions
 interface ExtendedRequest extends Request {
@@ -106,10 +112,6 @@ interface ServiceState {
   sapIndexToToolId: Record<string, string>;
 }
 
-interface StreamingIntervals {
-  ping: NodeJS.Timeout | null;
-}
-
 type StreamingMode = 'native' | 'emulated' | 'non_streaming' | 'non_streaming_fallback';
 
 interface StreamingRequestOptions {
@@ -142,7 +144,11 @@ interface UsageInfo {
   output_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  cache_creation?: AnthropicCacheCreation;
 }
+
+/** No cache write: the TTL split Anthropic reports on every usage object. */
+const NO_CACHE_CREATION: AnthropicCacheCreation = { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 };
 
 // Removed unused interface TransformedEvent
 
@@ -222,12 +228,27 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
     // shared Valkey cache for a request we are about to 403.
     if (!enforceEntitlement(req, res, substitutedModelName)) return;
 
+    // A Connection model is never sent to SAP: it is served by its connection.
+    const external = await resolveExternalTarget(req, res, substitutedModelName, 'claude', 'anthropic');
+    if (external.kind === 'handled') return;
+    if (external.kind === 'external') {
+      await dispatchMessages(req, res, external.target, usageMetrics, originalModelFromClient);
+      return;
+    }
+
     // Determine subPath for hook config
     const subPath = clientRequestedStream ? 'invoke-with-response-stream' : 'invoke';
 
     // Get plugin hook configuration for this model+subpath
     (req as any).__endpoint = 'anthropic';
     const hookConfig = configService.getHookConfig(substitutedModelName, subPath, 'anthropic');
+
+    // Fail closed: with pseudonymization forced and no hook chain that runs the plugin, the
+    // request would reach the upstream unmasked. The before-chain below runs for the deployed
+    // branch too, so this one check covers both.
+    if (refuseIfForcedWithoutPlugin(req, res, hookConfig, {
+      endpoint: 'anthropic', subPaths: [subPath], servedModel: substitutedModelName, component: 'AnthropicController',
+    })) return;
 
     // Execute any 'before' strategy plugins
     if (hookConfig) {
@@ -243,7 +264,8 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
 
     const modelDetails: ModelDetails | null = await modelService.getModelDetails(substitutedModelName);
     if (!modelDetails) {
-      res.status(400).json({ error: `Model ${substitutedModelName} not found` });
+      // Anthropic answers an unknown model with 404 not_found_error and "model: <name>".
+      sendAnthropicHttpError(res, { status: 404, message: `model: ${originalModelFromClient}` });
       return;
     }
     const isDeployedModel = modelDetails && (
@@ -323,43 +345,30 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
         logger.error('AnthropicController', `Error during deployed model call for ${debugRequestId}: ${deployedCallError.message}`);
         
         // Emit usage event for deployed model error case
-        const statusCode = deployedCallError.status || 500;
+        const statusCode = httpStatusOr(deployedCallError.status ?? deployedCallError.response?.status);
         const modelIdForUsageEvent = configService.getSubstitutedModel('anthropic', originalModelFromClient);
         emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, statusCode);
         
-        if (clientRequestedStream && !res.headersSent) {
-          // For streaming requests, send SSE error
-          res.setHeader('Content-Type', 'text/event-stream');
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Connection', 'keep-alive');
-        }
-        
-        if (clientRequestedStream && !res.writableEnded) {
-          try {
-            const errorPayload = { 
-              type: 'error', 
-              error: { 
-                message: deployedCallError.message || 'Deployed model processing failed', 
-                type: 'api_error', 
-                code: deployedCallError.status || 500 
-              }
-            };
-            sseWriter.writeEventStream(res, 'error', JSON.stringify(errorPayload));
-            sseWriter.writeDone(res);
-          } catch (sseError: any) {
-            logger.error('AnthropicController', `Error writing SSE error: ${sseError.message}`);
+        if (clientRequestedStream) {
+          // Anthropic's shape on both sides of the stream start: the real status and a JSON
+          // body while nothing was sent, else one `error` event and the end of the stream.
+          const failure = { status: statusCode, message: deployedCallError.message || 'Deployed model processing failed' };
+          if (!res.headersSent) {
+            sendAnthropicHttpError(res, failure);
+          } else if (!res.writableEnded) {
+            try {
+              sseWriter.writeEventStream(res, 'error', JSON.stringify(anthropicErrorBody(failure)));
+            } catch (sseError: any) {
+              logger.error('AnthropicController', `Error writing SSE error: ${sseError.message}`);
+            }
+            res.end();
           }
           return;
         }
         
         // For non-streaming requests or if response headers haven't been sent
         if (!res.headersSent) {
-          res.status(deployedCallError.status || 500).json({
-            error: {
-              type: 'api_error',
-              message: deployedCallError.message || 'Deployed model processing failed'
-            }
-          });
+          sendAnthropicHttpError(res, { status: statusCode, message: deployedCallError.message || 'Deployed model processing failed' });
           return;
         }
       }
@@ -443,11 +452,9 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
       }, req, res);
     }
     if (!res.headersSent) {
-      const errorToSend = err;
-      if (!errorToSend.status) {
-        errorToSend.status = 500;
-      }
-      next(errorToSend);
+      // Anthropic's error shape, not the gateway-wide OpenAI-style one: Claude Code reads
+      // error.type and the message (e.g. "prompt is too long") off this body.
+      sendAnthropicHttpError(res, failureFromError(err));
     } else {
       logger.error('AnthropicController', 'Error after headers sent, cannot use next(err). Ending response if possible.');
       if (!res.writableEnded) {
@@ -466,9 +473,8 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
     mappedModel, 
     sapPayload, 
     debugRequestId, 
-    req, 
-    res, 
-    next 
+    req,
+    res
   } = options;
 
   // Initialize usage tracking
@@ -491,7 +497,8 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
       false, 
       originalModelFromClient, 
       originalRequestContentFormatType, 
-      latencyMsNonStreaming
+      latencyMsNonStreaming,
+      mappedModel
     );
 
     // Track usage if available
@@ -505,11 +512,13 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
       });
       
       if (usage && typeof usage === 'object') {
-        const inputTokens = usage.input_tokens || 0;
-        const outputTokens = usage.output_tokens || 0;
-        const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
-        const cacheReadTokens = usage.cache_read_input_tokens || 0;
-        
+        // Anthropic's EXCLUSIVE counts — the transform already took the cache out of an
+        // inclusive (e.g. OpenAI-family) prompt_tokens (mapSapCacheUsageToAnthropic).
+        const inputTokens = usage.input_tokens || usage.inputTokens || 0;
+        const outputTokens = usage.output_tokens || usage.outputTokens || 0;
+        const cacheCreationTokens = usage.cache_creation_input_tokens || usage.cacheWriteInputTokens || 0;
+        const cacheReadTokens = usage.cache_read_input_tokens || usage.cacheReadInputTokens || 0;
+
         logger.info('UsageTrackingService', 'Extracted token counts from usage object', {
           requestId: debugRequestId,
           inputTokens: inputTokens,
@@ -558,98 +567,160 @@ async function handleNonStreamingRequest(options: NonStreamingRequestOptions): P
     logger.error('AnthropicController', `Error in non-streaming request: ${error.message}`, error);
     
     // Emit usage event for error case
-    const statusCode = error.response?.status || error.status || 500;
+    const failure = failureFromError(error);
     const modelIdForUsageEvent = configService.getSubstitutedModel('anthropic', originalModelFromClient);
-    emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, statusCode);
-    
-    const enhancedError = new Error(`Non-streaming request failed for ${originalModelFromClient}: ${error.message}`) as any;
-    enhancedError.status = statusCode;
-    enhancedError.details = error.response?.data || error.details;
-    next(enhancedError);
+    emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, failure.status);
+
+    // Anthropic's shape and SAP's own message (prefix dropped): Claude Code retries a failed
+    // stream without streaming, and must find "prompt is too long" here to compact.
+    if (!res.headersSent) sendAnthropicHttpError(res, failure);
+    else if (!res.writableEnded) res.end();
   }
 }
 
-// Interface for native streaming parameters
-interface NativeStreamingOptions {
-  mappedModel: string;
-  modelForReportingInStream: string;
-  sapPayload: SAPPayload;
-  anthropicVersion: string;
-  debugRequestId: string;
-  requestStartTimeStream: number;
-  intervals: StreamingIntervals;
+/**
+ * What every streaming mode shares: the deferred start (status line + message_start,
+ * then pings), the single place an upstream failure is delivered, and the SSE log.
+ *
+ * Nothing is written before the upstream delivers content or the start deadline passes
+ * (utils/streamStart.ts), so a failure that arrives first is answered the way Anthropic
+ * answers it — the HTTP status and a JSON error body — rather than as an in-stream event
+ * under a 200 (the "prompt is too long" case Claude Code must see to auto-compact).
+ */
+interface StreamingContext {
+  stream: DeferredStreamStart;
   abortController: AbortController;
-  messageId: string;
-  res: Response;
-  req: ExtendedRequest;
-  serviceState: ServiceState;
-  contentBlockStarted: boolean;
-  lastContentBlockIndex: number;
+  requestStartTimeStream: number;
   shouldLogEvents: boolean;
   clientNativeStreamLog: string[];
-  hookConfig?: any;
-  usageMetrics: any;
+  /** Write one SSE event and, for native streams, log it. */
+  writeEvent: (event: string, dataStr: string) => void;
+  /**
+   * Deliver an upstream failure: before the start, its HTTP status and Anthropic's JSON
+   * body; after it, one `error` event and the end of the stream — never a message_delta
+   * or message_stop after it, which a client reads as a normal (empty) completion.
+   */
+  deliverFailure: (failure: StreamFailure) => void;
   cleanup: () => void;
 }
 
-// Interface for emulated streaming parameters
-interface EmulatedStreamingOptions {
+// Interface for native streaming parameters
+interface NativeStreamingOptions extends StreamingContext {
   mappedModel: string;
   modelForReportingInStream: string;
   sapPayload: SAPPayload;
   anthropicVersion: string;
   debugRequestId: string;
-  requestStartTimeStream: number;
-  intervals: StreamingIntervals;
-  abortController: AbortController;
-  messageId: string;
+  res: Response;
+  req: ExtendedRequest;
+  serviceState: ServiceState;
+  hookConfig?: any;
+  usageMetrics: any;
+}
+
+// Interface for emulated streaming parameters
+interface EmulatedStreamingOptions extends StreamingContext {
+  mappedModel: string;
+  modelForReportingInStream: string;
+  sapPayload: SAPPayload;
+  anthropicVersion: string;
+  debugRequestId: string;
   res: Response;
   req: ExtendedRequest;
   usageMetrics: any;
-  cleanup: () => void;
 }
 
 /**
  * Handle streaming requests (both native and emulated)
  */
 async function handleStreamingRequest(options: StreamingRequestOptions): Promise<void> {
-  const { 
-    streamingMode, 
-    modelForReportingInStream, 
-    mappedModel, 
-    sapPayload, 
-    anthropicVersion, 
-    debugRequestId, 
-    req, 
-    res, 
+  const {
+    streamingMode,
+    modelForReportingInStream,
+    mappedModel,
+    sapPayload,
+    anthropicVersion,
+    debugRequestId,
+    req,
+    res,
     hookConfig,
-    usageMetrics 
+    usageMetrics
   } = options;
-
-  // Setup streaming response headers
-  res.set({
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
 
   const messageId = `msg_${Date.now().toString(36)}_${Math.random().toString(36).substring(2,7)}`;
   const abortController = new AbortController();
-  const intervals: StreamingIntervals = { ping: null };
-  
-  // Cleanup function for intervals
-  const cleanup = (): void => {
-    if (intervals.ping) clearInterval(intervals.ping);
-    intervals.ping = null;
+
+  // Setup logging for native streaming
+  const clientNativeStreamLog: string[] = [];
+  const shouldLogEvents = !!debugRequestId && streamingMode === 'native';
+
+  const writeEvent = (event: string, dataStr: string): void => {
+    sseWriter.writeEventStream(res, event, dataStr);
+    if (shouldLogEvents) {
+      clientNativeStreamLog.push(`event: ${event}\ndata: ${dataStr}\n`);
+    }
   };
-  
+
+  // Sent once the stream starts. Token counts are reported in message_delta with stop_reason.
+  const messageStartEvent = {
+    type: 'message_start',
+    message: {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: modelForReportingInStream,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation: { ...NO_CACHE_CREATION },
+      }
+    }
+  };
+
+  const stream = deferStreamStart({
+    onStart: () => {
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      writeEvent('message_start', JSON.stringify(messageStartEvent));
+    },
+    onKeepalive: () => writeEvent('ping', JSON.stringify({ type: 'ping' })),
+    isOpen: () => !res.writableEnded && !abortController.signal.aborted,
+  });
+
+  const cleanup = (): void => {
+    stream.stop();
+  };
+
+  const deliverFailure = (failure: StreamFailure): void => {
+    cleanup();
+    if (res.writableEnded) return;
+    const body = anthropicErrorBody(failure);
+    if (!stream.started && !res.headersSent) {
+      if (shouldLogEvents) {
+        clientNativeStreamLog.push(`HTTP ${failure.status}\n${JSON.stringify(body)}\n`);
+      }
+      sendAnthropicHttpError(res, failure);
+      return;
+    }
+    writeEvent('error', JSON.stringify(body));
+    res.end();
+  };
+
   // Handle client and connection aborts
   req.on('aborted', () => {
     logger.info('AnthropicController', 'Client aborted the request (req aborted event).');
     if (!abortController.signal.aborted) abortController.abort('Client aborted request');
     cleanup();
   });
-  
+
   req.on('close', () => {
     if (!res.writableEnded && !abortController.signal.aborted) {
       logger.info('AnthropicController', 'Client closed connection before response completed.');
@@ -658,97 +729,57 @@ async function handleStreamingRequest(options: StreamingRequestOptions): Promise
     }
   });
 
-  res.on('close', () => { 
+  res.on('close', () => {
     if (!res.writableEnded && !abortController.signal.aborted) {
       logger.info('AnthropicController', 'Response stream closed prematurely.');
       abortController.abort('Response stream closed');
       cleanup();
     }
   });
-  
-  const requestStartTimeStream = Date.now();
-  
-  // Setup logging for native streaming
-  let clientNativeStreamLog: string[] = []; 
-  const shouldLogEvents = !!debugRequestId && streamingMode === 'native';
 
-  // Initialize service state for tracking 
-  let serviceState: ServiceState = {
-    openTextBlockAnthropicIndex: null,
-    nextAnthropicBlockIndex: 0,
-    pendingTools: {},
-    sapIndexToToolId: {},
+  const context: StreamingContext = {
+    stream,
+    abortController,
+    requestStartTimeStream: Date.now(),
+    shouldLogEvents,
+    clientNativeStreamLog,
+    writeEvent,
+    deliverFailure,
+    cleanup,
   };
-
-  // Send initial message_start event
-  // Note: Token counts will be properly reported in message_delta with stop_reason
-  const messageStartEvent = {
-    type: 'message_start',
-    message: {
-      id: messageId, 
-      type: 'message', 
-      role: 'assistant', 
-      model: modelForReportingInStream, 
-      content: [],
-      stop_reason: null, 
-      stop_sequence: null,
-      usage: { 
-        input_tokens: 0, 
-        output_tokens: 0,
-        cache_creation_input_tokens: 0, 
-        cache_read_input_tokens: 0 
-      }
-    }
-  };
-  const messageStartEventStr = JSON.stringify(messageStartEvent);
-  sseWriter.writeEventStream(res, 'message_start', messageStartEventStr);
-  
-  if (shouldLogEvents) {
-    clientNativeStreamLog.push(`event: message_start\ndata: ${messageStartEventStr}\n`);
-  }
-    
-  let contentBlockStarted = false;
-  let lastContentBlockIndex = -1;
 
   if (streamingMode === 'emulated') {
     // Handle emulated streaming
     await handleEmulatedStreaming({
+      ...context,
       mappedModel,
       modelForReportingInStream,
       sapPayload,
       anthropicVersion,
       debugRequestId,
-      requestStartTimeStream,
-      intervals,
-      abortController,
-      messageId,
       res,
       req,
       usageMetrics,
-      cleanup
     });
   } else if (streamingMode === 'native') {
     // Handle native streaming
     await handleNativeStreaming({
+      ...context,
       mappedModel,
       modelForReportingInStream,
       sapPayload,
       anthropicVersion,
       debugRequestId,
-      requestStartTimeStream,
-      intervals,
-      abortController,
-      messageId,
       res,
       req,
-      serviceState,
-      contentBlockStarted,
-      lastContentBlockIndex,
-      shouldLogEvents,
-      clientNativeStreamLog,
+      serviceState: {
+        openTextBlockAnthropicIndex: null,
+        nextAnthropicBlockIndex: 0,
+        pendingTools: {},
+        sapIndexToToolId: {},
+      },
       hookConfig,
       usageMetrics,
-      cleanup
     });
   }
 }
@@ -787,7 +818,7 @@ function saveSSEStreamToFile(requestId: string, sseEvents: string[]): void {
     fs.writeFileSync(filePath, wireFormatContent, 'utf8');
     logger.info('AnthropicController', `SSE_STREAM_LOG: Saved SSE stream to ${filename}`);
 
-    payloadLogger.savePayload(requestId, '04_client_native_stream_response', 
+    payloadLogger.savePayload(requestId, '04_client_native_stream_response',
       { note: `SSE stream saved as ${filename}. View the .txt file for the complete stream.` });
   } catch (error: any) {
     logger.error('AnthropicController', `SSE_STREAM_LOG: Error saving SSE stream for request ${requestId}: ${error.message}`, error);
@@ -805,7 +836,7 @@ function chunkText(text: string, size: number): string[] {
   for (const word of words) {
     if (currentChunk.length + word.length > size && currentChunk.length > 0) {
       chunks.push(currentChunk);
-      currentChunk = word.trimStart(); 
+      currentChunk = word.trimStart();
     } else {
       currentChunk += word;
     }
@@ -825,28 +856,21 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
     anthropicVersion,
     debugRequestId,
     requestStartTimeStream,
-    intervals,
+    stream,
     abortController,
     res,
     req,
+    deliverFailure,
     cleanup
   } = options;
 
   try {
-    // Set up ping intervals for keeping the connection alive
-    intervals.ping = setInterval(() => {
-      if (!res.writableEnded && !abortController.signal.aborted) {
-        sseWriter.writeEventStream(res, 'ping', JSON.stringify({ type: 'ping' }));
-      } else {
-        cleanup();
-      }
-    }, 5000);
-
-    // Make a standard non-streaming request to SAP AI Core
+    // Make a standard non-streaming request to SAP AI Core. Nothing has been written yet:
+    // the stream starts with the response, or with pings once the start deadline passes.
     logger.info('AnthropicController', `Using emulated streaming for ${modelForReportingInStream} (SAP model: ${mappedModel}) - making non-streaming request to SAP AI Core.`);
     const responseData = await sapAIService.completeChat(sapPayload as any);
     const latencyMsEmulationData = Date.now() - requestStartTimeStream;
-    
+
     logger.info('AnthropicController', `Emulated streaming: received full SAP response in ${latencyMsEmulationData}ms, now chunking to client.`);
 
     // Check if the client has disconnected during the request
@@ -857,10 +881,14 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
       return;
     }
 
+    stream.start();
+
     // Extract text content and metadata from the SAP response
     let fullText = '';
     let sapStopReason = 'end_turn';
-    const usageInfo: UsageInfo = { input_tokens: 0, output_tokens: 0 };
+    const usageInfo: UsageInfo = {
+      input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_creation: { ...NO_CACHE_CREATION },
+    };
 
     // Parse the response object structure
     if (responseData.final_result) {
@@ -870,34 +898,41 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
         if (choice.finish_reason) sapStopReason = choice.finish_reason;
       }
       if (responseData.final_result.usage) {
-        usageInfo.input_tokens = responseData.final_result.usage.prompt_tokens || 0;
+        const cache = mapSapCacheUsageToAnthropic(responseData.final_result.usage);
+        // Anthropic's input_tokens excludes the cache; SAP's prompt_tokens does only for exclusive
+        // families (Claude, Nova).
+        usageInfo.input_tokens = fullRatePromptTokens(
+          mappedModel,
+          responseData.final_result.usage.prompt_tokens || 0,
+          cache.cache_creation_input_tokens,
+          cache.cache_read_input_tokens,
+        );
         usageInfo.output_tokens = responseData.final_result.usage.completion_tokens || 0;
-        usageInfo.cache_creation_input_tokens = responseData.final_result.usage.cache_creation_input_tokens || 0;
-        usageInfo.cache_read_input_tokens = responseData.final_result.usage.cache_read_input_tokens || 0;
+        Object.assign(usageInfo, cache, { cache_creation: mapSapCacheCreationToAnthropic(responseData.final_result.usage) });
       }
     }
-    
+
     // Split the full text into chunks for streaming simulation
-    const chunks = chunkText(fullText, 80); 
-    
+    const chunks = chunkText(fullText, 80);
+
     // Send content block start event if not already sent
     sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify({
       type: 'content_block_start',
       index: 0,
       content_block: { type: 'text', text: '' }
     }));
-    
+
     // Send each chunk with a small delay to simulate streaming
     for (let i = 0; i < chunks.length; i++) {
       if (abortController.signal.aborted) break;
-      
+
       // Send the chunk as a delta event
       sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-        type: 'content_block_delta', 
-        index: 0, 
+        type: 'content_block_delta',
+        index: 0,
         delta: { type: 'text_delta', text: chunks[i] }
       }));
-      
+
       // Add a small delay between chunks unless it's the last chunk
       if (i < chunks.length - 1) await new Promise(resolve => setTimeout(resolve, 20));
     }
@@ -911,11 +946,11 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
     }
 
     // Send content block stop event
-    sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({ 
-      type: 'content_block_stop', 
-      index: 0 
+    sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({
+      type: 'content_block_stop',
+      index: 0
     }));
-    
+
     // Map SAP stop reason to Anthropic format
     const anthropicStopReason = mapSapFinishReasonToAnthropic(sapStopReason);
 
@@ -923,12 +958,12 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
     sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
       type: 'message_delta',
       delta: { stop_reason: anthropicStopReason, stop_sequence: null },
-      usage: usageInfo 
+      usage: usageInfo
     }));
-    
+
     // Send message stop event
     sseWriter.writeEventStream(res, 'message_stop', JSON.stringify({ type: 'message_stop' }));
-    
+
     // For older API versions, send [DONE] marker
     if (anthropicVersion < '2023-06-01') {
       sseWriter.writeDone(res);
@@ -936,12 +971,12 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
       // For newer versions, just end the response
       if (!res.writableEnded) res.end();
     }
-    
+
     // Track usage for emulated streaming completion
     recordInvokedTools(req, anthropicAdapter.invokedTools(responseData.final_result));
     updateTokenCounts(
-      options.usageMetrics, 
-      usageInfo.input_tokens, 
+      options.usageMetrics,
+      usageInfo.input_tokens,
       usageInfo.output_tokens,
       usageInfo.cache_creation_input_tokens,
       usageInfo.cache_read_input_tokens
@@ -952,51 +987,30 @@ async function handleEmulatedStreaming(options: EmulatedStreamingOptions): Promi
 
     // Clean up resources
     cleanup();
-    
+
     // Log completion and metrics
     const totalEmulationLatency = Date.now() - requestStartTimeStream;
     logger.info('AnthropicController', `Emulated streaming completed for ${modelForReportingInStream} → ${mappedModel}. Total Latency: ${totalEmulationLatency}ms`);
-    
-    logStructuredEvent({ 
-      provider: 'anthropic', 
-      origModel: modelForReportingInStream, 
-      mappedModel, 
-      streaming: 'emulated', 
-      status: 200, 
-      latency_ms: totalEmulationLatency, 
-      reqId: debugRequestId 
+
+    logStructuredEvent({
+      provider: 'anthropic',
+      origModel: modelForReportingInStream,
+      mappedModel,
+      streaming: 'emulated',
+      status: 200,
+      latency_ms: totalEmulationLatency,
+      reqId: debugRequestId
     });
 
   } catch (error: any) {
     logger.error('AnthropicController', 'Error in emulated streaming:', error);
-    
+    const failure = failureFromError(error);
+
     // Track usage for emulated streaming error (no token data available)
-    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, error.status || 500);
-    
-    if (!res.writableEnded) {
-      const errorEvent = { 
-        type: 'error', 
-        error: { 
-          message: error.message || 'Emulated stream failed', 
-          type: 'internal_error' 
-        }
-      };
-      
-      // Send error event
-      sseWriter.writeEventStream(res, 'error', JSON.stringify(errorEvent));
-      
-      // For older API versions, send [DONE] marker
-      if (anthropicVersion < '2023-06-01') {
-        sseWriter.writeDone(res);
-      } else {
-        // For newer versions, just end the response
-        if (!res.writableEnded) res.end();
-      }
-    }
-    
-    // Clean up resources
+    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, failure.status);
+
+    deliverFailure(failure);
     cleanup();
-    
     if (!res.writableEnded) res.end();
   }
 }
@@ -1012,345 +1026,303 @@ async function handleNativeStreaming(options: NativeStreamingOptions): Promise<v
     anthropicVersion,
     debugRequestId,
     requestStartTimeStream,
-    intervals,
+    stream,
     abortController,
     res,
     req,
     serviceState,
     shouldLogEvents,
     clientNativeStreamLog,
+    writeEvent,
+    deliverFailure,
     hookConfig,
     cleanup
   } = options;
-  
+
   let contentBlockStarted = false;
   let lastContentBlockIndex = -1;
 
-  try {
-    // Set up ping intervals for keeping the connection alive
-    intervals.ping = setInterval(() => {
-      if (!res.writableEnded && !abortController.signal.aborted) {
-        const pingEvent = { type: 'ping' };
-        const pingEventStr = JSON.stringify(pingEvent);
-        sseWriter.writeEventStream(res, 'ping', pingEventStr);
-        
-        // Log ping events if enabled
-        if (shouldLogEvents) {
-          clientNativeStreamLog.push(`event: ping\ndata: ${pingEventStr}\n`);
-        }
-      } else {
-        cleanup();
-      }
-    }, 5000);
-    
-    // Accumulators for token counts and stop reason
-    let accumulatedOutputTokens = 0;
-    let finalStopReason: string | null = null;
-    let finalInputTokens = 0;
-    let finalCacheCreationTokens = 0;
-    let finalCacheReadTokens = 0;
+  // Accumulators for token counts and stop reason
+  let accumulatedOutputTokens = 0;
+  let finalStopReason: string | null = null;
+  let finalInputTokens = 0;
+  let finalCacheCreationTokens = 0;
+  let finalCacheReadTokens = 0;
+  let finalCacheCreation: AnthropicCacheCreation = { ...NO_CACHE_CREATION };
 
-    // Stream the chat completion from SAP AI Core
-    await sapAIService.streamChatCompletion(sapPayload as any, async (chunk: any) => {
-      // Skip if request aborted
-      if (abortController.signal.aborted) return;
-      
-      // Transform chunk from SAP format to Anthropic format
-      const transformed = await anthropicResponseService.transformSAPChunkToAnthropic(
-        chunk, 
-        serviceState
-      );
-      
-      if (transformed) {
-        // Update service state if provided
-        if (transformed.state) {
-          Object.assign(serviceState, transformed.state);
-        }
-        
-        // Process events (single event or array)
-        if (transformed.event) {
-          const events = Array.isArray(transformed.event) ? transformed.event : [transformed.event];
-          
-          for (const event of events) {
-            // Skip empty text delta events if not part of sequence
-            if (event.type === 'content_block_delta' && 
-                event.delta && 
-                event.delta.type === 'text_delta' &&
-                event.delta.text === "" &&
-                !transformed.finishReason && !transformed.usage) {
-              continue;
-            }
-            
-            // Debug logging for JSON deltas
-            if (event.type === 'content_block_delta' && 
-                event.delta?.type === 'input_json_delta') {
-              logger.debug('AnthropicController', `Emitting input_json_delta for Anthropic index ${(event as any).index} with content: '${event.delta.partial_json}'`);
-            }
-            
-            // Send the event to the client
-            const eventStr = JSON.stringify(event);
-            sseWriter.writeEventStream(res, event.type, eventStr);
-            recordInvokedTools(req, anthropicAdapter.invokedToolsFromChunk(event));
+  // The first upstream failure, once delivered. Nothing is written after it.
+  let failure = null as StreamFailure | null;
+  // Set once the closing events are being written: a transport error sapAIService reports
+  // after the stream resolved must not append an error to a finished message.
+  let finished = false;
 
-            // Log the event if debug is enabled
-            if (shouldLogEvents) {
-              clientNativeStreamLog.push(`event: ${event.type}\ndata: ${eventStr}\n`);
-            }
-          
-            // Track content block state to ensure proper closing
-            if (event.type === 'content_block_start') {
-              contentBlockStarted = true;
-              lastContentBlockIndex = Math.max(lastContentBlockIndex, (event as any).index);
-            } else if (event.type === 'content_block_stop') {
-              if ((event as any).index === lastContentBlockIndex) {
-                 contentBlockStarted = false;
-              }
-            }
-          }
-        }
-        
-        // Track token usage
-        if (transformed.usage) {
-          const usage = transformed.usage as any;
-          if (usage?.completion_tokens !== undefined) {
-            accumulatedOutputTokens = usage.completion_tokens;
-          }
-          if (usage?.prompt_tokens !== undefined) {
-            finalInputTokens = usage.prompt_tokens;
-          }
-          if (usage?.input_tokens !== undefined) {
-            finalInputTokens = usage.input_tokens;
-          }
-          if (usage?.output_tokens !== undefined) {
-            accumulatedOutputTokens = usage.output_tokens;
-          }
-          if (usage?.cache_creation_input_tokens !== undefined) {
-            finalCacheCreationTokens = usage.cache_creation_input_tokens;
-          }
-          if (usage?.cache_read_input_tokens !== undefined) {
-            finalCacheReadTokens = usage.cache_read_input_tokens;
-          }
-        }
-        
-        // Track stop reason
-        if (transformed.finishReason) {
-          finalStopReason = transformed.finishReason;
-        }
-      }
-    }, abortController.signal, req as any, hookConfig)
-    .then(() => {
-      // Skip if the stream was aborted
-      if (abortController.signal.aborted) {
-        logger.info('AnthropicController', 'Native Stream: Stream processing aborted before completion.');
-        cleanup();
-        if (!res.writableEnded) res.end();
-        return;
-      }
-      
-      const latencyMsNative = Date.now() - requestStartTimeStream;
-      
-      // Ensure any open content blocks are closed properly
-      if (contentBlockStarted) {
-        const contentBlockStopEvent = { 
-          type: 'content_block_stop', 
-          index: lastContentBlockIndex
-        };
-        const contentBlockStopEventStr = JSON.stringify(contentBlockStopEvent);
-        sseWriter.writeEventStream(res, 'content_block_stop', contentBlockStopEventStr);
-        
-        // Log the event if enabled
-        if (shouldLogEvents) {
-          clientNativeStreamLog.push(`event: content_block_stop\ndata: ${contentBlockStopEventStr}\n`);
-        }
-      }
-      
-      // Use the tracked stop reason, mapped to Anthropic's vocabulary (tool_calls → tool_use), default to end_turn
-      const anthropicStopReason = mapSapFinishReasonToAnthropic(finalStopReason);
+  const handleChunk = async (chunk: any): Promise<void> => {
+    // Skip if request aborted, or the turn already ended
+    if (abortController.signal.aborted || failure || finished) return;
 
-      // Send message delta with final metadata
-      const messageDeltaEvent = {
-        type: "message_delta",
-        delta: {
-          stop_reason: anthropicStopReason,
-          stop_sequence: anthropicStopReason === "stop_sequence" ? "stop_sequence_placeholder" : null,
-        },
-        usage: { 
-          output_tokens: accumulatedOutputTokens,
-        } as any
-      };
-      
-      // Add input tokens if available
-      if (finalInputTokens > 0) {
-        messageDeltaEvent.usage.input_tokens = finalInputTokens;
-      }
-      
-      // Add cache tokens if available
-      if (finalCacheCreationTokens > 0) {
-        messageDeltaEvent.usage.cache_creation_input_tokens = finalCacheCreationTokens;
-      }
-      if (finalCacheReadTokens > 0) {
-        messageDeltaEvent.usage.cache_read_input_tokens = finalCacheReadTokens;
-      }
-      
-      // Send message delta event
-      const messageDeltaEventStr = JSON.stringify(messageDeltaEvent);
-      sseWriter.writeEventStream(res, 'message_delta', messageDeltaEventStr);
-      
-      // Log the message delta event if enabled
-      if (shouldLogEvents) {
-        clientNativeStreamLog.push(`event: message_delta\ndata: ${messageDeltaEventStr}\n`);
-      }
-      
-      // Send message stop event
-      const messageStopEvent = { type: 'message_stop' };
-      const messageStopEventStr = JSON.stringify(messageStopEvent);
-      sseWriter.writeEventStream(res, 'message_stop', messageStopEventStr);
-      
-      // Log the message stop event if enabled
-      if (shouldLogEvents) {
-        clientNativeStreamLog.push(`event: message_stop\ndata: ${messageStopEventStr}\n`);
-      }
-      
-      // Determine if we should send a [DONE] marker based on API version
-      const shouldSendDoneMarker = anthropicVersion < '2023-06-01';
-      
-      // Log the [DONE] marker if enabled and needed
-      if (shouldLogEvents && shouldSendDoneMarker) {
-        clientNativeStreamLog.push(`data: [DONE]\n`);
-      }
-      
-      // Save the SSE stream to file if logging is enabled
-      if (shouldLogEvents) {
-        saveSSEStreamToFile(debugRequestId, clientNativeStreamLog);
-      }
-      
-      // Send [DONE] marker or just end the response based on API version
-      if (shouldSendDoneMarker) {
-        sseWriter.writeDone(res);
-      } else if (!res.writableEnded) {
-        res.end();
-      }
-      
-      // Clean up resources
-      cleanup();
-      
-      // Track usage for streaming completion
-      updateTokenCounts(
-        options.usageMetrics, 
-        finalInputTokens, 
-        accumulatedOutputTokens,
-        finalCacheCreationTokens,
-        finalCacheReadTokens
-      );
-      const imageRefsNative = (req as any).__imageRefs;
-      const emitFinalNative = () => emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
-      if (imageRefsNative && imageRefsNative.length) captureImageTokensAsync(req, options.usageMetrics, imageRefsNative, emitFinalNative); else emitFinalNative();
+    // SAP's in-stream error (`{error:{code,message,…}}`) or the gateway's own transport
+    // error (`{error:true,message}`). SAP answers HTTP 200 and sends its rejection as a
+    // chunk, so this is also how "prompt is too long" arrives.
+    if (chunkError(chunk)) {
+      failure = failureFromChunk(chunk);
+      logger.error('AnthropicController', `Native Stream: upstream error (status ${failure.status}): ${failure.message}`);
+      deliverFailure(failure);
+      return;
+    }
 
-      // Log completion and metrics
-      logger.info('AnthropicController', `Native streaming completed for ${modelForReportingInStream} → ${mappedModel}. Latency: ${latencyMsNative}ms. Stop: ${anthropicStopReason}, OutTokens: ${accumulatedOutputTokens}, InTokens: ${finalInputTokens}, CacheCreate: ${finalCacheCreationTokens}, CacheRead: ${finalCacheReadTokens}`);
-      
-      logStructuredEvent({ 
-        provider: 'anthropic', 
-        origModel: modelForReportingInStream, 
-        mappedModel, 
-        streaming: 'native', 
-        status: 200, 
-        latency_ms: latencyMsNative, 
-        reqId: debugRequestId 
-      });
-    })
-    .catch(async (err: any) => {
-      logger.error('AnthropicController', `Native Stream: Error during streaming: ${err.message}`, err);
-      
-      // Handle aborted streams separately from real errors
-      if (abortController.signal.aborted && (err.message?.includes('abort') || err.message === 'canceled')) {
-         logger.info('AnthropicController', 'Native Stream: Stream aborted, error caught post-abort.');
-      } else if (!res.writableEnded) {
-        try {
-          // Create and send error event
-          const errorPayload = { 
-            type: 'error', 
-            error: { 
-              message: err.message || 'Native stream failed', 
-              type: 'internal_error', 
-              code: err.status || 500 
-            }
-          };
-          const errorPayloadStr = JSON.stringify(errorPayload);
-          sseWriter.writeEventStream(res, 'error', errorPayloadStr);
-          
-          // Log the error event if enabled
-          if (shouldLogEvents) {
-            clientNativeStreamLog.push(`event: error\ndata: ${errorPayloadStr}\n`);
-            
-            // Determine if we should send a [DONE] marker
-            const shouldSendDoneMarker = anthropicVersion < '2023-06-01';
-            
-            // Log the [DONE] marker if needed
-            if (shouldSendDoneMarker) {
-              clientNativeStreamLog.push(`data: [DONE]\n`);
-            }
-            
-            // Save the SSE stream to file even in error case
-            saveSSEStreamToFile(debugRequestId, clientNativeStreamLog);
+    // Transform chunk from SAP format to Anthropic format
+    const transformed = await anthropicResponseService.transformSAPChunkToAnthropic(
+      chunk,
+      serviceState,
+      mappedModel
+    );
+    if (abortController.signal.aborted || failure) return;
+
+    if (transformed) {
+      // Update service state if provided
+      if (transformed.state) {
+        Object.assign(serviceState, transformed.state);
+      }
+
+      // Process events (single event or array)
+      if (transformed.event) {
+        const events = Array.isArray(transformed.event) ? transformed.event : [transformed.event];
+
+        for (const event of events) {
+          // Skip empty text delta events if not part of sequence
+          if (event.type === 'content_block_delta' &&
+              event.delta &&
+              event.delta.type === 'text_delta' &&
+              event.delta.text === "" &&
+              !transformed.finishReason && !transformed.usage) {
+            continue;
           }
-          
-          // Send [DONE] marker or just end the response based on API version
-          if (anthropicVersion < '2023-06-01') {
-            sseWriter.writeDone(res);
-          } else if (!res.writableEnded) {
-            res.end();
+
+          // Debug logging for JSON deltas
+          if (event.type === 'content_block_delta' &&
+              event.delta?.type === 'input_json_delta') {
+            logger.debug('AnthropicController', `Emitting input_json_delta for Anthropic index ${(event as any).index} with content: '${event.delta.partial_json}'`);
           }
-        } catch (e: any) { 
-          logger.error('AnthropicController', `Native Stream: Error sending error event: ${e.message}`); 
+
+          // The first content starts the stream (status line + message_start).
+          stream.start();
+
+          // Send the event to the client (and log it if debug is enabled)
+          writeEvent(event.type, JSON.stringify(event));
+          recordInvokedTools(req, anthropicAdapter.invokedToolsFromChunk(event));
+
+          // Track content block state to ensure proper closing
+          if (event.type === 'content_block_start') {
+            contentBlockStarted = true;
+            lastContentBlockIndex = Math.max(lastContentBlockIndex, (event as any).index);
+          } else if (event.type === 'content_block_stop') {
+            if ((event as any).index === lastContentBlockIndex) {
+               contentBlockStarted = false;
+            }
+          }
         }
       }
-      
-      // Track usage for streaming error
-      updateTokenCounts(
-        options.usageMetrics, 
-        finalInputTokens, 
-        accumulatedOutputTokens,
-        finalCacheCreationTokens,
-        finalCacheReadTokens
-      );
-      emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, err.status || 500);
-      
-      // Clean up resources
-      cleanup();
-      
-      // Ensure response is ended
-      if (!res.writableEnded) res.end();
-    });
-  } catch (error: any) {
-    logger.error('AnthropicController', `Error setting up native streaming: ${error.message}`, error);
-    
-    // Track usage for setup error (no tokens, just the error)
-    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, error.status || 500);
-    
-    if (!res.writableEnded) {
-      const errorEvent = { 
-        type: 'error', 
-        error: { 
-          message: error.message || 'Native streaming setup failed', 
-          type: 'internal_error' 
+
+      // Track token usage
+      if (transformed.usage) {
+        const usage = transformed.usage as any;
+        if (usage?.completion_tokens !== undefined) {
+          accumulatedOutputTokens = usage.completion_tokens;
         }
-      };
-      
-      // Send error event
-      sseWriter.writeEventStream(res, 'error', JSON.stringify(errorEvent));
-      
-      // Send [DONE] marker or just end based on API version
-      if (anthropicVersion < '2023-06-01') {
-        sseWriter.writeDone(res);
-      } else {
-        res.end();
+        if (usage?.prompt_tokens !== undefined) {
+          finalInputTokens = usage.prompt_tokens;
+        }
+        if (usage?.input_tokens !== undefined) {
+          finalInputTokens = usage.input_tokens;
+        }
+        if (usage?.output_tokens !== undefined) {
+          accumulatedOutputTokens = usage.output_tokens;
+        }
+        if (usage?.cache_creation_input_tokens !== undefined) {
+          finalCacheCreationTokens = usage.cache_creation_input_tokens;
+        }
+        if (usage?.cache_read_input_tokens !== undefined) {
+          finalCacheReadTokens = usage.cache_read_input_tokens;
+        }
+        if (usage?.cache_creation) {
+          finalCacheCreation = usage.cache_creation;
+        }
+      }
+
+      // Track stop reason
+      if (transformed.finishReason) {
+        finalStopReason = transformed.finishReason;
       }
     }
-    
+  };
+
+  // streamChatCompletion does not await its callback, so chunks are handled one after
+  // another here — events keep upstream order, and the completion below runs only after
+  // the last chunk was written.
+  let chunkWork: Promise<void> = Promise.resolve();
+  const onChunk = (chunk: any): Promise<void> => {
+    chunkWork = chunkWork.then(() => handleChunk(chunk)).catch((handlerError: any) => {
+      logger.error('AnthropicController', `Native Stream: Error handling a chunk: ${handlerError?.message}`, handlerError);
+    });
+    return chunkWork;
+  };
+
+  const trackUsage = (): void => {
+    updateTokenCounts(
+      options.usageMetrics,
+      finalInputTokens,
+      accumulatedOutputTokens,
+      finalCacheCreationTokens,
+      finalCacheReadTokens
+    );
+  };
+
+  try {
+    // Stream the chat completion from SAP AI Core
+    await sapAIService.streamChatCompletion(sapPayload as any, onChunk, abortController.signal, req as any, hookConfig);
+    await chunkWork;
+  } catch (err: any) {
+    await chunkWork;
+    logger.error('AnthropicController', `Native Stream: Error during streaming: ${err.message}`, err);
+
+    // Handle aborted streams separately from real errors
+    if (abortController.signal.aborted && (err.message?.includes('abort') || err.message === 'canceled')) {
+      logger.info('AnthropicController', 'Native Stream: Stream aborted, error caught post-abort.');
+    } else if (!failure) {
+      failure = failureFromError(err);
+      deliverFailure(failure);
+    }
+    if (shouldLogEvents) saveSSEStreamToFile(debugRequestId, clientNativeStreamLog);
+
+    // Track usage for streaming error
+    trackUsage();
+    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, failure?.status || err.status || 500);
+
     // Clean up resources
     cleanup();
+
+    // Ensure response is ended
+    if (!res.writableEnded) res.end();
+    return;
   }
+
+  // Skip if the stream was aborted
+  if (abortController.signal.aborted) {
+    logger.info('AnthropicController', 'Native Stream: Stream processing aborted before completion.');
+    cleanup();
+    if (!res.writableEnded) res.end();
+    return;
+  }
+
+  // The upstream reported an error and the stream promise still resolved (SAP sends
+  // its errors as chunks). The failure was delivered; the turn ends there.
+  if (failure) {
+    const delivered: StreamFailure = failure;
+    if (shouldLogEvents) saveSSEStreamToFile(debugRequestId, clientNativeStreamLog);
+    trackUsage();
+    emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, delivered.status);
+    cleanup();
+    if (!res.writableEnded) res.end();
+    logStructuredEvent({
+      provider: 'anthropic',
+      origModel: modelForReportingInStream,
+      mappedModel,
+      streaming: 'native',
+      status: delivered.status,
+      latency_ms: Date.now() - requestStartTimeStream,
+      reqId: debugRequestId
+    });
+    return;
+  }
+
+  finished = true;
+  const latencyMsNative = Date.now() - requestStartTimeStream;
+
+  // An upstream that ended without any content still gets a well-formed message.
+  stream.start();
+
+  // Ensure any open content blocks are closed properly
+  if (contentBlockStarted) {
+    const contentBlockStopEvent = {
+      type: 'content_block_stop',
+      index: lastContentBlockIndex
+    };
+    writeEvent('content_block_stop', JSON.stringify(contentBlockStopEvent));
+  }
+
+  // Use the tracked stop reason, mapped to Anthropic's vocabulary (tool_calls → tool_use), default to end_turn
+  const anthropicStopReason = mapSapFinishReasonToAnthropic(finalStopReason);
+
+  // Send message delta with final metadata
+  const messageDeltaEvent = {
+    type: "message_delta",
+    delta: {
+      stop_reason: anthropicStopReason,
+      stop_sequence: anthropicStopReason === "stop_sequence" ? "stop_sequence_placeholder" : null,
+    },
+    usage: {
+      output_tokens: accumulatedOutputTokens,
+    } as any
+  };
+
+  // Add input tokens if available
+  if (finalInputTokens > 0) {
+    messageDeltaEvent.usage.input_tokens = finalInputTokens;
+  }
+
+  // Cache counts and the TTL split go out on every message_delta, 0 when nothing was cached
+  // (Anthropic's own shape).
+  messageDeltaEvent.usage.cache_creation_input_tokens = finalCacheCreationTokens;
+  messageDeltaEvent.usage.cache_read_input_tokens = finalCacheReadTokens;
+  messageDeltaEvent.usage.cache_creation = finalCacheCreation;
+
+  // Send message delta event
+  writeEvent('message_delta', JSON.stringify(messageDeltaEvent));
+
+  // Send message stop event
+  writeEvent('message_stop', JSON.stringify({ type: 'message_stop' }));
+
+  // Determine if we should send a [DONE] marker based on API version
+  const shouldSendDoneMarker = anthropicVersion < '2023-06-01';
+
+  // Log the [DONE] marker if enabled and needed
+  if (shouldLogEvents && shouldSendDoneMarker) {
+    clientNativeStreamLog.push(`data: [DONE]\n`);
+  }
+
+  // Save the SSE stream to file if logging is enabled
+  if (shouldLogEvents) {
+    saveSSEStreamToFile(debugRequestId, clientNativeStreamLog);
+  }
+
+  // Send [DONE] marker or just end the response based on API version
+  if (shouldSendDoneMarker) {
+    sseWriter.writeDone(res);
+  } else if (!res.writableEnded) {
+    res.end();
+  }
+
+  // Clean up resources
+  cleanup();
+
+  // Track usage for streaming completion
+  trackUsage();
+  const imageRefsNative = (req as any).__imageRefs;
+  const emitFinalNative = () => emitUsageEvent(req, options.usageMetrics, modelForReportingInStream, 200);
+  if (imageRefsNative && imageRefsNative.length) captureImageTokensAsync(req, options.usageMetrics, imageRefsNative, emitFinalNative); else emitFinalNative();
+
+  // Log completion and metrics
+  logger.info('AnthropicController', `Native streaming completed for ${modelForReportingInStream} → ${mappedModel}. Latency: ${latencyMsNative}ms. Stop: ${anthropicStopReason}, OutTokens: ${accumulatedOutputTokens}, InTokens: ${finalInputTokens}, CacheCreate: ${finalCacheCreationTokens}, CacheRead: ${finalCacheReadTokens}`);
+
+  logStructuredEvent({
+    provider: 'anthropic',
+    origModel: modelForReportingInStream,
+    mappedModel,
+    streaming: 'native',
+    status: 200,
+    latency_ms: latencyMsNative,
+    reqId: debugRequestId
+  });
 }
 
 // Helper functions

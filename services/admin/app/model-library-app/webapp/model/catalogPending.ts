@@ -15,15 +15,43 @@ export interface PendingChanges {
   include: string[];
   /** e-mail → this catalog's ID (assign) or null (unassign: back to the default catalog) */
   assign: Record<string, string | null>;
+  /** `<teamId>|<slot>` → the team's staged catalog or profile for that slot (null = none). Optional
+   *  so a set built without teams still reads as one; emptyPending() always carries it. */
+  teams?: Record<string, TeamAssignment>;
 }
+/** Which association of a team an assignment writes: its catalog, its pool profile or its member profile. */
+export type TeamSlot = 'catalog' | 'pool' | 'member';
+export interface TeamAssignment { teamId: string; name: string; slot: TeamSlot; target: string | null; }
 export type PendingMark = 'add' | 'remove' | null;
 
+/**
+ * Resolves an i18n key with optional {0} arguments — the controller injects the resource bundle;
+ * jest passes none and gets the English defaults below, so the module keeps no UI5 imports.
+ */
+export type Translator = (key: string, args?: (string | number)[]) => string;
+/** English defaults: each value is byte-identical to the literal it replaced, so the pure tests hold. */
+const EN_TEXTS: Record<string, string> = {
+  pendingOne: '1 unsaved change', pendingMany: '{0} unsaved changes',
+  stepRemoveModels: 'remove models', stepAddModels: 'add models', stepIncludeModels: 'include models', stepExcludeModels: 'exclude models',
+  stepAssign: 'assign {0}', stepUnassign: 'unassign {0}',
+  savedAdded: '{0} added', savedRemoved: '{0} removed', savedExcluded: '{0} excluded', savedIncluded: '{0} included again',
+  savedAssigned: '{0} user(s) assigned', savedUnassigned: '{0} user(s) unassigned',
+  stepAssignTeam: 'assign team {0}', stepUnassignTeam: 'unassign team {0}',
+  savedTeamsAssigned: '{0} team(s) assigned', savedTeamsUnassigned: '{0} team(s) unassigned',
+  saved: 'Saved', savedParts: 'Saved: {0}', savedPruned: '{0}; {1} pruned from child catalogs',
+  excludedInModelLibrary: 'Excluded in the Model Library'
+};
+const defaultTranslate: Translator = (key, args) => {
+  const pattern = EN_TEXTS[key] ?? key;
+  return args ? pattern.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : pattern;
+};
+
 export function emptyPending(): PendingChanges {
-  return { addMembers: [], removeMembers: [], exclude: [], include: [], assign: {} };
+  return { addMembers: [], removeMembers: [], exclude: [], include: [], assign: {}, teams: {} };
 }
 
 export function pendingCount(p: PendingChanges): number {
-  return p.addMembers.length + p.removeMembers.length + p.exclude.length + p.include.length + Object.keys(p.assign).length;
+  return p.addMembers.length + p.removeMembers.length + p.exclude.length + p.include.length + Object.keys(p.assign).length + Object.keys(p.teams ?? {}).length;
 }
 
 const ids = (v: Iterable<string>) => new Set(v);
@@ -86,6 +114,41 @@ export function stageAssign(p: PendingChanges, email: string, target: string | n
   return { ...p, assign };
 }
 
+/** Assign (`target` = a catalog or profile ID) or unassign (null) one slot of a team; the server's own value makes it a no-op. */
+export function stageTeamAssign(p: PendingChanges, team: { teamId: string; name: string }, slot: TeamSlot, target: string | null, current: string | null | undefined): PendingChanges {
+  const teams = { ...(p.teams ?? {}) };
+  const key = `${team.teamId}|${slot}`;
+  if ((current ?? null) === target) delete teams[key]; else teams[key] = { teamId: team.teamId, name: team.name, slot, target };
+  return { ...p, teams };
+}
+
+/** A team as the assignments tab lists it: its three slots as the server holds them. */
+export interface TeamRow {
+  ID: string; name: string;
+  catalogId: string | null; catalogName: string | null;
+  poolProfileId: string | null; poolProfileName: string | null;
+  memberProfileId: string | null; memberProfileName: string | null;
+}
+export interface MergedTeamRow extends TeamRow { pendingCatalog: boolean; pendingPool: boolean; pendingMember: boolean; pending: boolean; }
+const TEAM_SLOT_FIELDS: Record<TeamSlot, ['catalogId' | 'poolProfileId' | 'memberProfileId', 'catalogName' | 'poolProfileName' | 'memberProfileName', 'pendingCatalog' | 'pendingPool' | 'pendingMember']> = {
+  catalog: ['catalogId', 'catalogName', 'pendingCatalog'], pool: ['poolProfileId', 'poolProfileName', 'pendingPool'], member: ['memberProfileId', 'memberProfileName', 'pendingMember']
+};
+/** The teams table: a staged slot overrides what the server holds (named after `thisItem` when it points there), and says so. */
+export function mergeTeams(snapshot: TeamRow[], p: PendingChanges, thisItem: { ID: string; name: string }): MergedTeamRow[] {
+  return snapshot.map(r => {
+    const row: MergedTeamRow = { ...r, pendingCatalog: false, pendingPool: false, pendingMember: false, pending: false };
+    for (const slot of Object.keys(TEAM_SLOT_FIELDS) as TeamSlot[]) {
+      const staged = p.teams?.[`${r.ID}|${slot}`];
+      if (!staged) continue;
+      const [idField, nameField, flag] = TEAM_SLOT_FIELDS[slot];
+      row[idField] = staged.target;
+      row[nameField] = staged.target === null ? null : staged.target === thisItem.ID ? thisItem.name : r[nameField];
+      row[flag] = true; row.pending = true;
+    }
+    return row;
+  });
+}
+
 export interface MemberRow { modelId: string; displayName?: string | null; absent?: boolean; [k: string]: any; }
 /** The members table: the server's rows marked 'remove' where queued, the queued additions appended and marked 'add'. */
 export function mergeMembers<T extends MemberRow>(snapshot: T[], p: PendingChanges): Array<T & { pending: PendingMark }> {
@@ -93,6 +156,21 @@ export function mergeMembers<T extends MemberRow>(snapshot: T[], p: PendingChang
   const rows: Array<T & { pending: PendingMark }> = snapshot.map(r => ({ ...r, pending: removing.has(r.modelId) ? 'remove' as const : null }));
   for (const m of p.addMembers) rows.push({ modelId: m.modelId, displayName: m.displayName ?? m.modelId, absent: false, pending: 'add' } as T & { pending: PendingMark });
   return rows;
+}
+
+/**
+ * The reason stored with an exclusion made on this screen. It is data, kept in English in every
+ * language; the exclusions table shows it through exclusionReason().
+ */
+export const EXCLUDED_REASON = 'Excluded in the Model Library';
+
+/**
+ * The exclusions table's reason column: the stored sentinel reads in the cockpit language (the view
+ * binds the bundle text as the second part, the bundle is async), any other reason shows as stored.
+ */
+export function exclusionReason(reason: string | null | undefined, sentinelText?: string | null): string {
+  if (reason === EXCLUDED_REASON) return sentinelText || defaultTranslate('excludedInModelLibrary');
+  return reason ?? '';
 }
 
 export interface ExclusionRow { modelId: string; reason?: string | null; [k: string]: any; }
@@ -116,9 +194,9 @@ export function mergeUsers<T extends UserRow>(snapshot: T[], p: PendingChanges, 
   });
 }
 
-export function pendingSummary(p: PendingChanges): string {
+export function pendingSummary(p: PendingChanges, t: Translator = defaultTranslate): string {
   const n = pendingCount(p);
-  return n === 0 ? '' : n === 1 ? '1 unsaved change' : `${n} unsaved changes`;
+  return n === 0 ? '' : n === 1 ? t('pendingOne') : t('pendingMany', [n]);
 }
 
 export interface PendingInvokers {
@@ -128,8 +206,13 @@ export interface PendingInvokers {
   includeModels(modelIds: string[]): Promise<{ included?: number } | undefined>;
   assignCatalog(email: string, catalogId: string): Promise<{ prunedFromChildren?: number } | undefined>;
   unassignCatalog(email: string): Promise<unknown>;
+  /** One slot of a team: assignTeamCatalog or assignTeamQuotaProfile (null target = none). */
+  assignTeam?(teamId: string, slot: TeamSlot, target: string | null): Promise<unknown>;
 }
-export interface ApplyResults { added: number; removed: number; excluded: number; included: number; assigned: number; unassigned: number; prunedFromChildren: number; }
+export interface ApplyResults {
+  added: number; removed: number; excluded: number; included: number; assigned: number; unassigned: number;
+  teamsAssigned?: number; teamsUnassigned?: number; prunedFromChildren: number;
+}
 export interface ApplyOutcome { remaining: PendingChanges; failed: { step: string; message: string }[]; results: ApplyResults; }
 
 const message = (e: any) => (e && typeof e.message === 'string' ? e.message : String(e));
@@ -140,27 +223,27 @@ const message = (e: any) => (e && typeof e.message === 'string' ? e.message : St
  * side, so those calls must not overlap). A set whose call fails stays pending, with the message;
  * the other steps still run, so what could be saved is.
  */
-export async function applyPending(p: PendingChanges, invoke: PendingInvokers): Promise<ApplyOutcome> {
+export async function applyPending(p: PendingChanges, invoke: PendingInvokers, t: Translator = defaultTranslate): Promise<ApplyOutcome> {
   const remaining = emptyPending();
   const failed: ApplyOutcome['failed'] = [];
-  const results: ApplyResults = { added: 0, removed: 0, excluded: 0, included: 0, assigned: 0, unassigned: 0, prunedFromChildren: 0 };
+  const results: ApplyResults = { added: 0, removed: 0, excluded: 0, included: 0, assigned: 0, unassigned: 0, teamsAssigned: 0, teamsUnassigned: 0, prunedFromChildren: 0 };
   const pruned = (r: any) => { results.prunedFromChildren += Number(r?.prunedFromChildren) || 0; };
 
   if (p.removeMembers.length) {
     try { const r = await invoke.removeModels(p.removeMembers); results.removed += Number(r?.removed) || 0; pruned(r); }
-    catch (e) { remaining.removeMembers = [...p.removeMembers]; failed.push({ step: 'remove models', message: message(e) }); }
+    catch (e) { remaining.removeMembers = [...p.removeMembers]; failed.push({ step: t('stepRemoveModels'), message: message(e) }); }
   }
   if (p.addMembers.length) {
     try { const r = await invoke.addModels(p.addMembers.map(m => m.modelId)); results.added += Number(r?.added) || 0; pruned(r); }
-    catch (e) { remaining.addMembers = [...p.addMembers]; failed.push({ step: 'add models', message: message(e) }); }
+    catch (e) { remaining.addMembers = [...p.addMembers]; failed.push({ step: t('stepAddModels'), message: message(e) }); }
   }
   if (p.include.length) {
     try { const r = await invoke.includeModels(p.include); results.included += Number(r?.included) || 0; }
-    catch (e) { remaining.include = [...p.include]; failed.push({ step: 'include models', message: message(e) }); }
+    catch (e) { remaining.include = [...p.include]; failed.push({ step: t('stepIncludeModels'), message: message(e) }); }
   }
   if (p.exclude.length) {
     try { const r = await invoke.excludeModels(p.exclude); results.excluded += Number(r?.excluded) || 0; pruned(r); }
-    catch (e) { remaining.exclude = [...p.exclude]; failed.push({ step: 'exclude models', message: message(e) }); }
+    catch (e) { remaining.exclude = [...p.exclude]; failed.push({ step: t('stepExcludeModels'), message: message(e) }); }
   }
   for (const [email, target] of Object.entries(p.assign)) {
     try {
@@ -168,21 +251,34 @@ export async function applyPending(p: PendingChanges, invoke: PendingInvokers): 
       else { const r = await invoke.assignCatalog(email, target); results.assigned += 1; pruned(r); }
     } catch (e) {
       remaining.assign[email] = target;
-      failed.push({ step: target === null ? `unassign ${email}` : `assign ${email}`, message: message(e) });
+      failed.push({ step: target === null ? t('stepUnassign', [email]) : t('stepAssign', [email]), message: message(e) });
+    }
+  }
+  // the teams last, one at a time like the users: each write invalidates and republishes the members
+  for (const [key, a] of Object.entries(p.teams ?? {})) {
+    try {
+      if (!invoke.assignTeam) throw new Error('team assignments cannot be saved here');
+      await invoke.assignTeam(a.teamId, a.slot, a.target);
+      if (a.target === null) results.teamsUnassigned! += 1; else results.teamsAssigned! += 1;
+    } catch (e) {
+      remaining.teams![key] = a;
+      failed.push({ step: t(a.target === null ? 'stepUnassignTeam' : 'stepAssignTeam', [a.name]), message: message(e) });
     }
   }
   return { remaining, failed, results };
 }
 
 /** The toast after Save, from what the server reported. */
-export function saveSummary(r: ApplyResults): string {
+export function saveSummary(r: ApplyResults, t: Translator = defaultTranslate): string {
   const parts: string[] = [];
-  if (r.added) parts.push(`${r.added} added`);
-  if (r.removed) parts.push(`${r.removed} removed`);
-  if (r.excluded) parts.push(`${r.excluded} excluded`);
-  if (r.included) parts.push(`${r.included} included again`);
-  if (r.assigned) parts.push(`${r.assigned} user(s) assigned`);
-  if (r.unassigned) parts.push(`${r.unassigned} user(s) unassigned`);
-  const base = parts.length ? `Saved: ${parts.join(', ')}` : 'Saved';
-  return r.prunedFromChildren ? `${base}; ${r.prunedFromChildren} pruned from child catalogs` : base;
+  if (r.added) parts.push(t('savedAdded', [r.added]));
+  if (r.removed) parts.push(t('savedRemoved', [r.removed]));
+  if (r.excluded) parts.push(t('savedExcluded', [r.excluded]));
+  if (r.included) parts.push(t('savedIncluded', [r.included]));
+  if (r.assigned) parts.push(t('savedAssigned', [r.assigned]));
+  if (r.unassigned) parts.push(t('savedUnassigned', [r.unassigned]));
+  if (r.teamsAssigned) parts.push(t('savedTeamsAssigned', [r.teamsAssigned]));
+  if (r.teamsUnassigned) parts.push(t('savedTeamsUnassigned', [r.teamsUnassigned]));
+  const base = parts.length ? t('savedParts', [parts.join(', ')]) : t('saved');
+  return r.prunedFromChildren ? t('savedPruned', [base, r.prunedFromChildren]) : base;
 }

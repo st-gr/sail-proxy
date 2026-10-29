@@ -1,0 +1,17 @@
+<mvc:View xmlns="sap.m" xmlns:mvc="sap.ui.core.mvc" xmlns:core="sap.ui.core">
+    <!-- <Button text="Commented out"/> -->
+    <Page title="Hard-coded page title">
+        <Button text="{i18n>save}" icon="sap-icon://save" tooltip="Save the draft"/>
+        <Text text="Last Updated: {viewModel>/lastUpdated}"/>
+        <Text text="{viewModel>/name}"/>
+        <Text text="{path: 'viewModel>/count', formatter: '.formatNumber'}"/>
+        <Text text="{= ${viewModel>/currency} || 'USD'} per month"/>
+        <GenericTile header="Requests" subheader="{= ${a} + ' (estimate)'}"/>
+        <ObjectStatus text="{= ${path:'metaFlag',targetType:'any'} ? ${i18n>valid} : ${i18n>invalid}}"/>
+        <Input placeholder="Search &amp; filter" value="Not a text attribute"/>
+        <Button icon="sap-icon://refresh" text="sap-icon://refresh"/>
+        <core:Item key="10" text="10"/>
+        <ObjectNumber number="{viewModel>/n}" unit="tokens"/>
+        <Image src="logo.png" alt="Company logo"/>
+    </Page>
+</mvc:View>

@@ -1,0 +1,279 @@
+{
+    "_version": "1.65.0",
+    "sap.app": {
+        "id": "admin.teams",
+        "type": "application",
+        "i18n": {
+            "bundleUrl": "i18n/i18n.properties",
+            "supportedLocales": [
+                "",
+                "en",
+                "de",
+                "es",
+                "fr",
+                "it",
+                "nl",
+                "pt"
+            ],
+            "fallbackLocale": "en"
+        },
+        "applicationVersion": {
+            "version": "1.0.0"
+        },
+        "title": "{{appTitle}}",
+        "description": "Teams: shared pools, entitlement and membership",
+        "resources": "resources.json",
+        "sourceTemplate": {
+            "id": "@sap/generator-fiori:lrop",
+            "version": "1.18.4"
+        },
+        "dataSources": {
+            "mainService": {
+                "uri": "/odata/v4/admin/",
+                "type": "OData",
+                "settings": {
+                    "annotations": [
+                        "annotation0"
+                    ],
+                    "odataVersion": "4.0",
+                    "withCredentials": true
+                }
+            },
+            "annotation0": {
+                "type": "ODataAnnotation",
+                "uri": "annotations/annotation.xml",
+                "settings": {
+                    "localUri": "annotations/annotation.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "icons": {
+            "icon": "",
+            "favIcon": "",
+            "phone": "",
+            "phone@2": "",
+            "tablet": "",
+            "tablet@2": ""
+        },
+        "deviceTypes": {
+            "desktop": true,
+            "tablet": true,
+            "phone": true
+        }
+    },
+    "sap.ui5": {
+        "flexEnabled": true,
+        "dependencies": {
+            "minUI5Version": "1.136.0",
+            "libs": {
+                "sap.m": {},
+                "sap.ui.core": {},
+                "sap.fe.templates": {},
+                "sap.fe.core": {},
+                "sap.fe.macros": {},
+                "sap.f": {},
+                "sap.suite.ui.microchart": {}
+            }
+        },
+        "contentDensities": {
+            "compact": true,
+            "cozy": true
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": {
+                    "bundleName": "admin.teams.i18n.i18n",
+                    "supportedLocales": [
+                        "",
+                        "en",
+                        "de",
+                        "es",
+                        "fr",
+                        "it",
+                        "nl",
+                        "pt"
+                    ],
+                    "fallbackLocale": "en",
+                    "async": true
+                }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "operationMode": "Server",
+                    "autoExpandSelect": true,
+                    "earlyRequests": true
+                }
+            }
+        },
+        "resources": {
+            "css": [
+                {
+                    "uri": "css/style.css"
+                }
+            ]
+        },
+        "routing": {
+            "config": {},
+            "routes": [
+                {
+                    "pattern": ":?query:",
+                    "name": "TeamsList",
+                    "target": "TeamsList"
+                },
+                {
+                    "pattern": "Teams({key}):?query:",
+                    "name": "TeamsObjectPage",
+                    "target": "TeamsObjectPage"
+                }
+            ],
+            "targets": {
+                "TeamsList": {
+                    "type": "Component",
+                    "id": "TeamsList",
+                    "name": "sap.fe.templates.ListReport",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/Teams",
+                            "entitySet": "Teams",
+                            "variantManagement": "None",
+                            "initialLoad": "Enabled",
+                            "controlConfiguration": {
+                                "@com.sap.vocabularies.UI.v1.LineItem": {
+                                    "tableSettings": {
+                                        "enableAddCardToInsights": false,
+                                        "p13nMode": [],
+                                        "variantManagement": "None",
+                                        "selectionMode": "Multi"
+                                    }
+                                }
+                            },
+                            "navigation": {
+                                "Teams": {
+                                    "detail": {
+                                        "route": "TeamsObjectPage"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "TeamsObjectPage": {
+                    "type": "Component",
+                    "id": "TeamsObjectPage",
+                    "name": "sap.fe.templates.ObjectPage",
+                    "options": {
+                        "settings": {
+                            "contextPath": "/Teams",
+                            "enhanceI18n": "i18n/i18n.properties",
+                            "editableHeaderContent": false,
+                            "content": {
+                                "header": {
+                                    "actions": {
+                                        "FieldHelp": {
+                                            "press": "admin.teams.ext.FieldHelp.onFieldHelp",
+                                            "text": "{{fieldHelpTitle}}",
+                                            "visible": true,
+                                            "enabled": true,
+                                            "requiresSelection": false,
+                                            "icon": "sap-icon://sys-help-2"
+                                        }
+                                    }
+                                },
+                                "body": {
+                                    "sections": {
+                                        "UsageCharts": {
+                                            "template": "admin.teams.ext.fragment.UsageCharts",
+                                            "title": "{{usageCharts}}",
+                                            "position": {
+                                                "placement": "After",
+                                                "anchor": "Usage"
+                                            }
+                                        },
+                                        "PoolExplanation": {
+                                            "template": "admin.teams.ext.fragment.PoolExplanation",
+                                            "title": "{{poolExplanationTitle}}",
+                                            "position": {
+                                                "placement": "After",
+                                                "anchor": "Pool"
+                                            }
+                                        },
+                                        "MembersHint": {
+                                            "template": "admin.teams.ext.fragment.MembersHint",
+                                            "title": "{{membersHintTitle}}",
+                                            "visible": "{= !${path: 'IsActiveEntity', targetType: 'any'} && !${path: 'HasActiveEntity', targetType: 'any'} }",
+                                            "position": {
+                                                "placement": "Before",
+                                                "anchor": "Members"
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "controlConfiguration": {
+                                "members/@com.sap.vocabularies.UI.v1.LineItem#ForTeam": {
+                                    "tableSettings": {
+                                        "selectionMode": "Multi",
+                                        "p13nMode": [],
+                                        "personalization": false,
+                                        "enableAddCardToInsights": false
+                                    },
+                                    "actions": {
+                                        "AddMember": {
+                                            "press": "admin.teams.ext.controller.MemberActions.onAddMember",
+                                            "text": "{{addMember}}",
+                                            "visible": true,
+                                            "enabled": "{= ${canManageMembers} && (${path: 'IsActiveEntity', targetType: 'any'} || ${path: 'HasActiveEntity', targetType: 'any'}) }",
+                                            "requiresSelection": false
+                                        },
+                                        "RemoveMembers": {
+                                            "press": "admin.teams.ext.controller.MemberActions.onRemoveMembers",
+                                            "text": "{{removeMembers}}",
+                                            "visible": true,
+                                            "enabled": "{= ${canManageMembers} && (${path: 'IsActiveEntity', targetType: 'any'} || ${path: 'HasActiveEntity', targetType: 'any'}) }",
+                                            "requiresSelection": true
+                                        },
+                                        "MakeAdmin": {
+                                            "press": "admin.teams.ext.controller.MemberActions.onMakeAdmin",
+                                            "text": "{{makeAdmin}}",
+                                            "visible": true,
+                                            "enabled": "{= ${canManageMembers} && (${path: 'IsActiveEntity', targetType: 'any'} || ${path: 'HasActiveEntity', targetType: 'any'}) }",
+                                            "requiresSelection": true
+                                        },
+                                        "MakeMember": {
+                                            "press": "admin.teams.ext.controller.MemberActions.onMakeMember",
+                                            "text": "{{makeMember}}",
+                                            "visible": true,
+                                            "enabled": "{= ${canManageMembers} && (${path: 'IsActiveEntity', targetType: 'any'} || ${path: 'HasActiveEntity', targetType: 'any'}) }",
+                                            "requiresSelection": true
+                                        },
+                                        "SetPrimary": {
+                                            "press": "admin.teams.ext.controller.MemberActions.onSetPrimary",
+                                            "text": "{{setPrimary}}",
+                                            "visible": true,
+                                            "enabled": "{= ${canManageMembers} && (${path: 'IsActiveEntity', targetType: 'any'} || ${path: 'HasActiveEntity', targetType: 'any'}) }",
+                                            "requiresSelection": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "sap.fiori": {
+        "registrationIds": [],
+        "archeType": "transactional"
+    },
+    "sap.cloud": {
+        "public": true,
+        "service": "admin"
+    }
+}

@@ -219,10 +219,10 @@ async function runRequest(overrides: any = {}) {
   await done;
   await waitFor(() => res.writableEnded, 'the response to be ended');
 
-  // Real requests emit 'close'; without it the handler's 15s ping interval is
-  // never cleared and the suite leaks one timer per test (currently masked by
-  // jest's forceExit).
-  req.emit('close');
+  // A real response emits 'close' once it has ended; without it the handler's 15s
+  // ping interval is never cleared and the suite leaks one timer per test
+  // (currently masked by jest's forceExit).
+  res.emit('close');
   return res;
 }
 
@@ -271,7 +271,7 @@ describe('handleNativeStreamingRequest — web_search stream wiring', () => {
   });
 
   it('leaves no keepalive timer behind', async () => {
-    // The handler starts a 15s ping interval and clears it on req 'close'. A test
+    // The handler starts a 15s ping interval and clears it on res 'close'. A test
     // that never emits 'close' leaks one timer per test — six here — which
     // `forceExit: true` hides at the cost of the suite no longer being able to
     // tell a leak from a clean exit.

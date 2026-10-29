@@ -1,9 +1,32 @@
+import { createHash } from 'crypto';
+
 // Make Valkey optional since it may not be installed
 let Redis: any;
 try {
   Redis = require('iovalkey');
 } catch (error) {
   console.warn('iovalkey not available - cache invalidation will be limited');
+}
+
+/**
+ * The credential part of a unified cache key ('unified:<apikey|token>:<hash>'). The gateway's
+ * UnifiedValidationCache keys its entries with this, and buildSpecificCacheKey below addresses them
+ * with it, so an invalidation event - which carries the raw credential - hits exactly the key that
+ * was written. Full SHA-256: two credentials share a key only through a SHA-256 collision, so a
+ * cache hit can never be served to a different credential.
+ */
+export function hashUnifiedCacheCredential(credential: string): string {
+  return createHash('sha256').update(credential).digest('hex');
+}
+
+/**
+ * Short, non-reversible label for a credential in a log line - never the raw value. Mirrors
+ * services/gateway/src/utils/secretLabel.ts and libs/logger's own hashForLabel; libs/ must not
+ * import from a service, so this reuses the SHA-256 already computed above rather than adding a
+ * third copy of the same hashing helper.
+ */
+function credentialLabel(credential: string): string {
+  return hashUnifiedCacheCredential(credential).slice(0, 8);
 }
 
 export interface CacheInvalidationEvent {
@@ -140,7 +163,7 @@ export class CacheInvalidationService {
     await this.publishInvalidationEvent(event);
     
     if (this.config.enableLogging) {
-      this.logger.info('CacheInvalidationService', `Invalidated API key cache: ${keyId} (reason: ${reason}) - using specific cache key invalidation`);
+      this.logger.info('CacheInvalidationService', `Invalidated API key cache: ${credentialLabel(keyId)} (reason: ${reason}) - using specific cache key invalidation`);
     }
   }
 
@@ -160,7 +183,7 @@ export class CacheInvalidationService {
     await this.publishInvalidationEvent(event);
     
     if (this.config.enableLogging) {
-      this.logger.info('CacheInvalidationService', `Invalidated AWS credential cache: ${credentialId} (reason: ${reason}) - using specific cache key invalidation`);
+      this.logger.info('CacheInvalidationService', `Invalidated AWS credential cache: ${credentialLabel(credentialId)} (reason: ${reason}) - using specific cache key invalidation`);
     }
   }
 
@@ -286,7 +309,7 @@ export class CacheInvalidationService {
       const event: CacheInvalidationEvent = JSON.parse(message);
       
       if (this.config.enableLogging) {
-        this.logger.info('CacheInvalidationService', `Received invalidation event: ${event.type} for ${event.pattern ?? event.credentialId}`);
+        this.logger.info('CacheInvalidationService', `Received invalidation event: ${event.type} for ${event.pattern ?? (event.credentialId ? credentialLabel(event.credentialId) : undefined)}`);
       }
 
       // Process the invalidation event
@@ -294,7 +317,10 @@ export class CacheInvalidationService {
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.warn('CacheInvalidationService', `Failed to process invalidation event: ${errorMsg} - Message: ${message}`);
+      // `message` is the raw pub/sub payload, which for a credential event carries the raw
+      // credentialId - never log it verbatim; a label still lets repeated bad messages be
+      // correlated without exposing anything.
+      this.logger.warn('CacheInvalidationService', `Failed to process invalidation event: ${errorMsg} - message label: ${credentialLabel(message)}`);
     }
   }
 
@@ -326,7 +352,7 @@ export class CacheInvalidationService {
         const cleared = await service.clearByCredentialId(event.credentialId, event.authType);
         if (cleared) {
           totalCleared++;
-          this.logger.debug('CacheInvalidationService', `Cleared cache in ${service.name} for ${event.credentialId}`);
+          this.logger.debug('CacheInvalidationService', `Cleared cache in ${service.name} for ${credentialLabel(event.credentialId)}`);
         }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -354,8 +380,8 @@ export class CacheInvalidationService {
     const processingTime = Date.now() - startTime;
     
     if (this.config.enableLogging) {
-      this.logger.info('CacheInvalidationService', 
-        `Processed invalidation for ${event.credentialId}: cleared ${totalCleared} entries in ${processingTime}ms`);
+      this.logger.info('CacheInvalidationService',
+        `Processed invalidation for ${credentialLabel(event.credentialId)}: cleared ${totalCleared} entries in ${processingTime}ms`);
     }
   }
 
@@ -401,23 +427,8 @@ export class CacheInvalidationService {
     // Build the specific cache key that matches the unified cache system
     // This ensures we only clear the cache entry for the specific rotated credential
     const prefix = authType === 'api_key' ? 'apikey' : 'token';
-    const keyHash = this.hashKey(credentialId);
+    const keyHash = hashUnifiedCacheCredential(credentialId);
     return `unified-cache:unified:${prefix}:${keyHash}`;
-  }
-
-  /**
-   * Hash function matching the one used in UnifiedValidationCache
-   * This ensures we generate the same cache keys for invalidation
-   */
-  private hashKey(key: string): string {
-    // Simple hash function for cache keys (matches UnifiedValidationCache.hashKey)
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) {
-      const char = key.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(36);
   }
 
   /**
@@ -434,7 +445,7 @@ export class CacheInvalidationService {
       await this.commandClient.publish(this.config.channelName, eventJson);
       
       if (this.config.enableLogging) {
-        this.logger.debug('CacheInvalidationService', `Published invalidation event: ${event.type} for ${event.pattern ?? event.credentialId}`);
+        this.logger.debug('CacheInvalidationService', `Published invalidation event: ${event.type} for ${event.pattern ?? (event.credentialId ? credentialLabel(event.credentialId) : undefined)}`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';

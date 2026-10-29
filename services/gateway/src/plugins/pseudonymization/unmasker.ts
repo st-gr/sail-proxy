@@ -7,6 +7,7 @@
 import { ReplacementMap } from './replacementMap';
 import { containUnknownPlaceholders } from './unknownPlaceholders';
 import type { ContainmentOptions } from './unknownPlaceholders';
+import { mapJsonStringLiterals } from '../../utils/jsonStringLeaves';
 
 /**
  * The alternation regex over a map's placeholders, cached per map.
@@ -28,11 +29,12 @@ import type { ContainmentOptions } from './unknownPlaceholders';
  *     (replacementMap.ts:74-76; replacer.ts:139), so a value already mapped never
  *     re-enters;
  *   - therefore any change to the key set changes `reverse.size`, and the cache misses.
- * The one write that can leave the size unchanged is `replacer.ts:142` in
- * `fabricated_data` mode, where `generateFakeValue` gives up probing after 10 attempts
- * (fabricatedData.ts:67-70) and may overwrite a colliding key. That replaces a VALUE,
- * not a key — and values are resolved live through `reverse.get` at replace time, never
- * baked into the cached regex — so the cached regex stays correct there too.
+ * `fabricated_data` mode used to be an exception: `generateFakeValue` gives up probing
+ * after 10 attempts (fabricatedData.ts:67-70) and can still return a colliding fake, which
+ * would have overwritten an existing reverse entry (a same-size write the cache key could
+ * not see). `replacer.ts` now detects that collision before writing and falls back to the
+ * content-hash placeholder instead, which is unique by construction — so every write to
+ * `reverse` is unconditionally a new key, and the invariant above holds without exception.
  *
  * WeakMap so a finished request's regex dies with its map.
  */
@@ -91,6 +93,40 @@ export function unmaskJsonValue(value: any, map: ReplacementMap, containment?: C
   }
   if (value && typeof value === 'object') {
     for (const k of Object.keys(value)) value[k] = unmaskJsonValue(value[k], map, containment);
+    return value;
+  }
+  return value;
+}
+
+/**
+ * Unmask a tool call's JSON-text arguments literal by literal (object keys included): each
+ * string literal holding a placeholder is re-encoded with the restored value, so a value
+ * containing `"` or `\` stays valid JSON and every other byte, large numbers included, stays
+ * as the model wrote it. Arguments that are not JSON (a truncated call) are restored as text.
+ */
+export function unmaskJsonArguments(text: string, map: ReplacementMap, containment?: ContainmentOptions): string {
+  if (map.size === 0) return text;
+  const unmask = (s: string) => unmaskText(s, map, containment);
+  return mapJsonStringLiterals(text, unmask) ?? unmask(text);
+}
+
+/**
+ * unmaskJsonValue for a whole response body or stream frame: the same walk, except that a
+ * string under an `arguments` key (OpenAI `function.arguments`, Responses
+ * `function_call.arguments`) is JSON text and goes through unmaskJsonArguments.
+ */
+export function unmaskResponseBody(value: any, map: ReplacementMap, containment?: ContainmentOptions): any {
+  if (typeof value === 'string') return unmaskText(value, map, containment);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = unmaskResponseBody(value[i], map, containment);
+    return value;
+  }
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) {
+      value[k] = k === 'arguments' && typeof value[k] === 'string'
+        ? unmaskJsonArguments(value[k], map, containment)
+        : unmaskResponseBody(value[k], map, containment);
+    }
     return value;
   }
   return value;

@@ -17,6 +17,12 @@ function hasNul(value: unknown): boolean {
   return false;
 }
 
+/** The file ids of a file batch's `files: [{ file_id }]`; anything malformed is left to the handler's 400. */
+function batchFileIds(files: unknown): unknown[] {
+  if (!Array.isArray(files)) return [];
+  return files.map((entry) => (typeof entry === 'object' && entry !== null ? (entry as any).file_id : undefined));
+}
+
 function sendNulByteError(res: Response): void {
   res.status(400).json({
     error: {
@@ -31,7 +37,8 @@ function sendNulByteError(res: Response): void {
 /**
  * Body/query surface guard — mounted with `app.use()` ahead of the /files
  * and /vector_stores routers. Covers req.query (pagination cursors) and the
- * body's file_ids/file_id/vector_store_ids fields.
+ * body's file_ids/file_id/vector_store_ids fields, the file batch's files[].file_id and an upload
+ * completion's part_ids.
  *
  * Does NOT reliably see req.params: Express only populates req.params once
  * a request has matched a route *inside* the sub-router, which happens
@@ -48,6 +55,8 @@ export function nulByteGuard(req: Request, res: Response, next: NextFunction): v
     (req.body as any)?.file_ids,
     (req.body as any)?.file_id,
     (req.body as any)?.vector_store_ids,
+    (req.body as any)?.part_ids,
+    ...batchFileIds((req.body as any)?.files),
   ];
 
   if (suspects.some(hasNul)) {

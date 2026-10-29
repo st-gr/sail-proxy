@@ -19,6 +19,7 @@ import {
   SiemUsageEvent
 } from '../types/security';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 const logger = getDefaultLogger();
 
 class SecurityEventEmitter {
@@ -237,7 +238,7 @@ class SecurityEventEmitter {
       timestamp: new Date().toISOString(),
       clientIP: data.clientIP,
       userAgent: data.userAgent,
-      endpoint: data.endpoint,
+      endpoint: redactUrl(data.endpoint),
       method: data.method,
       requestId: data.requestId,
       statusCode: data.statusCode || 401,
@@ -267,7 +268,7 @@ class SecurityEventEmitter {
       timestamp: new Date().toISOString(),
       clientIP: data.clientIP,
       userAgent: data.userAgent,
-      endpoint: data.endpoint,
+      endpoint: redactUrl(data.endpoint),
       method: data.method,
       requestId: data.requestId,
       statusCode: 403,
@@ -306,7 +307,7 @@ class SecurityEventEmitter {
       timestamp: new Date().toISOString(),
       clientIP: data.clientIP,
       userAgent: data.userAgent,
-      endpoint: data.endpoint,
+      endpoint: redactUrl(data.endpoint),
       method: data.method,
       requestId: data.requestId,
       statusCode: data.mode === 'reject' ? 403 : 200,
@@ -336,7 +337,7 @@ class SecurityEventEmitter {
       description: `The model returned ${data.placeholders.length} pseudonymization placeholder(s) it was never sent (${data.placeholders.join(', ')}); ${data.action === 'withheld' ? 'withheld from the client' : 'reported only'}`,
       timestamp: new Date().toISOString(),
       userAgent: data.userAgent,
-      endpoint: data.endpoint,
+      endpoint: redactUrl(data.endpoint),
       method: data.method,
       requestId: data.requestId,
       statusCode: 200,
@@ -361,7 +362,7 @@ class SecurityEventEmitter {
       timestamp: new Date().toISOString(),
       clientIP: data.clientIP,
       userAgent: data.userAgent,
-      endpoint: data.endpoint,
+      endpoint: redactUrl(data.endpoint),
       method: 'POST',
       requestId: data.requestId,
       statusCode: 201,
@@ -378,7 +379,7 @@ class SecurityEventEmitter {
       eventType: SecurityEventType.QUOTA_EXCEEDED, severity: SecurityEventSeverity.HIGH,
       description: `Quota exceeded: ${data.scope} ${data.dimension} per ${data.window} (${data.used}/${data.limit})`,
       timestamp: new Date().toISOString(),
-      clientIP: data.clientIP, userAgent: data.userAgent, endpoint: data.endpoint, method: data.method, requestId: data.requestId,
+      clientIP: data.clientIP, userAgent: data.userAgent, endpoint: redactUrl(data.endpoint), method: data.method, requestId: data.requestId,
       statusCode: 429, actionTaken: SecurityEventAction.THROTTLED, autoBlocked: true, source: 'gateway',
       metadata: { ownerEmail: data.ownerEmail, scope: data.scope, dimension: data.dimension, window: data.window, limit: data.limit, used: data.used }
     });
@@ -390,7 +391,7 @@ class SecurityEventEmitter {
       eventId: uuidv4(), credentialId: 'gateway', authType: 'api_key',
       eventType: SecurityEventType.QUOTA_UNENFORCED, severity: SecurityEventSeverity.MEDIUM,
       description: `Quota enforcement degraded: ${data.reason}`, timestamp: new Date().toISOString(),
-      clientIP: data.clientIP, endpoint: data.endpoint, requestId: data.requestId,
+      clientIP: data.clientIP, endpoint: redactUrl(data.endpoint), requestId: data.requestId,
       statusCode: 200, actionTaken: SecurityEventAction.MONITORED, source: 'gateway', metadata: { reason: data.reason }
     });
   }

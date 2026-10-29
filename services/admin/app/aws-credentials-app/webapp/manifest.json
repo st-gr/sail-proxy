@@ -5,13 +5,13 @@
         "type": "application",
         "i18n": {
             "bundleUrl": "i18n/i18n.properties",
-            "supportedLocales": ["", "en"],
+            "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "AWS Credentials",
+        "title": "{{awsCredentials}}",
         "description": "Administration interface for AWS Credentials management",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -77,7 +77,7 @@
                 "type": "sap.ui.model.resource.ResourceModel",
                 "settings": {
                     "bundleUrl": "i18n/i18n.properties",
-                    "supportedLocales": ["", "en"],
+                    "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
                     "fallbackLocale": "en",
                     "async": true
                 }
@@ -159,10 +159,17 @@
                             "content": {
                                 "header": {
                                     "actions": {
+                                        "ChangeTeam": {
+                                            "press": "admin.awscredentials.ext.ChangeTeam.onChangeTeam",
+                                            "visible": "admin.awscredentials.ext.ChangeTeam.isVisible",
+                                            "enabled": true,
+                                            "text": "{{changeTeam}}",
+                                            "requiresSelection": false
+                                        },
                                         "CopyCredentials": {
                                             "press": "admin.awscredentials.ext.CopyCredentials.onCopyCredentials",
                                             "visible": true,
-                                            "text": "Copy Credentials",
+                                            "text": "{{copyCredentials}}",
                                             "enabled": true,
                                             "requiresSelection": false
                                         }

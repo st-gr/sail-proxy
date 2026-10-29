@@ -36,19 +36,19 @@ describe('geminiFinishReason', () => {
 
 describe('usageMetadataFromOrchestration', () => {
   it('passes an uncached turn through unchanged — nothing to add back', () => {
-    expect(usageMetadataFromOrchestration({ prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }))
+    expect(usageMetadataFromOrchestration({ prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }, OPTS.modelName))
       .toEqual({ promptTokenCount: 10, candidatesTokenCount: 2, totalTokenCount: 12 });
   });
 
   it('derives totalTokenCount rather than trusting SAP\'s, which is in the other regime', () => {
-    expect(usageMetadataFromOrchestration({ prompt_tokens: 10, completion_tokens: 2 }))
+    expect(usageMetadataFromOrchestration({ prompt_tokens: 10, completion_tokens: 2 }, OPTS.modelName))
       .toEqual({ promptTokenCount: 10, candidatesTokenCount: 2, totalTokenCount: 12 });
     // SAP's own total excludes the cache read; Gemini's includes it, so the field is
     // recomputed even when SAP sent one.
     expect(usageMetadataFromOrchestration({
       prompt_tokens: 10, completion_tokens: 2, total_tokens: 12,
       prompt_tokens_details: { cached_tokens: 5 },
-    })).toEqual({
+    }, OPTS.modelName)).toEqual({
       promptTokenCount: 15, candidatesTokenCount: 2, totalTokenCount: 17, cachedContentTokenCount: 5,
     });
   });
@@ -57,7 +57,7 @@ describe('usageMetadataFromOrchestration', () => {
     const out: any = usageMetadataFromOrchestration({
       prompt_tokens: 14, completion_tokens: 4, total_tokens: 18,
       prompt_tokens_details: { cached_tokens: 0 },
-    });
+    }, OPTS.modelName);
     expect(out).not.toHaveProperty('cachedContentTokenCount');
   });
 
@@ -69,7 +69,7 @@ describe('usageMetadataFromOrchestration', () => {
     const out: any = usageMetadataFromOrchestration({
       prompt_tokens: 14, completion_tokens: 4, total_tokens: 18,
       prompt_tokens_details: { cached_tokens: 17692 },
-    });
+    }, OPTS.modelName);
     expect(out.promptTokenCount).toBe(14 + 17692);
     expect(out.cachedContentTokenCount).toBe(17692);
     expect(out.totalTokenCount).toBe(14 + 17692 + 4);
@@ -85,7 +85,7 @@ describe('usageMetadataFromOrchestration', () => {
     const out: any = usageMetadataFromOrchestration({
       prompt_tokens: 14, completion_tokens: 4, total_tokens: 18,
       prompt_tokens_details: { cached_tokens: 5, cache_creation_tokens: 9 },
-    });
+    }, OPTS.modelName);
     expect(out).toEqual({
       promptTokenCount: 14 + 5 + 9, candidatesTokenCount: 4, totalTokenCount: 14 + 5 + 9 + 4,
       cachedContentTokenCount: 5,
@@ -96,14 +96,25 @@ describe('usageMetadataFromOrchestration', () => {
     const out: any = usageMetadataFromOrchestration({
       prompt_tokens: 14, completion_tokens: 4,
       prompt_tokens_details: { cached_tokens: 0, cache_creation_tokens: 9 },
-    });
+    }, OPTS.modelName);
     expect(out.promptTokenCount).toBe(23);
     // Nothing was served FROM cache, so the read field stays absent.
     expect(out).not.toHaveProperty('cachedContentTokenCount');
   });
 
+  it('passes an OpenAI-family model\'s prompt_tokens through: it already includes the cache', () => {
+    // Probe of 2026-09-30 (gpt-4.1-nano via orchestration): prompt_tokens 1978 on the cold
+    // and the cached call, cached_tokens 0 -> 1792. Adding the cache back would report 3770.
+    expect(usageMetadataFromOrchestration({
+      prompt_tokens: 1978, completion_tokens: 1, total_tokens: 1979,
+      prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+    }, 'gpt-4.1-nano')).toEqual({
+      promptTokenCount: 1978, candidatesTokenCount: 1, totalTokenCount: 1979, cachedContentTokenCount: 1792,
+    });
+  });
+
   it('zero-fills an absent usage object rather than throwing', () => {
-    expect(usageMetadataFromOrchestration(undefined))
+    expect(usageMetadataFromOrchestration(undefined, OPTS.modelName))
       .toEqual({ promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 });
   });
 });

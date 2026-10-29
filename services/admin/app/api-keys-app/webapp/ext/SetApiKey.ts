@@ -5,12 +5,31 @@ import Button from "sap/m/Button";
 import Text from "sap/m/Text";
 import MessageBox from "sap/m/MessageBox";
 import Device from "sap/ui/Device";
-import ValueState from "sap/ui/core/ValueState";
-import ButtonType from "sap/m/ButtonType";
-import InputType from "sap/m/InputType";
+import { ValueState } from "sap/ui/core/library";
+import { ButtonType, InputType } from "sap/m/library";
 import Context from "sap/ui/model/odata/v4/Context";
+import ODataContextBinding from "sap/ui/model/odata/v4/ODataContextBinding";
 import SimpleForm from "sap/ui/layout/form/SimpleForm";
 import Title from "sap/m/Title";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+
+/** What AdminService.updateApiKeyValue returns (admin-service.cds). */
+type UpdateApiKeyResult = { success?: boolean | null; message?: string | null };
+
+let bundlePromise: Promise<ResourceBundle> | undefined;
+
+/** The app's i18n bundle, loaded once for the user's language. */
+function getBundle(): Promise<ResourceBundle> {
+    if (!bundlePromise) {
+        bundlePromise = ResourceBundle.create({
+            bundleName: "admin.app.i18n.i18n",
+            async: true,
+            supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+            fallbackLocale: ""
+        }) as Promise<ResourceBundle>;
+    }
+    return bundlePromise;
+}
 
 /**
  * Custom action handler for "Set API Key" functionality
@@ -32,9 +51,16 @@ export default {
      * @param oBindingContext - The binding context
      * @param aSelectedContexts - Selected contexts (not used for single object)
      */
-    onSetApiKey: function (oBindingContext: Context, aSelectedContexts: Context[]): void {
+    onSetApiKey: async function (oBindingContext: Context, aSelectedContexts: Context[]): Promise<void> {
+        let bundle: ResourceBundle;
+        try {
+            bundle = await getBundle();
+        } catch (error) {
+            MessageBox.error(String(error));
+            return;
+        }
         if (!oBindingContext) {
-            MessageBox.error("No context available");
+            MessageBox.error(bundle.getText("noContextAvailable") as string);
             return;
         }
         
@@ -48,14 +74,14 @@ export default {
             placeholder: "sk-...",
             liveChange: function(oEvent) {
                 // Live validation - lightweight
-                const sValue = oEvent.getParameter("value").trim();
+                const sValue = (oEvent.getParameter("value") ?? "").trim();
                 if (!sValue) {
                     oInput.setValueState(ValueState.None);
                     return;
                 }
                 if (!/^sk-[A-Za-z0-9_-]{16,}$/.test(sValue)) {
                     oInput.setValueState(ValueState.Warning);
-                    oInput.setValueStateText("Key should start with 'sk-' and look complete.");
+                    oInput.setValueStateText(bundle.getText("keyShouldStart") as string);
                 } else {
                     oInput.setValueState(ValueState.None);
                 }
@@ -67,7 +93,7 @@ export default {
         });
 
         // Show only last 4 characters of current key (security best practice)
-        const sObscured = sCurrentKey ? `Current key: ••••${sCurrentKey.slice(-4)}` : "";
+        const sObscured = sCurrentKey ? bundle.getText("currentKey", [sCurrentKey.slice(-4)]) : "";
 
         // Create simple form
         const oContent = new SimpleForm({
@@ -76,13 +102,13 @@ export default {
             content: [
                 // Helper text section
                 new Text({
-                    text: "Enter the new API key. Replacing the key will invalidate any cached tokens."
+                    text: bundle.getText("setApiKeyHelp")
                 }),
-                
+
                 // Form fields section
-                new Label({ 
-                    text: "New API key", 
-                    required: true 
+                new Label({
+                    text: bundle.getText("newApiKey"),
+                    required: true
                 }),
                 oInput,
                 
@@ -95,7 +121,7 @@ export default {
 
         // Create dialog
         const oDialog = new Dialog({
-            title: "Replace API Key",
+            title: bundle.getText("replaceApiKeyTitle"),
             content: oContent,
             contentWidth: "30rem",
             stretch: Device.system.phone,   // responsive on phones
@@ -106,7 +132,7 @@ export default {
                 oPromise.resolve();
             },
             beginButton: new Button({
-                text: "Save",
+                text: bundle.getText("save"),
                 type: ButtonType.Emphasized,
                 press: async function () {
                     const sNewKey = oInput.getValue().trim();
@@ -114,13 +140,13 @@ export default {
                     // Simple required + format check
                     if (!sNewKey) {
                         oInput.setValueState(ValueState.Error);
-                        oInput.setValueStateText("Please enter your API key.");
+                        oInput.setValueStateText(bundle.getText("pleaseEnterApiKey") as string);
                         oInput.focus();
                         return;
                     }
                     if (!/^sk-[A-Za-z0-9_-]{16,}$/.test(sNewKey)) {
                         oInput.setValueState(ValueState.Error);
-                        oInput.setValueStateText("API key must start with 'sk-' and look complete.");
+                        oInput.setValueStateText(bundle.getText("apiKeyMustStart") as string);
                         oInput.focus();
                         return;
                     }
@@ -128,18 +154,18 @@ export default {
                     oDialog.setBusy(true);
                     try {
                         // Call the updateApiKeyValue action
-                        const oOperationBinding = oModel.bindContext("/updateApiKeyValue(...)");
+                        const oOperationBinding = oModel.bindContext("/updateApiKeyValue(...)") as ODataContextBinding;
                         oOperationBinding.setParameter("keyId", sKeyId);
                         oOperationBinding.setParameter("newKey", sNewKey);
                         
                         const oContext = await oOperationBinding.execute("$auto");
-                        const oResult = oOperationBinding.getBoundContext()?.getObject();
+                        const oResult = oOperationBinding.getBoundContext()?.getObject() as UpdateApiKeyResult | undefined;
 
                         // Check if the action was actually successful
                         if (oResult && oResult.success === false) {
                             // Backend returned success=false, show error
                             oDialog.setBusy(false);
-                            MessageBox.error(oResult.message || "Failed to replace API key.");
+                            MessageBox.error(oResult.message || (bundle.getText("failedToReplace") as string));
                             return;
                         }
 
@@ -152,11 +178,11 @@ export default {
 
                         oDialog.setBusy(false);
                         oDialog.close();
-                        MessageBox.success(oResult?.message || "API key replaced.");
+                        MessageBox.success(oResult?.message || (bundle.getText("apiKeyReplaced") as string));
                     } catch (oError: any) {
                         oDialog.setBusy(false);
                         // Extract meaningful error message from OData error
-                        let sErrorMessage = "Failed to replace API key.";
+                        let sErrorMessage = bundle.getText("failedToReplace") as string;
                         
                         if (oError.message) {
                             sErrorMessage = oError.message;
@@ -178,7 +204,7 @@ export default {
                 }
             }),
             endButton: new Button({
-                text: "Cancel",
+                text: bundle.getText("cancel"),
                 type: ButtonType.Transparent,
                 press: function () {
                     oDialog.close();
@@ -188,7 +214,7 @@ export default {
                 oInput.focus();
             },
             afterClose: function () {
-                this.destroy();
+                oDialog.destroy();
             }
         });
 

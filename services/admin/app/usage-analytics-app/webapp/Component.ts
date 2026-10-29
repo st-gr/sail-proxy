@@ -1,6 +1,7 @@
 import UIComponent from "sap/ui/core/UIComponent";
 import models from "./model/models";
 import JSONModel from "sap/ui/model/json/JSONModel";
+import ODataModel from "sap/ui/model/odata/v4/ODataModel";
 
 /**
  * @namespace admin.usageanalytics
@@ -18,7 +19,7 @@ export default class Component extends UIComponent {
         this.setModel(models.createDeviceModel(), "device");
         
         // Check if OData model is available (should be propagated from shell)
-        const oDataModel = this.getModel();
+        const oDataModel = this.getModel() as ODataModel | undefined;
         console.log("[UsageAnalytics.Component.init] OData model available:", !!oDataModel);
         if (oDataModel) {
             console.log("[UsageAnalytics.Component.init] OData service URL:", oDataModel.getServiceUrl?.());
@@ -37,8 +38,11 @@ export default class Component extends UIComponent {
             userContext: {
                 email: "",
                 isAdmin: false,
+                isTeamAdmin: false,
                 roles: []
             },
+            teamScope: "",
+            teamScopes: [],
             filters: {
                 provider: "",
                 model: "",
@@ -53,8 +57,12 @@ export default class Component extends UIComponent {
         this.getRouter().initialize();
 
         // Load user context
-        this._loadUserContext();
+        this.userContextReady = this._loadUserContext();
     }
+
+    /** Settles once /userContext is set (or defaulted), so the Team selector knows the roles. */
+    // Assigned in init(); an initializer here would run after init() and overwrite it.
+    declare public userContextReady: Promise<void>;
 
     /**
      * Load user context for role-based access
@@ -83,6 +91,7 @@ export default class Component extends UIComponent {
             viewModel.setProperty("/userContext", {
                 email: userPrefs.email || "",
                 isAdmin: userPrefs.isAdmin || false,
+                isTeamAdmin: userPrefs.isTeamAdmin || false,
                 roles: userPrefs.roles ? JSON.parse(userPrefs.roles) : []
             });
             
@@ -93,6 +102,7 @@ export default class Component extends UIComponent {
             viewModel.setProperty("/userContext", {
                 email: "",
                 isAdmin: false,
+                isTeamAdmin: false,
                 roles: []
             });
         }

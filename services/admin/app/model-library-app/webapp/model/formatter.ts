@@ -3,32 +3,29 @@
  * date/version labels). Filled in by Tasks 2-6.
  */
 import IconPool from "sap/ui/core/IconPool";
+import type { IconInfo } from "sap/ui/core/IconPool";
 import { providerMark } from "./providerMarks";
-import { providerLabel } from "./providerLabel";
+import { providerLabel, providerMarkName } from "./providerLabel";
 import { contextWindow } from "./contextWindow";
 import { isDeployed, isDeployment, retires, deploymentOnly, notCallable } from "./deploymentBadge";
+import { capabilityIcons, glyphFor } from "./capabilityIcons";
+import { exclusionReason } from "./catalogPending";
+import { originLabel } from "./origin";
 
-/** Card footer chips (A6) and the filter pane's radio/checkbox icons (A8/A9) share this map. */
-const CAPABILITY_INPUT_ICONS: Record<string, [string, string]> = {
-  "text-generation": ["sap-icon://write-new", "Text Generation"],
-  "image-recognition": ["sap-icon://show", "Image Recognition"],
-  "image-generation": ["sap-icon://picture", "Image Generation"],
-  reasoning: ["sap-icon://org-chart", "Reasoning"],
-  embedding: ["sap-icon://overview-chart", "Embedding"],
-  "speech-to-text": ["sap-icon://microphone", "Speech To Text"],
-  text: ["sap-icon://text", "Text"],
-  image: ["sap-icon://image-viewer", "Image"],
-  audio: ["sap-icon://sound", "Audio"],
-  video: ["sap-icon://video", "Video"]
-};
+/**
+ * Resolves an i18n key — the view binds the bundle pattern as the formatter's second part; the
+ * English default below is the fallback before the bundle has loaded.
+ */
+type Translator = (key: string) => string;
+/** English defaults: each value is byte-identical to the literal it replaced. */
+const EN_TEXTS: Record<string, string> = { versionValue: 'Version: {0}', yes: 'Yes', no: 'No' };
+const defaultTranslate: Translator = (key) => EN_TEXTS[key] ?? key;
 
-/** LibraryFilterState's capability enum -> the flag name CAPABILITY_INPUT_ICONS keys on. */
+/** LibraryFilterState's capability enum -> the flag name CAPABILITY_INPUT_ICONS (capabilityIcons.ts) keys on. */
 const CAPABILITY_ENUM_TO_FLAG: Record<string, string> = {
   text: "text-generation", imageRecognition: "image-recognition", imageGeneration: "image-generation",
   reasoning: "reasoning", embedding: "embedding", speechToText: "speech-to-text"
 };
-
-function glyphFor(key: string): string | undefined { return CAPABILITY_INPUT_ICONS[key]?.[0]; }
 
 /**
  * Prefixes a capabilityGroup RadioButton's label with its capability icon (A8). RadioButton has
@@ -44,24 +41,24 @@ function capabilityRadioLabel(enumKey: string, label: string): string {
   const flag = CAPABILITY_ENUM_TO_FLAG[enumKey];
   const src = flag ? glyphFor(flag) : undefined;
   if (!src) return label;
-  const info = IconPool.getIconInfo(src);
+  // No loadingMode is "sync": the info (or undefined), never a Promise.
+  const info = IconPool.getIconInfo(src) as IconInfo | undefined;
   return info ? `${info.content} ${label}` : label;
 }
 
 export default {
   // L: the mark and the facet label read the display name, so a literal "unknown" provider shows
-  // as "Other"/"OT" rather than "unknown"/"UN". The filter value behind it is untouched.
-  providerSrc(provider: string): string | undefined { return providerMark(providerLabel(provider)).src; },
-  providerInitials(provider: string): string | undefined { return providerMark(providerLabel(provider)).initials; },
-  providerLabel,
-  version(v: string | null): string { return v ? `Version: ${v}` : ""; },
-  /** Card footer icons: capability glyphs first, then modality glyphs, from the JSON arrays. */
-  capabilityIcons(capabilities: string | null, inputTypes: string | null): { icon: string; tooltip: string }[] {
-    const caps: string[] = safeArray(capabilities);
-    const ins: string[] = safeArray(inputTypes);
-    return [...caps, ...ins].filter(k => CAPABILITY_INPUT_ICONS[k])
-      .map(k => ({ icon: CAPABILITY_INPUT_ICONS[k][0], tooltip: CAPABILITY_INPUT_ICONS[k][1] }));
+  // as "Other"/"OT" rather than "unknown"/"UN". The filter value behind it is untouched. The mark
+  // keeps the English "Other" (initials "OT") in every language; the label follows the bundle.
+  providerSrc(provider: string): string | undefined { return providerMark(providerMarkName(provider)).src; },
+  providerInitials(provider: string): string | undefined { return providerMark(providerMarkName(provider)).initials; },
+  /** The facet label: the view binds the bundle's "Other" text as the second part (the bundle is async). */
+  providerLabel(provider: string, otherText?: string | null): string {
+    return providerLabel(provider, otherText ? () => otherText : undefined);
   },
+  version(v: string | null, pattern?: string | null): string { return v ? (pattern || defaultTranslate("versionValue")).replace("{0}", v) : ""; },
+  /** Card footer icons: capability glyphs first, then modality glyphs, from the JSON arrays (see capabilityIcons.ts). */
+  capabilityIcons,
   capabilityRadioLabel,
   // One-argument wrappers per capability radio row — the view binds each to its own i18n key via
   // the ordinary single-part "formatter" attribute (the same pattern as version()/yesNo() below),
@@ -72,7 +69,10 @@ export default {
   capReasoningRadioLabel(label: string): string { return capabilityRadioLabel("reasoning", label); },
   capSpeechToTextRadioLabel(label: string): string { return capabilityRadioLabel("speechToText", label); },
   capTextRadioLabel(label: string): string { return capabilityRadioLabel("text", label); },
-  yesNo(b: boolean): string { return b ? "Yes" : "No"; },
+  /** The view binds the bundle's yes/no texts as the second and third parts (the bundle is async). */
+  yesNo(b: boolean, yesText?: string | null, noText?: string | null): string {
+    return b ? (yesText || defaultTranslate("yes")) : (noText || defaultTranslate("no"));
+  },
   contextWindow,
   // G: library tile badges — a foundation model with a live deployment sibling, a deployment row,
   // and the retirement date. See deploymentBadge.ts for why they are not written inline here.
@@ -80,9 +80,14 @@ export default {
   isDeployment,
   retires,
   deploymentOnly,
-  notCallable
+  notCallable,
+  /** Origin label: the view binds origin, connection and the three bundle texts (SAP, named Connection, unnamed Connection). */
+  origin(origin: string | null, connection: string | null, sapText: string, connectionText: string, unnamedText: string): string {
+    return originLabel(origin, connection, sapText, connectionText, unnamedText);
+  },
+  /** True for a Connection model, whose price lives in Connections. */
+  isExternal(origin: string | null): boolean { return origin === "external"; },
+  /** Catalogs exclusions table: the view binds the bundle text for the stored sentinel as the second part. */
+  exclusionReason
 };
 
-function safeArray(json: string | null): string[] {
-  try { const v = JSON.parse(json || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
-}

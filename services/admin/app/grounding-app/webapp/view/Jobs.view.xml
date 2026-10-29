@@ -1,0 +1,48 @@
+<mvc:View
+    controllerName="admin.grounding.controller.Jobs"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m">
+    <Page id="jobsPage" title="{i18n>jobsTitle}">
+        <headerContent>
+            <Button id="refreshJobsButton" icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefresh"/>
+        </headerContent>
+        <content>
+            <MessageStrip id="jobsHint" text="{i18n>jobsHint}" type="Information" showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop"/>
+            <Table id="jobsTable" items="{view>/jobs}" noDataText="{i18n>noJobs}" busy="{view>/busy}" busyIndicatorDelay="0">
+                <columns>
+                    <Column><Text text="{i18n>columnKind}"/></Column>
+                    <Column><Text text="{i18n>columnStore}"/></Column>
+                    <Column><Text text="{i18n>columnState}"/></Column>
+                    <Column hAlign="End"><Text text="{i18n>columnProgress}"/></Column>
+                    <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>jobFailedFiles}"/></Column>
+                    <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnTokens}"/></Column>
+                    <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnStarted}"/></Column>
+                    <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnFinished}"/></Column>
+                    <Column hAlign="End" width="13rem"><Text text="{i18n>columnActions}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem type="Navigation" press=".onOpen">
+                        <cells>
+                            <VBox>
+                                <Text text="{view>kindText}"/>
+                                <Text text="{view>targetChunkingText}" visible="{view>rechunk}" class="sapUiTinyMarginTop"/>
+                            </VBox>
+                            <Text text="{view>storeName}"/>
+                            <ObjectStatus text="{view>stateText}" state="{view>stateColor}"/>
+                            <Text text="{view>progress}"/>
+                            <Text text="{view>failed}"/>
+                            <Text text="{view>tokens}"/>
+                            <Text text="{view>started}"/>
+                            <Text text="{view>finished}"/>
+                            <HBox justifyContent="End">
+                                <Button text="{i18n>cancelJob}" type="Transparent" visible="{view>canCancel}" press=".onCancel"/>
+                                <Button text="{i18n>retryJob}" type="Transparent" visible="{view>canRetry}" press=".onRetry"/>
+                            </HBox>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+            <Button id="jobsMore" text="{i18n>adminMore}" visible="{view>/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+        </content>
+    </Page>
+</mvc:View>

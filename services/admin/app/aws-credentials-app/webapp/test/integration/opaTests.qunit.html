@@ -5,10 +5,13 @@
 	<title>AWS Credentials - UI journeys</title>
 	<!-- The framework served for this app (incl. sap.fe.test); test/app.html loads the same
 	     one, so the OPA page and the app iframe run one UI5 version. -->
+	<!-- Themes come from the shell: every app has its own dev server, which would compile and keep its
+	     own copy of every library theme (some 200 MB per app; the CI admin ran out of heap). -->
 	<script id="sap-ui-bootstrap"
 		src="../../resources/sap-ui-core.js"
 		data-sap-ui-resourceroots='{"admin.awscredentials": "../../"}'
 		data-sap-ui-theme="sap_horizon"
+		data-sap-ui-theme-roots='{"sap_horizon": "/shell/resources/"}'
 		data-sap-ui-language="en"
 		data-sap-ui-compatVersion="edge"
 		data-sap-ui-async="true">

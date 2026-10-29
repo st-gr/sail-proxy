@@ -703,7 +703,7 @@ if (key === "settings") {
                 "path": "app/config-app",
                 "configFile": "ui5.yaml", 
                 "mountPath": "/config",
-                "versionOverride": "1.136.0"
+                "versionOverride": "1.136.22"
             }
         }
     },

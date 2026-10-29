@@ -8,10 +8,20 @@ import crypto from 'crypto';
 
 // Import TypeScript modules
 import configService from '../services/configService';
-import { getDefaultLogger } from '@libs/logger';
+import { getDefaultLogger, createHeadersPreview } from '@libs/logger';
 const logger = getDefaultLogger();
 import * as payloadLogger from '../utils/payloadLogger';
-import openRouterService from '../services/openRouterService';
+import openRouterService, { ModelVisibility } from '../services/openRouterService';
+import { entitlementFromRequest, isModelEntitled } from '../utils/modelEntitlement';
+
+/**
+ * Connection models follow the caller's entitlement here as on /v1/models (spec 2026-10-23 §4.3):
+ * the default catalog never lists one. SAP entries stay as these lists have always shown them.
+ */
+function connectionModelVisibility(req: Request): ModelVisibility {
+  const block = entitlementFromRequest(req);
+  return (model) => model.accessType !== 'external' || isModelEntitled(block, model.id);
+}
 
 interface OpenRouterRequest extends Request {
   body: {
@@ -166,13 +176,13 @@ export const handleChatCompletions = async (req: OpenRouterRequest, res: Respons
  */
 export const listModels = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   logger.info('OpenRouterController', 'Handling model listing request');
-  logger.debug('OpenRouterController', `Request headers: ${JSON.stringify(req.headers)}`);
+  logger.debug('OpenRouterController', `Request headers: ${createHeadersPreview(req.headers)}`);
   
   try {
     // Forward to the service that will handle OpenRouter model format
     // Use the imported openRouterService
     logger.info('OpenRouterController', 'Calling openRouterService.getModels()');
-    const models = await openRouterService.getModels();
+    const models = await openRouterService.getModels(connectionModelVisibility(req));
     logger.debug('OpenRouterController', `Models response: ${JSON.stringify(models).substring(0, 100)}...`);
     res.json(models);
   } catch (error: any) {
@@ -197,7 +207,7 @@ export const getModelEndpoints = async (req: ModelEndpointsRequest, res: Respons
   
   try {
     // Use the imported openRouterService
-    const endpoints = await openRouterService.getModelEndpoints(author, slug);
+    const endpoints = await openRouterService.getModelEndpoints(author, slug, connectionModelVisibility(req));
     res.json(endpoints);
   } catch (error: any) {
     logger.error('OpenRouterController', `Error getting model endpoints: ${error.message}`);

@@ -67,6 +67,8 @@ jest.mock('../../../src/services/configService', () => ({
 // this suite actually asserts on — the ownership predicate, the expiry and dimension
 // gates, the errors and their statuses — is real, and runs against the real database.
 jest.mock('../../../src/fileSearch/embedder', () => ({
+  // The real error classes (search and ingestion test for them with instanceof).
+  ...jest.requireActual<any>('../../../src/fileSearch/embedder'),
   __esModule: true,
   // EmbedResult, not a bare vector — search.ts destructures `{ vectors }`.
   embed: jest.fn(async (texts: string[]) => ({
@@ -295,17 +297,17 @@ d('file_search pre-turn store access guard against a real Postgres database (req
     it('accepts a shared store the caller does not own', async () => {
       await expect(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [theirsSharedId] },
-        { ownerEmail: MINE, logger },
+        { ownerEmail: MINE, teamIds: [], logger },
       )).resolves.toMatchObject({ storeIds: [theirsSharedId], maxNumResults: 10 });
     });
 
     it('rejects a store owned by someone else with the SAME 400 as an unknown id, not a 403', async () => {
       const unowned = await failureOf(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [theirsPrivateId] },
-        { ownerEmail: MINE, logger }));
+        { ownerEmail: MINE, teamIds: [], logger }));
       const unknown = await failureOf(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [UNKNOWN_ID] },
-        { ownerEmail: MINE, logger }));
+        { ownerEmail: MINE, teamIds: [], logger }));
       expect(unowned.status).toBe(400);
       expect(unknown.status).toBe(400);
       expect(unowned.code).toBe(unknown.code);
@@ -320,7 +322,7 @@ d('file_search pre-turn store access guard against a real Postgres database (req
       // check has passed, so it discloses nothing.
       await expect(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [mineExpiredId] },
-        { ownerEmail: MINE, logger },
+        { ownerEmail: MINE, teamIds: [], logger },
       )).rejects.toMatchObject({ status: 409, name: 'StoreExpiredError' });
     });
 
@@ -330,14 +332,14 @@ d('file_search pre-turn store access guard against a real Postgres database (req
       // for it, in the same per-store loop as the expiry check.
       await expect(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [mineDriftedId] },
-        { ownerEmail: MINE, logger },
+        { ownerEmail: MINE, teamIds: [], logger },
       )).rejects.toMatchObject({ status: 409, name: 'StoreDimensionMismatchError' });
     });
 
     it('prepares a store the caller owns', async () => {
       await expect(fileSearchDescriptor.prepare(
         { type: 'file_search', vector_store_ids: [mineId], max_num_results: 3 },
-        { ownerEmail: MINE, logger },
+        { ownerEmail: MINE, teamIds: [], logger },
       )).resolves.toMatchObject({ storeIds: [mineId], maxNumResults: 3 });
     });
   });

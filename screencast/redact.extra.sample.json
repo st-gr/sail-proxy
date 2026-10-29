@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to redact.extra.local.json (gitignored) and replace the keys with this Mac's real values; the values are what a cast or a page shows instead. Merged into redact.local.json by stack/with-service-key.mjs; its entries win.",
+  "<hostname>": "demo-mac.local",
+  "<short hostname>": "demo-mac",
+  "/Users/<user name>": "/Users/demo",
+  "<user name>": "demo",
+  "<account full name>": "Demo Maintainer"
+}

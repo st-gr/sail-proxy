@@ -1,5 +1,20 @@
-sap.ui.define(["sap/m/MessageToast", "sap/m/MessageBox", "sap/m/TableSelectDialog", "sap/m/ColumnListItem", "sap/m/Column", "sap/m/Label", "sap/m/Text", "sap/ui/model/Filter", "sap/ui/model/FilterOperator"], function (MessageToast, MessageBox, TableSelectDialog, ColumnListItem, Column, Label, Text, Filter, FilterOperator) {
+sap.ui.define(["sap/m/MessageToast", "sap/m/MessageBox", "sap/m/TableSelectDialog", "sap/m/ColumnListItem", "sap/m/Column", "sap/m/Label", "sap/m/Text", "sap/ui/model/Filter", "sap/ui/model/FilterOperator", "sap/base/i18n/ResourceBundle"], function (MessageToast, MessageBox, TableSelectDialog, ColumnListItem, Column, Label, Text, Filter, FilterOperator, ResourceBundle) {
 	"use strict";
+
+	var bundlePromise;
+
+	/** The app's i18n bundle, loaded once for the user's language. */
+	function getBundle() {
+		if (!bundlePromise) {
+			bundlePromise = ResourceBundle.create({
+				bundleName: "admin.toolpolicies.i18n.i18n",
+				async: true,
+				supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+				fallbackLocale: ""
+			});
+		}
+		return bundlePromise;
+	}
 
 	// Assigning a user or an API key to a tool policy is neither a create nor a delete on the table
 	// that shows it: the row is an existing user or key, and the four bound actions on ToolPolicies
@@ -55,7 +70,7 @@ sap.ui.define(["sap/m/MessageToast", "sap/m/MessageBox", "sap/m/TableSelectDialo
 	 *
 	 * Several rows can be picked at once; `onPicked` is called with every chosen key.
 	 */
-	function pick(policyContext, settings) {
+	function pick(policyContext, bundle, settings) {
 		// Neither TableSelectDialog nor SelectDialog has a public close(): both close themselves and
 		// fire "confirm" from inside that close sequence, AFTER "afterClose". Destroying the dialog in
 		// afterClose therefore tears it down before confirm can read the chosen rows, so the teardown
@@ -74,7 +89,7 @@ sap.ui.define(["sap/m/MessageToast", "sap/m/MessageBox", "sap/m/TableSelectDialo
 			title: settings.title,
 			noDataText: settings.noDataText,
 			// The default label is "Select", which says nothing about what happens next.
-			confirmButtonText: "Assign",
+			confirmButtonText: bundle.getText("assignButton"),
 			multiSelect: true,
 			growing: true,
 			growingThreshold: 50,
@@ -109,77 +124,85 @@ sap.ui.define(["sap/m/MessageToast", "sap/m/MessageBox", "sap/m/TableSelectDialo
 		dialog.open();
 	}
 
-	/** "3 API keys assigned" / "1 API key assigned". */
-	function assigned(count, singular, plural) {
-		return count + " " + (count === 1 ? singular : plural) + " assigned";
+	/** "3 API keys assigned" / "1 API key assigned": one whole bundle key per plural form. */
+	function assigned(bundle, count, oneKey, otherKey) {
+		return bundle.getText(count === 1 ? oneKey : otherKey, [count]);
 	}
 
 	return {
 		/** "Assign User" on the Assigned Users table: pick users, then assignUser(email) per user. */
 		onAssignUser: function (policyContext) {
-			pick(policyContext, {
-				title: "Assign Users",
-				noDataText: "No users found",
-				path: "/Users",
-				key: "email",
-				searchProperties: ["email", "displayName"],
-				columns: [
-					{ label: "Email", path: "email" },
-					{ label: "Name", path: "displayName" },
-					{ label: "Status", path: "status" },
-					{ label: "Current Policy", path: "toolPolicy/name" }
-				],
-				onPicked: function (emails) {
-					invoke(policyContext, "assignUser", "email", emails)
-						.then(function () { report(policyContext, assigned(emails.length, "user", "users")); })
-						.catch(fail);
-				}
+			getBundle().then(function (bundle) {
+				pick(policyContext, bundle, {
+					title: bundle.getText("assignUsersTitle"),
+					noDataText: bundle.getText("noUsersFound"),
+					path: "/Users",
+					key: "email",
+					searchProperties: ["email", "displayName"],
+					columns: [
+						{ label: bundle.getText("columnEmail"), path: "email" },
+						{ label: bundle.getText("name"), path: "displayName" },
+						{ label: bundle.getText("columnStatus"), path: "status" },
+						{ label: bundle.getText("columnCurrentPolicy"), path: "toolPolicy/name" }
+					],
+					onPicked: function (emails) {
+						invoke(policyContext, "assignUser", "email", emails)
+							.then(function () { report(policyContext, assigned(bundle, emails.length, "userAssignedOne", "userAssignedOther")); })
+							.catch(fail);
+					}
+				});
 			});
 		},
 
 		/** "Unassign" on the Assigned Users table: acts on the selected rows, no dialog. */
 		onUnassignUsers: function (policyContext, selected) {
 			var emails = (selected || []).map(function (context) { return context.getProperty("email"); });
-			if (emails.length === 0) {
-				MessageToast.show("Select the users to unassign");
-				return;
-			}
-			invoke(policyContext, "unassignUser", "email", emails)
-				.then(function () { report(policyContext, emails.length + " user(s) unassigned"); })
-				.catch(fail);
+			getBundle().then(function (bundle) {
+				if (emails.length === 0) {
+					MessageToast.show(bundle.getText("selectUsersToUnassign"));
+					return;
+				}
+				invoke(policyContext, "unassignUser", "email", emails)
+					.then(function () { report(policyContext, bundle.getText("usersUnassigned", [emails.length])); })
+					.catch(fail);
+			});
 		},
 
 		/** "Assign API Key" on the Assigned API Keys table: pick keys, then assignApiKey(keyId) per key. */
 		onAssignApiKey: function (policyContext) {
-			pick(policyContext, {
-				title: "Assign API Keys",
-				noDataText: "No API keys found",
-				path: "/ApiKeys",
-				key: "ID",
-				searchProperties: ["name", "email"],
-				columns: [
-					{ label: "Key", path: "name" },
-					{ label: "Owner", path: "email" },
-					{ label: "Current Policy", path: "toolPolicy/name" }
-				],
-				onPicked: function (keyIds) {
-					invoke(policyContext, "assignApiKey", "keyId", keyIds)
-						.then(function () { report(policyContext, assigned(keyIds.length, "API key", "API keys")); })
-						.catch(fail);
-				}
+			getBundle().then(function (bundle) {
+				pick(policyContext, bundle, {
+					title: bundle.getText("assignApiKeysTitle"),
+					noDataText: bundle.getText("noApiKeysFound"),
+					path: "/ApiKeys",
+					key: "ID",
+					searchProperties: ["name", "email"],
+					columns: [
+						{ label: bundle.getText("columnKey"), path: "name" },
+						{ label: bundle.getText("columnOwner"), path: "email" },
+						{ label: bundle.getText("columnCurrentPolicy"), path: "toolPolicy/name" }
+					],
+					onPicked: function (keyIds) {
+						invoke(policyContext, "assignApiKey", "keyId", keyIds)
+							.then(function () { report(policyContext, assigned(bundle, keyIds.length, "apiKeyAssignedOne", "apiKeyAssignedOther")); })
+							.catch(fail);
+					}
+				});
 			});
 		},
 
 		/** "Unassign" on the Assigned API Keys table: acts on the selected rows, no dialog. */
 		onUnassignApiKeys: function (policyContext, selected) {
 			var ids = (selected || []).map(function (context) { return context.getProperty("ID"); });
-			if (ids.length === 0) {
-				MessageToast.show("Select the API keys to unassign");
-				return;
-			}
-			invoke(policyContext, "unassignApiKey", "keyId", ids)
-				.then(function () { report(policyContext, ids.length + " API key(s) unassigned"); })
-				.catch(fail);
+			getBundle().then(function (bundle) {
+				if (ids.length === 0) {
+					MessageToast.show(bundle.getText("selectApiKeysToUnassign"));
+					return;
+				}
+				invoke(policyContext, "unassignApiKey", "keyId", ids)
+					.then(function () { report(policyContext, bundle.getText("apiKeysUnassigned", [ids.length])); })
+					.catch(fail);
+			});
 		}
 	};
 });

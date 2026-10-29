@@ -114,4 +114,15 @@ describe('unifiedTokenAuth accepts the key shapes Gemini clients send', () => {
     expect(sanitizedHeaders['x-goog-api-key']).toBe('[REDACTED]');
     expect(sanitizedHeaders['x-goog-api-key']).not.toContain(FAKE_KEY);
   });
+
+  it('redacts x-stainless-key and masks a key in the referer handed to the validation service', async () => {
+    mockValidateApiKey.mockResolvedValue(validResult());
+    const req = makeReq({ headers: { 'x-stainless-key': FAKE_KEY, referer: `http://h/p?api_key=${FAKE_KEY}&x=1` } });
+
+    await unifiedTokenAuth(req, makeRes(), jest.fn());
+
+    const h = (mockValidateApiKey.mock.calls[0][0] as any).headers;
+    expect(h['x-stainless-key']).toBe('[REDACTED]');
+    expect(h.referer).toBe('http://h/p?api_key=***&x=1');
+  });
 });

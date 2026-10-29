@@ -2,10 +2,12 @@ import { Request } from 'express';
 import { UsageEvent, UsageMetrics } from '../types/usage';
 import usageEmitter from '../services/usageEventEmitter';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from './redactUrl';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { emitSiemUsageEvent } from '../services/siemUsageEvent';
 import { toolsForEvent } from '../toolGovernance/record';
+import { teamFromRequest } from './userBlock';
 
 /**
  * Extract authentication info from request for usage tracking
@@ -147,14 +149,17 @@ export async function emitUsageEvent(
       requestId: (req as any).debugRequestId,
       credentialId: authInfo?.credentialId,
       authType: authInfo?.authType,
-      endpoint: req.originalUrl || req.url || '',
+      endpoint: redactUrl(req.originalUrl || req.url || ''),
     });
 
     if (!authInfo) return; // Skip if no auth info available
 
     // Provider will be resolved by admin service from model data
-    // Gateway no longer needs to resolve providers during request processing
-    const provider = 'unknown';
+    // Gateway no longer needs to resolve providers during request processing.
+    // A Connection model is the exception (spec 2026-10-23 §5.5): the resolver tagged the request,
+    // and the admin must know it is external so it never prices it as SAP.
+    const external = (req as any).__externalUsage;
+    const provider = external?.provider ?? 'unknown';
 
     const responseTime = Date.now() - metrics.startTime;
     
@@ -167,6 +172,8 @@ export async function emitUsageEvent(
       endpoint = endpoint.split('?')[0];
     }
     
+    const teamId = teamFromRequest(req)?.teamId;
+
     const event: UsageEvent = {
       requestId: (req as any).debugRequestId || 'unknown',
       timestamp: Math.floor(Date.now() / 1000), // Unix timestamp
@@ -188,7 +195,12 @@ export async function emitUsageEvent(
       usageEstimated: metrics.usageEstimated,
       unit: metrics.unit ?? 'tokens',
       tools: toolsForEvent(req),
-      userAgent: userAgentOf(req)
+      userAgent: userAgentOf(req),
+      teamId: typeof teamId === 'string' ? teamId : undefined,
+      // Stamped by sapTenantMiddleware when the request entered; a Connection request never reached SAP.
+      sapTenant: external ? null : ((req as any).__sapTenant ?? null),
+      sapTenantSource: external ? null : ((req as any).__sapTenantSource ?? null),
+      ...(external ? { connectionId: external.connectionId, upstreamModel: external.upstreamModel, origin: 'external' as const } : {})
     };
 
     // Add comprehensive logging before emission

@@ -13,6 +13,8 @@ import Table from "sap/m/Table";
 import Input, { Input$LiveChangeEvent } from "sap/m/Input";
 import SearchField from "sap/m/SearchField";
 import ListItemBase from "sap/m/ListItemBase";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
+import formatMessage from "sap/base/strings/formatMessage";
 import * as session from "../model/session";
 import { catalogPickSearch, catalogPickCancel } from "../model/catalogPicker";
 import { modelIdIn, modelIdNotIn } from "../model/idFilters";
@@ -20,12 +22,14 @@ import { headerDirty, isCatalogClean } from "../model/headerDirty";
 import { filterUsers } from "../model/userFilter";
 import {
   PendingChanges, PendingModel, PendingInvokers, emptyPending, pendingCount, pendingSummary,
-  stageAdd, stageRemove, stageExclude, stageInclude, stageAssign,
-  mergeMembers, mergeExclusions, mergeUsers, applyPending, saveSummary
+  stageAdd, stageRemove, stageExclude, stageInclude, stageAssign, stageTeamAssign,
+  mergeMembers, mergeExclusions, mergeUsers, mergeTeams, applyPending, saveSummary, EXCLUDED_REASON
 } from "../model/catalogPending";
+import type { TeamRow, TeamSlot } from "../model/catalogPending";
 import { toCatalogShapedUsers } from "../model/profileRows";
 import { serverErrors, serverErrorText } from "../model/saveMessages";
 import type { UiMessage } from "../model/saveMessages";
+import type { UserRow } from "../model/catalogPending";
 
 /**
  * I: the detail header's own update group. An application group ID is deferred, so a Name or
@@ -33,8 +37,6 @@ import type { UiMessage } from "../model/saveMessages";
  * the data-loss guard possible at all.
  */
 const HEADER_GROUP = "catalogHeader";
-/** The non-cancelling action of the unsaved-changes warning; MessageBox.Action.CANCEL is the other. */
-const DISCARD_ACTION = "Discard";
 /**
  * Which of the two objects this view manages. They share everything below the selection — one
  * detail page, one staged set of changes, one Save — and differ in what is listed, which container
@@ -43,11 +45,6 @@ const DISCARD_ACTION = "Discard";
 type Mode = "catalogs" | "profiles";
 /** The container that carries the element binding per mode (see Catalogs.view.xml). */
 const DETAIL_CONTAINER: Record<Mode, string> = { catalogs: "catalogDetail", profiles: "profileDetail" };
-/** The data-loss guard's wording. Verbatim: the OPA page object matches these texts. */
-const UNSAVED_WARNING: Record<Mode, string> = {
-  catalogs: "You have unsaved changes to this catalog. Discard them?",
-  profiles: "You have unsaved changes to this profile. Discard them?"
-};
 
 /**
  * @namespace admin.modellibrary.controller
@@ -56,6 +53,13 @@ export default class CatalogsController extends Controller {
   private vm(): JSONModel { return this.getOwnerComponent()!.getModel("viewModel") as JSONModel; }
   private odata(): ODataModel { return this.getOwnerComponent()!.getModel() as ODataModel; }
   private router() { return (this.getOwnerComponent() as UIComponent).getRouter(); }
+  /** Resolves an i18n key, filling {0}, {1} … from args; every caller runs on a user action, by
+   *  which time the bundle is loaded. */
+  private text(key: string, args?: unknown[]): string {
+    const model = this.getOwnerComponent()?.getModel("i18n") as ResourceModel | undefined;
+    const pattern = (model?.getProperty(key) as string | null | undefined) ?? key;
+    return args ? formatMessage(pattern, args) : pattern;
+  }
   private selected: any = null;          // current catalog or profile object
   /** Which list is shown; the route decides it and onModeChange navigates to change it. */
   private mode: Mode = "catalogs";
@@ -163,6 +167,7 @@ export default class CatalogsController extends Controller {
     (this.byId(DETAIL_CONTAINER[this.mode]) as any).bindElement({ path: ctx.getPath(), parameters: { $$updateGroupId: HEADER_GROUP } });
     this.resetPending();
     this.vm().setProperty("/catalogs/layout", "TwoColumnsMidExpanded");
+    if (isAdmin) this.loadTeams();
     if (this.mode === "profiles") { this.loadProfileUsers(); return; }
     this.loadMembers(); this.loadExclusions(); this.loadParentName();
     if (isAdmin) this.loadUsers();
@@ -206,11 +211,45 @@ export default class CatalogsController extends Controller {
   private memberIds(): string[] { return (this.vm().getProperty("/catalogs/membersSnapshot") || []).map((m: any) => m.modelId); }
   private excludedIds(): string[] { return (this.vm().getProperty("/catalogs/exclusionsSnapshot") || []).map((x: any) => x.modelId); }
   private loadParentName(): void {
-    if (!this.selected?.parent_ID) { this.vm().setProperty("/catalogs/parentName", this.selected?.isDefault ? "—" : "— (root)"); return; }
+    if (!this.selected?.parent_ID) { this.vm().setProperty("/catalogs/parentName", this.selected?.isDefault ? "—" : this.text("parentNoneRoot")); return; }
     const cb = this.odata().bindContext(`/ModelCatalogs(${this.selected.parent_ID})`);
     cb.getBoundContext().requestObject().then((p: any) => this.vm().setProperty("/catalogs/parentName", p?.name || this.selected.parent_ID))
       .catch(() => this.vm().setProperty("/catalogs/parentName", this.selected.parent_ID));
   }
+  /**
+   * Every saved team with its catalog and both profile slots (admin): the Assignments tab assigns
+   * them like the users, staged and written by Save (assignTeamCatalog / assignTeamQuotaProfile).
+   */
+  private async loadTeams(): Promise<void> {
+    const id = this.selected?.ID;
+    this.vm().setProperty("/catalogs/teamsSnapshot", []); this.renderTeams();
+    if (!id) return;
+    try {
+      const lb = this.odata().bindList("/Teams", undefined, [], undefined, {
+        $select: "ID,name,entitlementCatalog_ID,quotaProfile_ID,memberQuotaProfile_ID", $orderby: "name", $filter: "IsActiveEntity eq true",
+        $expand: "entitlementCatalog($select=ID,name),quotaProfile($select=ID,name),memberQuotaProfile($select=ID,name)"
+      }) as ODataListBinding;
+      const contexts = await lb.requestContexts(0, 500);
+      if (this.selected?.ID !== id) return;
+      this.vm().setProperty("/catalogs/teamsSnapshot", contexts.map((c): TeamRow => {
+        const t = c.getObject() as any;
+        return {
+          ID: t.ID, name: t.name,
+          catalogId: t.entitlementCatalog_ID ?? null, catalogName: t.entitlementCatalog?.name ?? null,
+          poolProfileId: t.quotaProfile_ID ?? null, poolProfileName: t.quotaProfile?.name ?? null,
+          memberProfileId: t.memberQuotaProfile_ID ?? null, memberProfileName: t.memberQuotaProfile?.name ?? null
+        };
+      }));
+      this.renderTeams();
+    } catch (err: any) {
+      if (this.selected?.ID === id) MessageBox.error(err?.message || String(err));
+    }
+  }
+  private renderTeams(): void {
+    const rows = (this.vm().getProperty("/catalogs/teamsSnapshot") as TeamRow[] | undefined) || [];
+    this.vm().setProperty("/catalogs/teams", this.selected ? mergeTeams(rows, this.pending, { ID: this.selected.ID, name: this.selected.name }) : []);
+  }
+
   public loadUsers(): void {
     const b = this.odata().bindContext("/libraryUsers(...)");
     b.invoke().then(() => { const r = b.getBoundContext().getObject() as any; this.setUsers(r.value || []); }).catch(() => this.setUsers([]));
@@ -237,7 +276,7 @@ export default class CatalogsController extends Controller {
   }
   private applyUserQuery(): void {
     const query = (this.vm().getProperty("/catalogs/userQuery") as string) || "";
-    const rows = filterUsers(this.vm().getProperty("/catalogs/allUsers") || [], query);
+    const rows = filterUsers((this.vm().getProperty("/catalogs/allUsers") as UserRow[] | undefined) || [], query);
     this.vm().setProperty("/catalogs/users", this.selected ? mergeUsers(rows, this.pending, { ID: this.selected.ID, name: this.selected.name }) : rows);
     // Re-filling the rows drops the table's selection, so the toolbar's counters must follow.
     this.clearUserSelection();
@@ -271,13 +310,13 @@ export default class CatalogsController extends Controller {
    */
   public onAssignSelected(): void {
     const rows = this.selectedUserRows().filter(r => r.email);
-    if (!rows.length) { MessageToast.show("Select users first"); return; }
+    if (!rows.length) { MessageToast.show(this.text("selectUsersFirst")); return; }
     for (const r of rows) this.pending = stageAssign(this.pending, r.email, this.selected.ID, r.catalogId ?? null);
     this.afterStaging();
   }
   public onUnassignSelected(): void {
     const rows = this.selectedUserRows().filter(r => r.email && r.effectiveCatalogId);
-    if (!rows.length) { MessageToast.show("Select assigned users first"); return; }
+    if (!rows.length) { MessageToast.show(this.text("selectAssignedUsersFirst")); return; }
     for (const r of rows) this.pending = stageAssign(this.pending, r.email, null, r.catalogId ?? null);
     this.afterStaging();
   }
@@ -291,6 +330,42 @@ export default class CatalogsController extends Controller {
     this.pending = stageAssign(this.pending, row.email, null, row.catalogId ?? null);
     this.afterStaging();
   }
+  // ---- team assignments (admin): staged, written by Save ----
+  /** The team row a button sits on, with what the server holds for it. */
+  private teamOf(e: any): { row: any; stored: TeamRow | undefined } {
+    const row = e.getSource().getBindingContext("viewModel").getObject();
+    const stored = ((this.vm().getProperty("/catalogs/teamsSnapshot") as TeamRow[]) || []).find((t) => t.ID === row.ID);
+    return { row, stored };
+  }
+  private stageTeam(row: any, stored: TeamRow | undefined, slot: TeamSlot, target: string | null): void {
+    const current = slot === "catalog" ? stored?.catalogId : slot === "pool" ? stored?.poolProfileId : stored?.memberProfileId;
+    this.pending = stageTeamAssign(this.pending, { teamId: row.ID, name: row.name }, slot, target, current ?? null);
+    this.afterStaging();
+  }
+  /** Asks which profile slot (pool or member) a team assignment is for; `slots` are the choices offered. */
+  private pickSlot(question: string, slots: TeamSlot[], then: (slot: TeamSlot) => void): void {
+    if (slots.length === 1) { then(slots[0]); return; }
+    const pool = this.text("asPoolProfile"), member = this.text("asMemberProfile");
+    MessageBox.confirm(question, {
+      actions: [pool, member, MessageBox.Action.CANCEL], emphasizedAction: pool,
+      onClose: (action: string) => { if (action === pool) then("pool"); else if (action === member) then("member"); }
+    });
+  }
+  public onAssignTeam(e: any): void {
+    const { row, stored } = this.teamOf(e);
+    const id = this.selected.ID;
+    if (this.selectedKind !== "profiles") { this.stageTeam(row, stored, "catalog", id); return; }
+    const free = (["pool", "member"] as TeamSlot[]).filter((s) => (s === "pool" ? row.poolProfileId : row.memberProfileId) !== id);
+    this.pickSlot(this.text("assignSlotQuestion", [this.selected.name, row.name]), free, (slot) => this.stageTeam(row, stored, slot, id));
+  }
+  public onUnassignTeam(e: any): void {
+    const { row, stored } = this.teamOf(e);
+    if (this.selectedKind !== "profiles") { this.stageTeam(row, stored, "catalog", null); return; }
+    const id = this.selected.ID;
+    const held = (["pool", "member"] as TeamSlot[]).filter((s) => (s === "pool" ? row.poolProfileId : row.memberProfileId) === id);
+    this.pickSlot(this.text("unassignSlotQuestion", [this.selected.name, row.name]), held, (slot) => this.stageTeam(row, stored, slot, null));
+  }
+
   public onTabSelect(): void { /* content is preloaded on select */ }
 
   // ---- create / update / delete ----
@@ -313,11 +388,11 @@ export default class CatalogsController extends Controller {
   public onCancelNewCatalog(): void { this.newDialog?.close(); }
   public onCreateCatalog(): void {
     const n = this.vm().getProperty("/catalogs/new");
-    if (!n.name?.trim()) { MessageToast.show("Name is required"); return; }
+    if (!n.name?.trim()) { MessageToast.show(this.text("nameRequired")); return; }
     const list = this.byId("catalogList") as List;
     const binding = list.getBinding("items") as any;
     const ctx = binding.create({ name: n.name.trim(), description: n.description || "" }, true);
-    ctx.created().then(() => { MessageToast.show("Catalog created"); this.newDialog?.close(); binding.refresh(); })
+    ctx.created().then(() => { MessageToast.show(this.text("catalogCreated")); this.newDialog?.close(); binding.refresh(); })
       .catch((err: any) => MessageBox.error(err?.message || String(err)));
   }
 
@@ -337,12 +412,12 @@ export default class CatalogsController extends Controller {
   public onCancelNewProfile(): void { this.newProfileDialog?.close(); }
   public onCreateProfile(): void {
     const n = this.vm().getProperty("/catalogs/newProfile");
-    if (!n.name?.trim()) { MessageToast.show("Name is required"); return; }
+    if (!n.name?.trim()) { MessageToast.show(this.text("nameRequired")); return; }
     const binding = (this.byId("profileList") as List).getBinding("items") as any;
     const ctx = binding.create({ name: n.name.trim(), description: n.description || "" }, true);
     // The CREATE response does not carry assignedUsers (it is counted in the service's after-READ),
     // so the new row would show no count at all until the list is read again.
-    ctx.created().then(() => { MessageToast.show("Quota profile created"); this.newProfileDialog?.close(); binding.refresh(); })
+    ctx.created().then(() => { MessageToast.show(this.text("profileCreated")); this.newProfileDialog?.close(); binding.refresh(); })
       .catch((err: any) => MessageBox.error(err?.message || String(err)));
   }
 
@@ -352,12 +427,12 @@ export default class CatalogsController extends Controller {
     const count = pendingCount(this.pending);
     const headerPending = this.headerEdited || this.odata().hasPendingChanges(HEADER_GROUP);
     this.vm().setProperty("/catalogs/pendingCount", count);
-    this.vm().setProperty("/catalogs/pendingText", pendingSummary(this.pending));
+    this.vm().setProperty("/catalogs/pendingText", pendingSummary(this.pending, (key, args) => this.text(key, args)));
     this.vm().setProperty("/catalogs/dirty", !this.saveInFlight && (headerPending || count > 0));
   }
   /** After a click staged something: the tables show it, the footer counts it. */
   private afterStaging(): void {
-    this.renderMembers(); this.renderExclusions(); this.applyUserQuery();
+    this.renderMembers(); this.renderExclusions(); this.applyUserQuery(); this.renderTeams();
     this.refreshDirty();
   }
   private resetPending(): void {
@@ -419,7 +494,7 @@ export default class CatalogsController extends Controller {
           const raw = Messaging.getMessageModel().getData() as UiMessage[];
           const reported = serverErrors(raw, path);
           const detail = serverErrorText(raw, path);
-          MessageBox.error(`The ${this.selectedKind === "profiles" ? "profile" : "catalog"} was not saved.${detail ? `\n${detail}` : ""}\nYour changes are still here — try Save again.`);
+          MessageBox.error(this.text(this.selectedKind === "profiles" ? "notSavedProfile" : "notSavedCatalog", [detail ? `\n${detail}` : ""]));
           if (reported.length) Messaging.removeMessages(reported as any);
           return;
         }
@@ -428,21 +503,22 @@ export default class CatalogsController extends Controller {
         this.refreshListRow();
       }
       if (pendingCount(this.pending) > 0) {
-        const { remaining, failed, results } = await applyPending(this.pending, this.invokers());
+        const { remaining, failed, results } = await applyPending(this.pending, this.invokers(), (key, args) => this.text(key, args));
         this.pending = remaining;
-        MessageToast.show(saveSummary(results));
+        MessageToast.show(saveSummary(results, (key, args) => this.text(key, args)));
         if (failed.length) {
-          MessageBox.error(`Not saved — still pending:\n${failed.map(f => `${f.step}: ${f.message}`).join("\n")}`);
+          MessageBox.error(this.text("notSavedStillPending", [failed.map(f => `${f.step}: ${f.message}`).join("\n")]));
         }
+        if (this.vm().getProperty("/isAdmin")) this.loadTeams();
         if (this.selectedKind === "profiles") {
-          // the row's "n users" is counted server-side, so it only changes once the list is read again
+          // the row's "n users, m teams" is counted server-side, so it only changes once the list is read again
           this.loadProfileUsers(); this.refreshListRow();
         } else {
           this.loadMembers(); this.loadExclusions(); this.refreshEntitlement();
           if (this.vm().getProperty("/isAdmin")) this.loadUsers();
         }
       } else {
-        MessageToast.show("Saved");
+        MessageToast.show(this.text("saved"));
       }
     } finally {
       this.saveInFlight = false;
@@ -466,6 +542,9 @@ export default class CatalogsController extends Controller {
       await b.invoke();
       return b.getBoundContext().getObject() as any;
     };
+    const assignTeam = (teamId: string, slot: TeamSlot, target: string | null) => slot === "catalog"
+      ? unbound("assignTeamCatalog", { teamId, catalogId: target })
+      : unbound("assignTeamQuotaProfile", { teamId, profileId: target, slot });
     if (this.selectedKind === "profiles") {
       // A profile holds no models, so nothing stages the four model steps for one; they are here
       // because applyPending takes one set of invokers, and they must never pass silently.
@@ -474,16 +553,18 @@ export default class CatalogsController extends Controller {
         addModels: never("Adding models"), removeModels: never("Removing models"),
         excludeModels: never("Excluding models"), includeModels: never("Including models"),
         assignCatalog: (email: string, profileId: string) => unbound("assignQuotaProfile", { email, profileId }),
-        unassignCatalog: (email: string) => unbound("unassignQuotaProfile", { email })
+        unassignCatalog: (email: string) => unbound("unassignQuotaProfile", { email }),
+        assignTeam
       };
     }
     return {
       addModels: (modelIds: string[]) => bound("addModels", { modelIds }),
       removeModels: (modelIds: string[]) => bound("removeModels", { modelIds }),
-      excludeModels: (rows: PendingModel[]) => bound("excludeModels", { modelIds: rows.map(r => r.modelId), reason: rows[0]?.reason || "Excluded in the Model Library" }),
+      excludeModels: (rows: PendingModel[]) => bound("excludeModels", { modelIds: rows.map(r => r.modelId), reason: rows[0]?.reason || EXCLUDED_REASON }),
       includeModels: (modelIds: string[]) => bound("includeModels", { modelIds }),
       assignCatalog: (email: string, catalogId: string) => unbound("assignCatalog", { email, catalogId }),
-      unassignCatalog: (email: string) => unbound("unassignCatalog", { email })
+      unassignCatalog: (email: string) => unbound("unassignCatalog", { email }),
+      assignTeam
     };
   }
 
@@ -512,7 +593,7 @@ export default class CatalogsController extends Controller {
     // its way.
     try { this.odata().resetChanges(HEADER_GROUP); } catch { /* a save for this group is in flight */ }
     this.resetPending();
-    this.renderMembers(); this.renderExclusions(); this.applyUserQuery();
+    this.renderMembers(); this.renderExclusions(); this.applyUserQuery(); this.renderTeams();
   }
 
   /**
@@ -531,11 +612,15 @@ export default class CatalogsController extends Controller {
       proceed();
       return;
     }
-    MessageBox.warning(UNSAVED_WARNING[this.selectedKind], {
-      actions: [DISCARD_ACTION, MessageBox.Action.CANCEL],
-      emphasizedAction: DISCARD_ACTION,
+    // The non-cancelling action doubles as its own button label; computing it once keeps the
+    // label and the comparison in the same language. The OPA journeys run in English, where it is
+    // "Discard" verbatim, as before.
+    const discardAction = this.text("discard");
+    MessageBox.warning(this.text(this.selectedKind === "profiles" ? "unsavedProfile" : "unsavedCatalog"), {
+      actions: [discardAction, MessageBox.Action.CANCEL],
+      emphasizedAction: discardAction,
       onClose: (action: string) => {
-        if (action !== DISCARD_ACTION) { onCancel?.(); return; }
+        if (action !== discardAction) { onCancel?.(); return; }
         this.discardAll();
         proceed();
       }
@@ -545,9 +630,9 @@ export default class CatalogsController extends Controller {
   public onDeleteCatalog(): void {
     // A DELETE must not race the header PATCH that Save just sent: the guard treats an in-flight
     // save as clean (isCatalogClean), so it would let the delete through without a word.
-    if (this.saveInFlight) { MessageToast.show("Wait for the save to finish"); return; }
+    if (this.saveInFlight) { MessageToast.show(this.text("waitForSave")); return; }
     this.confirmDiscard(() => {
-      MessageBox.confirm(`Delete catalog "${this.selected.name}"?`, { onClose: (a: string) => {
+      MessageBox.confirm(this.text("deleteCatalogConfirm", [this.selected.name]), { onClose: (a: string) => {
         if (a !== MessageBox.Action.OK) return;
         const ctx = this.detailContext();
         // "$auto" explicitly: Context#delete falls back to the *binding's* update group when
@@ -556,19 +641,19 @@ export default class CatalogsController extends Controller {
         // submits. The DELETE would sit in the queue, the promise would never settle, and the
         // queued deletion would itself count as a pending change, so the next navigation would
         // offer to "discard" the delete.
-        ctx.delete("$auto").then(() => { MessageToast.show("Catalog deleted"); this.selectedItem = null; this.onCloseDetail(); (this.byId("catalogList") as List).getBinding("items")?.refresh(); }).catch((err: any) => MessageBox.error(err?.message || String(err)));
+        ctx.delete("$auto").then(() => { MessageToast.show(this.text("catalogDeleted")); this.selectedItem = null; this.onCloseDetail(); (this.byId("catalogList") as List).getBinding("items")?.refresh(); }).catch((err: any) => MessageBox.error(err?.message || String(err)));
       } });
     });
   }
 
   /** The same delete, with the server's 409 as the answer when somebody is still assigned. */
   public onDeleteProfile(): void {
-    if (this.saveInFlight) { MessageToast.show("Wait for the save to finish"); return; }
+    if (this.saveInFlight) { MessageToast.show(this.text("waitForSave")); return; }
     this.confirmDiscard(() => {
-      MessageBox.confirm(`Delete quota profile "${this.selected.name}"?`, { onClose: (a: string) => {
+      MessageBox.confirm(this.text("deleteProfileConfirm", [this.selected.name]), { onClose: (a: string) => {
         if (a !== MessageBox.Action.OK) return;
         this.detailContext().delete("$auto")
-          .then(() => { MessageToast.show("Quota profile deleted"); this.selectedItem = null; this.onCloseDetail(); (this.byId("profileList") as List).getBinding("items")?.refresh(); })
+          .then(() => { MessageToast.show(this.text("profileDeleted")); this.selectedItem = null; this.onCloseDetail(); (this.byId("profileList") as List).getBinding("items")?.refresh(); })
           .catch((err: any) => MessageBox.error(err?.message || String(err)));
       } });
     });
@@ -596,7 +681,7 @@ export default class CatalogsController extends Controller {
       filter = modelIdNotIn([...this.excludedIds(), ...this.pending.exclude.map(x => x.modelId)]);
     }
     (this.picker.getBinding("items") as ODataListBinding).changeParameters({ $filter: filter });
-    this.picker.setTitle(mode === "exclude" ? "Exclude models from the default catalog" : "Add models");
+    this.picker.setTitle(mode === "exclude" ? this.text("excludeModelsTitle") : this.text("addModels"));
     this.picker.open();
   }
   public onAddMembers(): void { this.openPicker("members"); }
@@ -609,21 +694,21 @@ export default class CatalogsController extends Controller {
     const rows: PendingModel[] = (e.getParameter("selectedContexts") || []).map((c: any) => ({ modelId: c.getProperty("modelId"), displayName: c.getProperty("displayName") }));
     if (!rows.length) return;
     this.pending = this.pickerMode === "exclude"
-      ? stageExclude(this.pending, rows.map(r => ({ ...r, reason: "Excluded in the Model Library" })), this.excludedIds())
+      ? stageExclude(this.pending, rows.map(r => ({ ...r, reason: EXCLUDED_REASON })), this.excludedIds())
       : stageAdd(this.pending, rows, this.memberIds());
     this.afterStaging();
   }
   public onRemoveMembers(): void {
     const t = this.byId("membersTable") as Table;
     const ids = t.getSelectedContexts().map(c => (c.getObject() as any).modelId);
-    if (!ids.length) { MessageToast.show("Select models first"); return; }
+    if (!ids.length) { MessageToast.show(this.text("selectModelsFirst")); return; }
     this.pending = stageRemove(this.pending, ids, this.memberIds());
     this.afterStaging();
   }
   public onInclude(): void {
     const t = this.byId("exclusionsTable") as Table;
     const ids = t.getSelectedContexts().map(c => (c.getObject() as any).modelId);
-    if (!ids.length) { MessageToast.show("Select exclusions first"); return; }
+    if (!ids.length) { MessageToast.show(this.text("selectExclusionsFirst")); return; }
     this.pending = stageInclude(this.pending, ids, this.excludedIds());
     this.afterStaging();
   }

@@ -35,7 +35,10 @@ function itemId(prefix: string): string {
 }
 
 export interface StreamTranslatorOptions {
+  /** The client-facing model name, echoed as `response.model`. */
   model: string;
+  /** The model SAP is asked for; decides the usage regime (`cacheRegimeFor`). */
+  sapModel: string;
   responseId: string;
 }
 
@@ -164,13 +167,13 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
     output,
     // Must agree with responseTranslator.ts's usage shape — a client reading
     // either path reads the same fields (previously established by review). It
-    // is now literally the same function, so the two cannot drift: the exclusive
+    // is now literally the same function, so the two cannot drift: the per-model
     // -> inclusive conversion and the zero-fill both live in translateUsage, and
     // the zero-fill is just translateUsage of nothing.
     usage: usage
-      ? translateUsage(usage)
+      ? translateUsage(usage, opts.sapModel)
       : zeroFillIfMissing
-        ? translateUsage(undefined)
+        ? translateUsage(undefined, opts.sapModel)
         : undefined,
     error: null,
   });

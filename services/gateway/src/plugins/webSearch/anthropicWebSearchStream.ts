@@ -45,6 +45,7 @@ import {
   WEB_SEARCH_TOOL_NAME,
   buildWebSearchToolResultContent,
 } from './webSearchTool';
+import { currentSapTarget } from '../../sap/sapTarget';
 
 /**
  * One continuation round's own token usage, in Anthropic's wire field names —
@@ -381,7 +382,7 @@ export function installWebSearchStreamInterception(
         headers: {
           Authorization: `Bearer ${opts.authToken}`,
           'Content-Type': 'application/json',
-          'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+          'AI-Resource-Group': currentSapTarget().resourceGroup,
         },
         responseType: 'stream',
         timeout: opts.timeoutMs,

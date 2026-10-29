@@ -29,6 +29,26 @@ service ValidationService {
       responseTime: Integer;
       statusCode: Integer;
       endpoint: String; // Add endpoint field for better granularity
+      // Every optional field the gateway's UsageEvent carries: CAP rejects the whole call with
+      // 400 for any member a struct does not declare.
+      cacheCreationInputTokens: Integer;
+      cacheReadInputTokens: Integer;
+      imageInputTokens: Integer;
+      imageOutputTokens: Integer;
+      audioInputTokens: Integer;
+      audioOutputTokens: Integer;
+      usageEstimated: Boolean;
+      onBehalfOf: String(255); // the cockpit user a service key acted for (Grounding); honoured for service keys only
+      teamId: String;
+      unit: String(6);         // tokens | cells | units
+      userAgent: String;
+      tools: array of {
+        identity: String;
+        facet: String;
+        count: Integer;
+        decision: String;
+        reason: String;
+      };
     }
   ) returns {
     processed: Integer;
@@ -212,7 +232,13 @@ service ValidationService {
     method: String(10) @mandatory,
     endpoint: String(200) @mandatory,
     headers: String(2000), // JSON string
-    signature: String(200) // Required for AWS credentials
+    signature: String(200), // Required for AWS credentials
+    // AWS only: the SigV4 scopes to return signing keys for (at most 4, date within a day of today UTC)
+    signingScopes: array of {
+      date: String(8); // YYYYMMDD
+      region: String(32);
+      service: String(32);
+    }
   ) returns {
     token: String(2000);
     expiresAt: Integer;
@@ -235,7 +261,13 @@ service ValidationService {
       email: String(255);
       // For AWS Credentials  
       credentialId: String(36);
-      secretAccessKey: String(255); // Critical for AWS SigV4 validation
+      // hex(kSigning) per requested signingScope; the secret itself is never returned
+      signingKeys: array of {
+        date: String(8);
+        region: String(32);
+        service: String(32);
+        ![key]: String(64); // ![] because key is a CDS keyword
+      };
       region: String(20);
       sapAiRegion: String(50);
       userId: String(255);
@@ -261,6 +293,8 @@ service ValidationService {
       code: String(50);
       message: String(200);
       details: String(500);
+      // Row ID of a credential that exists but was refused (inactive/expired); gateway caller only
+      credentialId: String(36);
     };
   };
 
@@ -367,6 +401,17 @@ service ValidationService {
     version: Integer;
     checksum: String(64);
     lastModified: Timestamp;
+    error: String(500);
+  };
+
+  /**
+   * The Connections snapshot (spec 2026-10-23 §4.2): active connections with their DECRYPTED
+   * credentials and published models. Answers the gateway's service JWT only (403 otherwise);
+   * the gateway keeps it in memory and refetches on the connections-changed marker.
+   */
+  function getConnections() returns {
+    success: Boolean;
+    snapshot: {};  // { connections: SnapshotConnection[] } - services/connectionSnapshot.ts
     error: String(500);
   };
 

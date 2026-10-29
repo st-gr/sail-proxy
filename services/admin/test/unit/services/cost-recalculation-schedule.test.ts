@@ -6,7 +6,7 @@
  * activation re-arms the schedule without triggering a run.
  */
 jest.mock('@sap/cds', () => ({ connect: { to: jest.fn(async () => ({})) } }));
-jest.mock('../../../src/services/sapCapacityService', () => ({ getCacheBillingFactors: () => ({ read: 1, write: 1 }), isProductive: () => true, cuFactor: () => 1 }));
+jest.mock('../../../src/services/sapCapacityService', () => ({ cacheBillingFactorsByProvider: () => new Map(), isProductive: () => true, cuFactor: () => 1 }));
 jest.mock('../../../../../libs/logger', () => ({ getDefaultLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) }));
 jest.mock('../../../src/services/usageCounters', () => ({ rebuild: jest.fn(async () => ({ users: 0, buckets: 0, durationMs: 0 })) }));
 jest.mock('../../../src/services/userQuotaService', () => ({ republishAll: jest.fn(async () => 0) }));

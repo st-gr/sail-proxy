@@ -85,3 +85,17 @@ describe('respondNotEntitled', () => {
     });
   });
 });
+
+import { normalizeBlock } from '../src/utils/modelEntitlement';
+describe('team catalog on the block', () => {
+  it('normalizeBlock keeps teamCatalogId/Name; the 403 names both catalogs', () => {
+    const block = normalizeBlock({ catalogId: 'c', catalogName: 'Owner', teamCatalogId: 't', teamCatalogName: 'Team', mode: 'list', include: ['a'] } as any);
+    expect(block).toMatchObject({ teamCatalogId: 't', teamCatalogName: 'Team' });
+    const r: any = { status(c: number) { r.code = c; return r; }, json(b: any) { r.body = b; return r; } };
+    respondNotEntitled(r, 'b', block);
+    expect(r.code).toBe(403);
+    expect(r.body.error).toEqual({ type: 'model_not_entitled', message: 'Model b is not in your entitlement catalog "Owner" or your team\'s catalog "Team"', model: 'b', catalog: 'Owner', teamCatalog: 'Team' });
+    respondNotEntitled(r, 'b', normalizeBlock({ catalogId: 'c', catalogName: 'Owner', mode: 'list', include: [] } as any));
+    expect(r.body.error).not.toHaveProperty('teamCatalog');
+  });
+});

@@ -6,7 +6,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny-ingress
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector: {}
   policyTypes:
@@ -17,7 +17,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-nginx-to-gateway
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -38,7 +38,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-nginx-to-oauth2-proxy
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -59,7 +59,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-oauth2-proxy-to-dex
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -80,7 +80,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-apps-to-postgres
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -104,7 +104,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-apps-to-valkey
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -128,7 +128,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-istio-to-nginx
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -149,7 +149,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-dns
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector: {}
   policyTypes:
@@ -167,7 +167,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-admin-comprehensive-egress
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -234,7 +234,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-gateway-egress-to-postgres
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -261,7 +261,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-oauth2-proxy-egress-to-dex
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -288,7 +288,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-nginx-egress
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -336,7 +336,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-istio-sidecar-egress
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector: {}
   policyTypes:
@@ -362,7 +362,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-istio-sidecar-internal
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector: {}
   policyTypes:
@@ -404,7 +404,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-dex-k8s-api
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -431,7 +431,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-nginx-ingress
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -450,7 +450,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-admin-ingress-from-nginx
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:
@@ -471,7 +471,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-gateway-egress-to-nginx
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   podSelector:
     matchLabels:

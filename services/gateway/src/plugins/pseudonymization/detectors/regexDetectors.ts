@@ -173,7 +173,12 @@ function credentialValueValidate(value: string): boolean {
 const DETECTORS: DetectorDef[] = [
   {
     type: 'profile-email',
-    pattern: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g,
+    // Anchored to a run boundary (?<![...]) so a long run of local-part characters is
+    // scanned once instead of retried from every offset inside it — the unanchored
+    // version was O(n^2) on a long class-char run (C4). Any match starting mid-run also
+    // matches from the run's start, so the leftmost match is unchanged; same idiom as
+    // the credential detector below.
+    pattern: /(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g,
   },
   {
     type: 'profile-phone',

@@ -145,7 +145,7 @@ describe('which descriptors get visible field help', () => {
  * rule is only "a URL at the very END is a link": one in the middle of a sentence is prose.
  */
 describe('splitHelpText separates a trailing doc URL from the prose', () => {
-    const URL = 'https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-3-gateway.md#keys';
+    const URL = 'https://st-gr.github.io/sail-proxy/developer/gateway#provider-configuration-keys';
 
     it('splits a description that ends with a URL', () => {
         const result = splitHelpText(`Settings for each provider. Per-provider keys: ${URL}`);

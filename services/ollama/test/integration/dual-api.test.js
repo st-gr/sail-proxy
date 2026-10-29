@@ -6,7 +6,7 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, liveModels } = require('@libs/test-utils');
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 
@@ -58,7 +58,7 @@ describe('Dual API Compatibility Integration', () => {
 
   describe('Chat Completions Comparison', () => {
     const testPrompt = "Say 'API test successful' and nothing else.";
-    const testModel = 'gpt-4.1-nano';
+    const testModel = liveModels.cheapChat;
 
     it('should handle chat in both Ollama and OpenAI formats', async () => {
       // Native Ollama format
@@ -154,7 +154,7 @@ describe('Dual API Compatibility Integration', () => {
       
       // Ollama generate endpoint
       const generateResponse = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt,
         stream: false
       });
@@ -166,7 +166,7 @@ describe('Dual API Compatibility Integration', () => {
       
       // OpenAI chat completion (equivalent)
       const chatResponse = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [{ role: 'user', content: prompt }],
         stream: false
       });
@@ -187,7 +187,7 @@ describe('Dual API Compatibility Integration', () => {
       try {
         // Ollama embeddings endpoint
         const ollamaEmbeddings = await axiosInstance.post('/api/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           prompt: text
         });
         
@@ -197,7 +197,7 @@ describe('Dual API Compatibility Integration', () => {
         
         // OpenAI embeddings endpoint
         const openaiEmbeddings = await axiosInstance.post('/v1/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           input: text
         });
         

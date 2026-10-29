@@ -1217,15 +1217,15 @@ describe('the one-line summary on a collapsed map entry', () => {
             containerSchema: section.schema,
             containerData: readPointer(document, MODEL_OVERRIDES_POINTER) as Record<string, unknown>
         });
-        const haiku = entries.filter(entry => entry.key.indexOf('claude-3-haiku') !== -1)[0];
-        const descriptor = mapEntryDescriptor(haiku, apiConfigSchema as any, pluginFor) as any;
+        const model = entries.filter(entry => entry.key === 'anthropic--claude-4-opus--deployed')[0];
+        const descriptor = mapEntryDescriptor(model, apiConfigSchema as any, pluginFor) as any;
 
-        expect(descriptor.summary).toBe(mapEntrySummary(haiku.data, haiku.schema));
+        expect(descriptor.summary).toBe(mapEntrySummary(model.data, model.schema));
         expect(descriptor.summary).toContain('streamingSupported on');
         expect(descriptor.summary.length).toBeLessThanOrEqual(60);
         // An entry with nothing to say carries no key at all, so its header stays a plain title.
         const bare = mapEntryDescriptor(
-            { key: 'empty', pointer: mapEntryPointer(MODEL_OVERRIDES_POINTER, 'empty'), schema: haiku.schema, data: {}, removable: true },
+            { key: 'empty', pointer: mapEntryPointer(MODEL_OVERRIDES_POINTER, 'empty'), schema: model.schema, data: {}, removable: true },
             apiConfigSchema as any,
             pluginFor
         );

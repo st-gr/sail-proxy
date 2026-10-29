@@ -142,10 +142,21 @@ export function replaceEntities(
       const fake = generateFakeValue(match.type, match.original, map);
       // Store in map for reverse lookup
       if (!map.forward.has(match.original)) {
-        map.forward.set(match.original, fake);
-        map.reverse.set(fake, match.original);
+        if (map.reverse.has(fake) && map.reverse.get(fake) !== match.original) {
+          // generateFakeValue's own dedup probing gave up (e.g. a small fixed pool
+          // like the 10 cities, or one of the constant categories such as
+          // '[NATIONALITY]') and would otherwise overwrite the existing reverse
+          // entry, making the earlier original unrecoverable. Fall back to the
+          // content-hash placeholder, which is unique by construction.
+          placeholder = map.getPlaceholder(match.type, match.original, customPrefix);
+        } else {
+          map.forward.set(match.original, fake);
+          map.reverse.set(fake, match.original);
+          placeholder = fake;
+        }
+      } else {
+        placeholder = map.forward.get(match.original)!;
       }
-      placeholder = map.forward.get(match.original)!;
     } else {
       placeholder = map.getPlaceholder(match.type, match.original, customPrefix);
     }

@@ -1,0 +1,22 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:u="sap.ui.unified">
+	<!--
+		Set service key (SAP AI Core). The key comes from a .json file, read in the browser and held in
+		the handler only, or is pasted into a masked input (a JSON text's line breaks are insignificant
+		whitespace, so the single-line input loses nothing). It goes, on OK, straight into the action call
+		(a binding of our own, whose parameters are blanked and which is destroyed afterwards): it is bound
+		to no model, never uploaded by the FileUploader (no uploadUrl) and never logged.
+	-->
+	<Dialog id="dialog" title="{i18n>serviceKey.dialogTitle}" contentWidth="32rem" draggable="false" resizable="false"
+		busy="{dlg>/busy}" busyIndicatorDelay="0" afterClose=".onAfterClose">
+		<VBox class="sapUiSmallMargin">
+			<Text text="{i18n>serviceKey.help}" class="sapUiSmallMarginBottom"/>
+			<Label text="{i18n>serviceKey.file}" labelFor="file"/>
+			<u:FileUploader id="file" fileType="json" sendXHR="false" uploadOnChange="false" width="100%"
+				placeholder="{i18n>serviceKey.filePlaceholder}" change=".onFileChange" typeMissmatch=".onTypeMismatch"/>
+			<Label text="{i18n>serviceKey.paste}" labelFor="paste" class="sapUiSmallMarginTop"/>
+			<Input id="paste" type="Password" liveChange=".onPasteChange" submit=".onOk"/>
+		</VBox>
+		<beginButton><Button text="{i18n>credential.save}" type="Emphasized" press=".onOk"/></beginButton>
+		<endButton><Button text="{i18n>cancel}" press=".onCancel"/></endButton>
+	</Dialog>
+</core:FragmentDefinition>

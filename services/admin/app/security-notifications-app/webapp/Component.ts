@@ -1,4 +1,6 @@
 import AppComponent from "sap/fe/core/AppComponent";
+// The list report focuses the first filter field on page ready; the field's delegate must already be loaded or UI5 throws
+import "sap/fe/macros/field/FieldBaseDelegate";
 import JSONModel from "sap/ui/model/json/JSONModel";
 
 /**

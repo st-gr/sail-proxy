@@ -10,49 +10,49 @@ annotate AdminService.ApiKeys with @(
         { 
             $Type: 'UI.DataField', 
             Value: name, 
-            Label: 'Name',
+            Label: '{i18n>common.name}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: email, 
-            Label: 'User Email',
+            Label: '{i18n>apiKeys.userEmail}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: maskedKey, 
-            Label: 'API Key',
+            Label: '{i18n>apiKeys.apiKey}',
             ![@UI.Importance]: #High
         },
         {
             $Type: 'UI.DataField',
             Value: isActive,
-            Label: 'Active',
+            Label: '{i18n>common.active}',
             ![@UI.Importance]: #High
         },
         {
             $Type: 'UI.DataField',
             Value: expiresAt,
-            Label: 'Expires At',
+            Label: '{i18n>common.expiresAt}',
             ![@UI.Importance]: #Medium
         },
         {
             $Type: 'UI.DataField',
             Value: neverExpires,
-            Label: 'Never Expires',
+            Label: '{i18n>common.neverExpires}',
             ![@UI.Importance]: #Medium
         },
         {
             $Type: 'UI.DataField',
             Value: lastUsed,
-            Label: 'Last Used',
+            Label: '{i18n>common.lastUsed}',
             ![@UI.Importance]: #Low
         },
         {
             $Type: 'UI.DataField',
             Value: createdAt,
-            Label: 'Created',
+            Label: '{i18n>common.created}',
             ![@UI.Importance]: #Low
         }
     ],
@@ -69,8 +69,8 @@ annotate AdminService.ApiKeys with @(
 annotate AdminService.ApiKeys with @(
     // Header Information
     UI.HeaderInfo: {
-        TypeName: 'API Key',
-        TypeNamePlural: 'API Keys', 
+        TypeName: '{i18n>apiKeys.apiKey}',
+        TypeNamePlural: '{i18n>common.apiKeys}', 
         Title: { Value: name },
         Description: { Value: email },
         ImageUrl: 'sap-icon://key'
@@ -80,7 +80,7 @@ annotate AdminService.ApiKeys with @(
     UI.HeaderFacets: [
         { 
             $Type: 'UI.ReferenceFacet', 
-            Label: 'Status',
+            Label: '{i18n>common.status}',
             Target: '@UI.FieldGroup#HeaderSummary' 
         }
     ],
@@ -89,7 +89,7 @@ annotate AdminService.ApiKeys with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: isActive, 
-                Label: 'Active'
+                Label: '{i18n>common.active}'
             }
         ]
     },
@@ -98,23 +98,23 @@ annotate AdminService.ApiKeys with @(
     UI.Facets: [
         {
             $Type: 'UI.ReferenceFacet',
-            Label: 'Key Information',
+            Label: '{i18n>apiKeys.keyInformation}',
             Target: '@UI.FieldGroup#General'
         },
         {
             $Type: 'UI.ReferenceFacet', 
             Target: '@UI.FieldGroup#Security',
-            Label: 'Usage Details'
+            Label: '{i18n>apiKeys.usageDetails}'
         },
         {
             $Type: 'UI.ReferenceFacet',
-            Label: 'Rate Limits',
+            Label: '{i18n>common.rateLimits}',
             Target: '@UI.FieldGroup#RateLimits'
         },
         {
             $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#Metadata', 
-            Label: 'Record Information'
+            Label: '{i18n>common.recordInformation}'
         }
     ],
     
@@ -124,35 +124,37 @@ annotate AdminService.ApiKeys with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: name,
-                Label: 'Key Name'
+                Label: '{i18n>apiKeys.keyName}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: email,
-                Label: 'User Email'
+                Label: '{i18n>apiKeys.userEmail}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: isActive,
-                Label: 'Active'
+                Label: '{i18n>common.active}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: expiresAt,
-                Label: 'Expires At',
+                Label: '{i18n>common.expiresAt}',
                 ![@UI.Importance]: #Medium
             },
             {
                 $Type: 'UI.DataField',
                 Value: neverExpires,
-                Label: 'Never Expires',
+                Label: '{i18n>common.neverExpires}',
                 ![@UI.Importance]: #Medium
             },
             {
                 $Type: 'UI.DataField',
                 Value: key,
-                Label: 'API Key (Full)'
-            }
+                Label: '{i18n>apiKeys.apiKeyFull}'
+            },
+            { $Type: 'UI.DataField', Value: effectiveTeamName, Label: '{i18n>teams.effectiveTeam}' },
+            { $Type: 'UI.DataField', Value: followsPrimaryTeam, Label: '{i18n>teams.followsPrimaryTeam}' }
         ]
     },
     
@@ -162,28 +164,28 @@ annotate AdminService.ApiKeys with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: lastUsed,
-                Label: 'Last Used'
+                Label: '{i18n>common.lastUsed}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: usageCount,
-                Label: 'Usage Count'
+                Label: '{i18n>common.usageCount}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: createdBy,
-                Label: 'Created By'
+                Label: '{i18n>common.createdBy}'
             }
         ]
     },
 
     // Rate Limits Field Group (spec §4) - read-only, changed only through setRateLimits
     UI.FieldGroup#RateLimits: { Data: [
-        { $Type: 'UI.DataField', Value: requestsPerMinute, Label: 'Requests per Minute' },
-        { $Type: 'UI.DataField', Value: requestsPerHour, Label: 'Requests per Hour' },
-        { $Type: 'UI.DataField', Value: requestsPerDay, Label: 'Requests per Day' },
-        { $Type: 'UI.DataField', Value: ownerRequestsPerMinuteText, Label: 'Owner''s Limit per Minute' },
-        { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: 'Set Rate Limits' }
+        { $Type: 'UI.DataField', Value: requestsPerMinute, Label: '{i18n>common.requestsPerMinute}' },
+        { $Type: 'UI.DataField', Value: requestsPerHour, Label: '{i18n>common.requestsPerHour}' },
+        { $Type: 'UI.DataField', Value: requestsPerDay, Label: '{i18n>common.requestsPerDay}' },
+        { $Type: 'UI.DataField', Value: ownerRequestsPerMinuteText, Label: '{i18n>common.ownerLimitPerMinute}' },
+        { $Type: 'UI.DataFieldForAction', Action: 'AdminService.setRateLimits', Label: '{i18n>common.setRateLimits}' }
     ] },
     
     // Metadata Field Group  
@@ -192,22 +194,22 @@ annotate AdminService.ApiKeys with @(
             {
                 $Type: 'UI.DataField',
                 Value: toolPolicy_ID,
-                Label: 'Tool Policy'
+                Label: '{i18n>common.toolPolicy}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: createdAt,
-                Label: 'Created At'
+                Label: '{i18n>common.createdAt}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: modifiedAt,
-                Label: 'Modified At' 
+                Label: '{i18n>common.modifiedAt}' 
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: modifiedBy,
-                Label: 'Modified By'
+                Label: '{i18n>common.modifiedBy}'
             }
         ]
     },
@@ -217,12 +219,12 @@ annotate AdminService.ApiKeys with @(
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.rotateApiKey', 
-            Label: 'Rotate API Key'
+            Label: '{i18n>apiKeys.rotateApiKey}'
         },
         {
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.setRateLimits',
-            Label: 'Set Rate Limits'
+            Label: '{i18n>common.setRateLimits}'
         }
     ]
 );
@@ -234,14 +236,14 @@ annotate AdminService.ApiKeys with @(
 annotate AdminService.ApiKeys with {
     // Core Identity Fields
     name @(
-        Common.Label: 'API Key Name',
+        Common.Label: '{i18n>apiKeys.name}',
         Common.FieldControl: #Mandatory,
         UI.MultiLineText: false
     );
     
     // User Identity (role-based editability) - field control handled in TypeScript handlers
     email @(
-        Common.Label: 'User Email',
+        Common.Label: '{i18n>apiKeys.userEmail}',
         UI.MultiLineText: false,
         Communication.IsEmailAddress: true
     );
@@ -249,79 +251,81 @@ annotate AdminService.ApiKeys with {
     // API Key - full key - computed/immutable (read-only but visible)
     ![key] @(
         Core.Computed: true,
-        Common.Label: 'API Key (Full)',
+        Common.Label: '{i18n>apiKeys.apiKeyFull}',
         UI.MultiLineText: false
     );
     
     // Masked API Key - for List Report display (computed/read-only)
     maskedKey @(
         Core.Computed: true,
-        Common.Label: 'API Key',
+        Common.Label: '{i18n>apiKeys.apiKey}',
         UI.MultiLineText: false
     );
     
     // Status - field control handled in TypeScript handlers
     isActive @(
-        Common.Label: 'Active',
+        Common.Label: '{i18n>common.active}',
         UI.TextArrangement: #TextOnly,
         Common.FieldControl: isActiveFC
     );
 
     expiresAt @(
-        Common.Label: 'Expires At',
+        Common.Label: '{i18n>common.expiresAt}',
         Common.FieldControl: expiresAtFC
     );
 
     // Never expires - administrators only (FieldControl 1 renders the checkbox read-only
     // for everyone else). When set, the key ignores Expires At entirely.
     neverExpires @(
-        Common.Label: 'Never Expires',
+        Common.Label: '{i18n>common.neverExpires}',
         Common.FieldControl: neverExpiresFC
     );
 
-    lockedByUserDeactivation @(Common.Label: 'Locked by Deactivation', Common.FieldControl: #ReadOnly);
+    lockedByUserDeactivation @(Common.Label: '{i18n>common.lockedByDeactivation}', Common.FieldControl: #ReadOnly);
 
     // Per-credential rate limits (spec §4), enforced by the gateway alongside the user-level limit.
-    requestsPerMinute @(Common.Label: 'Requests per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential; the owner''s user-level limit (below) applies as well. Empty = no per-credential limit. Change with Set Rate Limits.');
-    requestsPerHour @(Common.Label: 'Requests per Hour', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
-    requestsPerDay @(Common.Label: 'Requests per Day', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'Enforced by the gateway per credential. Empty = no per-credential limit. Change with Set Rate Limits.');
-    ownerRequestsPerMinuteText @(Common.Label: 'Owner''s Limit per Minute', Common.FieldControl: #ReadOnly, Common.QuickInfo: 'The requests-per-minute limit of the key''s owner, applied on top of this key''s own limits: their own constraint, else their quota profile, else the platform default. Change it in Users & Quotas or Entitlements & Quotas.');
+    requestsPerMinute @(Common.Label: '{i18n>common.requestsPerMinute}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerMinuteInfo}');
+    requestsPerHour @(Common.Label: '{i18n>common.requestsPerHour}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerPeriodInfo}');
+    requestsPerDay @(Common.Label: '{i18n>common.requestsPerDay}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>common.requestsPerPeriodInfo}');
+    effectiveTeamName @(Common.Label: '{i18n>teams.effectiveTeam}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>teams.effectiveTeamInfo}');
+    followsPrimaryTeam @(Common.Label: '{i18n>teams.followsPrimaryTeam}', Common.FieldControl: #ReadOnly);
+    ownerRequestsPerMinuteText @(Common.Label: '{i18n>common.ownerLimitPerMinute}', Common.FieldControl: #ReadOnly, Common.QuickInfo: '{i18n>apiKeys.ownerLimitPerMinuteInfo}');
 
     toolPolicy @(
-        Common.Label: 'Tool Policy',
+        Common.Label: '{i18n>common.toolPolicy}',
         Common.FieldControl: #ReadOnly,
         Common.Text: toolPolicy.name, Common.TextArrangement: #TextOnly,
-        Common.QuickInfo: 'A key-level policy narrows its owner''s policy; set in Tool Policies (Assign API Key). Empty = the owner''s policy alone.'
+        Common.QuickInfo: '{i18n>apiKeys.toolPolicyInfo}'
     );
 
     // System Metadata - all read-only
     createdAt @(
-        Common.Label: 'Created At',
+        Common.Label: '{i18n>common.createdAt}',
         Common.FieldControl: #ReadOnly
     );
     
     modifiedAt @(
-        Common.Label: 'Last Modified',
+        Common.Label: '{i18n>common.lastModified}',
         Common.FieldControl: #ReadOnly
     );
     
     createdBy @(
-        Common.Label: 'Created By',
+        Common.Label: '{i18n>common.createdBy}',
         Common.FieldControl: #ReadOnly
     );
     
     modifiedBy @(
-        Common.Label: 'Modified By', 
+        Common.Label: '{i18n>common.modifiedBy}', 
         Common.FieldControl: #ReadOnly
     );
     
     lastUsed @(
-        Common.Label: 'Last Used',
+        Common.Label: '{i18n>common.lastUsed}',
         Common.FieldControl: #ReadOnly
     );
     
     usageCount @(
-        Common.Label: 'Total Usage',
+        Common.Label: '{i18n>common.totalUsage}',
         Common.FieldControl: #ReadOnly
     );
 };

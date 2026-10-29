@@ -12,6 +12,7 @@
  * for the binding rules this file implements.
  */
 import { mapCachedTokens } from '../../responses/orchestrationBridge/cacheBreakpoints';
+import { wholePromptTokens } from '../../utils/usageFolding';
 
 /**
  * `finish_reason` → Gemini's `finishReason` enum.
@@ -41,12 +42,16 @@ export function geminiFinishReason(
  * `translateUsage` — an earlier version of this comment claimed the opposite
  * and the numbers on the wire were wrong for it.
  *
- * SAP orchestration counts EXCLUSIVE: `prompt_tokens` holds only the full-rate
- * tokens and the cache read is a separate line item beside it, never inside it
- * (measured; see `foldExclusiveUsage` in ../../utils/usageFolding.ts for the
- * captures). Gemini counts INCLUSIVE: "Number of tokens in the prompt. When
- * `cachedContent` is set, this is still the total effective prompt size meaning
- * this includes the number of tokens in the cached content."
+ * SAP orchestration counts per model family (`cacheRegimeFor` in
+ * ../../utils/usageFolding.ts). For Claude and Amazon Nova it is EXCLUSIVE:
+ * `prompt_tokens` holds only the full-rate tokens and the cache read is a separate
+ * line item beside it, never inside it (measured; see `cacheRegimeFor` there for the
+ * captures). For OpenAI-family and Gemini models it is already INCLUSIVE (probe of
+ * 2026-09-30) and passes through unchanged; other families are assumed inclusive
+ * too. The rest of this comment is about the exclusive case. Gemini counts
+ * INCLUSIVE: "Number of tokens in the prompt. When `cachedContent` is set, this is
+ * still the total effective prompt size meaning this includes the number of tokens
+ * in the cached content."
  * (ai.google.dev/api/generate-content, GenerateContentResponse.UsageMetadata.)
  * So the cached count has to be ADDED back into `promptTokenCount` here, or a
  * Gemini client computing "how much of my prompt was cached" reads a cached
@@ -70,7 +75,7 @@ export function geminiFinishReason(
  * activity — that is how a real Gemini response with nothing cached shapes the
  * field.
  */
-export function usageMetadataFromOrchestration(usage: any): {
+export function usageMetadataFromOrchestration(usage: any, modelName: string): {
   promptTokenCount: number;
   candidatesTokenCount: number;
   totalTokenCount: number;
@@ -81,7 +86,7 @@ export function usageMetadataFromOrchestration(usage: any): {
   // of the prompt they belong to; `cachedContentTokenCount` stays the READ count,
   // which is what it means.
   const creationTokens = usage?.prompt_tokens_details?.cache_creation_tokens ?? 0;
-  const promptTokenCount = (usage?.prompt_tokens ?? 0) + cachedTokens + creationTokens;
+  const promptTokenCount = wholePromptTokens(modelName, usage?.prompt_tokens ?? 0, creationTokens, cachedTokens);
   const candidatesTokenCount = usage?.completion_tokens ?? 0;
   const totalTokenCount = promptTokenCount + candidatesTokenCount;
 
@@ -143,7 +148,7 @@ export function orchestrationToGeminiResponse(envelope: any, opts: { modelName: 
 
   return {
     candidates: [{ content: { role: 'model', parts }, finishReason, index: 0 }],
-    usageMetadata: usageMetadataFromOrchestration(body?.usage),
+    usageMetadata: usageMetadataFromOrchestration(body?.usage, opts.modelName),
     modelVersion: opts.modelName,
   };
 }

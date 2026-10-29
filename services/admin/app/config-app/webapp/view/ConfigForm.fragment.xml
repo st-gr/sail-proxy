@@ -8,14 +8,12 @@
         controller/ConfigFormTabs.ts), each holding one collapsible panel per section. `siem`
         renders inside the observability tab, at the pointer it has always had.
 
-        Placement is load-bearing and was established empirically (task 4 findings): this fragment
-        lives in detailDynamicPage -> header -> DynamicPageHeader -> content. Nothing in
-        Main.controller.ts reads, writes or destroys the header aggregation, while everything in
-        f:content is replaced on every selection by _createDetailContentProgrammatically.
-
-        The container is a Panel and must stay one: _ensureDetailContentVisible walks the whole
-        detail page and forces setVisible(true) on every control whose metadata name is exactly
-        "sap.m.VBox", so a VBox here could never be hidden by the toggle.
+        Placement: this fragment lives in detailDynamicPage -> header -> DynamicPageHeader ->
+        content, beside f:content's `detailContent` wrapper (the JSON editor). The configuration's
+        info and validation messages sit in the page title above both. The toggle shows one of the
+        two at a time - this panel through /formViewActive, the wrapper through
+        ConfigForm._setJsonVisible - so neither is rebuilt when the operator switches between them.
+        The header around this panel stays visible in both views (see Main.view.xml at f:header).
     -->
     <Panel id="configFormPanel"
            visible="{viewModel>/formViewActive}"

@@ -3,7 +3,7 @@
   "sap.app": {
     "id": "admin.modellibrary",
     "type": "application",
-    "i18n": { "bundleUrl": "i18n/i18n.properties", "supportedLocales": ["", "en"], "fallbackLocale": "en" },
+    "i18n": { "bundleUrl": "i18n/i18n.properties", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en" },
     "title": "Model Library",
     "description": "Models available through this gateway, their specifications, prices and entitlement catalogs",
     "applicationVersion": { "version": "1.0.0" },
@@ -44,7 +44,7 @@
       }
     },
     "models": {
-      "i18n": { "type": "sap.ui.model.resource.ResourceModel", "settings": { "bundleName": "admin.modellibrary.i18n.i18n", "supportedLocales": ["", "en"], "fallbackLocale": "en", "async": true } },
+      "i18n": { "type": "sap.ui.model.resource.ResourceModel", "settings": { "bundleName": "admin.modellibrary.i18n.i18n", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en", "async": true } },
       "": { "dataSource": "mainService", "type": "sap.ui.model.odata.v4.ODataModel", "preload": true, "settings": { "operationMode": "Server", "autoExpandSelect": true, "earlyRequests": true, "groupId": "$auto" } },
       "viewModel": { "type": "sap.ui.model.json.JSONModel" }
     }

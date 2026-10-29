@@ -1,5 +1,5 @@
 <mvc:View controllerName="admin.modellibrary.controller.Catalogs" xmlns:mvc="sap.ui.core.mvc" xmlns="sap.m" xmlns:f="sap.f" xmlns:core="sap.ui.core" xmlns:form="sap.ui.layout.form" displayBlock="true"
-  core:require="{ formatMessage: 'sap/base/strings/formatMessage' }">
+  core:require="{ formatMessage: 'sap/base/strings/formatMessage', formatter: 'admin/modellibrary/model/formatter' }">
   <f:FlexibleColumnLayout id="fcl" layout="{viewModel>/catalogs/layout}" backgroundDesign="Translucent">
     <f:beginColumnPages>
       <Page id="listPage" title="{i18n>catalogsTitle}" showNavButton="true" navButtonPress=".onNavBack">
@@ -18,7 +18,7 @@
           items="{path: '/ModelCatalogs', sorter: [{path: 'isDefault', descending: true}, {path: 'name'}]}">
           <!-- A catalog's own description is what the second line is for; the role phrase is the
                fallback for a catalog that has none, not a replacement for what the owner wrote. -->
-          <StandardListItem title="{name}" description="{= ${description} ? ${description} : (${path:'isDefault',targetType:'any'} ? 'Default — everything minus exclusions' : (${ownerEmail} ? 'Owner: ' + ${ownerEmail} : 'Admin catalog'))}" icon="{= ${path:'isDefault',targetType:'any'} ? 'sap-icon://globe' : (${ownerEmail} ? 'sap-icon://person-placeholder' : 'sap-icon://folder-blank')}" type="Navigation"/>
+          <StandardListItem title="{name}" description="{= ${description} ? ${description} : (${path:'isDefault',targetType:'any'} ? ${i18n>catalogDescDefault} : (${ownerEmail} ? ${i18n>catalogOwnerPrefix} + ${ownerEmail} : ${i18n>catalogAdminCatalog}))}" icon="{= ${path:'isDefault',targetType:'any'} ? 'sap-icon://globe' : (${ownerEmail} ? 'sap-icon://person-placeholder' : 'sap-icon://folder-blank')}" type="Navigation"/>
         </List>
         <!-- suspended: QuotaProfiles is admin-only, and an aggregation binding requests its rows as
              soon as the control is instantiated - invisible or not. The controller resumes this one
@@ -26,7 +26,7 @@
              for a set it may not read. -->
         <List id="profileList" mode="SingleSelectMaster" selectionChange=".onSelectProfile" visible="{= ${viewModel>/catalogs/mode} === 'profiles' }"
           items="{path: '/QuotaProfiles', suspended: true, sorter: {path: 'name'}}">
-          <StandardListItem title="{name}" description="{= ${description} || '' }" info="{parts: ['i18n>usersCount', 'assignedUsers'], formatter: 'formatMessage'}" icon="sap-icon://measuring-point" type="Navigation"/>
+          <StandardListItem title="{name}" description="{= ${description} || '' }" info="{parts: ['i18n>assignedUsersTeams', 'assignedUsers', 'assignedTeams'], formatter: 'formatMessage'}" icon="sap-icon://measuring-point" type="Navigation"/>
         </List>
       </Page>
     </f:beginColumnPages>
@@ -46,15 +46,15 @@
             <!-- I: the header is saved explicitly. The detail element binding uses a deferred
                  update group, so neither `change` nor anything else sends these edits; the footer's
                  Save does. `liveChange` only keeps the footer's buttons in step while typing. -->
-            <Label text="Name"/><Input id="catalogName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
-            <Label text="Description"/><Input id="catalogDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
-            <Label text="{i18n>owner}"/><Text text="{= ${ownerEmail} || 'admin'}"/>
+            <Label text="{i18n>name}"/><Input id="catalogName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            <Label text="{i18n>description}"/><Input id="catalogDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+            <Label text="{i18n>owner}"/><Text text="{= ${ownerEmail} || ${i18n>ownerAdmin}}"/>
             <Label text="{i18n>parent}"/><Text text="{viewModel>/catalogs/parentName}"/>
           </form:SimpleForm>
           <VBox id="profileDetail" visible="{= ${viewModel>/catalogs/mode} === 'profiles' }">
             <form:SimpleForm layout="ColumnLayout" columnsM="2" editable="true" class="sapUiSmallMarginTop">
-              <Label text="Name"/><Input id="profileName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
-              <Label text="Description"/><Input id="profileDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>name}"/><Input id="profileName" value="{name}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
+              <Label text="{i18n>description}"/><Input id="profileDescription" value="{description}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
             </form:SimpleForm>
             <!-- The seven limits, saved with the header through the same deferred group. Each Input
                  names its OData type as $metadata has it, so an empty field parses to null (the
@@ -63,13 +63,13 @@
                  with a thousands separator on the floor. The ids are the property names -
                  model/profileRows.ts PROFILE_LIMIT_FIELDS holds this form and the bundles together. -->
             <form:SimpleForm id="profileLimitsForm" layout="ColumnLayout" columnsM="2" editable="true" title="{i18n>limits}">
-              <core:Title text="Requests"/>
+              <core:Title text="{i18n>requests}"/>
               <Label text="{i18n>requestsPerMinute}"/><Input id="requestsPerMinute" type="Number" value="{path: 'requestsPerMinute', type: 'sap.ui.model.odata.type.Int32', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
-              <core:Title text="Tokens"/>
+              <core:Title text="{i18n>tokens}"/>
               <Label text="{i18n>tokensPerDay}"/><Input id="tokensPerDay" type="Number" value="{path: 'tokensPerDay', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
               <Label text="{i18n>tokensPerWeek}"/><Input id="tokensPerWeek" type="Number" value="{path: 'tokensPerWeek', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
               <Label text="{i18n>tokensPerMonth}"/><Input id="tokensPerMonth" type="Number" value="{path: 'tokensPerMonth', type: 'sap.ui.model.odata.type.Int64', formatOptions: {groupingEnabled: false}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
-              <core:Title text="Spend"/>
+              <core:Title text="{i18n>spend}"/>
               <Label text="{i18n>spendPerDay}"/><Input id="spendPerDay" type="Number" value="{path: 'spendPerDay', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
               <Label text="{i18n>spendPerWeek}"/><Input id="spendPerWeek" type="Number" value="{path: 'spendPerWeek', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
               <Label text="{i18n>spendPerMonth}"/><Input id="spendPerMonth" type="Number" value="{path: 'spendPerMonth', type: 'sap.ui.model.odata.type.Decimal', formatOptions: {groupingEnabled: false}, constraints: {precision: 12, scale: 4}}" editable="{viewModel>/catalogs/canEdit}" liveChange=".onHeaderLiveChange" change=".onHeaderChange"/>
@@ -78,7 +78,7 @@
           <IconTabBar id="catalogTabs" expandable="false" select=".onTabSelect">
             <items>
               <IconTabFilter id="membersTab" key="members" text="{i18n>members}" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' &amp;&amp; !${viewModel>/catalogs/selectedIsDefault}}">
-                <Table id="membersTable" mode="MultiSelect" items="{viewModel>/catalogs/members}" inset="false" noDataText="No models in this catalog yet.">
+                <Table id="membersTable" mode="MultiSelect" items="{viewModel>/catalogs/members}" inset="false" noDataText="{i18n>noModelsInCatalog}">
                   <!-- NeverOverflow: canEdit hides both buttons on the Default catalog, and an
                        OverflowToolbar re-measures its content on every visibility change of a
                        child. Measured with the buttons hidden, the Title fills the whole toolbar
@@ -95,25 +95,25 @@
                       <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
                     </Button>
                   </OverflowToolbar></headerToolbar>
-                  <columns><Column><Text text="Model"/></Column><Column><Text text="Id"/></Column><Column><Text text="Availability"/></Column></columns>
+                  <columns><Column><Text text="{i18n>model}"/></Column><Column><Text text="{i18n>id}"/></Column><Column><Text text="{i18n>availability}"/></Column></columns>
                   <!-- L: a row added or removed since the last Save says so until Save writes it (or Discard drops it) -->
                   <items><ColumnListItem highlight="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }">
                     <Text text="{viewModel>displayName}"/><Text text="{viewModel>modelId}"/>
-                    <ObjectStatus text="{= ${viewModel>pending} === 'add' ? ${i18n>pendingAdd} : ${viewModel>pending} === 'remove' ? ${i18n>pendingRemove} : (${viewModel>absent} ? 'No longer available' : 'Available') }"
+                    <ObjectStatus text="{= ${viewModel>pending} === 'add' ? ${i18n>pendingAdd} : ${viewModel>pending} === 'remove' ? ${i18n>pendingRemove} : (${viewModel>absent} ? ${i18n>noLongerAvailable} : ${i18n>available}) }"
                       state="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' || ${viewModel>absent} ? 'Warning' : 'Success' }"/>
                   </ColumnListItem></items>
                 </Table>
               </IconTabFilter>
               <IconTabFilter id="exclusionsTab" key="exclusions" text="{i18n>exclusions}" visible="{= ${viewModel>/catalogs/mode} === 'catalogs' &amp;&amp; ${viewModel>/catalogs/selectedIsDefault} &amp;&amp; ${viewModel>/isAdmin}}">
-                <Table id="exclusionsTable" mode="MultiSelect" items="{viewModel>/catalogs/exclusions}" inset="false" noDataText="Nothing excluded — every model is entitled by default.">
+                <Table id="exclusionsTable" mode="MultiSelect" items="{viewModel>/catalogs/exclusions}" inset="false" noDataText="{i18n>nothingExcluded}">
                   <headerToolbar><OverflowToolbar>
                     <Title text="{i18n>exclusions}"/><ToolbarSpacer/>
-                    <Button id="excludeButton" text="Exclude models" icon="sap-icon://add" press=".onExclude"/>
-                    <Button id="includeButton" text="Include again" icon="sap-icon://less" press=".onInclude"/>
+                    <Button id="excludeButton" text="{i18n>excludeModelsButton}" icon="sap-icon://add" press=".onExclude"/>
+                    <Button id="includeButton" text="{i18n>includeAgain}" icon="sap-icon://less" press=".onInclude"/>
                   </OverflowToolbar></headerToolbar>
-                  <columns><Column><Text text="Model"/></Column><Column><Text text="Reason"/></Column><Column><Text text="Status"/></Column></columns>
+                  <columns><Column><Text text="{i18n>model}"/></Column><Column><Text text="{i18n>reasonColumn}"/></Column><Column><Text text="{i18n>statusColumn}"/></Column></columns>
                   <items><ColumnListItem highlight="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }">
-                    <Text text="{viewModel>modelId}"/><Text text="{viewModel>reason}"/>
+                    <Text text="{viewModel>modelId}"/><Text text="{parts: ['viewModel>reason', 'i18n>excludedInModelLibrary'], formatter: 'formatter.exclusionReason'}"/>
                     <ObjectStatus text="{= ${viewModel>pending} === 'add' ? ${i18n>pendingExclude} : ${viewModel>pending} === 'remove' ? ${i18n>pendingInclude} : '' }"
                       state="{= ${viewModel>pending} === 'add' ? 'Information' : ${viewModel>pending} === 'remove' ? 'Warning' : 'None' }"/>
                   </ColumnListItem></items>
@@ -131,7 +131,7 @@
                 <MessageStrip id="assignHint" text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignHintProfile} : ${i18n>assignHint} }" type="Information" showIcon="true" class="sapUiSmallMarginTopBottom"/>
                 <Table id="assignmentsTable" mode="MultiSelect" selectionChange=".onUserSelectionChange" items="{viewModel>/catalogs/users}" inset="false" noDataText="{i18n>noUsersMatch}">
                   <headerToolbar><OverflowToolbar>
-                    <Title text="Users"/>
+                    <Title text="{i18n>users}"/>
                     <SearchField id="userSearch" width="14rem" placeholder="{i18n>searchUsers}" liveChange=".onUserSearch" search=".onUserSearch">
                       <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
                     </SearchField>
@@ -140,7 +140,7 @@
                     <Button id="unassignSelectedButton" text="{i18n>unassignSelected}" icon="sap-icon://less" press=".onUnassignSelected" enabled="{= ${viewModel>/catalogs/selectedAssignedCount} &gt; 0}"/>
                     <Button icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefreshUsers"/>
                   </OverflowToolbar></headerToolbar>
-                  <columns><Column><Text text="User"/></Column><Column><Text text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignedProfile} : 'Assigned catalog' }"/></Column><Column width="14rem"><Text text=""/></Column></columns>
+                  <columns><Column><Text text="{i18n>user}"/></Column><Column><Text text="{= ${viewModel>/catalogs/mode} === 'profiles' ? ${i18n>assignedProfile} : ${i18n>assignedCatalog} }"/></Column><Column width="14rem"><Text text=""/></Column></columns>
                   <items><ColumnListItem highlight="{= ${viewModel>pending} ? 'Information' : 'None' }">
                     <Text text="{viewModel>email}"/>
                     <!-- Nothing assigned means the default catalog in one mode and the platform's
@@ -150,6 +150,32 @@
                     <HBox>
                       <Button id="assignButton" text="{i18n>assign}" type="Transparent" press=".onAssign" visible="{= ${viewModel>effectiveCatalogId} !== ${viewModel>/catalogs/selectedId}}"/>
                       <Button text="{i18n>unassign}" type="Transparent" press=".onUnassign" visible="{= !!${viewModel>effectiveCatalogId}}"/>
+                    </HBox>
+                  </ColumnListItem></items>
+                </Table>
+                <!-- Teams beside the users, staged the same way and written by the same Save. A team has
+                     one catalog and two profile slots: the pool profile (defaults for the team's empty
+                     pool fields) and the member profile (a limit for each member), so in profiles mode
+                     each use has its own column and Assign asks which slot (catalogPending.ts). -->
+                <Table id="catalogTeamsTable" items="{viewModel>/catalogs/teams}" noDataText="{i18n>noTeams}" inset="false" class="sapUiMediumMarginTop">
+                  <headerToolbar><OverflowToolbar><Title text="{i18n>teamsTitle}" level="H3"/></OverflowToolbar></headerToolbar>
+                  <columns>
+                    <Column><Text text="{i18n>teamColumn}"/></Column>
+                    <Column visible="{= ${viewModel>/catalogs/mode} === 'catalogs' }"><Text text="{i18n>assignedCatalog}"/></Column>
+                    <Column visible="{= ${viewModel>/catalogs/mode} === 'profiles' }"><Text text="{i18n>poolProfileColumn}"/></Column>
+                    <Column visible="{= ${viewModel>/catalogs/mode} === 'profiles' }"><Text text="{i18n>memberProfileColumn}"/></Column>
+                    <Column width="14rem"><Text text=""/></Column>
+                  </columns>
+                  <items><ColumnListItem highlight="{= ${viewModel>pending} ? 'Information' : 'None' }">
+                    <Text text="{viewModel>name}"/>
+                    <Text text="{= (${viewModel>catalogName} || ${i18n>default}) + (${viewModel>pendingCatalog} ? ' ' + ${i18n>pendingAssign} : '') }"/>
+                    <Text text="{= (${viewModel>poolProfileName} || ${i18n>noProfile}) + (${viewModel>pendingPool} ? ' ' + ${i18n>pendingAssign} : '') }"/>
+                    <Text text="{= (${viewModel>memberProfileName} || ${i18n>noProfile}) + (${viewModel>pendingMember} ? ' ' + ${i18n>pendingAssign} : '') }"/>
+                    <HBox>
+                      <Button text="{i18n>assign}" type="Transparent" press=".onAssignTeam"
+                        visible="{= ${viewModel>/catalogs/mode} === 'profiles' ? (${viewModel>poolProfileId} !== ${viewModel>/catalogs/selectedId} || ${viewModel>memberProfileId} !== ${viewModel>/catalogs/selectedId}) : (!${viewModel>/catalogs/selectedIsDefault} &amp;&amp; ${viewModel>catalogId} !== ${viewModel>/catalogs/selectedId}) }"/>
+                      <Button text="{i18n>unassign}" type="Transparent" press=".onUnassignTeam"
+                        visible="{= ${viewModel>/catalogs/mode} === 'profiles' ? (${viewModel>poolProfileId} === ${viewModel>/catalogs/selectedId} || ${viewModel>memberProfileId} === ${viewModel>/catalogs/selectedId}) : !!${viewModel>catalogId} }"/>
                     </HBox>
                   </ColumnListItem></items>
                 </Table>

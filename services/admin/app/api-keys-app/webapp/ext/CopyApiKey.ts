@@ -1,5 +1,21 @@
 import MessageToast from "sap/m/MessageToast";
 import Context from "sap/ui/model/odata/v4/Context";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+
+let bundlePromise: Promise<ResourceBundle> | undefined;
+
+/** The app's i18n bundle, loaded once for the user's language. */
+function getBundle(): Promise<ResourceBundle> {
+  if (!bundlePromise) {
+    bundlePromise = ResourceBundle.create({
+      bundleName: "admin.app.i18n.i18n",
+      async: true,
+      supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+      fallbackLocale: ""
+    }) as Promise<ResourceBundle>;
+  }
+  return bundlePromise;
+}
 
 /**
  * Custom action handlers for API key copy functionality
@@ -12,10 +28,12 @@ export default {
 
   // Header action handler (existing)
   onCopyApiKey: async function (oBindingContext: Context): Promise<void> {
+    let loaded: ResourceBundle | undefined;
     try {
+      const bundle = loaded = await getBundle();
       const key = oBindingContext?.getProperty("key") as string | undefined;
       if (!key) {
-        MessageToast.show("No API key available.");
+        MessageToast.show(bundle.getText("noApiKeyAvailable") as string);
         return;
       }
 
@@ -33,9 +51,9 @@ export default {
         document.execCommand("copy");
         document.body.removeChild(ta);
       }
-      MessageToast.show("API key copied.");
-    } catch {
-      MessageToast.show("Copy failed.");
+      MessageToast.show(bundle.getText("apiKeyCopied") as string);
+    } catch (error) {
+      MessageToast.show(loaded ? loaded.getText("copyFailed") as string : String(error));
     }
   }
 };

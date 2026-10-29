@@ -12,12 +12,12 @@
     "test": "npm run build"
   },
   "devDependencies": {
-    "@ui5/cli": "^4.0.16",
-    "ui5-tooling-modules": "^3.27.3",
-    "ui5-tooling-transpile": "^3.8.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.15.0"
+    "@ui5/cli": "^4.0.69",
+    "eslint": "^9.15.0",
+    "ui5-tooling-modules": "^3.38.3",
+    "ui5-tooling-transpile": "^3.13.1"
   },
   "dependencies": {
     "@types/node": "^20.0.0"

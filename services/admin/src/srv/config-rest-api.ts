@@ -6,6 +6,11 @@ const cds = require('@sap/cds');
 const logger = getDefaultLogger();
 const router: express.Router = express.Router();
 
+// Docker and Kyma mount this router with no global JSON parser (local dev may have one, and then
+// express.json sees the body is already parsed and does nothing). The shipped api_config.json is
+// ~61 KB; express's own default of 100 KB is too close, nginx allows 50 MB.
+const jsonBody = express.json({ limit: '10mb' });
+
 // Extend Request interface for user property
 declare global {
   namespace Express {
@@ -29,6 +34,30 @@ declare global {
  * Simple REST endpoint for Gateway service configuration retrieval
  * Provides backward compatibility with existing Gateway service
  */
+
+/**
+ * Run fn as the authenticated request user. These are plain Express routes with no ambient CAP
+ * request context, and cds.run(fn, context) ignores its second argument, so the user must be set
+ * on a new root transaction instead. The user is rebuilt as a cds.User: authMiddleware's own `is`
+ * only knows the mapped roles and would deny CAP's built-in 'authenticated-user'.
+ */
+function runAsUser<T>(user: NonNullable<express.Request['user']>, fn: () => Promise<T>): Promise<T> {
+  return cds.tx({ user: new cds.User({ id: user.id, roles: user.roles ?? [], attr: user.attr ?? {} }) }, fn);
+}
+
+/**
+ * Answer a CAP authorization refusal (403, or 401) with its own status instead of a 500.
+ * Returns true when it answered.
+ */
+function sendAuthError(res: express.Response, error: unknown): boolean {
+  const e = error as { code?: unknown; status?: unknown; statusCode?: unknown };
+  const status = [e?.code, e?.status, e?.statusCode].map(Number).find((n) => n === 401 || n === 403);
+  if (!status) return false;
+  res.status(status).json(status === 403
+    ? { error: 'Forbidden', message: 'The admin role is required.' }
+    : { error: 'Unauthorized', message: 'Sign in to use this route.' });
+  return true;
+}
 
 /**
  * GET /api/admin/health
@@ -95,11 +124,9 @@ router.get('/api-config', async (req, res) => {
     // Call the configuration service with proper user context
     let result;
     if (req.user) {
-      // Use CDS.context to run with user context for authenticated requests
-      const context = { user: req.user };
-      result = await cds.run(async () => {
+      result = await runAsUser(req.user, async () => {
         return await AdminService.send('getActiveConfiguration');
-      }, context);
+      });
     } else {
       // Fallback to system user for non-authenticated calls (should not happen in docker mode)
       result = await AdminService.send('getActiveConfiguration');
@@ -118,24 +145,32 @@ router.get('/api-config', async (req, res) => {
     }
 
     // Return in format expected by Gateway service
-    // The configData already contains the proper structure with api_config wrapper
-    const response = JSON.parse(result.data.configData);
+    // The configData already contains the proper structure with api_config wrapper. The config
+    // service hands it back parsed; a string is tolerated.
+    const rawConfig = result.data.configData;
+    const response = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
 
-    // Add metadata headers for change detection
-    res.set({
-      'X-Config-Version': result.data.version,
-      'X-Config-Checksum': result.data.checksum,
-      'X-Config-Deployed-At': result.data.deployedAt?.toISOString(),
-      'ETag': `"${result.data.checksum}"`
-    });
+    // Add metadata headers for change detection. The db layer returns Timestamps as ISO strings,
+    // a Date is tolerated; a missing value sets no header.
+    const { version, checksum, deployedAt } = result.data;
+    const deployedAtIso = deployedAt ? new Date(deployedAt).toISOString() : undefined;
+    const headers: Record<string, string> = {};
+    if (version != null) headers['X-Config-Version'] = String(version);
+    if (checksum) {
+      headers['X-Config-Checksum'] = String(checksum);
+      headers['ETag'] = `"${checksum}"`;
+    }
+    if (deployedAtIso) headers['X-Config-Deployed-At'] = deployedAtIso;
+    res.set(headers);
 
     logger.info('ConfigEndpoint', '✅ Configuration served successfully', {
-      version: result.data.version,
-      checksum: result.data.checksum.substring(0, 8)
+      version,
+      checksum: checksum ? String(checksum).substring(0, 8) : undefined
     });
 
     return res.json(response);
   } catch (error) {
+    if (sendAuthError(res, error)) return;
     logger.error('ConfigEndpoint', '❌ Failed to get configuration', error as Error);
     return res.status(500).json({
       error: 'Internal server error',
@@ -149,9 +184,9 @@ router.get('/api-config', async (req, res) => {
  * Update configuration (for backward compatibility)
  * This endpoint creates a new configuration version and activates it
  */
-router.put('/api-config', async (req, res) => {
+router.put('/api-config', jsonBody, async (req, res) => {
   try {
-    const { api_config } = req.body;
+    const { api_config } = req.body ?? {};
     const user = req.user?.id || 'system';
     
     if (!api_config) {
@@ -166,14 +201,13 @@ router.put('/api-config', async (req, res) => {
     // Create new configuration with user context
     let createResult;
     if (req.user) {
-      const context = { user: req.user };
-      createResult = await cds.run(async () => {
+      createResult = await runAsUser(req.user, async () => {
         return await AdminService.send('createConfiguration', {
           name: `Config-${new Date().toISOString()}`,
           configData: JSON.stringify({ api_config }),
           description: 'Updated via REST API'
         });
-      }, context);
+      });
     } else {
       createResult = await AdminService.send('createConfiguration', {
         name: `Config-${new Date().toISOString()}`,
@@ -197,12 +231,11 @@ router.put('/api-config', async (req, res) => {
     // Activate the new configuration with user context
     let activateResult;
     if (req.user) {
-      const context = { user: req.user };
-      activateResult = await cds.run(async () => {
+      activateResult = await runAsUser(req.user, async () => {
         return await AdminService.send('activateConfiguration', {
           configId: createResult.configId
         });
-      }, context);
+      });
     } else {
       activateResult = await AdminService.send('activateConfiguration', {
         configId: createResult.configId
@@ -233,6 +266,7 @@ router.put('/api-config', async (req, res) => {
       warnings: createResult.warnings
     });
   } catch (error) {
+    if (sendAuthError(res, error)) return;
     logger.error('ConfigEndpoint', 'Failed to update configuration', error as Error);
     return res.status(500).json({
       error: 'Internal server error',
@@ -245,21 +279,20 @@ router.put('/api-config', async (req, res) => {
  * POST /api/admin/api-config/rollback
  * Rollback to previous configuration
  */
-router.post('/api-config/rollback', async (req, res) => {
+router.post('/api-config/rollback', jsonBody, async (req, res) => {
   try {
-    const { reason } = req.body;
+    const { reason } = req.body ?? {};
     
     // Get CDS service
     const { AdminService } = cds.services;
     
     let result;
     if (req.user) {
-      const context = { user: req.user };
-      result = await cds.run(async () => {
+      result = await runAsUser(req.user, async () => {
         return await AdminService.send('rollbackConfiguration', {
           reason: reason || 'Manual rollback via REST API'
         });
-      }, context);
+      });
     } else {
       result = await AdminService.send('rollbackConfiguration', {
         reason: reason || 'Manual rollback via REST API'
@@ -280,6 +313,7 @@ router.post('/api-config/rollback', async (req, res) => {
 
     return res.json(result);
   } catch (error) {
+    if (sendAuthError(res, error)) return;
     logger.error('ConfigEndpoint', 'Failed to rollback configuration', error as Error);
     return res.status(500).json({
       error: 'Internal server error',
@@ -299,10 +333,9 @@ router.get('/api-config/status', async (req, res) => {
     
     let result;
     if (req.user) {
-      const context = { user: req.user };
-      result = await cds.run(async () => {
+      result = await runAsUser(req.user, async () => {
         return await AdminService.send('getConfigurationStatus');
-      }, context);
+      });
     } else {
       result = await AdminService.send('getConfigurationStatus');
     }
@@ -315,6 +348,7 @@ router.get('/api-config/status', async (req, res) => {
 
     return res.json(result.status);
   } catch (error) {
+    if (sendAuthError(res, error)) return;
     logger.error('ConfigEndpoint', 'Failed to get configuration status', error as Error);
     return res.status(500).json({
       error: 'Internal server error',

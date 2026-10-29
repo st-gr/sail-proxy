@@ -13,13 +13,13 @@ using AdminService from '../../src/srv/admin-service';
 
 annotate AdminService.SapCapacityUnitPrice with @(
     UI.LineItem: [
-        { $Type: 'UI.DataField', Value: usageType, Label: 'Usage Type', ![@UI.Importance]: #High },
-        { $Type: 'UI.DataField', Value: dateFrom, Label: 'Valid From', ![@UI.Importance]: #High },
-        { $Type: 'UI.DataField', Value: dateTo, Label: 'Valid To', ![@UI.Importance]: #High },
-        { $Type: 'UI.DataField', Value: pricePerCu, Label: 'Price per CU', ![@UI.Importance]: #High },
-        { $Type: 'UI.DataField', Value: currency, Label: 'Currency', ![@UI.Importance]: #High },
-        { $Type: 'UI.DataField', Value: servicePlan, Label: 'Service Plan', ![@UI.Importance]: #Medium },
-        { $Type: 'UI.DataField', Value: region, Label: 'Region', ![@UI.Importance]: #Low }
+        { $Type: 'UI.DataField', Value: usageType, Label: '{i18n>sapRates.usageType}', ![@UI.Importance]: #High },
+        { $Type: 'UI.DataField', Value: dateFrom, Label: '{i18n>sapRates.validFrom}', ![@UI.Importance]: #High },
+        { $Type: 'UI.DataField', Value: dateTo, Label: '{i18n>sapRates.validTo}', ![@UI.Importance]: #High },
+        { $Type: 'UI.DataField', Value: pricePerCu, Label: '{i18n>sapRates.pricePerCu}', ![@UI.Importance]: #High },
+        { $Type: 'UI.DataField', Value: currency, Label: '{i18n>common.currency}', ![@UI.Importance]: #High },
+        { $Type: 'UI.DataField', Value: servicePlan, Label: '{i18n>sapRates.servicePlan}', ![@UI.Importance]: #Medium },
+        { $Type: 'UI.DataField', Value: region, Label: '{i18n>common.region}', ![@UI.Importance]: #Low }
     ],
     UI.SelectionFields: [ usageType, currency ],
     // Default list ordering: group by usage type, then newest effective date first so the
@@ -35,14 +35,14 @@ annotate AdminService.SapCapacityUnitPrice with @(
 
 annotate AdminService.SapCapacityUnitPrice with @(
     UI.HeaderInfo: {
-        TypeName: 'SAP Capacity Unit Price',
-        TypeNamePlural: 'SAP Capacity Unit Prices',
+        TypeName: '{i18n>sapRates.capacityUnitPrice}',
+        TypeNamePlural: '{i18n>sapRates.capacityUnitPrices}',
         Title: { Value: usageType },
         Description: { Value: currency }
     },
     UI.Facets: [
-        { $Type: 'UI.ReferenceFacet', Label: 'Price & Validity', Target: '@UI.FieldGroup#General' },
-        { $Type: 'UI.ReferenceFacet', Label: 'Record Information', Target: '@UI.FieldGroup#Metadata' }
+        { $Type: 'UI.ReferenceFacet', Label: '{i18n>sapRates.priceValidity}', Target: '@UI.FieldGroup#General' },
+        { $Type: 'UI.ReferenceFacet', Label: '{i18n>common.recordInformation}', Target: '@UI.FieldGroup#Metadata' }
     ],
     UI.FieldGroup#General: {
         Data: [
@@ -50,29 +50,29 @@ annotate AdminService.SapCapacityUnitPrice with @(
             // Valid From and Valid To land next to each other on the top row (they are the
             // temporal key of the record): dateFrom and dateTo sit at the two adjacent
             // top-row column positions, with usageType directly under dateFrom.
-            { $Type: 'UI.DataField', Value: dateFrom, Label: 'Valid From' },
-            { $Type: 'UI.DataField', Value: usageType, Label: 'Usage Type' },
-            { $Type: 'UI.DataField', Value: dateTo, Label: 'Valid To' },
-            { $Type: 'UI.DataField', Value: pricePerCu, Label: 'Price per CU' },
-            { $Type: 'UI.DataField', Value: currency, Label: 'Currency' },
-            { $Type: 'UI.DataField', Value: servicePlan, Label: 'Service Plan' },
-            { $Type: 'UI.DataField', Value: region, Label: 'Region' },
-            { $Type: 'UI.DataField', Value: sku, Label: 'SKU' }
+            { $Type: 'UI.DataField', Value: dateFrom, Label: '{i18n>sapRates.validFrom}' },
+            { $Type: 'UI.DataField', Value: usageType, Label: '{i18n>sapRates.usageType}' },
+            { $Type: 'UI.DataField', Value: dateTo, Label: '{i18n>sapRates.validTo}' },
+            { $Type: 'UI.DataField', Value: pricePerCu, Label: '{i18n>sapRates.pricePerCu}' },
+            { $Type: 'UI.DataField', Value: currency, Label: '{i18n>common.currency}' },
+            { $Type: 'UI.DataField', Value: servicePlan, Label: '{i18n>sapRates.servicePlan}' },
+            { $Type: 'UI.DataField', Value: region, Label: '{i18n>common.region}' },
+            { $Type: 'UI.DataField', Value: sku, Label: '{i18n>sapRates.sku}' }
         ]
     },
     UI.FieldGroup#Metadata: {
         Data: [
-            { $Type: 'UI.DataField', Value: createdAt, Label: 'Created At' },
-            { $Type: 'UI.DataField', Value: createdBy, Label: 'Created By' },
-            { $Type: 'UI.DataField', Value: modifiedAt, Label: 'Modified At' },
-            { $Type: 'UI.DataField', Value: modifiedBy, Label: 'Modified By' }
+            { $Type: 'UI.DataField', Value: createdAt, Label: '{i18n>common.createdAt}' },
+            { $Type: 'UI.DataField', Value: createdBy, Label: '{i18n>common.createdBy}' },
+            { $Type: 'UI.DataField', Value: modifiedAt, Label: '{i18n>common.modifiedAt}' },
+            { $Type: 'UI.DataField', Value: modifiedBy, Label: '{i18n>common.modifiedBy}' }
         ]
     }
 );
 
 annotate AdminService.SapCapacityUnitPrice with {
     usageType @(
-        Common.Label: 'Usage Type',
+        Common.Label: '{i18n>sapRates.usageType}',
         Common.FieldControl: #Mandatory,
         Common.ValueListWithFixedValues: true,
         Common.ValueList: {
@@ -82,29 +82,29 @@ annotate AdminService.SapCapacityUnitPrice with {
                 { $Type: 'Common.ValueListParameterDisplayOnly', ValueListProperty: 'name' }
             ]
         },
-        Common.QuickInfo: 'SAP subaccount classification that selects the price: productive or non-productive. SAP classifies each subaccount (a sandbox can be classified productive). Prices are matched by this value within the validity window.'
+        Common.QuickInfo: '{i18n>sapRates.usageTypeInfo}'
     );
     dateFrom @(
-        Common.Label: 'Valid From',
+        Common.Label: '{i18n>sapRates.validFrom}',
         Common.FieldControl: #Mandatory,
-        Common.QuickInfo: 'Start of the validity window (inclusive). Cost uses the price whose [Valid From, Valid To] window contains the event time.'
+        Common.QuickInfo: '{i18n>sapRates.validFromInfo}'
     );
     dateTo @(
-        Common.Label: 'Valid To',
+        Common.Label: '{i18n>sapRates.validTo}',
         Common.FieldControl: #Mandatory,
-        Common.QuickInfo: 'End of the validity window (inclusive). Use a far-future date for the currently-active price. Windows for the same usage type must not overlap.'
+        Common.QuickInfo: '{i18n>sapRates.validToInfo}'
     );
     pricePerCu @(
-        Common.Label: 'Price per CU',
+        Common.Label: '{i18n>sapRates.pricePerCu}',
         Common.FieldControl: #Mandatory,
-        Common.QuickInfo: 'Price, in the given currency, per Capacity Unit - from the SAP BTP price list (Extended plan). Cost = Capacity Units x this price.'
+        Common.QuickInfo: '{i18n>sapRates.pricePerCuInfo}'
     );
     currency @(
-        Common.Label: 'Currency',
-        Common.QuickInfo: 'ISO currency code for Price per CU (e.g. USD). The price lookup matches on Usage Type only, so keep a single currency per usage type and period.'
+        Common.Label: '{i18n>common.currency}',
+        Common.QuickInfo: '{i18n>sapRates.currencyInfo}'
     );
     servicePlan @(
-        Common.Label: 'Service Plan',
+        Common.Label: '{i18n>sapRates.servicePlan}',
         Common.ValueListWithFixedValues: true,
         Common.ValueList: {
             CollectionPath: 'SapServicePlanCodes',
@@ -113,18 +113,18 @@ annotate AdminService.SapCapacityUnitPrice with {
                 { $Type: 'Common.ValueListParameterDisplayOnly', ValueListProperty: 'name' }
             ]
         },
-        Common.QuickInfo: 'SAP service plan the price applies to (extended = the generative AI hub). Descriptive.'
+        Common.QuickInfo: '{i18n>sapRates.servicePlanInfo}'
     );
     region @(
-        Common.Label: 'Region',
-        Common.QuickInfo: 'SAP region the price applies to. Descriptive; not part of the price-matching key.'
+        Common.Label: '{i18n>common.region}',
+        Common.QuickInfo: '{i18n>sapRates.regionInfo}'
     );
     sku @(
-        Common.Label: 'SKU',
-        Common.QuickInfo: 'SAP material / SKU for the price line. Descriptive.'
+        Common.Label: '{i18n>sapRates.sku}',
+        Common.QuickInfo: '{i18n>sapRates.skuInfo}'
     );
-    createdAt @(Common.Label: 'Created At', Common.FieldControl: #ReadOnly);
-    createdBy @(Common.Label: 'Created By', Common.FieldControl: #ReadOnly);
-    modifiedAt @(Common.Label: 'Modified At', Common.FieldControl: #ReadOnly);
-    modifiedBy @(Common.Label: 'Modified By', Common.FieldControl: #ReadOnly);
+    createdAt @(Common.Label: '{i18n>common.createdAt}', Common.FieldControl: #ReadOnly);
+    createdBy @(Common.Label: '{i18n>common.createdBy}', Common.FieldControl: #ReadOnly);
+    modifiedAt @(Common.Label: '{i18n>common.modifiedAt}', Common.FieldControl: #ReadOnly);
+    modifiedBy @(Common.Label: '{i18n>common.modifiedBy}', Common.FieldControl: #ReadOnly);
 };

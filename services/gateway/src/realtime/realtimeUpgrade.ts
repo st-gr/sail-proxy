@@ -30,6 +30,7 @@ import { emitToolPolicyEvent, policyBlocksFromRequest } from '../toolGovernance/
 import { recordInvokedTools, stateOf } from '../toolGovernance/record';
 import type { ToolGovernanceState } from '../toolGovernance/record';
 import type { ToolPolicyBlock } from '../toolGovernance/identity';
+import { currentSapTarget, stampSapTenant, withSapTarget } from '../sap/sapTarget';
 
 const logger = getDefaultLogger();
 
@@ -76,7 +77,8 @@ export function attachRealtimeUpgrade(server: Server, overrides: Partial<Realtim
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on('error', () => socket.destroy());
     const session = { started: false };
-    handleUpgrade(req, socket, head, deps, wss, session).catch((err) => {
+    // The session keeps the SAP target it was admitted with, like an HTTP request (sapTenantMiddleware).
+    withSapTarget(currentSapTarget(), () => handleUpgrade(req, socket, head, deps, wss, session)).catch((err) => {
       logger.error('Realtime', 'Upgrade handling failed', err instanceof Error ? err : new Error(String(err)));
       // Past the 101 the socket carries WebSocket frames: raw HTTP bytes would corrupt the stream,
       // so the session is dropped instead.
@@ -115,6 +117,8 @@ function isWebSocketHandshake(req: IncomingMessage): boolean {
 
 async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deps: RealtimeDeps, wss: WebSocketServer, session: { started: boolean }): Promise<void> {
   const ureq = prepareUpgradeRequest(req);
+  // An upgrade never enters Express, so the tenant stamp sapTenantMiddleware gives every HTTP request is set here.
+  stampSapTenant(ureq, currentSapTarget());
   const refuse = (recorded: RecordedResponse) => writeRefusal(socket as any, recorded);
 
   if (!REALTIME_PATHS.includes(ureq.path)) {
@@ -247,13 +251,14 @@ function startSession(client: WebSocket, upstream: WebSocket, ureq: UpgradeReque
   // trust chain's sources. Invoked calls are still read off each response.done and folded into that
   // response's usage event.
   const blocks = policyBlocksFromRequest(ureq);
-  const gate = createRealtimeToolGate(blocks.user, blocks.key);
+  const policyBlocks = [blocks.user, blocks.key, blocks.team].filter((b): b is ToolPolicyBlock => !!b);
+  const gate = createRealtimeToolGate(policyBlocks);
   const publish = (): void => {
     const s = gate.state();
     (ureq as any).toolGovernance = {
       result: s.result, declared: s.declared, sources: s.sources,
       invoked: stateOf(ureq)?.invoked ?? new Map<string, number>(),   // calls recorded since the last usage event stay
-      family: 'openaiChat', blocks: [blocks.user, blocks.key].filter((b): b is ToolPolicyBlock => !!b)
+      family: 'openaiChat', blocks: policyBlocks
     } satisfies ToolGovernanceState;
   };
   publish();

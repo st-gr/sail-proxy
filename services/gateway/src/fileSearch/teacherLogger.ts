@@ -36,6 +36,7 @@ import * as crypto from 'crypto';
 import { getPool } from './db';
 import { getTeacherLoggingConfig, TeacherLoggingConfig } from '../services/configService';
 import { CandidateChunk, candidateId } from './repository';
+import type { HybridWeights } from './rrf';
 import { getDefaultLogger } from '@libs/logger';
 
 const logger = getDefaultLogger();
@@ -61,6 +62,10 @@ export interface TeacherLogInput {
   candidatesRequested: number;
   rrfK: number;
   lexicalEnabled: boolean;
+  /** The request's `hybrid_search` weights; absent = unweighted. Kept in the event's `metadata` jsonb. */
+  hybridWeights?: HybridWeights;
+  /** hybrid.lexical_query when the search ran ('any' | 'all'). Kept in the event's `metadata` jsonb. */
+  lexicalQuery: 'any' | 'all';
   topK?: number;
   scoreThreshold?: number;
   requestId?: string;
@@ -136,8 +141,8 @@ async function writeRecord(input: TeacherLogInput, config: TeacherLoggingConfig)
          candidates_requested, candidates_returned, rrf_k, lexical_enabled,
          embedding_model, embedding_dim, reranker_provider, reranker_model,
          reranker_available, reranker_search_units, rewrite_used, query_rewritten,
-         embed_latency_ms, rerank_latency_ms, total_latency_ms, top_k, score_threshold, request_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+         embed_latency_ms, rerank_latency_ms, total_latency_ms, top_k, score_threshold, request_id, metadata
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
       [
         eventId, input.queryText, sha256Hex(input.queryText), source, input.storeIds, input.ownerEmail, retrievalMode,
         input.candidatesRequested, input.candidates.length, input.rrfK, input.lexicalEnabled,
@@ -145,6 +150,7 @@ async function writeRecord(input: TeacherLogInput, config: TeacherLoggingConfig)
         teacherAvailable, input.rerankerSearchUnits ?? null, input.rewriteUsed, input.queryRewritten ?? null,
         input.embedLatencyMs ?? null, input.rerankLatencyMs ?? null, input.totalLatencyMs ?? null,
         input.topK ?? null, input.scoreThreshold ?? null, input.requestId ?? null,
+        { hybrid_weights: input.hybridWeights ?? null, lexical_query: input.lexicalQuery ?? null },
       ],
     );
 

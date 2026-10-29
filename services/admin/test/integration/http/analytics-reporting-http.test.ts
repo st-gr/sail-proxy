@@ -19,144 +19,82 @@ describeLive('Analytics and Reporting HTTP Integration Tests', () => {
   });
 
   describe('Usage Statistics', () => {
-    test('should get usage statistics via getUsageStatistics function', async () => {
-      const startDate = '2024-01-01';
-      const endDate = '2024-12-31';
-      const granularity = 'day';
+    // getUsageStatistics is an OData function: GET with the parameters in the URL, which is how
+    // the Usage app calls it. A POST answers 405; the earlier form of these tests posted and
+    // tolerated that, so their assertions never ran.
+    const usageStatistics = (startDate: string, endDate: string, granularity: string) =>
+      client.get(`/odata/v4/admin/getUsageStatistics(startDate=${startDate},endDate=${endDate},granularity='${granularity}')`);
+    const year = new Date().getFullYear();
 
-      const response = await client.post('/odata/v4/admin/getUsageStatistics', {
-        startDate,
-        endDate,
-        granularity
-      });
+    test('returns the usage aggregates, with avgResponseTime and tokensPerSecond per model', async () => {
+      const response = await usageStatistics(`${year}-01-01`, `${year}-12-31`, 'day');
+      expect(response.status).toBe(200);
+      for (const list of ['apiKeyUsage', 'awsCredentialUsage', 'providerUsage', 'emailUsage', 'endpointUsage', 'modelUsage']) {
+        expect(Array.isArray(response.data[list])).toBe(true);
+      }
+      for (const apiKeyUsage of response.data.apiKeyUsage) {
+        expect(apiKeyUsage).toHaveProperty('keyId');
+        expect(apiKeyUsage).toHaveProperty('keyName');
+        expect(apiKeyUsage).toHaveProperty('totalRequests');
+        expect(apiKeyUsage).toHaveProperty('totalTokens');
+        // true only on the admin service key's row (cockpit usage on behalf of users)
+        expect(typeof apiKeyUsage.isServiceKey).toBe('boolean');
+        expect(apiKeyUsage).not.toHaveProperty('keyOwnerEmail');
+      }
+      for (const awsUsage of response.data.awsCredentialUsage) {
+        expect(awsUsage).toHaveProperty('credentialId');
+        expect(awsUsage).toHaveProperty('userId');
+        expect(awsUsage).toHaveProperty('totalRequests');
+        expect(awsUsage).toHaveProperty('totalTokens');
+      }
+      for (const providerUsage of response.data.providerUsage) {
+        expect(providerUsage).toHaveProperty('provider');
+        expect(providerUsage).toHaveProperty('totalRequests');
+        expect(typeof providerUsage.avgResponseTime).toBe('number');
+      }
+      for (const modelUsage of response.data.modelUsage) {
+        expect(modelUsage).toHaveProperty('modelId');
+        expect(typeof modelUsage.avgResponseTime).toBe('number');
+        // a number, or null when no request of the model had both output and a measured time
+        expect(modelUsage.tokensPerSecond === null || typeof modelUsage.tokensPerSecond === 'number').toBe(true);
+        // the raw sums behind the figure stay server-side
+        expect(modelUsage).not.toHaveProperty('throughputOutputTokens');
+        // how the model is reached; null when the Model Library does not know it and the id has no suffix
+        expect([null, 'foundation', 'deployment']).toContain(modelUsage.accessType);
+      }
+    });
 
-      if (response.status === 200) {
-        expect(response.data).toHaveProperty('apiKeyUsage');
-        expect(response.data).toHaveProperty('awsCredentialUsage');
-        expect(response.data).toHaveProperty('providerUsage');
-        
+    test('accepts every granularity', async () => {
+      for (const granularity of ['hour', 'day', 'week', 'month']) {
+        const response = await usageStatistics(`${year}-01-01`, `${year}-01-31`, granularity);
+        expect(response.status).toBe(200);
         expect(Array.isArray(response.data.apiKeyUsage)).toBe(true);
-        expect(Array.isArray(response.data.awsCredentialUsage)).toBe(true);
         expect(Array.isArray(response.data.providerUsage)).toBe(true);
-
-        // Validate structure of API key usage data
-        if (response.data.apiKeyUsage.length > 0) {
-          const apiKeyUsage = response.data.apiKeyUsage[0];
-          expect(apiKeyUsage).toHaveProperty('keyId');
-          expect(apiKeyUsage).toHaveProperty('keyName');
-          expect(apiKeyUsage).toHaveProperty('totalRequests');
-          expect(apiKeyUsage).toHaveProperty('totalTokens');
-        }
-
-        // Validate structure of AWS credential usage data
-        if (response.data.awsCredentialUsage.length > 0) {
-          const awsUsage = response.data.awsCredentialUsage[0];
-          expect(awsUsage).toHaveProperty('credentialId');
-          expect(awsUsage).toHaveProperty('userId');
-          expect(awsUsage).toHaveProperty('totalRequests');
-          expect(awsUsage).toHaveProperty('totalTokens');
-        }
-
-        // Validate structure of provider usage data
-        if (response.data.providerUsage.length > 0) {
-          const providerUsage = response.data.providerUsage[0];
-          expect(providerUsage).toHaveProperty('provider');
-          expect(providerUsage).toHaveProperty('totalRequests');
-          expect(providerUsage).toHaveProperty('avgResponseTime');
-        }
-      } else {
-        // Function may return 405 Method Not Allowed when called as POST
-        expect([200, 405, 404, 501, 500]).toContain(response.status);
       }
     });
 
-    test('should handle different granularity options for usage statistics', async () => {
-      const granularities = ['hour', 'day', 'week', 'month'];
-      
-      for (const granularity of granularities) {
-        const response = await client.post('/odata/v4/admin/getUsageStatistics', {
-          startDate: '2024-01-01',
-          endDate: '2024-01-31',
-          granularity
-        });
-
-        if (response.status === 200) {
-          expect(response.data).toHaveProperty('apiKeyUsage');
-          expect(response.data).toHaveProperty('awsCredentialUsage');
-          expect(response.data).toHaveProperty('providerUsage');
-        } else {
-          expect([200, 405, 404, 501, 500]).toContain(response.status);
+    test('aggregates e-mail usage across API keys and AWS credentials', async () => {
+      const response = await usageStatistics(`${year}-01-01`, `${year}-12-31`, 'day');
+      expect(response.status).toBe(200);
+      for (const emailUsage of response.data.emailUsage) {
+        // a user's e-mail, or a service identity such as the admin-to-gateway key's
+        expect(typeof emailUsage.email).toBe('string');
+        expect(emailUsage.email.length).toBeGreaterThan(0);
+        for (const field of ['totalRequests', 'totalInputTokens', 'totalOutputTokens', 'totalTokens', 'totalInputCost', 'totalOutputCost', 'totalCost', 'avgResponseTime', 'uniqueKeysUsed', 'lastActivity']) {
+          expect(emailUsage).toHaveProperty(field);
         }
+        expect(typeof emailUsage.totalRequests).toBe('number');
+        expect(emailUsage.totalRequests).toBeGreaterThanOrEqual(0);
+        expect(emailUsage.totalTokens).toBeGreaterThanOrEqual(0);
+        expect(emailUsage.totalCost).toBeGreaterThanOrEqual(0);
       }
-    });
+    }, 20000);
 
-    test('should include AWS credential usage in emailUsage aggregation', async () => {
-      const response = await client.post('/odata/v4/admin/getUsageStatistics', {
-        startDate: '2024-01-01',
-        endDate: '2025-12-31',
-        granularity: 'day'
-      });
-
+    test('answers an end date before the start date without failing', async () => {
+      const response = await usageStatistics(`${year}-12-31`, `${year}-01-01`, 'day');
+      expect([200, 400]).toContain(response.status);
       if (response.status === 200) {
-        // Verify emailUsage is present
-        expect(response.data).toHaveProperty('emailUsage');
-        expect(Array.isArray(response.data.emailUsage)).toBe(true);
-
-        // Verify both AWS credential and email usage data
-        const hasAwsCredentialUsage = response.data.awsCredentialUsage?.length > 0;
-        const hasEmailUsage = response.data.emailUsage?.length > 0;
-
-        if (hasAwsCredentialUsage && hasEmailUsage) {
-          // If we have AWS credential usage, verify email aggregation includes it
-          const emailUsage = response.data.emailUsage[0];
-          
-          // Validate email usage structure
-          expect(emailUsage).toHaveProperty('email');
-          expect(emailUsage).toHaveProperty('totalRequests');
-          expect(emailUsage).toHaveProperty('totalInputTokens');
-          expect(emailUsage).toHaveProperty('totalOutputTokens');
-          expect(emailUsage).toHaveProperty('totalTokens');
-          expect(emailUsage).toHaveProperty('totalInputCost');
-          expect(emailUsage).toHaveProperty('totalOutputCost');
-          expect(emailUsage).toHaveProperty('totalCost');
-          expect(emailUsage).toHaveProperty('avgResponseTime');
-          expect(emailUsage).toHaveProperty('uniqueKeysUsed');
-          expect(emailUsage).toHaveProperty('lastActivity');
-
-          // Verify email contains an @ symbol (is actually an email)
-          expect(emailUsage.email).toMatch(/^[^@]+@[^@]+$/);
-
-          // Verify numeric fields are valid
-          expect(typeof emailUsage.totalRequests).toBe('number');
-          expect(typeof emailUsage.totalTokens).toBe('number');
-          expect(typeof emailUsage.totalCost).toBe('number');
-          expect(emailUsage.totalRequests).toBeGreaterThanOrEqual(0);
-          expect(emailUsage.totalTokens).toBeGreaterThanOrEqual(0);
-          expect(emailUsage.totalCost).toBeGreaterThanOrEqual(0);
-
-          console.log(`✅ Email usage aggregation test passed - Found email: ${emailUsage.email} with ${emailUsage.totalRequests} requests`);
-        } else if (hasEmailUsage) {
-          console.log('✅ Email usage present, but no AWS credential usage data found (may be expected if no AWS requests made)');
-        } else {
-          console.log('ℹ️  No email usage data found (may be expected if no usage data exists)');
-        }
-      } else {
-        expect([200, 405, 404, 501, 500]).toContain(response.status);
-      }
-    }, 20000); // 20 second timeout for this comprehensive test
-
-    test('should validate date range parameters for usage statistics', async () => {
-      const response = await client.post('/odata/v4/admin/getUsageStatistics', {
-        startDate: '2024-12-31', // End date before start date
-        endDate: '2024-01-01',
-        granularity: 'day'
-      });
-
-      // Should handle invalid date ranges gracefully
-      if (response.status === 200) {
-        expect(response.data).toHaveProperty('apiKeyUsage');
-      } else {
-        expect([200, 400, 405, 404, 501]).toContain(response.status);
+        expect(Array.isArray(response.data.apiKeyUsage)).toBe(true);
       }
     });
   });
@@ -369,37 +307,25 @@ describeLive('Analytics and Reporting HTTP Integration Tests', () => {
   describe('Performance and Scalability', () => {
     test('should handle large date ranges for analytics queries', async () => {
       const startTime = Date.now();
-      
-      const response = await client.post('/odata/v4/admin/getUsageStatistics', {
-        startDate: '2020-01-01',
-        endDate: '2024-12-31',
-        granularity: 'month'
-      });
-      
+      const response = await client.get("/odata/v4/admin/getUsageStatistics(startDate=2020-01-01,endDate=2030-12-31,granularity='month')");
       const duration = Date.now() - startTime;
-      
+
+      expect(response.status).toBe(200);
       // Should complete within reasonable time even for large ranges
       expect(duration).toBeLessThan(10000);
-      
-      if (response.status === 200) {
-        expect(response.data).toHaveProperty('apiKeyUsage');
-      }
+      expect(Array.isArray(response.data.apiKeyUsage)).toBe(true);
     });
 
     test('should handle concurrent analytics requests', async () => {
-      const requests = Array.from({ length: 3 }, () => 
-        client.post('/odata/v4/admin/getUsageStatistics', {
-          startDate: '2024-01-01',
-          endDate: '2024-01-31',
-          granularity: 'day'
-        })
+      const year = new Date().getFullYear();
+      const requests = Array.from({ length: 3 }, () =>
+        client.get(`/odata/v4/admin/getUsageStatistics(startDate=${year}-01-01,endDate=${year}-01-31,granularity='day')`)
       );
 
       const responses = await Promise.all(requests);
-      
-      // All requests should complete without errors
+
       responses.forEach(response => {
-        expect([200, 405, 404, 501, 500]).toContain(response.status);
+        expect(response.status).toBe(200);
       });
     });
 

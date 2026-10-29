@@ -47,4 +47,16 @@ describe('modelController with entitlement', () => {
     await controller.getModelById({ params: { model_id: 'b' }, query: {}, apiKeyInfo: { entitlement: block } } as any, r2, jest.fn());
     expect(r2.json).toHaveBeenCalledWith({ id: 'b', object: 'model' });
   });
+
+  it('an id the list does not contain answers the same 404 body; an unreachable list still errors', async () => {
+    const r = res();
+    await controller.getModelById({ params: { model_id: 'does-not-exist' }, query: {} } as any, r, jest.fn());
+    expect(r.status).toHaveBeenCalledWith(404);
+    expect(r.json).toHaveBeenCalledWith({ error: { message: 'Model does-not-exist not found', type: 'model_not_found_error', param: 'model' } });
+    const failure = new Error('SAP AI Core unreachable');
+    getModelById.mockRejectedValueOnce(failure);
+    const next = jest.fn();
+    await controller.getModelById({ params: { model_id: 'a' }, query: {} } as any, res(), next);
+    expect(next).toHaveBeenCalledWith(failure);
+  });
 });

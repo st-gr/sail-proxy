@@ -10,9 +10,9 @@
  * the mutation it claims to cover is worse than no test.
  *
  * What this file CAN pin about the predicate is that `assertStoresAccessible` builds
- * its WHERE clause from the same shared `STORE_ACCESS_PREDICATE_SQL` constant
- * `recallCandidates` uses, with `$1`/`$2` bound to the same things — i.e. that there is
- * exactly one ownership rule, not two that agree today.
+ * its WHERE clause from the same shared `storeAccessPredicateSql` function
+ * `recallCandidates` uses, with `$1`/`$2` bound to the same things and the caller's team
+ * ids at `$3` — i.e. that there is exactly one ownership rule, not two that agree today.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
@@ -36,7 +36,7 @@ jest.mock('../src/services/configService', () => ({
 }));
 
 import { fileSearchDescriptor } from '../src/plugins/fileSearch/descriptor';
-import { STORE_ACCESS_PREDICATE_SQL } from '../src/fileSearch/repository';
+import { storeAccessPredicateSql } from '../src/fileSearch/recallSql';
 import { MIN_RESULTS_DEFAULT, MAX_RESULTS_DEFAULT } from '../src/services/configService';
 
 const logger: any = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() };
@@ -55,7 +55,7 @@ function storesReadableBy(ids: string[]): void {
   });
 }
 
-const ctx = (ownerEmail: string | undefined = 'a@b.com') => ({ ownerEmail, logger });
+const ctx = (ownerEmail: string | undefined = 'a@b.com', teamIds: string[] = []) => ({ ownerEmail, teamIds, logger });
 
 describe('fileSearchDescriptor.rewriteTool', () => {
   it('rewrites the hosted file_search tool into a function tool with a query parameter', () => {
@@ -154,7 +154,7 @@ describe('fileSearchDescriptor.prepare', () => {
     // yields ownerEmail 'a@b.com' and this test passes against a descriptor with no guard
     // at all. It did exactly that on the first run here.
     await expect(fileSearchDescriptor.prepare(
-      { type: 'file_search', vector_store_ids: ['vs_1'] }, { ownerEmail: undefined, logger },
+      { type: 'file_search', vector_store_ids: ['vs_1'] }, { ownerEmail: undefined, teamIds: [], logger },
     )).rejects.toMatchObject({ status: 400, code: 'invalid_request_error' });
     expect(poolQuery).not.toHaveBeenCalled();
   });
@@ -166,18 +166,19 @@ describe('fileSearchDescriptor.prepare', () => {
     expect(poolQuery).not.toHaveBeenCalled();
   });
 
-  it('checks accessibility with the one shared ownership predicate, binding $1=storeIds and $2=ownerEmail', async () => {
+  it('checks accessibility with the one shared ownership predicate, binding $1=storeIds, $2=ownerEmail and $3=teamIds', async () => {
     storesReadableBy(['vs_1']);
     await fileSearchDescriptor.prepare(
-      { type: 'file_search', vector_store_ids: ['vs_1'] }, ctx('a@b.com'));
+      { type: 'file_search', vector_store_ids: ['vs_1'] }, ctx('a@b.com', ['team-1']));
 
     const [sql, params] = poolQuery.mock.calls[0] as [string, any[]];
-    expect(sql).toContain(STORE_ACCESS_PREDICATE_SQL);
-    expect(params).toEqual([['vs_1'], 'a@b.com']);
-    // The constant itself is the tenant boundary; recallCandidates ANDs the identical
-    // string into both of its CTEs. Dropping `owner_email` from it makes every
+    expect(sql).toContain(storeAccessPredicateSql('$3'));
+    expect(params).toEqual([['vs_1'], 'a@b.com', ['team-1']]);
+    // The predicate itself is the tenant boundary; recallCandidates ANDs the identical
+    // fragment into both of its CTEs. Dropping `owner_email` from it makes every
     // cross-tenant assertion in storeAccessGuard.test.ts fail.
-    expect(STORE_ACCESS_PREDICATE_SQL).toBe('(vs.owner_email = $2 OR vs.is_shared = true)');
+    expect(storeAccessPredicateSql('$3')).toBe(
+      '(vs.owner_email = $2 OR vs.is_shared = true OR EXISTS (SELECT 1 FROM vector_store_team_shares s WHERE s.store_id = vs.id AND s.team_id = ANY($3)))');
   });
 
   it('carries max_num_results, filters and ranking_options through to the prepared config', async () => {
@@ -193,6 +194,22 @@ describe('fileSearchDescriptor.prepare', () => {
     expect(prepared.maxNumResults).toBe(25);
     expect(prepared.filters).toEqual({ type: 'eq', key: 'dept', value: 'legal' });
     expect(prepared.rankingOptions).toEqual({ score_threshold: 0.4 });
+  });
+
+  it.each(['none', 'auto', 'default-2024-11-15', 'default_2024_08_21', null])('accepts ranking_options.ranker %p (null as absent)', async (ranker) => {
+    storesReadableBy(['vs_1']);
+    const prepared: any = await fileSearchDescriptor.prepare(
+      { type: 'file_search', vector_store_ids: ['vs_1'], ranking_options: { ranker } }, ctx());
+    expect(prepared.rankingOptions).toEqual({ ranker });
+  });
+
+  it('rejects an unknown ranking_options.ranker with 400 before the turn opens', async () => {
+    for (const ranker of ['fastest', 1, '']) {
+      storesReadableBy(['vs_1']);
+      await expect(fileSearchDescriptor.prepare(
+        { type: 'file_search', vector_store_ids: ['vs_1'], ranking_options: { ranker } }, ctx(),
+      )).rejects.toMatchObject({ status: 400, code: 'invalid_request_error' });
+    }
   });
 
   it('defaults max_num_results from config when the caller omits it', async () => {

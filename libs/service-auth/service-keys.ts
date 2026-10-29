@@ -19,8 +19,8 @@ export const SERVICE_KEYS: ServiceKeyRegistry = {
     EMAIL: 'admin2gateway.service.key',
     NAME: 'Admin Service to Gateway',
     DESCRIPTION: 'Service-to-service API key for admin service to access gateway endpoints',
-    ENDPOINTS: ['/v1/models', '/api/admin/api-config/*', '/api/admin/deployments', '/api/admin/deployments/*'] as const,
-    PERMISSIONS: ['models:read', 'config:write', 'config:read', 'deployments:read', 'deployments:write'] as const,
+    ENDPOINTS: ['/v1/models', '/api/admin/api-config/*', '/api/admin/deployments', '/api/admin/deployments/*', '/api/admin/grounding', '/api/admin/grounding/*', '/api/admin/connections/*'] as const,
+    PERMISSIONS: ['models:read', 'config:write', 'config:read', 'deployments:read', 'deployments:write', 'grounding:user', 'grounding:admin', 'connections:read'] as const,
   },
 } as const;
 
@@ -50,6 +50,24 @@ export const ENDPOINT_AUTH_RULES: Record<string, EndpointAuthRule> = {
     mode: 'STANDALONE_OR_SERVICE_KEY',
     serviceKey: 'ADMIN_TO_GATEWAY',
     permissions: ['deployments:read', 'deployments:write'],
+  },
+  // Connection test and upstream model list (spec 2026-10-23 §7): the admin asks, the gateway calls the provider.
+  '/api/admin/connections/*': {
+    mode: 'STANDALONE_OR_SERVICE_KEY',
+    serviceKey: 'ADMIN_TO_GATEWAY',
+    permissions: ['connections:read'],
+  },
+  // The cockpit's Grounding layer (spec 2026-10-01 §4.2). The rule asks for grounding:user only:
+  // admin-level operations are decided per request from the acting role, not per endpoint.
+  '/api/admin/grounding': {
+    mode: 'STANDALONE_OR_SERVICE_KEY',
+    serviceKey: 'ADMIN_TO_GATEWAY',
+    permissions: ['grounding:user'],
+  },
+  '/api/admin/grounding/*': {
+    mode: 'STANDALONE_OR_SERVICE_KEY',
+    serviceKey: 'ADMIN_TO_GATEWAY',
+    permissions: ['grounding:user'],
   },
 } as const;
 

@@ -1,7 +1,21 @@
 // Test setup file
 import { jest } from '@jest/globals';
 import { randomBytes } from 'crypto';
-import { getAdminServiceUrl, getGatewayUrl } from '@libs/test-utils';
+import { getAdminServiceUrl, getGatewayUrl, pinEphemeralServersToLoopback } from '@libs/test-utils';
+
+// Ephemeral test servers bind 127.0.0.1, where their clients dial (libs/test-utils/src/loopback-listen.ts).
+pinEphemeralServersToLoopback();
+
+// No test may hold the product S3 keys: a developer's services/gateway/.env can carry real AWS keys
+// with no IAM limit. S3 tests inject their credentials into createS3Backend instead. Deleted now,
+// and again around every test, because modules such as services/modelService.ts and
+// services/sapAIService.ts call dotenv.config() when a test file imports them, which re-adds them.
+const PRODUCT_S3_KEYS = ['FILE_SEARCH_S3_ACCESS_KEY_ID', 'FILE_SEARCH_S3_SECRET_ACCESS_KEY'];
+const scrubProductS3Keys = () => { for (const name of PRODUCT_S3_KEYS) delete process.env[name]; };
+scrubProductS3Keys();
+beforeAll(scrubProductS3Keys);
+beforeEach(scrubProductS3Keys);
+afterEach(scrubProductS3Keys);
 
 // Global test setup
 beforeAll(() => {

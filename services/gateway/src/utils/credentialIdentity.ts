@@ -22,6 +22,9 @@
  * and ship the row's `ID` directly as credentialId — it is safe as-is and better for
  * correlation than a hash, since rotateApiKey updates the key in place. See
  * services/admin/src/srv/admin-service.ts rotateApiKey / rotateAwsCredentials.
+ * A credential that resolved but was then refused (an AWS signature or payload check, or a
+ * credential the admin names as disabled/expired) ships the row's `ID` plus the hint only:
+ * resolvedCredentialIdentity.
  */
 import { createHash } from 'crypto';
 
@@ -36,6 +39,12 @@ export interface CredentialIdentity {
   credentialHint?: string;
   credentialMaterial?: string;
 }
+
+/** A refused credential that resolved to a stored row: its row ID, and the hint of what was presented. */
+export const resolvedCredentialIdentity = (presented: string, credentialId: string): CredentialIdentity => ({
+  credentialId,
+  credentialHint: credentialIdentity(presented).credentialHint,
+});
 
 export const credentialIdentity = (presented: string): CredentialIdentity => {
   if (SENTINELS.has(presented)) {

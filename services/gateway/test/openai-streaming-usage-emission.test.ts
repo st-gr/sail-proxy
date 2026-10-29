@@ -49,6 +49,8 @@ jest.mock('../src/services/configService', () => ({
     shouldEmulateStreaming: () => false,
     getUnsupportedParams: () => [],
     getParamRenames: () => ({}),
+    // Read by the forced-pseudonymization check: nothing forces masking here.
+    getConfig: () => ({}),
     getHookConfig: () => undefined,
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'default' }),
     getOpenAIDeploymentApiVersion: () => undefined,

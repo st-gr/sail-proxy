@@ -13,7 +13,7 @@ sap.ui.define([
 			// Synthetic prices, and the same journey reverts them through revertToSapPrice:
 			// the journeys never leave a manual price behind and never deploy anything.
 			opaTest("Manual price round trip", function (Given, When, Then) {
-				Given.iStartMyAppInAFrame("../../index.html#/model/" + encodeURIComponent(oFx.memberIds[0]));
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN#/model/" + encodeURIComponent(oFx.memberIds[0]));
 				Then.onTheDetail.iSeeTheObjectPage();
 				if (oLib.canEditPrice) {
 					When.onTheDetail.iPressEditPrice();

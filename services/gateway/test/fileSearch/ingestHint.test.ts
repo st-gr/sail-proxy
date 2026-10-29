@@ -1,6 +1,6 @@
 // Hermetic (mocked iovalkey, no real valkey server) coverage of the
 // publish/subscribe wiring itself — Task 11 review's "spec gap" item:
-// repository.ts's enqueueIngestion must publish, and ingestWorker.ts's
+// storeFiles.ts's enqueueIngestion must publish, and ingestWorker.ts's
 // startIngestWorker must subscribe and wake on a hint. The property that
 // polling alone still drains the queue with valkey ABSENT is proven
 // elsewhere (every test in ingestWorker.test.ts and its integration

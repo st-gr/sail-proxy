@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { currentSapTarget, awsRegionFromSapRegion } from '../sap/sapTarget';
 
 // Type definitions
 interface AwsCredential {
@@ -110,9 +111,8 @@ export async function createAwsCredentials(userId: string = 'default'): Promise<
   
   awsCredentials.push(credential);
   
-  // Get AWS region from SAP_AI_REGION configuration
-  const sapAiRegion = process.env.SAP_AI_REGION || 'us-east-1';
-  const awsRegion = sapAiRegion.includes('.') ? (sapAiRegion.split('.')[1] || 'us-east-1') : sapAiRegion;
+  // AWS region of the SAP AI Core target in force (the active connection, else SAP_AI_REGION)
+  const awsRegion = awsRegionFromSapRegion(currentSapTarget().region);
   
   // Return the secret in plain text only this once
   return {

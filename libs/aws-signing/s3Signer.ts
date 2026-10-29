@@ -1,12 +1,13 @@
+// ci/scripts/file-search-test-s3.js transpiles this file at runtime (before or without a build), so it
+// must import Node builtins only - no package, no relative module.
 import * as crypto from 'crypto';
 
 const SERVICE = 's3';
 const ALGORITHM = 'AWS4-HMAC-SHA256';
 
 /**
- * Derive signing key and calculate signature — copied verbatim (unchanged) from
- * services/gateway/src/middlewares/awsSigV4Auth.ts, which implements INBOUND SigV4
- * validation for an Express middleware. Duplicated here rather than imported so this
+ * Derive signing key and calculate signature — the same AWS derivation the gateway uses
+ * for INBOUND SigV4 verification (services/gateway/src/utils/sigv4Verifier.ts). Duplicated here rather than imported so this
  * shared lib has no dependency on a gateway-only, Express-based module (and the
  * gateway-only services it in turn imports).
  */
@@ -47,7 +48,7 @@ export interface S3AuthHeaderParams {
 /**
  * Builds an outbound SigV4 `Authorization` header for a request to S3 (or an
  * S3-compatible endpoint). Reuses the signing-key/HMAC primitives already
- * used to validate inbound AWS SigV4 requests in awsSigV4Auth.ts, applied
+ * used to verify inbound AWS SigV4 requests (gateway sigv4Verifier.ts), applied
  * here in the opposite direction to sign an outbound request.
  */
 export function buildS3AuthHeader(params: S3AuthHeaderParams): string {

@@ -8,6 +8,7 @@
  */
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 import * as deployments from '../services/deploymentManagementService';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getClientIp } from '../utils/clientIp';
@@ -42,7 +43,7 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     const serviceKeyId = (req as any).serviceAuth?.serviceKey?.id || (req as any).apiKeyInfo?.keyId || 'service-key';
     Promise.resolve(securityEventEmitter.emitDeploymentCreated({
       credentialId: serviceKeyId, model, deploymentId: r.deploymentId, configurationId: r.configurationId, reusedConfiguration: r.reusedConfiguration,
-      clientIP: getClientIp(req, getTrustForwardedFor()), userAgent: req.get('user-agent'), endpoint: req.originalUrl, requestId: (req as any).debugRequestId
+      clientIP: getClientIp(req, getTrustForwardedFor()), userAgent: req.get('user-agent'), endpoint: redactUrl(req.originalUrl), requestId: (req as any).debugRequestId
     })).catch(err => logger.warn('DeploymentController', `security event failed: ${err instanceof Error ? err.message : String(err)}`));
     res.status(201).json(r);
   } catch (e) { fail(res, e); }

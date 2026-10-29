@@ -1,5 +1,21 @@
 import MessageToast from "sap/m/MessageToast";
 import Context from "sap/ui/model/odata/v4/Context";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+
+let bundlePromise: Promise<ResourceBundle> | undefined;
+
+/** The app's i18n bundle, loaded once for the user's language. */
+function getBundle(): Promise<ResourceBundle> {
+  if (!bundlePromise) {
+    bundlePromise = ResourceBundle.create({
+      bundleName: "admin.awscredentials.i18n.i18n",
+      async: true,
+      supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+      fallbackLocale: ""
+    }) as Promise<ResourceBundle>;
+  }
+  return bundlePromise;
+}
 
 /**
  * Custom action handlers for AWS credentials copy functionality
@@ -12,13 +28,15 @@ export default {
 
   // Header action handler for copying full AWS credentials as JSON
   onCopyCredentials: async function (oBindingContext: Context): Promise<void> {
+    let loaded: ResourceBundle | undefined;
     try {
+      const bundle = loaded = await getBundle();
       const accessKeyId = oBindingContext?.getProperty("accessKeyId") as string | undefined;
       const secretAccessKey = oBindingContext?.getProperty("secretAccessKey") as string | undefined;
       const region = oBindingContext?.getProperty("region") as string | undefined;
-      
+
       if (!accessKeyId || !secretAccessKey || !region) {
-        MessageToast.show("AWS credentials not available.");
+        MessageToast.show(bundle.getText("credentialsNotAvailable") as string);
         return;
       }
 
@@ -45,9 +63,9 @@ export default {
         document.execCommand("copy");
         document.body.removeChild(ta);
       }
-      MessageToast.show("AWS credentials copied to clipboard.");
-    } catch {
-      MessageToast.show("Copy failed.");
+      MessageToast.show(bundle.getText("credentialsCopied") as string);
+    } catch (error) {
+      MessageToast.show(loaded ? loaded.getText("copyFailed") as string : String(error));
     }
   }
 };

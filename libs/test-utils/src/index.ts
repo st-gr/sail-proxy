@@ -6,6 +6,10 @@
 export * from './port-utils';
 export * from './test-config';
 export * from './active-config-guard';
+export * from './live-models';
+export * from './loopback-listen';
+export * from './express-routes';
+export * from './openapi-coverage';
 
 // Additional test utilities can be exported here
 export const TestHelpers = {

@@ -7,12 +7,13 @@
  * never held across a gateway call here (there is none).
  */
 import { getDefaultLogger } from '@libs/logger';
-import { getUser, parseRoles, USERS, DbLike } from './usersService';
-import { effectiveLimits, platformQuotaDefaults, LIMIT_FIELDS, Limits, LimitSource } from './quotaLimits';
+import { getUser, parseRoles, teamLookupOr, USERS, DbLike } from './usersService';
+import { effectiveLimits, platformQuotaDefaults, LIMIT_FIELDS, Limits, LimitSource, TeamMemberLimits } from './quotaLimits';
+import { memberProfileLimits, primaryTeamOf } from './teamLookups';
 import { getProfile, getProfilesByIds, ProfileRow } from './quotaProfilesService';
 import { WindowName, windowStarts, nextResets } from './quotaWindows';
 import { quotaStateStore, quotaKeyFor, userMinuteKey, QUOTA_DOCUMENT_TTL_SECONDS } from './quotaStateStore';
-import { _lookupPrice, isProductive } from './sapCapacityService';
+import { _lookupPrice, isProductive, billingCurrency } from './sapCapacityService';
 import { readBuckets, windowsFromBuckets, windowHorizon, WindowUsage as BucketWindowUsage, BucketRow } from './usageCounters';
 
 const cds = require('@sap/cds');
@@ -30,13 +31,14 @@ const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 // same pattern as reconciliationService's groupBy('sapCostCurrency').
 export type WindowUsage = BucketWindowUsage;
 export interface QuotaStateDocument {
-  email: string; status: 'active' | 'deactivated'; limits: Limits; sapCostCurrency: string;
+  email: string; status: 'active' | 'deactivated'; limits: Limits; sapCostCurrency: string; primaryTeamId: string | null;
   used: Record<WindowName, WindowUsage>; windowStart: Record<WindowName, string>;
   quotaResetAt: string | null; updatedAt: string;
 }
 export interface QuotaStatus {
   email: string; status: 'active' | 'deactivated'; roles: string[];
   limits: Limits; limitSource: LimitSource; quotaProfileName: string | null; sapCostCurrency: string;
+  teamLimits: TeamMemberLimits | null;
   // The two raw inputs of the resolution beside the user's own values, so a consumer can say what a
   // CLEARED constraint would inherit (quotaLimits.defaultText) while the user still carries a value
   // of their own. Not modelled in CDS and never flattened onto a row.
@@ -54,15 +56,15 @@ export interface QuotaStatus {
 const CURRENCY_CACHE_MS = 60_000;
 let currencyCache: { at: number; value: string } | null = null;
 
-/** The spend quota's denomination: the currency of the currently-active SAP capacity-unit price. */
+/** The spend quota's denomination: the currency of the currently-active SAP capacity-unit price (the billing currency without one). */
 export async function quotaCurrency(now: Date): Promise<string> {
   if (currencyCache && Date.now() - currencyCache.at < CURRENCY_CACHE_MS) return currencyCache.value;
   let value: string;
   try {
     const price = await _lookupPrice(isProductive() ? 'productive' : 'non-productive', now);
-    value = price?.currency ?? 'USD';
+    value = price?.currency ?? billingCurrency();
   } catch {
-    value = 'USD';
+    value = billingCurrency();
   }
   currencyCache = { at: Date.now(), value };
   return value;
@@ -126,11 +128,13 @@ export async function currentMinuteRequests(email: string, now: Date): Promise<n
 
 export async function buildDocument(db: DbLike, email: string, now: Date = new Date(), currency?: string, used?: Record<WindowName, WindowUsage>): Promise<QuotaStateDocument> {
   const user = await getUser(db, email);
-  const { limits } = effectiveLimits(user, await userProfile(db, user), await platformQuotaDefaults(db));
+  const team = await teamLookupOr('member-profile lookup', email, null, () => memberProfileLimits(db, email));
+  const { limits } = effectiveLimits(user, await userProfile(db, user), await platformQuotaDefaults(db), team);
   const starts = windowStarts(now);
   const sapCostCurrency = currency ?? await quotaCurrency(now);
+  const primaryTeamId = await teamLookupOr('primary-team lookup', email, null, async () => (await primaryTeamOf(db, email))?.ID ?? null);
   return {
-    email, status: user?.status ?? 'active', limits, sapCostCurrency,
+    email, status: user?.status ?? 'active', limits, sapCostCurrency, primaryTeamId,
     used: used ?? await computeUsage(db, email, now, user?.quotaResetAt ?? null, sapCostCurrency),
     windowStart: { day: starts.day.toISOString(), week: starts.week.toISOString(), month: starts.month.toISOString() },
     quotaResetAt: user?.quotaResetAt ? new Date(user.quotaResetAt).toISOString() : null,
@@ -147,13 +151,14 @@ export async function status(db: DbLike, email: string, now: Date = new Date(), 
   const user = await getUser(db, email);
   const assigned = profile === undefined ? await userProfile(db, user) : profile;
   const platformLimits = platform ?? await platformQuotaDefaults(db);
-  const { limits, limitSource } = effectiveLimits(user, assigned, platformLimits);
+  const team = await teamLookupOr('member-profile lookup', email, null, () => memberProfileLimits(db, email));
+  const { limits, limitSource } = effectiveLimits(user, assigned, platformLimits, team);
   const sapCostCurrency = currency ?? await quotaCurrency(now);
   const usedNow = used ?? await computeUsage(db, email, now, user?.quotaResetAt ?? null, sapCostCurrency);
   const rem = (limit: number | null, value: number) => (limit === null ? null : round(Math.max(0, limit - value)));
   return {
     email, status: user?.status ?? 'active', roles: parseRoles(user?.rolesSnapshot), limits, limitSource,
-    quotaProfileName: assigned?.name ?? null, profileLimits: profileLimitsOf(assigned), platformLimits, sapCostCurrency,
+    quotaProfileName: assigned?.name ?? null, profileLimits: profileLimitsOf(assigned), platformLimits, teamLimits: team, sapCostCurrency,
     used: { minuteRequests: await currentMinuteRequests(email, now), ...usedNow },
     remaining: {
       spendDay: rem(limits.spendPerDay, usedNow.day.sapCost), spendWeek: rem(limits.spendPerWeek, usedNow.week.sapCost), spendMonth: rem(limits.spendPerMonth, usedNow.month.sapCost),

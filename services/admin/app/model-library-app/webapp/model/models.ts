@@ -34,7 +34,7 @@ export function initialViewState() {
       // badge binds this map, filled once per library load by Library.controller.
       deployedBaseModels: {} as Record<string, boolean>,
       leaderboard: { columns: [] as string[], rows: [] as any[], scoredCount: 0 },
-      chart: { x: "", y: "", xLabel: "", yLabel: "", keys: [] as string[], points: [] as any[] }
+      chart: { x: "", y: "", xLabel: "", yLabel: "", axesLabel: "", keys: [] as string[], points: [] as any[] }
     },
     detail: {
       modelId: "", config: null as any, cuFactor: 0, cuFactorSource: "default", prices: [] as any[],
@@ -57,7 +57,7 @@ export function initialViewState() {
       selectedId: "", selectedName: "", selectedIsDefault: false, selectedOwnerEmail: "",
       layout: "OneColumn", dirty: false, pendingCount: 0, pendingText: "", saving: false,
       membersSnapshot: [] as any[], members: [] as any[], exclusionsSnapshot: [] as any[], exclusions: [] as any[],
-      allUsers: [] as any[], users: [] as any[], userQuery: "",
+      allUsers: [] as any[], users: [] as any[], userQuery: "", teams: [] as any[],
       selectedUserCount: 0, selectedAssignedCount: 0
     }
   };

@@ -10,7 +10,8 @@
  * These toggles configure the plugin's DEFAULT entity set (force-config and
  * triggerword activation) only. They do not activate masking by themselves —
  * the plugin must be wired into the hook chain and an activation source must
- * fire — and an explicit caller-supplied body `masking` config is used as-is.
+ * fire — and an explicit caller-supplied body `masking` config is used as-is (on a request
+ * masking is forced for, it can only add to the forced set: widenForcedConfig in index.ts).
  */
 
 import { EntityConfig } from './types';

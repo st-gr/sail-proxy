@@ -1,15 +1,24 @@
 <core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
     <VBox id="myQuotaCompact" class="sapUiSmallMarginBottom">
-        <Title text="My quota" class="sapUiTinyMarginBottom"/>
+        <Title text="{i18n>quota.title}" class="sapUiTinyMarginBottom"/>
         <MessageStrip id="myQuotaCompactDeactivated" text="{quota>/statusText}" type="Error" showIcon="true" visible="{quota>/deactivated}" class="sapUiTinyMarginBottom"/>
         <MessageStrip id="myQuotaCompactUnavailable" text="{quota>/statusText}" type="Information" showIcon="true" visible="{= !${quota>/available} }" class="sapUiTinyMarginBottom"/>
         <!-- The per-minute rate guard has no bar (it is not a budget window), so the popover keeps
              it as one line of text above the windows. -->
         <Text id="myQuotaCompactMinute" text="{quota>/minuteText}" class="sapUiTinyMarginBottom" visible="{= !!${quota>/minuteText} }"/>
         <Text id="myQuotaCompactToolPolicy" text="{quota>/toolPolicyText}" class="sapUiTinyMarginBottom" visible="{= !!${quota>/toolPolicyText} }"/>
+        <Title id="myQuotaCompactTeamsTitle" text="{i18n>teams.title}" class="sapUiTinyMarginTop sapUiTinyMarginBottom" visible="{teams>/available}"/>
+        <List id="myQuotaCompactTeams" items="{teams>/lines}" showSeparators="None" visible="{teams>/available}">
+            <CustomListItem>
+                <VBox class="sapUiTinyMargin">
+                    <Text text="{teams>membershipText}"/>
+                    <Text text="{teams>poolText}" class="sapUiContentLabelColor" visible="{= !!${teams>poolText} }"/>
+                </VBox>
+            </CustomListItem>
+        </List>
         <List id="myQuotaCompactList" items="{quota>/rows}" showSeparators="None" visible="{quota>/available}">
             <CustomListItem>
-                <Text text="{quota>label}: {quota>used} / {quota>limit}" class="sapUiTinyMargin"/>
+                <Text core:require="{formatMessage: 'sap/base/strings/formatMessage'}" text="{= formatMessage(${i18n>quota.line}, [${quota>label}, ${quota>used}, ${quota>limit}]) }" class="sapUiTinyMargin"/>
             </CustomListItem>
         </List>
     </VBox>

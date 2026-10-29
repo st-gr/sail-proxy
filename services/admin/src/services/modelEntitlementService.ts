@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDefaultLogger } from '@libs/logger';
 import { USERS, isServiceKeyEmail, touch } from './usersService';
 import { DEEP_CONTEXT_SUFFIX } from './pricingTwins';
+import { TEAMS, TeamRef, teamsUsingCatalog, memberEmailsOfTeams } from './teamLookups';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -35,6 +36,8 @@ export interface Catalog {
 export interface EntitlementBlock {
   catalogId: string;
   catalogName: string;
+  teamCatalogId?: string;
+  teamCatalogName?: string;
   mode: 'all' | 'list';
   exclude?: string[];
   include?: string[];
@@ -108,9 +111,10 @@ export async function effectiveModelIds(db: any, catalog: Catalog): Promise<Set<
     // A --deep-context row is a pricing-only twin of its parent sap-rpt-*-large model (see
     // librarySnapshot.deriveDeepContextRows): it is not itself callable, so it never appears as
     // an offerable model in the default catalog even though it is present and non-absent.
-    const all = await db.run(SELECT.from(LIB).columns('modelId').where({ absent: false }).and('modelId not like', `%${DEEP_CONTEXT_SUFFIX}`));
+    const all = await db.run(SELECT.from(LIB).columns('modelId', 'origin').where({ absent: false }).and('modelId not like', `%${DEEP_CONTEXT_SUFFIX}`));
     const excluded = new Set(await exclusionIds(db, catalog.ID));
-    return new Set(all.map((r: any) => r.modelId).filter((id: string) => !excluded.has(id)));
+    // Connection models are opt-in (spec 2026-10-23 §4.3): only a catalog that lists them grants them.
+    return new Set(all.filter((r: any) => r.origin !== 'external').map((r: any) => r.modelId).filter((id: string) => !excluded.has(id)));
   }
   return new Set(await memberIds(db, catalog.ID));
 }
@@ -126,22 +130,41 @@ export async function entitlementFor(db: any, email: string, isAdmin: boolean): 
   return { catalog, modelIds: [...await effectiveModelIds(db, catalog)] };
 }
 
+/** The team's catalog when it names a non-default one; null for no team, no catalog or the default. */
+async function teamCatalogOf(db: any, teamId: string): Promise<Catalog | null> {
+  const team = await db.run(cds.ql.SELECT.one.from(TEAMS).columns('entitlementCatalog_ID').where({ ID: teamId }));
+  if (!team?.entitlementCatalog_ID) return null;
+  const catalog = await getCatalog(db, team.entitlementCatalog_ID);
+  return catalog && !catalog.isDefault ? catalog : null;
+}
+
 /**
- * Wire-side block for the gateway. Assignment only - see spec section 5, "limitation".
- * ensureDefaultCatalog, not getDefaultCatalog: a throw here is swallowed further up and the
- * caller ends up with NO block, i.e. unrestricted, which both caches then keep for an hour.
- * Seeding the missing default instead keeps the failure mode closed.
+ * Spec 2026-10-14 §4: the owner's side and the team's side each are "all minus exclusions" (the
+ * default catalog) or a member list. No team at all leaves today's block unchanged. all × all keeps
+ * the exclusions; a list against the default is the list minus the exclusions; two lists intersect.
+ * Assignment only - see spec section 5, "limitation". ensureDefaultCatalog, not getDefaultCatalog: a
+ * throw here is swallowed further up and the caller ends up with NO block, i.e. unrestricted, which
+ * both caches then keep for an hour. Seeding the missing default keeps the failure mode closed.
  */
-export async function entitlementBlockFor(db: any, email: string): Promise<EntitlementBlock> {
+export async function entitlementBlockFor(db: any, email: string, team?: TeamRef | null): Promise<EntitlementBlock> {
   const assigned = await getAssignedCatalog(db, email);
-  if (assigned && !assigned.isDefault) {
-    return { catalogId: assigned.ID, catalogName: assigned.name, mode: 'list', include: await memberIds(db, assigned.ID) };
-  }
-  const def = assigned ?? (await ensureDefaultCatalog(db));
+  const owner = assigned && !assigned.isDefault ? assigned : null;
+  const def = (assigned?.isDefault ? assigned : null) ?? (await ensureDefaultCatalog(db));
   const exclude = await exclusionIds(db, def.ID);
-  const block: EntitlementBlock = { catalogId: def.ID, catalogName: def.name, mode: 'all' };
-  if (exclude.length > 0) block.exclude = exclude;
-  return block;
+  const block: EntitlementBlock = { catalogId: (owner ?? def).ID, catalogName: (owner ?? def).name, mode: 'all' };
+  const teamCatalog = team ? await teamCatalogOf(db, team.teamId) : null;
+  if (teamCatalog) { block.teamCatalogId = teamCatalog.ID; block.teamCatalogName = teamCatalog.name; }
+  const ownerList = owner ? await memberIds(db, owner.ID) : null;
+  const teamList = teamCatalog ? await memberIds(db, teamCatalog.ID) : null;
+  if (!team) {                                          // today's behaviour, untouched
+    if (ownerList) return { ...block, mode: 'list', include: ownerList };
+    if (exclude.length > 0) block.exclude = exclude;
+    return block;
+  }
+  if (ownerList === null && teamList === null) { if (exclude.length > 0) block.exclude = exclude; return block; }
+  const excluded = new Set(exclude);
+  if (ownerList && teamList) { const t = new Set(teamList); return { ...block, mode: 'list', include: ownerList.filter((id) => t.has(id)) }; }
+  return { ...block, mode: 'list', include: (ownerList ?? teamList!).filter((id) => !excluded.has(id)) };
 }
 
 async function parentEffectiveSet(db: any, catalog: Catalog): Promise<Set<string> | null> {
@@ -269,8 +292,9 @@ export async function assertDeletable(db: any, catalog: Catalog): Promise<void> 
   if (catalog.isDefault) throw new EntitlementError(403, 'default_catalog', 'the default catalog cannot be deleted');
   const assignments = (await db.run(SELECT.from(USERS).columns('email').where({ entitlementCatalog_ID: catalog.ID }))).map((r: any) => r.email);
   const children = (await db.run(SELECT.from(CAT).columns('ID').where({ parent_ID: catalog.ID }))).map((r: any) => r.ID);
-  if (assignments.length > 0 || children.length > 0) {
-    throw new EntitlementError(409, 'has_dependants', 'catalog is assigned or has child catalogs', { assignments, children });
+  const teams = (await teamsUsingCatalog(db, catalog.ID)).map((t) => t.name);
+  if (assignments.length > 0 || children.length > 0 || teams.length > 0) {
+    throw new EntitlementError(409, 'has_dependants', 'catalog is assigned, used by a team or has child catalogs', { assignments, children, teams });
   }
 }
 
@@ -280,5 +304,6 @@ export async function affectedEmails(db: any, catalogId: string): Promise<string
   const cat = await getCatalog(db, catalogId);
   if (cat?.isDefault) return 'everyone';
   const rows = await db.run(SELECT.from(USERS).columns('email').where({ entitlementCatalog_ID: catalogId }));
-  return rows.map((r: any) => r.email);
+  const members = await memberEmailsOfTeams(db, (await teamsUsingCatalog(db, catalogId)).map((t) => t.ID));
+  return [...new Set<string>([...rows.map((r: any) => r.email), ...members])].sort();
 }

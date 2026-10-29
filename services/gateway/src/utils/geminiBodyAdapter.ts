@@ -17,8 +17,8 @@ export function isGeminiBody(body: any): boolean {
 
 /**
  * Every maskable text node, with a dot path usable by setGeminiInputText.
- * Only `.text` parts are maskable — `functionResponse` JSON and `inlineData`
- * are never masked/unmasked.
+ * Only `.text` parts; the JSON of tool calls and tool results is reached by
+ * extractGeminiJsonValues, and `inlineData` is never masked.
  */
 export function extractGeminiInputTexts(body: any): Array<{ text: string; path: string }> {
   const out: Array<{ text: string; path: string }> = [];
@@ -51,6 +51,28 @@ export function extractGeminiInputTexts(body: any): Array<{ text: string; path: 
     }
   }
 
+  return out;
+}
+
+/**
+ * The tool history in `contents` whose string leaves are masked one by one: the model's
+ * earlier calls (`functionCall.args`) and the client's tool results
+ * (`functionResponse.response`). Each entry names the object holding the value and its key.
+ */
+export function extractGeminiJsonValues(body: any): Array<{ holder: any; key: string }> {
+  const out: Array<{ holder: any; key: string }> = [];
+  if (!body || !Array.isArray(body.contents)) return out;
+  for (const content of body.contents) {
+    if (!content || !Array.isArray(content.parts)) continue;
+    for (const part of content.parts) {
+      const call = part?.functionCall;
+      if (call && typeof call === 'object' && call.args !== undefined && call.args !== null) out.push({ holder: call, key: 'args' });
+      const result = part?.functionResponse;
+      if (result && typeof result === 'object' && result.response !== undefined && result.response !== null) {
+        out.push({ holder: result, key: 'response' });
+      }
+    }
+  }
   return out;
 }
 

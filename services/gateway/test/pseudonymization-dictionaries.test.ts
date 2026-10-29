@@ -29,7 +29,7 @@ describe('dictionary word-lists contain no duplicate entries', () => {
 
   // Pinned so a future edit to the alphabetical body or an addendum can't silently
   // reintroduce a duplicate without this count moving too — matches the "172
-  // nationalities" figure in docs/security/pseudonymization-security-assessment.md.
+  // nationalities" figure in docs/developer/pseudonymization-assessment.md.
   it('NATIONALITIES has exactly 172 entries', () => {
     expect(NATIONALITIES.length).toBe(172);
   });

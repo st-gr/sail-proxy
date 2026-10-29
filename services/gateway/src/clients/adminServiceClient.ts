@@ -9,8 +9,15 @@ import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { performance } from 'perf_hooks';
 import { getCachedUnifiedAuthConfig, isStandaloneMode } from '../config/unifiedAuthConfig';
 import { ValidationTokenUtils } from '../../../../libs/aws-token-validation/validation-token';
+import {
+  DEFAULT_VALIDATION_TOKEN_SECRET,
+  REJECTED_VALIDATION_TOKEN_SECRETS
+} from '../../../../libs/aws-token-validation/validation-token-secrets';
 import { getDefaultLogger } from '@libs/logger';
+import type { Connection } from '../connections/types';
 const logger = getDefaultLogger();
+
+let weakValidationTokenSecretLogged = false;
 
 // Extend AxiosRequestConfig to include metadata
 declare module 'axios' {
@@ -31,6 +38,20 @@ export interface UnifiedTokenRequest {
   endpoint: string;
   headers?: string;
   signature?: string; // Required for AWS credentials
+  /** AWS only: the SigV4 scopes to return signing keys for (at most 4, date within a day of today UTC). */
+  signingScopes?: AwsSigningScope[];
+}
+
+/** One SigV4 credential scope: YYYYMMDD date, region, service. */
+export interface AwsSigningScope {
+  date: string;
+  region: string;
+  service: string;
+}
+
+/** The admin's day-scoped signing key for one requested scope: key = hex(kSigning). */
+export interface AwsSigningKey extends AwsSigningScope {
+  key: string;
 }
 
 export interface UnifiedTokenResponse {
@@ -56,6 +77,8 @@ export interface UnifiedValidationResponse {
     code: string;
     message: string;
     details: string;
+    /** Row ID of a credential that exists but was refused (disabled/expired); absent for an unknown one. */
+    credentialId?: string;
   };
 }
 
@@ -66,6 +89,8 @@ export interface EntitlementBlock {
   mode: 'all' | 'list';
   exclude?: string[];
   include?: string[];
+  teamCatalogId?: string;
+  teamCatalogName?: string;
 }
 
 /** Tool governance policy (spec 2026-09-16 §5): the user's policy, and optionally the key's, ride the validation response. */
@@ -76,11 +101,15 @@ export interface UserBlock {
   email: string;
   status: 'active' | 'deactivated';
   roles: string[];
+  teamIds?: string[];
   limits: {
     requestsPerMinute: number | null; spendPerDay: number | null; spendPerWeek: number | null; spendPerMonth: number | null;
     tokensPerDay: number | null; tokensPerWeek: number | null; tokensPerMonth: number | null;
   };
 }
+
+/** The request's team with its pool limits (spec 2026-10-14 §5); absent when the credential has no team. */
+export interface TeamBlock { teamId: string; teamName: string; limits: UserBlock['limits']; }
 
 export interface ApiKeyValidationData {
   keyId: string;
@@ -100,11 +129,17 @@ export interface ApiKeyValidationData {
   user?: UserBlock;
   toolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
   keyToolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
+  team?: TeamBlock;
+  teamToolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
 }
 
 export interface AwsCredentialValidationData {
   credentialId: string;
-  secretAccessKey: string; // Only returned for validation
+  /**
+   * On the wire only, for the requested signingScopes. The gateway moves them into its in-memory
+   * signing-key cache and strips them before the result is cached or returned.
+   */
+  signingKeys?: AwsSigningKey[];
   region: string;
   sapAiRegion: string;
   userId: string;
@@ -122,6 +157,8 @@ export interface AwsCredentialValidationData {
   entitlement?: EntitlementBlock;
   user?: UserBlock;
   toolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
+  team?: TeamBlock;
+  teamToolPolicy?: import('../toolGovernance/identity').ToolPolicyBlock;
 }
 
 export interface AdminServiceHealthResponse {
@@ -181,6 +218,25 @@ export class AdminServiceClient {
     // Start health check if enabled and not in standalone mode
     if (this.config.enabled && this.config.healthCheckIntervalMs > 0 && !isStandaloneMode()) {
       this.startHealthCheck();
+    }
+
+    this.warnIfWeakValidationTokenSecret();
+  }
+
+  /**
+   * Log once, at startup, when this gateway would sign its service JWT (createAuthToken) with a
+   * publicly known VALIDATION_TOKEN_SECRET outside development. The admin already refuses such a
+   * token, so AWS signing-key requests silently fail; this does not stop API-key traffic, which
+   * does not use this token.
+   */
+  private warnIfWeakValidationTokenSecret(): void {
+    if (weakValidationTokenSecretLogged || process.env.NODE_ENV === 'development') {
+      return;
+    }
+    const secret = process.env.VALIDATION_TOKEN_SECRET;
+    if (!secret || REJECTED_VALIDATION_TOKEN_SECRETS.includes(secret)) {
+      weakValidationTokenSecretLogged = true;
+      logger.error('AdminServiceClient', 'VALIDATION_TOKEN_SECRET is unset, the default, or the .env.sample placeholder: the admin will refuse this gateway\'s service JWT, so AWS SigV4 signing keys will not be issued until a generated secret is shared with it');
     }
   }
 
@@ -287,6 +343,33 @@ export class AdminServiceClient {
       });
       throw error;
     }
+  }
+
+  /**
+   * The Connections snapshot (spec 2026-10-23 §4.2), decrypted credentials included: kept in
+   * memory by connections/connectionRegistry.ts, never logged. One attempt, outside makeRequest's
+   * retries and circuit breaker: the registry retries on its own schedule, and that breaker also
+   * gates API-key validation, which a persistently refused snapshot must never trip. An admin
+   * that does not know the function (404, an older version) means no connections.
+   */
+  async getConnections(): Promise<Connection[]> {
+    const requestId = ValidationTokenUtils.generateRequestId();
+    let response: AxiosResponse<any>;
+    try {
+      response = await this.client.request({
+        method: 'GET',
+        url: '/odata/v4/validation/getConnections()',
+        headers: { 'Authorization': `Bearer ${this.createAuthToken(requestId)}`, 'X-Request-ID': requestId },
+      });
+    } catch (error: any) {
+      if (error?.response?.status === 404) return [];
+      throw new Error(`getConnections failed${error?.response?.status ? ` with HTTP ${error.response.status}` : ''}`);
+    }
+    const data = response.data;
+    if (!data?.success || !Array.isArray(data?.snapshot?.connections)) {
+      throw new Error('getConnections answered without a snapshot');
+    }
+    return data.snapshot.connections as Connection[];
   }
 
   /**
@@ -435,7 +518,7 @@ export class AdminServiceClient {
     const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
     
     const crypto = require('crypto');
-    const secret = process.env.VALIDATION_TOKEN_SECRET || 'dev-secret-change-in-production';
+    const secret = process.env.VALIDATION_TOKEN_SECRET || DEFAULT_VALIDATION_TOKEN_SECRET;
     const signature = crypto
       .createHmac('sha256', secret)
       .update(`${encodedHeader}.${encodedPayload}`)

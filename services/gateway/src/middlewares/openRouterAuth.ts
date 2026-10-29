@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 
 // Use require for CommonJS module
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
@@ -20,7 +21,7 @@ interface AuthenticatedRequest extends Request {
  */
 const openRouterAuth = (req: AuthenticatedRequest, _res: Response, next: NextFunction): void => {
   try {
-    logger.info('OpenRouterAuth', `Authenticating request to ${req.originalUrl}`);
+    logger.info('OpenRouterAuth', `Authenticating request to ${redactUrl(req.originalUrl)}`);
     
     // Get API key from header or authorization
     const apiKey = req.headers['x-api-key'] as string || 

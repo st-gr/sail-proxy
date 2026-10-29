@@ -8,12 +8,12 @@
 // drains entirely via polling, unaffected — see ingestWorker.test.ts and
 // ingestHint.test.ts.
 //
-// Lives in its own module rather than inside repository.ts or
+// Lives in its own module rather than inside storeFiles.ts or
 // ingestWorker.ts directly so the two can depend on this without depending
-// on each other: repository.ts's enqueueIngestion publishes here,
+// on each other: storeFiles.ts's enqueueIngestion publishes here,
 // ingestWorker.ts subscribes here, and neither imports the other's module
-// for this purpose (avoiding a repository.ts <-> ingestWorker.ts import
-// cycle — ingestWorker.ts already imports repository.ts for
+// for this purpose (avoiding a storeFiles.ts <-> ingestWorker.ts import
+// cycle — ingestWorker.ts already imports the repository for
 // assertStoreDimension).
 import Redis from 'iovalkey';
 import { shouldEnableDistributedCaching } from '../config/unifiedAuthConfig';

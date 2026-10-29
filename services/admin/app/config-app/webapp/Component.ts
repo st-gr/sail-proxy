@@ -15,7 +15,7 @@ export default UIComponent.extend("admin.config.Component", {
      */
     init: function() {
         // Call parent init
-        UIComponent.prototype.init.apply(this, arguments);
+        UIComponent.prototype.init.call(this);
 
         // Create device model
         this.setModel(createDeviceModel(), "device");
@@ -24,6 +24,11 @@ export default UIComponent.extend("admin.config.Component", {
         const viewModel = new JSONModel({
             busy: false,
             selectedConfigId: null,
+            // The view binds these as soon as it is created, before the controller's onInit fills in
+            // the rest of the defaults: an unset `enabled` would read as enabled, and the
+            // validation list's expression reads `.length`.
+            toolbar: { canDelete: false, canDuplicate: false, canActivate: false },
+            selectedValidationMessages: [],
             editorConfig: {
                 type: "json",
                 showLineNumbers: true,

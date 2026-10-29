@@ -93,7 +93,7 @@ export interface SAPEmbeddingRequest {
     };
   };
   input: {
-    text: string;
+    text: string | string[];
     type?: string;
   };
 }

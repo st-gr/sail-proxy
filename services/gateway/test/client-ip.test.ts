@@ -21,7 +21,7 @@ describe('getClientIp with forwarded headers NOT trusted', () => {
   });
 
   // Regression test: Express derives req.ip from X-Forwarded-For whenever `trust proxy` is
-  // enabled (see TRUST_PROXY_HOPS in src/index.ts), so req.ip can carry a forged value even
+  // enabled (see TRUST_PROXY_HOPS in src/app.ts), so req.ip can carry a forged value even
   // when the caller asked NOT to trust forwarded headers. getClientIp must never read req.ip
   // on this branch — only the socket peer is trustworthy here.
   it('ignores req.ip when it was forged via trust proxy, even though the socket peer differs', () => {

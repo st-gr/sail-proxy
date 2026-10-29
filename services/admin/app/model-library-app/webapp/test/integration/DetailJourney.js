@@ -10,7 +10,7 @@ sap.ui.define([
 			var oLib = expectations.expect.library;
 			QUnit.module("Model detail (" + expectations.role + ")");
 			opaTest("The detail page shows cost operands, configuration and role-gated actions", function (Given, When, Then) {
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN");
 				When.onTheLibrary.iPressTheFirstCard();
 				Then.onTheDetail.iSeeTheObjectPage();
 				Then.onTheDetail.iSeeCostRowsWithOperands();

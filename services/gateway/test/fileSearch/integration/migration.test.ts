@@ -30,7 +30,7 @@ d('migration (requires FILE_SEARCH_TEST_DSN pointing at pgvector)', () => {
     await fixture.pool.query(buildSchemaSql(1536));
     const EXPECTED_TABLES = [
       'file_blobs', 'fs_files', 'vector_stores', 'vector_store_files',
-      'vector_store_batches', 'vector_store_chunks',
+      'vector_store_batches', 'vector_store_chunks', 'fs_jobs',
     ];
     const { rows } = await fixture.pool.query<{ tablename: string }>(
       'SELECT tablename FROM pg_tables WHERE schemaname=$1 AND tablename = ANY($2)',
@@ -85,7 +85,7 @@ d('teacher-logging tables grant coverage (requires FILE_SEARCH_TEST_DSN)', () =>
   // runtime credentials) against a fresh database, then confirms the actual
   // runtime role's INSERT privilege via Postgres's own catalog function
   // rather than re-deriving the expectation from application source.
-  it('grants the runtime role DML on the new teacher-logging tables', async () => {
+  it('grants the runtime role DML on the teacher-logging tables and fs_jobs', async () => {
     const db = await createFreshDatabase(DSN!, 'fs_teacher_logging_test_');
     const runtimeUser = `fs_runtime_tl_${crypto.randomBytes(4).toString('hex')}`;
     const runtimePassword = crypto.randomBytes(8).toString('hex');
@@ -102,10 +102,12 @@ d('teacher-logging tables grant coverage (requires FILE_SEARCH_TEST_DSN)', () =>
 
       const admin = new Pool({ connectionString: db.dsn });
       try {
-        for (const t of ['reranker_search_events', 'reranker_candidate_labels']) {
-          const { rows } = await admin.query(
-            `SELECT has_table_privilege($1, $2, 'INSERT') AS ok`, [runtimeUser, t]);
-          expect(rows[0].ok).toBe(true);
+        for (const t of ['reranker_search_events', 'reranker_candidate_labels', 'fs_jobs']) {
+          for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+            const { rows } = await admin.query(
+              'SELECT has_table_privilege($1, $2, $3) AS ok', [runtimeUser, t, privilege]);
+            expect({ table: t, privilege, ok: rows[0].ok }).toEqual({ table: t, privilege, ok: true });
+          }
         }
       } finally {
         await admin.end();

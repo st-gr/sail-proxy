@@ -7,14 +7,20 @@
             "bundleUrl": "i18n/i18n.properties",
             "supportedLocales": [
                 "",
-                "en"
+                "en",
+                "de",
+                "es",
+                "fr",
+                "it",
+                "nl",
+                "pt"
             ],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "Tool Governance",
+        "title": "{{appTitle}}",
         "description": "Administration interface for Tool Policies management",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -82,7 +88,13 @@
                     "bundleUrl": "i18n/i18n.properties",
                     "supportedLocales": [
                         "",
-                        "en"
+                        "en",
+                        "de",
+                        "es",
+                        "fr",
+                        "it",
+                        "nl",
+                        "pt"
                     ],
                     "fallbackLocale": "en",
                     "async": true
@@ -143,7 +155,7 @@
                                     "actions": {
                                         "OpenInventory": {
                                             "press": "admin.toolpolicies.ext.controller.ListReportExt.onOpenInventory",
-                                            "text": "Open Tool Inventory",
+                                            "text": "{{openToolInventory}}",
                                             "visible": true
                                         }
                                     }
@@ -206,14 +218,14 @@
                                     "actions": {
                                         "AssignUser": {
                                             "press": "admin.toolpolicies.ext.controller.AssignmentActions.onAssignUser",
-                                            "text": "Assign User",
+                                            "text": "{{assignUser}}",
                                             "visible": "{= !${ui>/isEditable} }",
                                             "enabled": true,
                                             "requiresSelection": false
                                         },
                                         "UnassignUsers": {
                                             "press": "admin.toolpolicies.ext.controller.AssignmentActions.onUnassignUsers",
-                                            "text": "Unassign",
+                                            "text": "{{unassign}}",
                                             "visible": "{= !${ui>/isEditable} }",
                                             "enabled": true,
                                             "requiresSelection": true
@@ -228,18 +240,24 @@
                                     "actions": {
                                         "AssignApiKey": {
                                             "press": "admin.toolpolicies.ext.controller.AssignmentActions.onAssignApiKey",
-                                            "text": "Assign API Key",
+                                            "text": "{{assignApiKey}}",
                                             "visible": "{= !${ui>/isEditable} }",
                                             "enabled": true,
                                             "requiresSelection": false
                                         },
                                         "UnassignApiKeys": {
                                             "press": "admin.toolpolicies.ext.controller.AssignmentActions.onUnassignApiKeys",
-                                            "text": "Unassign",
+                                            "text": "{{unassign}}",
                                             "visible": "{= !${ui>/isEditable} }",
                                             "enabled": true,
                                             "requiresSelection": true
                                         }
+                                    }
+                                },
+                                "assignedTeams/@com.sap.vocabularies.UI.v1.LineItem#ForPolicy": {
+                                    "tableSettings": {
+                                        "selectionMode": "None",
+                                        "p13nMode": []
                                     }
                                 }
                             }
@@ -281,7 +299,7 @@
                                     "actions": {
                                         "BackToPolicies": {
                                             "press": "admin.toolpolicies.ext.controller.ListReportExt.onOpenPolicies",
-                                            "text": "Back to Tool Policies",
+                                            "text": "{{backToToolPolicies}}",
                                             "visible": true
                                         }
                                     }

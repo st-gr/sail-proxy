@@ -11,11 +11,13 @@ import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 import apiKeyAuth from './apiKeyAuth';
 import tokenBasedAwsAuth from './tokenBasedAwsAuth';
 import securityEventEmitter from '../services/securityEventEmitter';
-import { credentialIdentity, CredentialIdentity } from '../utils/credentialIdentity';
+import { credentialIdentity, resolvedCredentialIdentity, CredentialIdentity } from '../utils/credentialIdentity';
 import { getDefaultLogger } from '@libs/logger';
 import { getClientIp as deriveClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from '../services/configService';
-import { queryString } from '../utils/queryParam';
+import { extractApiKey, API_KEY_HEADERS } from '../utils/extractApiKey';
+import { redactUrl } from '../utils/redactUrl';
+import { isAwsSigV4Request } from '../utils/sigv4Verifier';
 const logger = getDefaultLogger();
 
 interface UnifiedAuthRequest extends Request {
@@ -58,7 +60,7 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
     logger.trace('UnifiedTokenAuth', 'Processing unified authentication', {
       authType,
       method: req.method,
-      url: req.originalUrl,
+      url: redactUrl(req.originalUrl),
       userAgent: req.headers['user-agent']?.substring(0, 50)
     });
 
@@ -73,7 +75,7 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
           clientIp: getClientIp(req),
           userAgent: req.headers['user-agent'],
           method: req.method,
-          endpoint: req.originalUrl || req.path,
+          endpoint: redactUrl(req.originalUrl || req.path),
           headers: sanitizeHeaders(req.headers)
         });
       }
@@ -153,12 +155,12 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
       (req as any).unifiedAuthAttempted = true;
       
       await securityEventEmitter.emitFailedAuth({
-        ...extractCredentialId(req, authType),
+        ...extractCredentialId(req, authType, validationResult?.error?.credentialId),
         authType,
         reason: validationResult?.error?.message || 'Authentication failed',
         clientIP: getClientIp(req),
         userAgent: req.get('User-Agent'),
-        endpoint: req.originalUrl,
+        endpoint: redactUrl(req.originalUrl),
         method: req.method,
         requestId: (req as any).debugRequestId,
         statusCode: 401
@@ -196,7 +198,7 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
     const responseTime = Date.now() - startTime;
     logger.error('UnifiedTokenAuth', 'Unified authentication error', error instanceof Error ? error : new Error(String(error)), {
       responseTime,
-      url: req.originalUrl
+      url: redactUrl(req.originalUrl)
     });
 
     // On internal error, try fallback if enabled
@@ -217,16 +219,17 @@ const unifiedTokenAuth = async (req: UnifiedAuthRequest, res: Response, next: Ne
 
 /**
  * Extract credential identity for security event logging. Both branches here run on a
- * FAILURE path — the credential did not resolve to a stored row — so the presented value
- * is never safe to ship as-is; credentialIdentity() hashes it and derives a short hint
- * (see utils/credentialIdentity.ts).
+ * FAILURE path, so the presented value is never safe to ship as-is; credentialIdentity()
+ * hashes it and derives a short hint (see utils/credentialIdentity.ts). When the admin named
+ * a refused key that exists (disabled/expired), its row ID replaces the hash.
  */
-function extractCredentialId(req: Request, authType: 'api_key' | 'aws_credential'): CredentialIdentity {
+function extractCredentialId(req: Request, authType: 'api_key' | 'aws_credential', refusedCredentialId?: string): CredentialIdentity {
   if (authType === 'api_key') {
-    return credentialIdentity(extractApiKey(req) || 'unknown');
+    const apiKey = extractApiKey(req);
+    return apiKey && refusedCredentialId ? resolvedCredentialIdentity(apiKey, refusedCredentialId) : credentialIdentity(apiKey || 'unknown');
   } else if (authType === 'aws_credential') {
     const authHeader = req.get('Authorization');
-    if (authHeader && authHeader.startsWith('AWS4-HMAC-SHA256')) {
+    if (isAwsSigV4Request(authHeader)) {
       const credentialMatch = authHeader.match(/Credential=([^\/]+)/);
       return credentialIdentity(credentialMatch ? credentialMatch[1] : 'unknown');
     }
@@ -246,7 +249,7 @@ function detectAuthType(req: Request): 'api_key' | 'aws_credential' | 'unknown' 
   // Check for AWS SigV4 indicators
   if (req.headers['x-amz-date'] && req.headers['authorization']) {
     const authHeader = req.headers['authorization'] as string;
-    if (authHeader.includes('AWS4-HMAC-SHA256')) {
+    if (isAwsSigV4Request(authHeader)) {
       return 'aws_credential';
     }
   }
@@ -266,7 +269,7 @@ function extractAwsCredentials(req: Request): {
   try {
     // Check for AWS SigV4 Authorization header
     const authHeader = req.headers['authorization'] as string;
-    if (!authHeader || !authHeader.includes('AWS4-HMAC-SHA256')) {
+    if (!isAwsSigV4Request(authHeader)) {
       return null;
     }
 
@@ -303,33 +306,6 @@ function extractAwsCredentials(req: Request): {
 }
 
 /**
- * Extract API key from various header locations
- */
-function extractApiKey(req: Request): string | null {
-  // Check standard API key headers
-  // Headers are string | string[]; a query value can also be a null-prototype object
-  // (`?api_key[a]=1`, express >= 4.22). queryString narrows every source to a string or
-  // null, so a non-string key is "no key" - it never reaches the validation service,
-  // the cache-key hash or credentialIdentity.
-  let apiKey: string | null =
-    queryString(req.headers['x-api-key']) || queryString(req.headers['x-stainless-key']) || queryString(req.headers['x-goog-api-key']) ||
-    queryString(req.query.api_key) || queryString(req.query.key);
-
-  // Check Authorization header for Bearer tokens that look like API keys
-  if (!apiKey && req.headers['authorization']) {
-    const authHeader = req.headers['authorization'] as string;
-    if (authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7).trim();
-      if (token.startsWith('sk-')) {
-        apiKey = token;
-      }
-    }
-  }
-
-  return apiKey;
-}
-
-/**
  * Get client IP address. Delegates to utils/clientIp's single derivation,
  * gated on the `security.trust_forwarded_for` config flag.
  */
@@ -348,9 +324,10 @@ function sanitizeHeaders(headers: any): Record<string, string> {
     
     if (lowerKey.includes('authorization') ||
         lowerKey.includes('api-key') ||
-        lowerKey.includes('x-api-key') ||
-        lowerKey.includes('x-goog-api-key')) {
+        (API_KEY_HEADERS as readonly string[]).includes(lowerKey)) {
       sanitized[key] = '[REDACTED]';
+    } else if (lowerKey === 'referer' || lowerKey === 'referrer') {
+      sanitized[key] = redactUrl(String(value));
     } else if (Array.isArray(value)) {
       sanitized[key] = value.join(', ');
     } else {

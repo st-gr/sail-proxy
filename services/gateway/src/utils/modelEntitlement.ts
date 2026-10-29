@@ -7,9 +7,11 @@
 import { Request, Response } from 'express';
 import type { EntitlementBlock } from '../clients/adminServiceClient';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from './redactUrl';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getClientIp } from './clientIp';
 import { getTrustForwardedFor } from '../services/configService';
+import { connectionRegistry } from '../connections/connectionRegistry';
 import { userFromRequest, isAdminUser } from './userBlock';
 
 const logger = getDefaultLogger();
@@ -24,12 +26,14 @@ function isBlock(x: any): x is EntitlementBlock {
  * substring check or throw. `include` fails closed (a broken list block entitles nothing);
  * `exclude` falls back to the unrestricted default (a broken exclusion list means "all").
  */
-function normalizeBlock(x: any): EntitlementBlock {
+export function normalizeBlock(x: any): EntitlementBlock {
   const normalized: EntitlementBlock = {
     catalogId: x.catalogId == null ? '' : String(x.catalogId),
     catalogName: x.catalogName == null ? '' : String(x.catalogName),
     mode: x.mode
   };
+  if (typeof x.teamCatalogId === 'string') normalized.teamCatalogId = x.teamCatalogId;
+  if (typeof x.teamCatalogName === 'string') normalized.teamCatalogName = x.teamCatalogName;
   // Only the field the block's own mode reads needs normalising: `include` for 'list'
   // (fail closed to [] so a broken list entitles nothing), `exclude` for 'all' (omit so a
   // broken exclusion list falls back to the mode's own "admit everything" default).
@@ -55,9 +59,15 @@ export function entitlementFromRequest(req: any): EntitlementBlock | null {
   return null;
 }
 
+/**
+ * A Connection model is opt-in (spec 2026-10-23 §4.3): 'all' (the default catalog) never grants
+ * one, only a catalog that lists it does. Decided here from the live registry, not from the
+ * admin's exclusion list, because the block is cached for up to an hour and a model published in
+ * between would reach every default-catalog caller.
+ */
 export function isModelEntitled(block: EntitlementBlock | null, modelId: string): boolean {
   if (!block) return true;
-  if (block.mode === 'all') return !(block.exclude || []).includes(modelId);
+  if (block.mode === 'all') return !connectionRegistry.isExternalModelId(modelId) && !(block.exclude || []).includes(modelId);
   return (block.include || []).includes(modelId);
 }
 
@@ -68,18 +78,22 @@ export function filterModels<T extends { id: string }>(block: EntitlementBlock |
 
 /** 403 body for an inference request outside the entitlement. `enforceEntitlement` wraps this with the security event. */
 export function respondNotEntitled(res: Response, model: string, block: EntitlementBlock): void {
+  const where = block.teamCatalogName
+    ? `your entitlement catalog "${block.catalogName}" or your team's catalog "${block.teamCatalogName}"`
+    : `your entitlement catalog "${block.catalogName}"`;
   res.status(403).json({
     error: {
       type: 'model_not_entitled',
-      message: `Model ${model} is not in your entitlement catalog "${block.catalogName}"`,
+      message: `Model ${model} is not in ${where}`,
       model,
-      catalog: block.catalogName
+      catalog: block.catalogName,
+      ...(block.teamCatalogName ? { teamCatalog: block.teamCatalogName } : {})
     }
   });
 }
 
 export function logEntitlementDecision(req: Request, model: string, allowed: boolean): void {
-  if (!allowed) logger.info('ModelEntitlement', `Refused ${model} for ${req.originalUrl}`);
+  if (!allowed) logger.info('ModelEntitlement', `Refused ${model} for ${redactUrl(req.originalUrl)}`);
 }
 
 function credentialOf(req: any): { credentialId: string; authType: 'api_key' | 'aws_credential' } {
@@ -105,7 +119,7 @@ export function emitNotEntitled(req: Request, model: string, block: EntitlementB
       credentialId, authType, model, catalog: block.catalogName, catalogId: block.catalogId,
       clientIP: getClientIp(req, getTrustForwardedFor()),
       userAgent: typeof (req as any).get === 'function' ? (req as any).get('user-agent') : undefined,
-      endpoint: req.originalUrl, method: req.method, requestId: (req as any).debugRequestId
+      endpoint: redactUrl(req.originalUrl), method: req.method, requestId: (req as any).debugRequestId
     })).catch(e => logger.warn('ModelEntitlement', `security event failed: ${e instanceof Error ? e.message : String(e)}`));
   } catch (e) {
     logger.warn('ModelEntitlement', `security event failed: ${e instanceof Error ? e.message : String(e)}`);

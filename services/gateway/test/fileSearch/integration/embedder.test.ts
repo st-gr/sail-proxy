@@ -33,7 +33,7 @@ import * as dotenv from 'dotenv';
 // `override: false` so an explicitly exported value still wins over the file.
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: false });
 
-import { embed } from '../../../src/fileSearch/embedder';
+import { embed, configuredEmbeddingTarget } from '../../../src/fileSearch/embedder';
 import configService from '../../../src/services/configService';
 
 const LIVE_PROBE = process.env.FILE_SEARCH_LIVE_PROBE;
@@ -54,7 +54,7 @@ if (!LIVE_PROBE) {
 
 live('embedder against the live tenant', () => {
   it('embeds a batch and returns vectors of the configured dimension', async () => {
-    const result = await embed(['alpha', 'beta'], 'query');
+    const result = await embed(['alpha', 'beta'], 'query', configuredEmbeddingTarget());
 
     expect(result.vectors).toHaveLength(2);
     expect(result.vectors[0]).toHaveLength(configService.getFileSearchConfig().embeddingDimensions);

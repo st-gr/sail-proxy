@@ -12,7 +12,7 @@
           <Button id="refreshButton" text="{i18n>refresh}" icon="sap-icon://refresh" press=".onRefresh" visible="{viewModel>/isAdmin}"/>
           <Button id="catalogsButton" text="{i18n>catalogsTitle}" icon="sap-icon://folder" press=".onOpenCatalogs"/>
           <Button id="addSelectedButton" text="{i18n>addToCatalog}" icon="sap-icon://add-folder" enabled="{= ${viewModel>/library/selectedCount} > 0}" press=".onAddSelectedToCatalog" visible="{= ${viewModel>/library/mode} === 'catalog'}"/>
-          <ToggleButton id="selectMode" icon="sap-icon://multi-select" pressed="{viewModel>/library/selectMode}" tooltip="Select models"/>
+          <ToggleButton id="selectMode" icon="sap-icon://multi-select" pressed="{viewModel>/library/selectMode}" tooltip="{i18n>selectModelsTooltip}"/>
         </f:actions>
       </f:DynamicPageTitle>
     </f:title>
@@ -37,7 +37,7 @@
               <VBox id="providerBox" items="{viewModel>/library/providerList}">
                 <HBox alignItems="Center">
                   <Avatar displaySize="XS" displayShape="Square" src="{path: '', model: 'viewModel', formatter: 'formatter.providerSrc'}" initials="{path: '', model: 'viewModel', formatter: 'formatter.providerInitials'}" class="mlFilterIcon"/>
-                  <CheckBox text="{path: '', model: 'viewModel', formatter: 'formatter.providerLabel'}" select=".onProviderChange"/>
+                  <CheckBox text="{parts: [{path: '', model: 'viewModel'}, {path: 'i18n>providerOther'}], formatter: 'formatter.providerLabel'}" select=".onProviderChange"/>
                 </HBox>
               </VBox>
             </Panel>
@@ -134,7 +134,7 @@
         <VBox id="results" class="sapUiSmallMargin">
           <OverflowToolbar id="resultsToolbar">
             <Title id="modelsCount" text="{parts: ['i18n>modelsCount', 'viewModel>/library/count'], formatter: 'formatMessage'}" level="H2"/>
-            <Label text="Mode:" class="sapUiTinyMarginBegin"/>
+            <Label text="{i18n>modeLabel}" class="sapUiTinyMarginBegin"/>
             <SegmentedButton id="modeButton" selectedKey="{viewModel>/library/mode}" selectionChange=".onModeChange">
               <items>
                 <SegmentedButtonItem key="catalog" icon="sap-icon://grid" text="{i18n>modeCatalog}"/>
@@ -174,10 +174,11 @@
                       <Text text="({modelId})" class="mlCardId"/>
                     </VBox>
                   </HBox>
-                  <Text text="{path: 'latestVersion', formatter: 'formatter.version'}"/>
+                  <Text text="{parts: ['latestVersion', 'i18n>versionValue'], formatter: 'formatter.version'}"/>
                   <ObjectStatus text="{i18n>deployed}" state="Success" icon="sap-icon://cloud" visible="{parts: [{path: 'modelId', targetType: 'any'}, {path: 'accessType', targetType: 'any'}, {path: 'viewModel>/library/deployedBaseModels'}], formatter: 'formatter.isDeployed'}"/>
                   <ObjectStatus text="{i18n>deploymentRow}" state="Information" visible="{path: 'accessType', targetType: 'any', formatter: 'formatter.isDeployment'}"/>
-                  <ObjectStatus text="{path: 'retirementDate', targetType: 'any', formatter: 'formatter.retires'}" state="Warning" visible="{= !!${retirementDate} }"/>
+                  <ObjectStatus text="{parts: [{path: 'origin', targetType: 'any'}, {path: 'connection', targetType: 'any'}, 'i18n>originSap', 'i18n>originConnection', 'i18n>originConnectionUnnamed'], formatter: 'formatter.origin'}" state="Information" icon="sap-icon://connected" visible="{path: 'origin', targetType: 'any', formatter: 'formatter.isExternal'}"/>
+                  <ObjectStatus text="{parts: [{path: 'retirementDate', targetType: 'any'}, 'i18n>retiresOn'], formatter: 'formatter.retires'}" state="Warning" visible="{= !!%{retirementDate} }"/>
                   <ObjectStatus text="{i18n>deploymentOnly}" state="Information" tooltip="{i18n>deploymentOnlyTip}" visible="{parts: [{path: 'accessType', targetType: 'any'}, {path: 'llmAccess', targetType: 'any'}, {path: 'orchestration', targetType: 'any'}], formatter: 'formatter.deploymentOnly'}"/>
                   <ObjectStatus text="{i18n>notCallable}" state="Warning" tooltip="{i18n>notCallableTip}" visible="{parts: [{path: 'accessType', targetType: 'any'}, {path: 'llmAccess', targetType: 'any'}, {path: 'orchestration', targetType: 'any'}], formatter: 'formatter.notCallable'}"/>
                   <ctl:IconStrip capabilities="{capabilities}" inputTypes="{inputTypes}" class="sapUiTinyMarginTop"/>
@@ -189,14 +190,14 @@
           <table:Table id="leaderboard" visible="{= ${viewModel>/library/mode} === 'leaderboard'}" rows="{viewModel>/library/leaderboard/rows}" selectionMode="None" visibleRowCountMode="Auto" minAutoRowCount="10"/>
           <VBox id="chartBox" visible="{= ${viewModel>/library/mode} === 'chart'}">
             <HBox alignItems="Center" class="sapUiSmallMarginBottom">
-              <Label text="X-Axis:" class="sapUiTinyMarginEnd"/>
+              <Label text="{i18n>xAxisLabel}" class="sapUiTinyMarginEnd"/>
               <Select id="chartX" selectedKey="{viewModel>/library/chart/x}" items="{viewModel>/library/chart/keys}" change=".onChartAxisChange"><core:Item key="{viewModel>key}" text="{viewModel>label}"/></Select>
-              <Button icon="sap-icon://synchronize" tooltip="Swap X and Y axes" press=".onSwapAxes" class="sapUiTinyMarginBeginEnd"/>
-              <Label text="Y-Axis:" class="sapUiTinyMarginEnd"/>
+              <Button icon="sap-icon://synchronize" tooltip="{i18n>swapAxesTooltip}" press=".onSwapAxes" class="sapUiTinyMarginBeginEnd"/>
+              <Label text="{i18n>yAxisLabel}" class="sapUiTinyMarginEnd"/>
               <Select id="chartY" selectedKey="{viewModel>/library/chart/y}" items="{viewModel>/library/chart/keys}" change=".onChartAxisChange"><core:Item key="{viewModel>key}" text="{viewModel>label}"/></Select>
             </HBox>
             <HBox alignItems="Start">
-              <ctl:BubbleChart id="chart" points="{viewModel>/library/chart/points}" xLabel="{viewModel>/library/chart/xLabel}" yLabel="{viewModel>/library/chart/yLabel}" height="480px" press=".onChartBubblePress" class="sapUiTinyMarginEnd"/>
+              <ctl:BubbleChart id="chart" points="{viewModel>/library/chart/points}" xLabel="{viewModel>/library/chart/xLabel}" yLabel="{viewModel>/library/chart/yLabel}" axesLabel="{viewModel>/library/chart/axesLabel}" noDataText="{i18n>chartNoData}" height="480px" press=".onChartBubblePress" class="sapUiTinyMarginEnd"/>
               <!-- C2: legend, one row per point — a coloured dot ("color", set by the controller
                    from chartLayout.colorForIndex, the same colour as the matching bubble) plus
                    "<name> - <version>" (the point's "label", already built by benchmarks.chartPoints). -->

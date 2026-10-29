@@ -4,13 +4,10 @@ import * as fs from 'fs/promises';
 import { sha256Of } from '../../src/fileSearch/blob/blobStore';
 import { createLocalBackend } from '../../src/fileSearch/blob/localBackend';
 
-// Final whole-branch review, Important #2: 'local'/'s3' have three
-// compounding, unresolved defects (a physical-delete race that can
-// permanently lose content, silent orphaning of existing blobs on a backend
-// switch, and no request timeout on an in-transaction network call) --
-// gated off rather than fixed in this pass. mockBackend is mutated per test
-// below; the `mock` name prefix is required for Jest's module-factory
-// hoisting to allow referencing it from inside jest.mock().
+// 'local' stays refused for new writes; 's3' is built from blob_storage.s3
+// (blobLifecycle.test.ts covers reads, release and revive). mockBackend is
+// mutated per test below; the `mock` name prefix is required for Jest's
+// module-factory hoisting to allow referencing it from inside jest.mock().
 let mockBackend: string = 'db';
 jest.mock('../../src/services/configService', () => ({
   __esModule: true,
@@ -25,6 +22,8 @@ jest.mock('../../src/services/configService', () => ({
 
 // eslint-disable-next-line import/first
 import { getBackend, UnsupportedBlobBackendError } from '../../src/fileSearch/blob/blobStore';
+// eslint-disable-next-line import/first
+import { S3ConfigError } from '../../src/fileSearch/blob/s3Backend';
 
 describe('getBackend backend gating', () => {
   beforeEach(() => { mockBackend = 'db'; });
@@ -40,13 +39,13 @@ describe('getBackend backend gating', () => {
   it('"local" is refused with a clear, typed error rather than being constructed', () => {
     mockBackend = 'local';
     expect(() => getBackend()).toThrow(UnsupportedBlobBackendError);
-    expect(() => getBackend()).toThrow(/experimental and not yet supported/i);
+    expect(() => getBackend()).toThrow(/"local" is not supported/i);
   });
 
-  it('"s3" is refused with a clear, typed error rather than being constructed', () => {
+  it('"s3" is not refused: it is built from blob_storage.s3, whose gaps are a config error', () => {
     mockBackend = 's3';
-    expect(() => getBackend()).toThrow(UnsupportedBlobBackendError);
-    expect(() => getBackend()).toThrow(/experimental and not yet supported/i);
+    expect(() => getBackend()).toThrow(S3ConfigError);
+    expect(() => getBackend()).not.toThrow(UnsupportedBlobBackendError);
   });
 });
 

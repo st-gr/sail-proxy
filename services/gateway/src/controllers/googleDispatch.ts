@@ -20,7 +20,8 @@ import { executeAfterPlugins } from '../services/pluginExecutor';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { recordInvokedTools, geminiAdapter } from '../toolGovernance';
 import { splitBlocks, sseBlock } from '../utils/sseFraming';
-import { foldNativeGeminiUsage, foldOrchestrationUsage, onClientClose, openSseStream, pluginFrame } from './googleWire';
+import { foldNativeGeminiUsage, foldOrchestrationUsage, onClientClose, openSseStream, pluginFrame, refuse } from './googleWire';
+import { StreamFailure, chunkError, failureFromChunk, failureFromError, httpStatusOr } from '../utils/streamStart';
 import {
   GeminiMethod, estimateEmbedTokens, geminiError, geminiUrl, usageFromSse,
 } from '../services/googleGeminiService';
@@ -146,7 +147,7 @@ export async function dispatchBridge(ctx: GeminiDispatchContext): Promise<void> 
   }
 
   const envelope = await sapAIService.completeChat(payload as any, (req as any).debugRequestId);
-  foldOrchestrationUsage(usage, (envelope?.final_result ?? envelope ?? {})?.usage);
+  foldOrchestrationUsage(usage, (envelope?.final_result ?? envelope ?? {})?.usage, modelName);
 
   let finalBody = orchestrationToGeminiResponse(envelope, { modelName });
   recordInvokedTools(req, geminiAdapter.invokedTools(finalBody));
@@ -162,8 +163,20 @@ async function bridgeStream(ctx: GeminiDispatchContext, payload: any): Promise<v
   const abort = new AbortController();
   let abandoned = false;
 
-  openSseStream(res);
+  // The SSE headers are set with the first frame, not here. SAP answers HTTP 200 and sends
+  // a rejection ("prompt is too long", measured 2026-10-13) as an error chunk after its
+  // templating chunk, which yields no frame; a failure that arrives before any frame is
+  // answered like Gemini answers a rejected request — its status and the JSON error
+  // envelope — instead of an error frame inside a 200 stream (utils/streamStart.ts).
+  //
+  // Unlike the Anthropic and OpenAI routes there is deliberately no start deadline and no
+  // keepalive here. Gemini's stream has no ping event, and an SSE comment is not safe for
+  // its clients: the google-genai SDKs JSON-parse every non-empty line they read, so a
+  // `: keepalive` line would break them. Holding the status line until the first frame is
+  // what this bridge already did (its headers were set but only sent with the first write).
   onClientClose(res, () => { abandoned = true; abort.abort(); });
+  let framed = false;
+  let preStartFailure: StreamFailure | null = null;
 
   // `streamChatCompletion` does NOT await its callback, so an async write would
   // reorder frames. Writes are chained here instead and the chain is awaited once
@@ -173,6 +186,10 @@ async function bridgeStream(ctx: GeminiDispatchContext, payload: any): Promise<v
   let writes: Promise<void> = Promise.resolve();
   const enqueue = (blocks: string[]): void => {
     if (blocks.length === 0) return;
+    if (!framed) {
+      framed = true;
+      openSseStream(res);
+    }
     writes = writes.then(async () => {
       for (const block of blocks) {
         if (res.writableEnded) return;
@@ -186,22 +203,46 @@ async function bridgeStream(ctx: GeminiDispatchContext, payload: any): Promise<v
 
   let status = 200;
   try {
-    await sapAIService.streamChatCompletion(payload, (chunk: any) => { enqueue(translator.onChunk(chunk)); },
-      abort.signal, req as any, undefined);
-    enqueue(translator.finish());
+    await sapAIService.streamChatCompletion(payload, (chunk: any) => {
+      if (preStartFailure) return;
+      if (!framed && chunkError(chunk)) {
+        preStartFailure = failureFromChunk(chunk, 502);
+        return;
+      }
+      enqueue(translator.onChunk(chunk));
+    }, abort.signal, req as any, undefined);
+    if (!preStartFailure) enqueue(translator.finish());
     await writes;
+    // An upstream that ended without a single frame is still a valid (empty) SSE response.
+    if (!preStartFailure && !framed && !res.headersSent) {
+      framed = true;
+      openSseStream(res);
+    }
   } catch (error: any) {
     await writes;
-    status = error?.status || error?.response?.status || 502;
+    // Checked: it reaches res.status() when nothing was framed yet.
+    status = httpStatusOr(error?.status, httpStatusOr(error?.response?.status, 502));
     logger.error('googleController', `Orchestration stream failed for ${modelName}: ${error?.message || error}`);
-    if (!res.writableEnded) {
+    if (!framed && !res.headersSent) {
+      preStartFailure = failureFromError(error, status);
+    } else if (!res.writableEnded) {
       try { res.write(sseBlock(geminiError(status, error?.message || 'orchestration stream failed'))); } catch { /* best effort */ }
     }
   }
 
+  if (preStartFailure) {
+    const failure: StreamFailure = preStartFailure;
+    logger.error('googleController', `Orchestration stream refused for ${modelName} (${failure.status}): ${failure.message}`);
+    foldOrchestrationUsage(usage, translator.usage(), modelName);
+    emitUsageEvent(req, usage, modelName, abandoned ? 499 : failure.status);
+    if (!res.headersSent && !res.writableEnded) refuse(res, failure.status, failure.message);
+    else if (!res.writableEnded) res.end();
+    return;
+  }
+
   // The translator's `usage()` is authoritative — it is what SAP reported, not
   // what the frames happened to carry.
-  foldOrchestrationUsage(usage, translator.usage());
+  foldOrchestrationUsage(usage, translator.usage(), modelName);
   emitUsageEvent(req, usage, modelName, abandoned ? 499 : status);
   if (!res.writableEnded) res.end();
 }

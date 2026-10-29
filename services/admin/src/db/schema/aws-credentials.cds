@@ -154,6 +154,18 @@ entity AwsCredentialUsage : cuid, temporal {
   capacityUnits       : Decimal(14,6);      // genAiTokens * cuFactor
   sapCost             : Decimal(12,6);      // capacityUnits * pricePerCu, in sapCostCurrency
   sapCostCurrency     : String(3);          // ISO-4217 of the price row used (e.g. 'USD','EUR')
+  // A Connection model's usage (spec 2026-10-23 §6.1): origin 'external', the connection's name and the
+  // provider's model name. The SAP cost columns above stay null; the row is priced from the admin-maintained
+  // list price in force at the request: listCost in listCostCurrency, or pricingMissing when none was set.
+  origin              : String(10) default 'sap';
+  connection          : String(31);
+  upstreamModel       : String(64);
+  listCost            : Decimal(12,6);
+  listCostCurrency    : String(3);
+  pricingMissing      : Boolean;
+  // The SAP AI Core tenant (identity zone, SapTenants.zone) that served the request (spec 2026-10-25 §6);
+  // null for Connection rows. Rows older than the column get the environment tenant once (sap-tenant-backfill.ts).
+  sapTenant           : String(100);
 
   // Error tracking
   errorCode           : String(50);

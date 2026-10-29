@@ -5,12 +5,15 @@
  * Maintains backward compatibility while adding support for both API key and AWS credential validation data.
  */
 
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'crypto';
 import { ValidationCache, ValidationResponse } from '../../../../libs/aws-token-validation/validation-token';
-import { secureMetadataExchange, CredentialMetadata } from '../../../../libs/aws-token-validation/secure-metadata-exchange';
+import { CredentialMetadata } from '../../../../libs/aws-token-validation/secure-metadata-exchange';
+import { hashUnifiedCacheCredential } from '../../../../libs/cache-invalidation/cacheInvalidationService';
 import { EnhancedValidationCache, CacheConfiguration, CacheMetrics, CacheEntry } from './enhancedValidationCache';
 import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 import { UnifiedValidationResponse, ApiKeyValidationData, AwsCredentialValidationData } from '../clients/adminServiceClient';
 import { ValkeyDistributedCacheAdapter } from './valkeyDistributedCacheAdapter';
+import { secretLabel } from '../utils/secretLabel';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
@@ -21,6 +24,10 @@ const logger = getDefaultLogger();
  * before it is matched against local keys (see clearByPattern).
  */
 export const VALKEY_CACHE_KEY_PREFIX = 'unified-cache:';
+
+/** HKDF salt/info for the per-credential key that encrypts a cached validation payload. */
+const ENTRY_KEY_SALT = 'sail-proxy unified validation cache';
+const ENTRY_KEY_INFO = 'entry-payload-v1';
 
 // Extended cache entry types
 export interface UnifiedCacheEntry {
@@ -122,8 +129,7 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
       this.valkeyAdapter = new ValkeyDistributedCacheAdapter({
         valkeyUrl: this.unifiedConfig.valkeyUrl,
         keyPrefix: VALKEY_CACHE_KEY_PREFIX,
-        defaultTTL: Math.floor(this.unifiedConfig.tokenTTL / 1000), // Convert to seconds
-        enableEncryption: this.unifiedConfig.encryptTokenData
+        defaultTTL: Math.floor(this.unifiedConfig.tokenTTL / 1000) // Convert to seconds
       });
       
       // Initialize Valkey connection asynchronously
@@ -162,14 +168,17 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
     const startTime = Date.now();
     const cacheKey = this.generateUnifiedCacheKey(tokenOrKey, response.authType);
     const ttl = options?.ttl || this.getTokenTTL(response.authType, options?.source);
-    const shouldEncrypt = this.unifiedConfig.encryptTokenData && this.containsUnifiedSensitiveData(response);
+    // Every payload is encrypted when enabled: the email, keyId and entitlement are as worth
+    // protecting in ValKey as a secret would be, and a key-name sniff cannot tell them apart.
+    const shouldEncrypt = this.unifiedConfig.encryptTokenData;
 
     try {
-      let processedData: UnifiedValidationResponse = response;
+      // A secret or signing key is never cached, encrypted or not; nothing reads it back from a cache hit.
+      let processedData: UnifiedValidationResponse = this.withoutSecrets(response);
 
-      // Encrypt sensitive data if enabled
+      // Encrypt under a key only the presented credential can derive
       if (shouldEncrypt) {
-        processedData = await this.encryptUnifiedCacheData(response, cacheKey);
+        processedData = this.encryptUnifiedCacheData(processedData, tokenOrKey);
       }
 
       const entry: UnifiedCacheEntry = {
@@ -288,10 +297,17 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
       entry.accessCount++;
       entry.lastAccessed = Date.now();
 
-      // Decrypt if necessary
+      // Decrypt if necessary. Decryption authenticates the payload against the presented
+      // credential (AES-GCM under a key derived from it), so an entry written for any other
+      // credential throws here and is a miss. With encryption on, a plaintext entry carries no
+      // such binding and is not trusted.
       let data = entry.data as UnifiedValidationResponse;
-      if (entry.encrypted && this.isUnifiedEncryptedData(data)) {
-        data = await this.decryptUnifiedCacheData(data, cacheKey);
+      if (this.isUnifiedEncryptedData(data)) {
+        data = this.decryptUnifiedCacheData(data, tokenOrKey);
+      } else if (this.unifiedConfig.encryptTokenData) {
+        this.unifiedMetrics.unifiedTokenMisses++;
+        this.updateUnifiedMetrics();
+        return null;
       }
 
       // Update cache hit metadata
@@ -597,12 +613,12 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
       }
       
       if (cleared) {
-        logger.info('UnifiedValidationCache', `Cleared cache for credential: ${credentialId} (${authType})`);
+        logger.info('UnifiedValidationCache', `Cleared cache for credential: ${secretLabel(credentialId)} (${authType})`);
       }
-      
+
       return cleared;
     } catch (error) {
-      logger.error('UnifiedValidationCache', `Failed to clear cache for credential ${credentialId}`, error instanceof Error ? error : new Error(String(error)));
+      logger.error('UnifiedValidationCache', `Failed to clear cache for credential ${secretLabel(credentialId)}`, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
@@ -650,26 +666,13 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
    * Build possible cache keys for a credential
    */
   private buildPossibleCacheKeys(credentialId: string, authType: 'api_key' | 'aws_credential'): string[] {
-    const keys: string[] = [];
-    
-    // Build the specific cache key using the same hash function as cache invalidation
+    // The cache has always been keyed by a SHA-256 hash of the credential (see A2 above);
+    // nothing in this codebase ever wrote an unhashed 'unified:<prefix>:<credential>' key, so
+    // building those variants only put the raw credential into a Valkey DEL argument for no
+    // reason. Just the one key that could actually exist.
     const prefix = authType === 'api_key' ? 'apikey' : 'token';
     const keyHash = this.hashKey(credentialId);
-    
-    // Primary key that should match the current cache entry
-    keys.push(`unified:${prefix}:${keyHash}`);
-    
-    // Legacy patterns for migration compatibility (these may not exist but check anyway)
-    if (authType === 'api_key') {
-      keys.push(`unified:apikey:${credentialId}`); // Unhashed legacy format
-      keys.push(`unified:token:${credentialId}`);  // Wrong prefix legacy format
-    } else if (authType === 'aws_credential') {
-      keys.push(`unified:token:${credentialId}`);  // Unhashed legacy format
-      keys.push(`unified:awscred:${credentialId}`); // Different prefix legacy
-      keys.push(`unified:aws:${credentialId}`);     // Short prefix legacy
-    }
-    
-    return keys;
+    return [`unified:${prefix}:${keyHash}`];
   }
 
   /**
@@ -747,14 +750,8 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
   }
 
   private hashKey(key: string): string {
-    // Simple hash function for cache keys (in production, use crypto.createHash)
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) {
-      const char = key.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(36);
+    // Shared with the invalidation lib, so invalidation by credential addresses this exact key
+    return hashUnifiedCacheCredential(key);
   }
 
   private getTokenTTL(authType: 'api_key' | 'aws_credential', source?: string): number {
@@ -766,106 +763,47 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
     return this.unifiedConfig.tokenTTL;
   }
 
-  private containsUnifiedSensitiveData(response: UnifiedValidationResponse): boolean {
-    try {
-      const responseStr = JSON.stringify(response).toLowerCase();
-      const sensitiveFields = ['secretkey', 'secretaccesskey', 'credentials', 'token', 'password'];
-      return sensitiveFields.some(field => responseStr.includes(field));
-    } catch {
-      return false;
+  // Signing keys live in process memory only (awsSigningKeyCache); a secret from an older admin
+  // is dropped too.
+  private withoutSecrets(response: UnifiedValidationResponse): UnifiedValidationResponse {
+    if (!response.data || !('secretAccessKey' in response.data || 'signingKeys' in response.data)) {
+      return response;
     }
+    const data: any = { ...response.data };
+    delete data.secretAccessKey;
+    delete data.signingKeys;
+    return { ...response, data };
   }
 
-  private async encryptUnifiedCacheData(data: UnifiedValidationResponse, key: string): Promise<UnifiedValidationResponse> {
-    try {
-      // Convert to a format compatible with secureMetadataExchange
-      const metadataForEncryption: CredentialMetadata = {
-        credentialId: `unified-token-${data.authType}`,
-        permissions: [{
-          service: 'unified-auth',
-          action: 'validate',
-          resource: data.authType,
-          effect: 'allow'
-        }],
-        region: 'global',
-        sapAiRegion: 'global',
-        userId: 'unified-user',
-        rateLimits: { requestsPerMinute: 0, requestsPerHour: 0, requestsPerDay: 0 },
-        // Store the actual unified data in a custom field
-        ...(data as any).unifiedPayload ? { unifiedPayload: data } : {}
-      };
-      
-      // Use a deterministic salt based on the cache key to ensure consistency
-      const salt = key + '-unified-cache-salt';
-      const encryptedData = await secureMetadataExchange.encryptMetadata(metadataForEncryption, key, salt);
-      
-      return { 
-        ...data, 
-        __encrypted: true, 
-        __encryptedData: encryptedData,
-        __originalData: JSON.stringify(data) // Store serialized original data as backup
-      } as any;
-    } catch (error) {
-      logger.warn('UnifiedValidationCache', 'Failed to encrypt unified cache data', {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return data; // Fall back to unencrypted
-    }
+  private deriveEntryKey(tokenOrKey: string): Buffer {
+    return Buffer.from(hkdfSync('sha256', tokenOrKey, ENTRY_KEY_SALT, ENTRY_KEY_INFO, 32));
   }
 
-  private async decryptUnifiedCacheData(encryptedData: any, key: string): Promise<UnifiedValidationResponse> {
-    try {
-      if (encryptedData.__encrypted && encryptedData.__encryptedData) {
-        // Use the same deterministic salt for decryption
-        const salt = key + '-unified-cache-salt';
-        const decryptedMetadata: CredentialMetadata = await secureMetadataExchange.decryptMetadata(encryptedData.__encryptedData, key, salt);
-        
-        // Try to extract original data from the stored backup
-        if (encryptedData.__originalData) {
-          try {
-            const originalData = JSON.parse(encryptedData.__originalData);
-            return originalData;
-          } catch (parseError) {
-            logger.warn('UnifiedValidationCache', 'Failed to parse original data, using decrypted metadata', {
-              error: parseError instanceof Error ? parseError.message : String(parseError)
-            });
-            // Fall through to reconstruct from metadata
-          }
-        }
-        
-        // Reconstruct UnifiedValidationResponse from decrypted metadata
-        // This is a fallback if __originalData is not available
-        const reconstructed: UnifiedValidationResponse = {
-          valid: true, // Assume valid if it was cached
-          authType: decryptedMetadata.credentialId.includes('api_key') ? 'api_key' : 'aws_credential',
-          data: {
-            // Generic data structure - this is why we prefer __originalData
-            credentialId: decryptedMetadata.credentialId,
-            region: decryptedMetadata.region,
-            userId: decryptedMetadata.userId,
-            permissions: decryptedMetadata.permissions.map(p => `${p.service}:${p.action}`),
-            rateLimits: decryptedMetadata.rateLimits,
-            metadata: {
-              isActive: true,
-              lastUsed: new Date().toISOString()
-            }
-          } as any,
-          auditInfo: {
-            requestId: 'decrypted-' + Date.now(),
-            validationTime: Date.now(),
-            cacheHit: true
-          }
-        };
-        
-        return reconstructed;
+  /**
+   * The stored payload is ciphertext only - no plaintext fields beside it. The key is derived from
+   * the credential itself, which the cache key (a SHA-256 of it) does not reveal, so every gateway
+   * process can decrypt an entry for the credential it is presented and nobody reading ValKey can.
+   */
+  private encryptUnifiedCacheData(data: UnifiedValidationResponse, tokenOrKey: string): UnifiedValidationResponse {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.deriveEntryKey(tokenOrKey), iv);
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+    return {
+      __encrypted: true,
+      __encryptedData: {
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'),
+        ciphertext: ciphertext.toString('base64')
       }
-      return encryptedData;
-    } catch (error) {
-      logger.warn('UnifiedValidationCache', 'Failed to decrypt unified cache data', {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error; // Don't return corrupted data
-    }
+    } as any;
+  }
+
+  private decryptUnifiedCacheData(encryptedData: any, tokenOrKey: string): UnifiedValidationResponse {
+    const { iv, tag, ciphertext } = encryptedData.__encryptedData;
+    const decipher = createDecipheriv('aes-256-gcm', this.deriveEntryKey(tokenOrKey), Buffer.from(iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(tag, 'base64'));
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(ciphertext, 'base64')), decipher.final()]);
+    return JSON.parse(plaintext.toString('utf8'));
   }
 
   private isUnifiedEncryptedData(data: any): boolean {

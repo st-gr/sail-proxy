@@ -4,10 +4,10 @@
        catalog's header. Enter creates it from either field, as in NewCatalogDialog. -->
   <Dialog id="newProfileDialog" title="{i18n>newProfile}" contentWidth="28rem" initialFocus="newProfileName">
     <f:SimpleForm layout="ResponsiveGridLayout" editable="true">
-      <Label text="Name" required="true"/><Input id="newProfileName" value="{viewModel>/catalogs/newProfile/name}" submit=".onCreateProfile"/>
-      <Label text="Description"/><Input id="newProfileDescription" value="{viewModel>/catalogs/newProfile/description}" submit=".onCreateProfile"/>
+      <Label text="{i18n>name}" required="true"/><Input id="newProfileName" value="{viewModel>/catalogs/newProfile/name}" submit=".onCreateProfile"/>
+      <Label text="{i18n>description}"/><Input id="newProfileDescription" value="{viewModel>/catalogs/newProfile/description}" submit=".onCreateProfile"/>
     </f:SimpleForm>
-    <beginButton><Button text="Create" type="Emphasized" press=".onCreateProfile"/></beginButton>
-    <endButton><Button text="Cancel" press=".onCancelNewProfile"/></endButton>
+    <beginButton><Button text="{i18n>create}" type="Emphasized" press=".onCreateProfile"/></beginButton>
+    <endButton><Button text="{i18n>cancel}" press=".onCancelNewProfile"/></endButton>
   </Dialog>
 </core:FragmentDefinition>

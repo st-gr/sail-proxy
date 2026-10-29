@@ -182,6 +182,7 @@ class ModelCostService {
         SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
+          AND (pricingKind IS NULL OR pricingKind <> 'list_price')
           AND CAST(dateFrom AS TIMESTAMP) <= CAST(? AS TIMESTAMP)
           AND CAST(dateTo AS TIMESTAMP) >= CAST(? AS TIMESTAMP)
         ORDER BY CAST(dateFrom AS TIMESTAMP) DESC
@@ -193,6 +194,7 @@ class ModelCostService {
         SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
+          AND (pricingKind IS NULL OR pricingKind <> 'list_price')
           AND datetime(dateFrom) <= datetime(?)
           AND datetime(dateTo) >= datetime(?)
         ORDER BY datetime(dateFrom) DESC
@@ -207,6 +209,7 @@ class ModelCostService {
         SELECT model, inputCost, outputCost, cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost, provider, complexCost, dateFrom, dateTo
         FROM sap_llm_gateway_admin_ModelCosts
         WHERE model = ?
+          AND (pricingKind IS NULL OR pricingKind <> 'list_price')
           AND dateFrom <= ?
           AND dateTo >= ?
         ORDER BY dateFrom DESC
@@ -243,8 +246,8 @@ class ModelCostService {
       // Fix case sensitivity issue: PostgreSQL returns lowercase field names
       const inputCostValue = cost.inputCost || cost.inputcost;
       const outputCostValue = cost.outputCost || cost.outputcost;
-      const cacheReadInputCostValue = cost.cacheReadInputCost || cost.cachereadinputcost;
-      const cacheCreationInputCostValue = cost.cacheCreationInputCost || cost.cachecreationinputcost;
+      const cacheReadInputCostValue = cost.cacheReadInputCost ?? cost.cachereadinputcost;
+      const cacheCreationInputCostValue = cost.cacheCreationInputCost ?? cost.cachecreationinputcost;
       const imageOutputCostValue = cost.imageOutputCost ?? cost.imageoutputcost;
       const audioInputCostValue = cost.audioInputCost ?? cost.audioinputcost;
       const audioOutputCostValue = cost.audioOutputCost ?? cost.audiooutputcost;
@@ -252,8 +255,8 @@ class ModelCostService {
       return {
         inputCost: parseFloat(inputCostValue) || 0,
         outputCost: parseFloat(outputCostValue) || 0,
-        cacheReadInputCost: cacheReadInputCostValue ? parseFloat(cacheReadInputCostValue) : undefined,
-        cacheCreationInputCost: cacheCreationInputCostValue ? parseFloat(cacheCreationInputCostValue) : undefined,
+        cacheReadInputCost: cacheReadInputCostValue !== null && cacheReadInputCostValue !== undefined ? parseFloat(cacheReadInputCostValue) : undefined,
+        cacheCreationInputCost: cacheCreationInputCostValue !== null && cacheCreationInputCostValue !== undefined ? parseFloat(cacheCreationInputCostValue) : undefined,
         imageOutputCost: imageOutputCostValue !== null && imageOutputCostValue !== undefined ? parseFloat(imageOutputCostValue) : undefined,
         audioInputCost: audioInputCostValue !== null && audioInputCostValue !== undefined ? parseFloat(audioInputCostValue) : undefined,
         audioOutputCost: audioOutputCostValue !== null && audioOutputCostValue !== undefined ? parseFloat(audioOutputCostValue) : undefined,
@@ -412,6 +415,10 @@ class ModelCostService {
     const now = new Date();
     const costEntries: ModelCostEntry[] = [];
 
+    // Connection models only (the gateway's SAP list failed): nothing to price, and the provider
+    // map of the last SAP list stays as it is.
+    if (!models.some((m) => (m as { accessType?: string }).accessType !== 'external')) return;
+
     // Clear and rebuild the provider map
     this.modelProviderMap.clear();
 
@@ -419,6 +426,8 @@ class ModelCostService {
       // A model the gateway cannot route never serves a request, so it gets no price row and no
       // provider mapping — the library snapshot is the only consumer of those entries.
       if ((model as { routable?: boolean }).routable === false) continue;
+      // A Connection model is priced by its list price (setListPrice), never from SAP GenAI rates; it has no versions.
+      if ((model as { accessType?: string }).accessType === 'external') continue;
       // Cache the provider mapping
       if (model.owned_by) {
         this.modelProviderMap.set(model.id, model.owned_by);
@@ -580,14 +589,18 @@ class ModelCostService {
 
   /**
    * Snapshot the gateway's model list into LibraryModels (spec section 2). UPSERT by modelId,
-   * then mark every row not stamped in this run absent. Never deletes. An empty payload is a
-   * no-op so a failed pull cannot blank the library.
+   * then mark every row not stamped in this run absent. Never deletes. An empty payload with no
+   * published Connection model is a no-op so a failed pull cannot blank the library.
    */
   async upsertLibrarySnapshot(models: GatewayModel[], now: Date = new Date()): Promise<{ upserted: number; absent: number; deployments: number }> {
-    if (!Array.isArray(models) || models.length === 0) {
-      return { upserted: 0, absent: 0, deployments: 0 };
-    }
-    const rows = models.filter(m => m && typeof m.id === 'string').map(m => mapModelToLibraryRow(m, now));
+    const listed = (Array.isArray(models) ? models : []).filter(m => m && typeof m.id === 'string');
+    // The admin's own service key gets the default catalog block, which never grants a Connection
+    // model (opt-in, spec 2026-10-23 §4.3), so the gateway's list cannot carry them: the published
+    // models of active Connections are added here, from the admin's own tables.
+    const listedIds = new Set(listed.map(m => m.id));
+    const ownRead = await this.publishedConnectionModels();
+    const own = (ownRead ?? []).filter(m => !listedIds.has(m.id));
+    const rows = [...listed, ...own].map(m => mapModelToLibraryRow(m, now));
     if (rows.length === 0) {
       return { upserted: 0, absent: 0, deployments: 0 };
     }
@@ -596,6 +609,9 @@ class ModelCostService {
     // mark-absent sweep below - keyed on lastSeenAt - treats them as seen in this run and leaves
     // their mirrored `absent` alone, instead of nulling it and flipping them absent regardless.
     const derivedRows = deriveDeepContextRows(rows).map(r => ({ ...r, lastSeenAt: now }));
+    // Connection models only: the gateway's SAP list failed and it served these alone. Such a
+    // payload says nothing about SAP models, so it is upserted without the absent sweep below.
+    const sapListed = rows.some(r => r.origin !== 'external');
     // modelId order: two admin replicas writing the same rows then lock them in the same order and
     // wait for each other instead of deadlocking (per-process runs are serialized in trySnapshot).
     const all = [...rows, ...derivedRows].sort((a, b) => (a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0));
@@ -604,14 +620,52 @@ class ModelCostService {
     for (let i = 0; i < all.length; i += CHUNK) {
       await db.run(UPSERT.into('sap.llm.gateway.admin.LibraryModels').entries(all.slice(i, i + CHUNK)));
     }
-    const absent = await db.run(
+    // When the Connections read failed (ownRead null) this run knows nothing about the Connection
+    // rows, so the sweep leaves them as they were; the next successful run settles them.
+    const unseen = [{ ref: ['lastSeenAt'] }, '<', { val: now }, 'or', { ref: ['lastSeenAt'] }, 'is', 'null'];
+    const sweepWhere = ownRead !== null ? unseen
+      : [{ xpr: unseen }, 'and', { xpr: [{ ref: ['origin'] }, 'is', 'null', 'or', { ref: ['origin'] }, '<>', { val: 'external' }] }];
+    const absent = !sapListed ? 0 : await db.run(
       UPDATE('sap.llm.gateway.admin.LibraryModels')
         .set({ absent: true })
-        .where([{ ref: ['lastSeenAt'] }, '<', { val: now }, 'or', { ref: ['lastSeenAt'] }, 'is', 'null'])
+        .where(sweepWhere as any)
     );
     const deployments = rows.filter(r => r.accessType === 'deployment').length;
     logger.info('ModelCostService', `Library snapshot: ${rows.length} models upserted (${deployments} deployments), ${typeof absent === 'number' ? absent : 0} marked absent`);
     return { upserted: rows.length, absent: typeof absent === 'number' ? absent : 0, deployments };
+  }
+
+  /**
+   * The published models of the active Connections as the gateway's own list would carry them
+   * (mergeExternalModels.externalModelEntry). Published means priced (setPublished refuses an
+   * unpriced model). Read before anything is written and never across the gateway call. Null when
+   * the read failed: the SAP snapshot goes on, and the sweep leaves the Connection rows alone.
+   */
+  private async publishedConnectionModels(): Promise<GatewayModel[] | null> {
+    try {
+      const db = await cds.connect.to('db');
+      const models = await db.run(SELECT.from('sap.llm.gateway.admin.ConnectionModels').where({ isPublished: true }));
+      if (!Array.isArray(models) || models.length === 0) return [];
+      const connections = await db.run(SELECT.from('sap.llm.gateway.admin.ProviderConnections')
+        .where({ ID: { in: [...new Set(models.map((m: any) => m.connection_ID))] } }));
+      const active = new Map<string, any>((Array.isArray(connections) ? connections : []).filter((c: any) => c.isActive !== false).map((c: any) => [c.ID, c]));
+      return models.filter((m: any) => active.has(m.connection_ID)).map((m: any) => {
+        let capabilities: string[] = [];
+        try {
+          const parsed = JSON.parse(m.capabilities);
+          if (Array.isArray(parsed)) capabilities = parsed.filter((c: unknown) => typeof c === 'string');
+        } catch { /* no capabilities listed */ }
+        const c = active.get(m.connection_ID);
+        return {
+          id: m.modelId, object: 'model', owned_by: c.providerType, accessType: 'external', connectionId: c.ID,
+          providerType: c.providerType, family: m.family, upstreamModel: m.upstreamModel, displayName: m.displayName,
+          streamingSupported: true, routable: true, capabilities, priced: true, versions: []
+        } as GatewayModel;
+      });
+    } catch (error) {
+      logger.warn('ModelCostService', `Could not read the published Connection models for the Library snapshot: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   /**
@@ -832,7 +886,8 @@ class ModelCostService {
     cacheReadInputTokens?: number,
     imageOutputTokens: number = 0,
     audioInputTokens: number = 0,
-    audioOutputTokens: number = 0
+    audioOutputTokens: number = 0,
+    options: { zeroWhenUnpriced?: boolean } = {}
   ): Promise<{
     inputCost: number;
     outputCost: number;
@@ -849,6 +904,11 @@ class ModelCostService {
     }
 
     let pricing = await this.getModelPricing(modelId, date);
+    if (!pricing && options.zeroWhenUnpriced) {
+      // Grounding usage (file_search embeddings and rerank): an unpriced model records its tokens at zero cost.
+      logger.debug('ModelCostService', `No pricing found for model ${modelId}, recorded at zero cost`);
+      return { inputCost: 0, outputCost: 0, cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0, totalCost: 0 };
+    }
     if (!pricing) {
       logger.warn('ModelCostService', `No pricing found for model ${modelId}, using fallback`);
       pricing = this.getFallbackPricing(modelId);
@@ -987,6 +1047,14 @@ class ModelCostService {
    * Initialize the service
    */
   async initialize(): Promise<void> {
+    // A jest-hosted admin (cds.test) arms no background fetch: both branches below end in a
+    // read of GATEWAY_URL, and in CI the Phase 5 gateway is live during the test phase, so its
+    // real model list reached an in-memory suite's LibraryModels once the suite outlived the
+    // timer (private CI 2026-09-30). Tests drive the fetch paths directly.
+    if (process.env.NODE_ENV === 'test') {
+      logger.info('ModelCostService', 'Model cost service initialized - test mode, no background model-data fetch');
+      return;
+    }
     if (this.useValkeyEvents) {
       logger.info('ModelCostService', 'Model cost service initialized - will use Valkey events for model data');
       // Valkey model-list events are fire-and-forget: an admin (re)started after the gateway

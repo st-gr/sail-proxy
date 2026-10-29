@@ -8,15 +8,18 @@ import * as modelUtils from '../utils/modelUtils';
 import modelService from '../services/modelService';
 import * as imageUtils from '../utils/imageUtils';
 import configService from '../services/configService';
-import { sanitizeUpstreamErrorObject } from '../utils/upstreamErrorEnvelope';
+import { sanitizeUpstreamErrorObject, errorTypeForStatus } from '../utils/upstreamErrorEnvelope';
+import { deferStreamStart, DeferredStreamStart, failureFromError, isSubstantiveChunk, httpStatusOr } from '../utils/streamStart';
 import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExecutor';
 import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent } from '../utils/usageTracker';
-import { foldExclusiveUsage } from '../utils/usageFolding';
+import { foldExclusiveUsage, foldOrchestrationUsageFor } from '../utils/usageFolding';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import { enforceEntitlement } from '../utils/modelEntitlement';
+import { resolveExternalTarget } from '../upstreams/externalTarget';
+import { dispatchChat } from '../upstreams/chatDispatch';
 import { recordInvokedTools, openaiChatAdapter } from '../toolGovernance';
 import {
   isUnsupportedParam,
@@ -26,8 +29,11 @@ import {
   OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS,
 } from '../utils/unsupportedParamFilter';
 import type { SapV2CompletionRequest } from '../services/sapOrchestrationTypes';
+import type { UsageMetrics } from '../types/usage';
 import { validateChatRequest } from './openaiRequestValidation';
 import { randomBytes } from 'crypto';
+import { refuseIfForcedWithoutPlugin } from '../plugins/pseudonymization/forcedRun';
+import { currentSapTarget } from '../sap/sapTarget';
 
 export type Completion = { id: string; model: string; created: number };
 
@@ -136,7 +142,8 @@ type SAPPayload = SapV2CompletionRequest & {
 
 
 interface StreamChunk {
-  error?: boolean;
+  // true on sapAIService's own error chunks; SAP's in-stream error event carries an object.
+  error?: boolean | { code?: number | string; message?: string };
   canceled?: boolean;
   message?: string;
   status?: number;
@@ -189,6 +196,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
   // Initialize usage tracking
   const usageMetrics = createUsageMetrics();
 
+  // A Connection model goes to its connection, never to SAP (spec 2026-10-23 §5.1).
+  const external = await resolveExternalTarget(req, res, originalModelFromRequest, 'openai', 'openai');
+  if (external.kind === 'handled') return;
+  if (external.kind === 'external') return dispatchChat(req, res, external.target, usageMetrics, originalModelFromRequest);
+
   // --- BEGIN DEPLOYED MODEL HANDLING ---
   if (originalModelFromRequest && originalModelFromRequest.endsWith('--deployed')) {
     if (!enforceEntitlement(req, res, originalModelFromRequest)) return;
@@ -237,37 +249,80 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       const deployedModelProvider = modelDetails.provider?.toLowerCase() || modelDetails.owned_by?.toLowerCase();
       logger.info('openaiController', `Deployed model ${originalModelFromRequest} - Provider: ${deployedModelProvider}, Deployment URL: ${modelDetails.deploymentUrl}`);
 
-      let finalDeploymentUrl = modelDetails.deploymentUrl;
-      // Providers whose SAP AI Core deployments expose an OpenAI-compatible
-      // /chat/completions endpoint. Posting to the bare deployment URL 404s, so
-      // the path must be appended (webSearchPlugin does the same for Perplexity).
-      // Anthropic deployments use a different (Bedrock-style) contract and are
-      // intentionally NOT handled on this route.
-      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider)) {
-        if (!finalDeploymentUrl.endsWith('/chat/completions')) {
-          finalDeploymentUrl = `${finalDeploymentUrl}/chat/completions`;
-        }
-
-        // api-version is Azure-OpenAI specific; Perplexity deployments reject it.
-        if (deployedModelProvider === 'openai') {
-          const apiVersion = configService.getOpenAIDeploymentApiVersion();
-          if (apiVersion) {
-            // Append api-version query parameter
-            finalDeploymentUrl = `${finalDeploymentUrl}?api-version=${apiVersion}`;
+      // Only providers whose SAP AI Core deployments expose an OpenAI-compatible
+      // /chat/completions endpoint are served here. Anthropic deployments use a
+      // different (Bedrock-style) contract and are served by the /anthropic route,
+      // so refuse anything else before the deployment is called.
+      if (!OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider)) {
+        logger.warn('openaiController', `Deployed model ${originalModelFromRequest} has provider '${deployedModelProvider}', which this route does not serve`);
+        const hint = deployedModelProvider === 'anthropic'
+          ? 'Use the Anthropic Messages endpoint (/anthropic/v1/messages) instead.'
+          : 'Chat completions serve only OpenAI and Perplexity deployments.';
+        const deploymentKind = deployedModelProvider && deployedModelProvider !== 'unknown'
+          ? `a ${deployedModelProvider} deployment`
+          : 'a non-OpenAI-compatible deployment';
+        res.status(400).json({
+          error: {
+            message: `Model ${originalModelFromRequest} is ${deploymentKind} and cannot be used for chat completions on this endpoint. ${hint}`,
+            type: 'invalid_request_error',
+            code: 'model_not_supported'
           }
+        });
+        return;
+      }
+
+      // Posting to the bare deployment URL 404s, so the path must be appended
+      // (webSearchPlugin does the same for Perplexity).
+      let finalDeploymentUrl = modelDetails.deploymentUrl;
+      if (!finalDeploymentUrl.endsWith('/chat/completions')) {
+        finalDeploymentUrl = `${finalDeploymentUrl}/chat/completions`;
+      }
+
+      // api-version is Azure-OpenAI specific; Perplexity deployments reject it.
+      if (deployedModelProvider === 'openai') {
+        const apiVersion = configService.getOpenAIDeploymentApiVersion();
+        if (apiVersion) {
+          // Append api-version query parameter
+          finalDeploymentUrl = `${finalDeploymentUrl}?api-version=${apiVersion}`;
         }
-        logger.info('openaiController', `Constructed final URL for deployed ${deployedModelProvider} model: ${finalDeploymentUrl}`);
+      }
+      logger.info('openaiController', `Constructed final URL for deployed ${deployedModelProvider} model: ${finalDeploymentUrl}`);
+
+      // Plugins run on the client body BEFORE it is copied into the deployment payload,
+      // so masking (pseudonymization) reaches the deployment. They run after the
+      // entitlement and provider refusals above: a refused request is never masked.
+      // The deployment is always called non-streaming (below), so the streaming subpath
+      // only selects the hook set; the answer is unmasked once, on the full body.
+      const clientRequestedStream = req.body.stream === true;
+      const subPath = clientRequestedStream ? 'invoke-with-response-stream' : 'invoke';
+      (req as any).__endpoint = 'openai';
+      // Keyed on the `--deployed` id: per-model hook overrides for deployed models are
+      // keyed that way; getHookConfig falls back to hooks.defaults.openai.
+      const hookConfig: HookConfig = configService.getHookConfig(originalModelFromRequest, subPath, 'openai');
+
+      // Fail closed, as the Responses route does: with pseudonymization forced for this
+      // request (route or model) and a hook chain that would not run the plugin, the request
+      // would reach the deployment unmasked.
+      if (refuseIfForcedWithoutPlugin(req, res, hookConfig, {
+        endpoint: 'openai', subPaths: [subPath], servedModel: originalModelFromRequest, component: 'openaiController',
+      })) return;
+
+      if (hookConfig) {
+        logger.info('openaiController', `Executing before plugins for deployed model ${originalModelFromRequest}, subpath ${subPath}`);
+        const pluginResult: PluginResult = await executeBeforePlugins(req, res, hookConfig);
+        if (pluginResult.stop) {
+          logger.info('openaiController', `Plugin short-circuited request for ${originalModelFromRequest}/${subPath}`);
+          return; // Response already sent by plugin
+        }
       }
 
       let deploymentPayload = { ...req.body };
-      const clientRequestedStream = deploymentPayload.stream === true;
       delete deploymentPayload.stream; // Direct call to deploymentUrl is non-streaming
 
       // The deployment knows only its upstream model name, not our `--deployed`
       // alias (Perplexity rejects it: "Model 'sonar--deployed' is not allowed,
-      // supported model: sonar."). Send the real name for OpenAI-compatible
-      // deployments; Anthropic deployments are not served on this route.
-      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider) && modelDetails.model) {
+      // supported model: sonar."). Send the real name.
+      if (modelDetails.model) {
         if (modelDetails.model !== deploymentPayload.model) {
           logger.info('openaiController',
             `Deployed model ${originalModelFromRequest} -> upstream model name '${modelDetails.model}'`);
@@ -306,7 +361,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       const authToken = await modelService.getAuthToken();
       logger.info('openaiController', `Calling deployment URL: ${finalDeploymentUrl} for model ${originalModelFromRequest}`);
 
-      const aiResourceGroup = process.env.SAP_AI_RESOURCE_GROUP || 'default';
+      const aiResourceGroup = currentSapTarget().resourceGroup;
       const deploymentResponse: AxiosResponse = await axios.post(finalDeploymentUrl, deploymentPayload, {
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -328,8 +383,9 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       // OpenAI-compatible endpoint (finalDeploymentUrl, restricted to
       // OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS above), not SAP. Per OpenAI's
       // documented contract, `prompt_tokens_details.cached_tokens` is INCLUSIVE
-      // (a subset already counted inside prompt_tokens) — the opposite of the
-      // EXCLUSIVE regime the other sites measured live. No live capture of a
+      // (a subset already counted inside prompt_tokens) — as SAP orchestration also
+      // measured for gpt-4.1-nano (the other sites fold per model family,
+      // foldOrchestrationUsageFor). No live capture of a
       // deployed-model cached response exists to confirm this branch actually
       // follows that contract, so cache tokens are deliberately NOT split here
       // pending one. Splitting with the exclusive fold (as if cache rode along
@@ -346,43 +402,32 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       }
 
       // Response Handling. OpenAI-compatible deployments (incl. Perplexity)
-      // already return an OpenAI-shaped chat.completion, so pass it straight
-      // through. Other providers (Anthropic) need a transformation that this
-      // route does not implement — they fall through to the error below.
-      if (OPENAI_COMPATIBLE_DEPLOYMENT_PROVIDERS.includes(deployedModelProvider)) {
-        // Determine provider name based on request source
-        const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
-        const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
-        
-        // Emit usage event for successful deployed model request. This deployment is a
-        // real SAP-hosted vision-capable endpoint (e.g. gpt-4o--deployed) that never
-        // reports image tokens back any more than orchestration does, so the same
-        // off-hot-path compute applies here: captureImageTokensAsync only schedules the
-        // compute and returns immediately, so the client write below (res.json /
-        // emulateOpenAIStreamFromFullResponse) is never delayed by it -- only the
-        // already-fire-and-forget emit is sequenced to wait, via onComplete.
-        const imageRefs = (req as any).__imageRefs;
-        const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, deploymentResponse.status);
-        if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+      // already return an OpenAI-shaped chat.completion, so it is passed through
+      // after the after-plugins (which unmask it) have run. Both the JSON answer and
+      // the emulated stream are written from this one unmasked body.
+      let clientBody = deploymentResponse.data;
+      if (hookConfig) {
+        clientBody = await executeAfterPlugins(req, res, clientBody, hookConfig);
+      }
 
-        if (clientRequestedStream && configService.shouldEmulateStreaming('openai', originalModelFromRequest)) {
-          logger.warn('openaiController', `Client requested stream and emulation is configured for deployed model ${originalModelFromRequest}. Using full response-to-stream emulation.`);
-          emulateOpenAIStreamFromFullResponse(res, deploymentResponse.data, completion, undefined, clientWantsUsage);
-        } else {
-          res.json(deploymentResponse.data); // Send as is (non-streaming)
-        }
+      const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
+
+      // Emit usage event for successful deployed model request. This deployment is a
+      // real SAP-hosted vision-capable endpoint (e.g. gpt-4o--deployed) that never
+      // reports image tokens back any more than orchestration does, so the same
+      // off-hot-path compute applies here: captureImageTokensAsync only schedules the
+      // compute and returns immediately, so the client write below (res.json /
+      // emulateOpenAIStreamFromFullResponse) is never delayed by it -- only the
+      // already-fire-and-forget emit is sequenced to wait, via onComplete.
+      const imageRefs = (req as any).__imageRefs;
+      const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, deploymentResponse.status);
+      if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+
+      if (clientRequestedStream && configService.shouldEmulateStreaming('openai', originalModelFromRequest)) {
+        logger.warn('openaiController', `Client requested stream and emulation is configured for deployed model ${originalModelFromRequest}. Using full response-to-stream emulation.`);
+        emulateOpenAIStreamFromFullResponse(res, clientBody, completion, undefined, clientWantsUsage);
       } else {
-        // Deployed model's provider does NOT match "openai"
-        logger.error('openaiController', `Provider mismatch for deployed model ${originalModelFromRequest}. Deployed provider: ${deployedModelProvider}, Route: openai. Cross-provider transformation of deployed model response not yet implemented.`);
-        
-        // Determine provider name based on request source
-        const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
-        const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
-        
-        // Emit usage event for error case
-        emitUsageEvent(req, usageMetrics, modelName, 400);
-        
-        return next(new Error(`Provider mismatch: Deployed model is ${deployedModelProvider}. Transformation to OpenAI format from this provider's direct response is not yet supported.`));
+        res.json(clientBody); // Non-streaming
       }
       return; // Deployed model request handled
 
@@ -450,6 +495,10 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     // Note that this is now an async call
     const payload = await transformRequestToSAPFormat(req.body);
     (req as any).__imageRefs = collectChatImageRefs(req.body.messages);
+    // The model SAP is asked for, which decides how its usage counts cached tokens
+    // (cacheRegimeFor in usageFolding.ts). Not the stream chunks' own `model`: SAP
+    // labels some of them "gpt-4" whatever the model (cache-probe-result.md).
+    const sapModelName = payload.config.modules.prompt_templating.model.name;
 
     // Determine subPath for hook config
     const subPath = req.body.stream === true ? 'invoke-with-response-stream' : 'invoke';
@@ -457,6 +506,10 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     // Get hook configuration for this model+subpath
     (req as any).__endpoint = 'openai';
     const hookConfig: HookConfig = configService.getHookConfig(req.body.model, subPath, 'openai');
+
+    // Fail closed: with pseudonymization forced and no hook chain that runs the plugin, the
+    // request would reach SAP unmasked.
+    if (refuseIfForcedWithoutPlugin(req, res, hookConfig, { endpoint: 'openai', subPaths: [subPath], component: 'openaiController' })) return;
     
     // Execute any 'before' strategy plugins
     if (hookConfig) {
@@ -508,40 +561,68 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     if (req.body.stream) {
       logger.info('openaiController', 'Handling streaming request');
       
-      // Skip setting headers for emulated streaming - we'll let the emulator handle it
-      if (!req.emulatedStreaming) {
-        // Set headers for Server-Sent Events (SSE)
-        res.set({
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive'
-        });
-        res.flushHeaders();
+      // Use the modern AbortController for cancellation
+      const abortController = new AbortController();
 
-        // Send initial message with role
-        logger.debug('openaiController', 'Sending initial role message');
-        const initialChunk = {
-          id: completion.id,
-          object: 'chat.completion.chunk',
-          created: completion.created,
-          model: completion.model,
-          choices: [
-            {
-              index: 0,
-              delta: {
-                role: 'assistant'
-              },
-              finish_reason: null
-            }
-          ]
-        };
-        sseWriter.writeChunk(res, JSON.stringify(initialChunk));
+      // The SSE headers and the initial role chunk wait for the upstream's first content
+      // (or the start deadline) — utils/streamStart.ts. SAP answers HTTP 200 and sends a
+      // rejection ("prompt is too long", an unknown model) as an in-stream chunk after its
+      // templating chunk, so committing the 200 up front left a failure no way to reach the
+      // client but an error frame under a 200. Chunks without content (that templating
+      // chunk's empty delta) are held and written, in order, once the stream starts.
+      // Skipped for emulated streaming - the emulator writes its own headers and preamble.
+      let streamStart: DeferredStreamStart | null = null;
+      const heldChunks: string[] = [];
+      if (!req.emulatedStreaming) {
+        streamStart = deferStreamStart({
+          onStart: () => {
+            // Set headers for Server-Sent Events (SSE)
+            res.set({
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive'
+            });
+            res.flushHeaders();
+
+            // Send initial message with role
+            logger.debug('openaiController', 'Sending initial role message');
+            const initialChunk = {
+              id: completion.id,
+              object: 'chat.completion.chunk',
+              created: completion.created,
+              model: completion.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: 'assistant'
+                  },
+                  finish_reason: null
+                }
+              ]
+            };
+            sseWriter.writeChunk(res, JSON.stringify(initialChunk));
+            for (const held of heldChunks.splice(0)) sseWriter.writeChunk(res, held);
+          },
+          isOpen: () => !res.writableEnded && !abortController.signal.aborted,
+        });
       } else {
         logger.debug('openaiController', 'Skipping initial headers and chunk for emulated streaming');
       }
 
-      // Use the modern AbortController for cancellation
-      const abortController = new AbortController();
+      // A failure the client must see: its HTTP status and OpenAI's JSON error body while
+      // nothing was sent, else one error frame that ends the stream (no [DONE] after it).
+      // OpenAI's error object always carries `param` (null when no parameter is at fault).
+      const sendStreamError = (status: number, error: Record<string, any>): void => {
+        streamStart?.stop();
+        if (res.writableEnded) return;
+        const body = { error: { ...error, param: null } };
+        if (!res.headersSent) {
+          res.status(httpStatusOr(status)).json(body);
+          return;
+        }
+        sseWriter.writeError(res, body);
+      };
 
       // Listen for client disconnect (abort) and cancel the SAP request
       req.on('aborted', () => {
@@ -549,14 +630,9 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         abortController.abort('Client aborted request');
       });
 
-      req.on('close', () => {
-        if (!res.writableEnded) {
-          logger.info('openaiController', 'Client closed connection before response completed.');
-          abortController.abort('Client closed connection');
-        }
-      });
-      
-      // Also monitor response close events
+      // A hang-up is `res` 'close' with the response unfinished. Not `req` 'close': on Node 20 the
+      // request emits it once its body is consumed, which is not a disconnect (see onClientClose
+      // in googleWire.ts).
       res.on('close', () => {
         if (!res.writableEnded) {
           logger.info('openaiController', 'Response closed before completion.');
@@ -568,13 +644,18 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       logger.info('openaiController', 'Calling SAP AI Core streaming service');
       let chunkCounter = 0; // Initialize chunk counter
       let emulatedStreamingData: any = null; // Store emulated streaming data
-      // Track streaming token usage. EXCLUSIVE regime (foldExclusiveUsage,
-      // src/utils/usageFolding.ts): prompt_tokens counts only full-rate tokens,
-      // cache read/write are separate line items that are ADDED, never subtracted.
-      // Measured live on POST /openai/v1/chat/completions, 2026-08-07
+      // Track streaming token usage: the raw SAP counts are accumulated here and folded
+      // once at the end by foldOrchestrationUsageFor (src/utils/usageFolding.ts), which
+      // picks the regime from sapModelName. Claude is EXCLUSIVE — measured live on
+      // POST /openai/v1/chat/completions, 2026-08-07
       // (test/fixtures/orchestration/cache-probe-result.md): prompt_tokens stayed
       // flat at 14 across two identical calls while prompt_tokens_details.cached_tokens
-      // went 0 -> 29004. Usage arrives on the FINAL streamed chunk only (measured: 1 of
+      // went 0 -> 29004. Amazon Nova is EXCLUSIVE too (probe of 2026-09-30: prompt_tokens
+      // 7 with cache_creation_tokens 9811, then 7 with cached_tokens 9811). OpenAI-family
+      // and Gemini models are INCLUSIVE (probe of 2026-09-30: gpt-4.1-nano prompt_tokens
+      // 1978 flat, cached_tokens 0 -> 1792), so the cache is subtracted there, and a usage
+      // whose prompt is smaller than its cache is folded exclusive whatever the name
+      // (cacheRegimeForUsage). Usage arrives on the FINAL streamed chunk only (measured: 1 of
       // several chunks per response), so this accumulator's `+=` is not a double-count
       // today; cache_creation_tokens was absent on T2's streaming captures but T11
       // observed it once on a streaming round of the same backend
@@ -590,6 +671,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       // spec-compliant final usage chunk emitted to opted-in clients (see
       // clientWantsUsage below) right before [DONE].
       let lastUsage: any = null;
+      // Status of the first error chunk the stream delivered, or null if none did.
+      let streamErrorStatus: number | null = null;
+      // Set when sapAIService reports the client connection gone (a canceled chunk). The
+      // client-already-aborted path sends one without this controller's abort signal firing.
+      let clientCanceled = false;
 
       // For emulated streaming, we need to handle the Promise differently
       const streamingPromise = sapAIService.streamChatCompletion(payload, (chunk: StreamChunk) => {
@@ -611,29 +697,45 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         // Log the chunk with its counter
         logger.debug('openaiController', `Processing chunk #${chunk.chunkNumber || ++chunkCounter} from SAP AI Core`);
         
+        // A client cancel is neither an error nor data: never transform or write it. The
+        // request is billed as a 499 once the stream settles.
+        if (chunk.canceled) {
+          logger.info('openaiController', `Request canceled by client: ${chunk.message}`);
+          clientCanceled = true;
+          return;
+        }
+
         // Handle error chunks
         if (chunk.error) {
-          // For cancellations, don't log as errors and don't send error response to client
-          if (chunk.canceled) {
-            logger.info('openaiController', `Request canceled by client: ${chunk.message}`);
-            return; // Just return without sending error to client
-          }
-          
-          logger.error('openaiController', `Error chunk received: ${chunk.message}`);
+          // sapAIService's own error chunks are { error: true, message, status }; SAP's in-stream
+          // error event arrives as { error: { code, message } } (as anthropicResponseService reads
+          // it). A numeric HTTP-like code there is the status.
+          const sapError = typeof chunk.error === 'object' ? chunk.error : undefined;
+          const sapErrorCode = Number(sapError?.code);
+          const errorMessage = chunk.message || sapError?.message;
+          // Checked: it reaches res.status() when nothing was streamed yet.
+          const errorStatus = httpStatusOr(chunk.status,
+            Number.isInteger(sapErrorCode) && sapErrorCode >= 400 && sapErrorCode <= 599 ? sapErrorCode : 500);
+          logger.error('openaiController', `Error chunk received: ${errorMessage}`);
+          // sapAIService resolves the stream promise after an error chunk, so remember the
+          // failure for the completion handler: this request is billed as failed, not as a 200.
+          if (streamErrorStatus === null) streamErrorStatus = errorStatus;
+          // OpenAI's error vocabulary for `type`; `details` (the raw upstream body) is never
+          // forwarded.
           const errorPayload = {
-            message: chunk.message,
-            type: 'sap_ai_core_error',
-            code: chunk.status || 500,
-            details: chunk.details
+            message: errorMessage,
+            type: errorTypeForStatus(errorStatus),
+            code: errorStatus,
           };
           logger.trace('openaiController', 'Writing error chunk to client:', { errorPayload });
-          sseWriter.writeError(res, errorPayload);
+          sendStreamError(errorStatus, errorPayload);
           return;
         }
         
         // Handle done marker
         if (chunk.done) {
           logger.debug('openaiController', 'Received [DONE] marker');
+          streamStart?.start();
           if (clientWantsUsage && lastUsage) {
             sseWriter.writeChunk(res, JSON.stringify(usageChunk(completion, lastUsage)));
           }
@@ -646,7 +748,12 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           const transformedResponse = transformSAPResponseToOpenAI(chunk, true, completion);
           recordInvokedTools(req, openaiChatAdapter.invokedToolsFromChunk(transformedResponse));
           logger.trace('openaiController', 'Writing transformed data chunk to client:', { transformedResponse });
-          sseWriter.writeChunk(res, JSON.stringify(transformedResponse));
+          if (streamStart && !streamStart.started && !isSubstantiveChunk(chunk)) {
+            heldChunks.push(JSON.stringify(transformedResponse));
+          } else {
+            streamStart?.start();
+            sseWriter.writeChunk(res, JSON.stringify(transformedResponse));
+          }
 
           // Extract token usage for internal accounting from the SAP source chunk
           // itself, NOT from transformedResponse — content/delta chunks no longer
@@ -675,9 +782,10 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           }
         } catch (error: any) {
           logger.error('openaiController', 'Error transforming chunk:', error);
-          sseWriter.writeError(res, {
+          sendStreamError(500, {
             message: `Error processing chunk: ${error.message}`,
-            type: 'processing_error'
+            type: 'processing_error',
+            code: null
           });
         }
         return;
@@ -713,36 +821,33 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           if (result && result.emulationHandled) {
             logger.debug('openaiController', 'Emulated streaming was handled, skipping [DONE]');
             
-            // For emulated streaming, usage tracking is handled by the emulation function
-            // but we may need to emit usage event here if not already done
-            const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
+            // The emulator only replays the response; the request is billed here, once the
+            // replay has finished (or the client went away).
             const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
-            
-            // Check if emulated streaming data had token usage that we should track
-            if (emulatedStreamingData && emulatedStreamingData.nonStreamingResponse && emulatedStreamingData.nonStreamingResponse.usage) {
-              const usage = emulatedStreamingData.nonStreamingResponse.usage;
-              foldExclusiveUsage(
-                usageMetrics,
-                usage.prompt_tokens || 0,
-                usage.completion_tokens || 0,
-                usage.prompt_tokens_details?.cache_creation_tokens ?? 0,
-                usage.prompt_tokens_details?.cached_tokens ?? 0,
-              );
-              logger.debug('openaiController', 'Updated usage metrics with emulated streaming tokens:', usage);
+
+            // nonStreamingResponse is the raw SAP orchestration body (usage under final_result,
+            // not top level), so it is read the way the non-streaming path reads it: through
+            // transformSAPResponseToOpenAI. SAP orchestration never reports image tokens, so
+            // billSapCompletion computes them off the hot path (imageTokenCapture.ts).
+            // The client already has the full answer, so a transform that throws here must not
+            // turn this into a failed request in .catch: bill the 200 once with the usage read
+            // straight off the raw body (or none).
+            let transformed: any;
+            try {
+              transformed = transformSAPResponseToOpenAI(emulatedStreamingData.nonStreamingResponse, false, completion);
+            } catch (transformError: any) {
+              logger.error('openaiController', `Could not transform the emulated response for billing: ${transformError?.message}`);
+              const raw = emulatedStreamingData.nonStreamingResponse;
+              transformed = { usage: raw?.final_result?.usage ?? raw?.intermediate_results?.llm?.usage ?? raw?.usage };
             }
-            
-            // Emit usage event for successful emulated streaming request. SAP orchestration
-            // never reports image tokens, so they're computed off the hot path here — see
-            // imageTokenCapture.ts. `captureImageTokensAsync` only schedules the compute and
-            // returns immediately; the already-fire-and-forget emit is what's sequenced to
-            // wait for it (via `onComplete`), not this `return` or anything the client sees.
-            const imageRefs = (req as any).__imageRefs;
-            const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
-            if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+            billSapCompletion(req, usageMetrics, transformed, modelName, sapModelName);
             return;
           }
           
-          // Regular streaming completion
+          // Regular streaming completion. An upstream that ended without content still
+          // gets the role chunk and [DONE].
+          if (!res.writableEnded && !abortController.signal.aborted) streamStart?.start();
+          streamStart?.stop();
           if (!res.writableEnded) {
             if (clientWantsUsage && lastUsage) {
               sseWriter.writeChunk(res, JSON.stringify(usageChunk(completion, lastUsage)));
@@ -754,7 +859,8 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Update usage metrics with streaming token counts (regardless of response state)
           logger.debug('openaiController', 'Final streaming token counts before usage tracking:', streamTokenCounts);
           if (streamTokenCounts.inputTokens > 0 || streamTokenCounts.outputTokens > 0) {
-            foldExclusiveUsage(
+            foldOrchestrationUsageFor(
+              sapModelName,
               usageMetrics,
               streamTokenCounts.inputTokens,
               streamTokenCounts.outputTokens,
@@ -775,24 +881,51 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
           const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
           
-          // Emit usage event for successful streaming request (regardless of response state).
+          // Emit usage event for the streaming request (regardless of response state): 200, or
+          // the error chunk's status when the stream ended in one, or 499 when the client hung
+          // up, with whatever tokens arrived.
           // Same off-hot-path image-token compute as the emulated-streaming branch above.
-          logger.info('openaiController', `Emitting usage event for streaming request: provider=${providerName}, model=${modelName}`);
+          const finalStatus = streamErrorStatus ?? (clientCanceled || abortController.signal.aborted ? 499 : 200);
+          logger.info('openaiController', `Emitting usage event for streaming request: provider=${providerName}, model=${modelName}, status=${finalStatus}`);
           const imageRefs = (req as any).__imageRefs;
-          const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
+          const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, finalStatus);
           if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
         })
         .catch(async (err: any) => {
-          // Handle client cancellation errors differently
-          if (err.message === 'canceled' || err.message?.includes('abort') ||
-              err.code === 'ERR_CANCELED' || err.canceled) {
+          // A client hang-up is billed as a 499 with the tokens seen so far (as the Responses
+          // and Google routes do), with no error frame. sapAIService wraps axios's CanceledError
+          // ("SAP AI Core streaming failed: canceled", status 500), so the cancel is read from
+          // this controller's own abort signal or the wrapped original error. (Not from a message
+          // merely containing "abort": an upstream ECONNABORTED is a failure, not a client cancel.)
+          if (clientCanceled || abortController.signal.aborted ||
+              err?.message === 'canceled' || err?.code === 'ERR_CANCELED' || err?.canceled ||
+              err?.originalError?.code === 'ERR_CANCELED') {
             logger.info('openaiController', 'Stream ended due to client disconnection');
+            streamStart?.stop();
+            if (streamTokenCounts.inputTokens > 0 || streamTokenCounts.outputTokens > 0) {
+              foldOrchestrationUsageFor(
+                sapModelName,
+                usageMetrics,
+                streamTokenCounts.inputTokens,
+                streamTokenCounts.outputTokens,
+                streamTokenCounts.cacheCreationInputTokens,
+                streamTokenCounts.cacheReadInputTokens,
+              );
+            }
+            const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
+            const imageRefs = (req as any).__imageRefs;
+            const emitCanceled = () => emitUsageEvent(req, usageMetrics, modelName, 499);
+            if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitCanceled); else emitCanceled();
             return;
           }
 
           // Check if this is a streaming not supported error
           if (err.streamingNotSupported) {
             logger.warn('openaiController', 'Detected streaming not supported error, forcing cache refresh and sending non-streaming request');
+            // The fallbacks below answer a stream:true client in SSE: start the stream they
+            // continue (headers + role chunk), as it always was by this point.
+            if (!res.writableEnded) streamStart?.start();
+            streamStart?.stop();
 
             // Mark model as non-streaming in the cache
             modelService.markModelAsNonStreaming(req.body.model);
@@ -809,12 +942,25 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
                 req.body.stream = true; // Keep this true since we're still sending streaming response to client
                 delete payload.config.stream;
                 
+                const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
+                let billed = false;
                 try {
                   const responseData = await sapAIService.completeChat(payload);
                   logger.info('openaiController', 'Non-streaming response received, emulating stream to client');
+
+                  // Bill the retried completion exactly once, as the non-streaming path does,
+                  // before the replay: the upstream call has completed whatever the replay does.
+                  billSapCompletion(req, usageMetrics, transformSAPResponseToOpenAI(responseData, false, completion), modelName, sapModelName);
+                  billed = true;
+
                   emulateOpenAIStreamFromFullResponse(res, responseData, completion, undefined, clientWantsUsage);
                   return; // Already handled via emulation
                 } catch (retryError: any) {
+                  // A failed retry is a failed upstream request and gets its error event, like
+                  // every other failure path here; a replay that throws after billing does not.
+                  if (!billed) {
+                    emitUsageEvent(req, usageMetrics, modelName, retryError.status || retryError.response?.status || 500);
+                  }
                   if (!res.writableEnded) {
                     logger.error('openaiController', `Error in streaming emulation retry: ${retryError.message}`);
                     sseWriter.writeError(res, {
@@ -838,28 +984,64 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
                 req.body.stream = false;
                 delete payload.config.stream;
 
+                const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
+                let billed = false;
                 try {
                   const responseData = await sapAIService.completeChat(payload);
-                  logger.info('openaiController', 'Non-streaming response received, sending via JSON');
-                  if (!res.writableEnded) {
-                    const transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
-                    // This fallback answers the client from a non-streaming response, so the
-                    // invoked tools are read the same way the non-streaming path reads them
-                    // (line ~916) — without this the tools a retried request called went
-                    // unrecorded.
-                    recordInvokedTools(req, openaiChatAdapter.invokedTools(transformedResponse));
-                    return res.json(transformedResponse);
+                  logger.info('openaiController', 'Non-streaming response received, sending fallback to client');
+                  // Bill the retried completion exactly once, same as a normal non-streaming
+                  // request (B9): the upstream call above already succeeded regardless of how,
+                  // or whether, its result reaches the client below, so billing depends on
+                  // neither res.headersSent nor res.writableEnded.
+                  const transformedResponse = transformSAPResponseToOpenAI(responseData, false, completion);
+                  logger.info('openaiController', `Emitting usage event for non-streaming fallback: model=${modelName}`);
+                  billSapCompletion(req, usageMetrics, transformedResponse, modelName, sapModelName);
+                  billed = true;
+
+                  if (res.writableEnded) {
+                    return; // Client gone: billed, nothing left to deliver
                   }
+
+                  if (res.headersSent) {
+                    // The SSE preamble (role chunk) was already flushed before the
+                    // streaming attempt failed (B9): res.json() would throw
+                    // ERR_HTTP_HEADERS_SENT here, leaving the client with the role
+                    // chunk and a silent EOF. Deliver the retried response as SSE
+                    // chunks instead, reusing the same full-response emulator the
+                    // sibling branch above uses.
+                    logger.warn('openaiController', 'Headers already sent, emitting fallback response as SSE chunks');
+                    emulateOpenAIStreamFromFullResponse(res, responseData, completion, undefined, clientWantsUsage);
+                    return;
+                  }
+
+                  return res.json(transformedResponse);
                 } catch (retryError: any) {
                   logger.error('openaiController', `Error in non-streaming retry: ${retryError.message}`);
+                  // A failed retry is a failed upstream request and gets its error event, like
+                  // every other failure path here; a delivery that throws after billing does not.
+                  if (!billed) {
+                    emitUsageEvent(req, usageMetrics, modelName, retryError.status || retryError.response?.status || 500);
+                  }
                   if (!res.writableEnded) {
                     if (!res.headersSent) {
                       return next(retryError);
                     } else {
-                      logger.warn('openaiController', 'Headers already sent, ending response');
-                      return res.end();
+                      logger.warn('openaiController', 'Headers already sent, sending SSE error frame');
+                      sseWriter.writeError(res, {
+                        message: `Error in non-streaming retry: ${retryError.message}`,
+                        type: 'processing_error'
+                      });
+                      sseWriter.writeDone(res);
+
+                      // Ensure response is ended properly
+                      if (!res.writableEnded) {
+                        res.end();
+                      }
                     }
                   }
+                  // Always return: falling through would add the generic streaming-error
+                  // event below as a second event for this request.
+                  return;
                 }
               }
             }
@@ -868,12 +1050,15 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Enhanced error handling for real (non-cancellation) streaming errors
           logger.error('openaiController', `Error in streaming: ${err.message}`);
 
-          // build a proper error payload
+          // build a proper error payload: SAP's own message where its body carries one (not
+          // axios's "Request failed with status code 400"), OpenAI's vocabulary for `type`.
+          // Checked: it reaches res.status() when nothing was streamed yet.
+          const statusCode = httpStatusOr(err.details?.status, httpStatusOr(err.status, 500));
           const errorPayload = {
             error: {
-              message: err.details?.message || err.message,
-              type: 'sap_ai_core_error',
-              code: err.details?.status || err.status || 500,
+              message: failureFromError(err).message,
+              type: errorTypeForStatus(statusCode),
+              code: statusCode,
               // Filtered even behind the DEBUG gate, like awsBedrockController: SAP's
               // error body carries intermediate_results.templating, and turning DEBUG
               // on to diagnose a streaming failure must not start writing templated
@@ -887,11 +1072,11 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Track usage for streaming error case
           const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
           const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
-          const statusCode = err.details?.status || err.status || 500;
           
           // Update metrics with any tokens collected during streaming before error
           if (streamTokenCounts.inputTokens > 0 || streamTokenCounts.outputTokens > 0) {
-            foldExclusiveUsage(
+            foldOrchestrationUsageFor(
+              sapModelName,
               usageMetrics,
               streamTokenCounts.inputTokens,
               streamTokenCounts.outputTokens,
@@ -903,14 +1088,10 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Emit usage event for streaming error
           emitUsageEvent(req, usageMetrics, modelName, statusCode);
 
-          // Only send error to client if connection is still open
-          if (!res.writableEnded) {
-            sseWriter.writeError(res, errorPayload);
-            // End the response after sending the error
-            if (!res.writableEnded) {
-              res.end();
-            }
-          }
+          // Before the stream started: the HTTP status and the JSON body. After: one error
+          // frame, which ends the response.
+          sendStreamError(statusCode, errorPayload.error);
+          if (!res.writableEnded) res.end();
         });
     } else {
       // Non-streaming request: wait for complete response
@@ -922,7 +1103,8 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
 
         // Track usage from transformed response
         if (transformedResponse && transformedResponse.usage) {
-          foldExclusiveUsage(
+          foldOrchestrationUsageFor(
+            sapModelName,
             usageMetrics,
             transformedResponse.usage.prompt_tokens || 0,
             transformedResponse.usage.completion_tokens || 0,
@@ -1229,11 +1411,12 @@ export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody):
     // Look for a system message in the previous messages
     const systemMessage = previousMessages.find(msg => msg.role === 'system');
 
-    // Use the user's system prompt if available, otherwise use a default
-    payload.config.modules.prompt_templating.prompt.template = [{
-      role: "system",
-      content: systemMessage ? systemMessage.content : "You are a helpful assistant."
-    }];
+    // Use the user's system prompt if available, otherwise use a default. The message object
+    // itself, never a copy of its content: this payload is built before the plugins run, and
+    // pseudonymization masks the message objects in place.
+    payload.config.modules.prompt_templating.prompt.template = [
+      systemMessage ?? { role: "system", content: "You are a helpful assistant." }
+    ];
   } else {
     // Normal handling for text-only messages
     payload.config.modules.prompt_templating.prompt.template = [templateMessage];
@@ -1514,6 +1697,31 @@ export function usageChunk(completion: Completion, usage: any) {
   };
 }
 
+/**
+ * Bill one completed SAP orchestration response that is answered from a full (non-streaming)
+ * body: record the tools it called, fold its usage (regime by `sapModelName`,
+ * foldOrchestrationUsageFor), and emit the 200 usage event once, after the off-hot-path
+ * image-token compute. `transformed` is the transformSAPResponseToOpenAI(..., false, ...)
+ * result. Used by the emulated-stream and streaming-fallback sites; the plain non-streaming
+ * path does the same steps around its after-plugins instead.
+ */
+function billSapCompletion(req: any, usageMetrics: UsageMetrics, transformed: any, modelName: string, sapModelName: string): void {
+  recordInvokedTools(req, openaiChatAdapter.invokedTools(transformed));
+  if (transformed && transformed.usage) {
+    foldOrchestrationUsageFor(
+      sapModelName,
+      usageMetrics,
+      transformed.usage.prompt_tokens || 0,
+      transformed.usage.completion_tokens || 0,
+      transformed.usage.prompt_tokens_details?.cache_creation_tokens ?? 0,
+      transformed.usage.prompt_tokens_details?.cached_tokens ?? 0,
+    );
+  }
+  const imageRefs = req.__imageRefs;
+  const emitFinal = () => emitUsageEvent(req, usageMetrics, modelName, 200);
+  if (imageRefs?.length) captureImageTokensAsync(req, usageMetrics, imageRefs, emitFinal); else emitFinal();
+}
+
 function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, completion: Completion, completionCallback?: () => void, clientWantsUsage: boolean = false): void {
   logger.info('openaiController', `Starting OpenAI stream emulation for model: ${completion.model}`);
   
@@ -1588,7 +1796,15 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, c
   }
   // Fallback content extraction
   else {
-    fullContent = responseData.content || responseData.text || responseData.message || 'No content available';
+    // Nothing found stays an empty completion, as transformSAPResponseToOpenAI answers the same
+    // body on the non-streaming path: never invented assistant text.
+    // Any of these may be an object (e.g. a `message` shaped { content }): take its string
+    // content/text if it has one, otherwise nothing.
+    const candidate = responseData.content || responseData.text || responseData.message;
+    fullContent = typeof candidate === 'string' ? candidate
+      : typeof candidate?.content === 'string' ? candidate.content
+      : typeof candidate?.text === 'string' ? candidate.text
+      : '';
     logger.warn('openaiController', `Using fallback content extraction for emulation: ${fullContent.substring(0, 100)}...`);
   }
 

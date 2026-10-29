@@ -88,7 +88,7 @@ import { unmaskText } from '../pseudonymization/unmasker';
 import { containmentOf } from '../pseudonymization/containmentRegistry';
 import { noteExtraUsage, readCacheWriteTokens } from '../../utils/usageFolding';
 import {
-  HostedToolDescriptor, Logger, ParsedCall, RenderCallItemOpts, ToolExecCtx, ToolExecResult,
+  HostedToolDescriptor, HostedToolUsage, Logger, ParsedCall, RenderCallItemOpts, ToolExecCtx, ToolExecResult,
 } from './descriptor';
 import {
   descriptorForCall, descriptorForHostedTool, descriptorForReplayedCallItem, descriptorForType,
@@ -97,6 +97,8 @@ import {
 import { syntheticId } from './syntheticId';
 import { getToolResult, putToolResult } from './resultCache';
 import { buildReplayFunctionCall } from './replayTranslation';
+import { fileSearchCallerOf, searchUsageSink } from '../../fileSearch/usage';
+import { callerTeamIds } from '../../utils/userBlock';
 
 interface PluginContext {
   req: Request;
@@ -125,6 +127,27 @@ const REWROTE_FLAG = '__responsesWebSearchRewritten';
 
 /** Where the before handler stashes each descriptor's `prepare()` result, by tool type. */
 const PREPARED_FLAG = '__hostedToolPrepared';
+
+/** Counts the live tool calls a request has run, across every execute site. */
+const CALL_SEQ_FLAG = '__hostedToolCallSeq';
+
+/**
+ * `ToolExecCtx.recordUsage` for one live tool call: billed to the request's caller, with ids
+ * `<debugRequestId>-fs-<callIndex>-embed-<n>` / `-fs-<callIndex>-rerank`.
+ *
+ * The call index is the 1-based ordinal of this execute among ALL live hosted-tool executes
+ * of the request (any tool type), taken from a counter on `req` when the context is built.
+ * On `req`, not in a factory closure, because three sites execute calls for the same request
+ * (the before handler's pending drain, then the streaming interceptor or the after handler,
+ * each across continuation rounds), and one request id is the base of all their events: a
+ * per-factory counter would restart at 1 and collide. Taken synchronously at context
+ * creation, so parallel streaming calls still get distinct indices.
+ */
+function usageRecorderFor(req: any): (u: HostedToolUsage) => void {
+  const callIndex = (req[CALL_SEQ_FLAG] = (req[CALL_SEQ_FLAG] || 0) + 1);
+  // file_search is the only hosted tool that records usage, so every record is its SearchUsage.
+  return searchUsageSink(fileSearchCallerOf(req), req.debugRequestId, callIndex) as (u: HostedToolUsage) => void;
+}
 
 /** Hard cap on pending calls drained per request, to guarantee termination. */
 const MAX_PENDING_CALLS_PER_TURN = 4;
@@ -631,6 +654,7 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
 
   const optsFor = renderOptsFor(req);
   const ownerEmail = ownerEmailFrom(req);
+  const teamIds = callerTeamIds(req);
 
   /**
    * The context a descriptor runs in on this path. `remask` is the identity function — see
@@ -638,12 +662,14 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
    */
   const execCtx = (d: HostedToolDescriptor): ToolExecCtx => ({
     ownerEmail,
+    teamIds,
     replacementMap: (req as any).__pseudonymizationMap,
     maskingConfig: maskingConfigFrom(req),
     isStreaming: true,
     prepared: ((req as any)[PREPARED_FLAG] as Map<string, unknown> | undefined)?.get(d.type),
     remask: (text: string) => text,
     logger: pluginLogger,
+    recordUsage: usageRecorderFor(req),
   });
 
   let tail = '';                                    // partial block held across writes
@@ -1925,10 +1951,11 @@ export async function hostedToolBeforeHandler({ req, res, utils }: PluginContext
     }
 
     const ownerEmail = ownerEmailFrom(req);
+    const teamIds = callerTeamIds(req);
     const prepared = new Map<string, unknown>();
     for (const { descriptor, hosted } of rewritten) {
       try {
-        prepared.set(descriptor.type, await descriptor.prepare(hosted, { ownerEmail, logger: pluginLogger }));
+        prepared.set(descriptor.type, await descriptor.prepare(hosted, { ownerEmail, teamIds, logger: pluginLogger }));
       } catch (error: any) {
         const status = rejectionStatusOf(error);
 
@@ -2011,6 +2038,7 @@ export async function hostedToolBeforeHandler({ req, res, utils }: PluginContext
         }
         const payload = descriptor.rehydratePayload(cached.payload, {
           ownerEmail: owner,
+          teamIds,
           replacementMap: (req as any).__pseudonymizationMap,
           maskingConfig: maskingConfigFrom(req),
           isStreaming: body.stream === true,
@@ -2074,12 +2102,14 @@ export async function hostedToolBeforeHandler({ req, res, utils }: PluginContext
         try {
           result = await descriptor.execute(call, {
             ownerEmail,
+            teamIds,
             replacementMap: (req as any).__pseudonymizationMap,
             maskingConfig: maskingConfigFrom(req),
             isStreaming: body.stream === true,
             prepared: prepared.get(descriptor.type),
             remask: (text: string) => text,
             logger: pluginLogger,
+            recordUsage: usageRecorderFor(req),
           });
         } catch (error: any) {
           pluginLogger.error(`Pending ${descriptor.functionName} call ${call.callId} threw: ${error.message}`, { stack: error.stack });
@@ -2152,6 +2182,7 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
     const upstream = (req as any).__responsesUpstream;
     const pseudonymizationMap = (req as any).__pseudonymizationMap;
     const ownerEmail = ownerEmailFrom(req);
+    const teamIds = callerTeamIds(req);
     const preparedByType = (req as any)[PREPARED_FLAG] as Map<string, unknown> | undefined;
 
     /**
@@ -2162,12 +2193,14 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
      */
     const execCtx = (d: HostedToolDescriptor): ToolExecCtx => ({
       ownerEmail,
+      teamIds,
       replacementMap: pseudonymizationMap,
       maskingConfig: maskingConfigFrom(req),
       isStreaming: false,
       prepared: preparedByType?.get(d.type),
       remask: (text: string) => remaskText(req, text),
       logger: pluginLogger,
+      recordUsage: usageRecorderFor(req),
     });
 
     // One cap per descriptor, each read once and memoised: two tools called in the same

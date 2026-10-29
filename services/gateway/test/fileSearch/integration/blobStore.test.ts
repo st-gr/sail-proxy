@@ -78,25 +78,28 @@ d('blob store refcounting (requires FILE_SEARCH_TEST_DSN pointing at pgvector)',
     const sha = sha256Of(bytes);
     await retainBlob(sha, bytes, 'text/plain');
     await retainBlob(sha, bytes, 'text/plain');
-    const { removed } = await releaseBlob(sha);
-    expect(removed).toBe(false);
-    const { rows } = await pool.query('SELECT ref_count, bytes FROM file_blobs WHERE sha256=$1', [sha]);
+    const { pendingDelete } = await releaseBlob(sha);
+    expect(pendingDelete).toBe(false);
+    const { rows } = await pool.query('SELECT ref_count, bytes, delete_after FROM file_blobs WHERE sha256=$1', [sha]);
     expect(rows[0].ref_count).toBe(1);
     expect(rows[0].bytes).not.toBeNull();
+    expect(rows[0].delete_after).toBeNull();
   });
 
-  it('removes the row and bytes once the last owner releases', async () => {
+  it('the last release keeps row and bytes, marked pending delete for the sweeper', async () => {
     const bytes = Buffer.from('integration-test-bytes-4');
     const sha = sha256Of(bytes);
     await retainBlob(sha, bytes, 'text/plain');
-    const { removed } = await releaseBlob(sha);
-    expect(removed).toBe(true);
-    const { rows } = await pool.query('SELECT * FROM file_blobs WHERE sha256=$1', [sha]);
-    expect(rows.length).toBe(0);
+    const { pendingDelete } = await releaseBlob(sha);
+    expect(pendingDelete).toBe(true);
+    const { rows } = await pool.query('SELECT ref_count, bytes, delete_after FROM file_blobs WHERE sha256=$1', [sha]);
+    expect(rows[0].ref_count).toBe(0);
+    expect(Buffer.from(rows[0].bytes).equals(bytes)).toBe(true);
+    expect(rows[0].delete_after).not.toBeNull();
   });
 
   it('releasing an unknown sha256 is a no-op, not an error', async () => {
-    const { removed } = await releaseBlob('f'.repeat(64));
-    expect(removed).toBe(false);
+    const { pendingDelete } = await releaseBlob('f'.repeat(64));
+    expect(pendingDelete).toBe(false);
   });
 });

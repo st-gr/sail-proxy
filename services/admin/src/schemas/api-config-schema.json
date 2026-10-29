@@ -37,7 +37,7 @@
   "$defs": {
     "providersGroup": {
       "type": "object",
-      "description": "Settings for each upstream provider, keyed by its wire name in the route (so `aws-bedrock` keeps its hyphen). Six providers are read today - anthropic, aws-bedrock, google, openai, openrouter and perplexity; any other key is accepted and validated but stays inert until the gateway learns it. Each named provider carries exactly the settings its own request path reads, and a setting under a provider whose code never reads it is rejected here - google is the narrowest of the six, carrying only substitute_models, read by the /google route; every other common provider setting is rejected under it rather than merely inert. Per-provider keys: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-3-gateway.md#provider-configuration-keys",
+      "description": "Settings for each upstream provider, keyed by its wire name in the route (so `aws-bedrock` keeps its hyphen). Six providers are read today - anthropic, aws-bedrock, google, openai, openrouter and perplexity; any other key is accepted and validated but stays inert until the gateway learns it. Each named provider accepts only its own list of settings, though some accepted settings are inert under a given provider - each field's description says where it is read; google is the narrowest of the six, carrying only substitute_models, read by the /google route; every other common provider setting is rejected under it rather than merely inert. Per-provider keys: https://st-gr.github.io/sail-proxy/developer/gateway#provider-configuration-keys",
       "properties": {
         "anthropic": {
           "description": "The anthropic provider, served by the gateway's Anthropic request path: the settings every provider carries, plus that path's wire version and its two beta-flag filters.",
@@ -304,7 +304,7 @@
         },
         "supports_prompt_caching": {
           "type": "boolean",
-          "description": "Whether this model receives Anthropic prompt-cache breakpoints. Resolution order: this per-model flag, then the provider-level api_config.providers.<provider>.supports_prompt_caching flag, then a default of true for Anthropic-provider models and false for all others. Set false to opt a model out, for example claude-3-haiku; a true on an Anthropic model with no provider-level override changes nothing."
+          "description": "Whether this model receives Anthropic prompt-cache breakpoints. Resolution order: this per-model flag, then the provider-level api_config.providers.<provider>.supports_prompt_caching flag, then a default of true for Anthropic-provider models and false for all others. Set false to opt a model out; a true on an Anthropic model with no provider-level override changes nothing."
         },
         "anthropic_version": {
           "description": "The anthropic_version the gateway puts into this model's Bedrock invoke request body when the caller supplied none. A body that already carries the field is left alone, and subpaths other than invoke are untouched. The shipped value is bedrock-2023-05-31.",
@@ -391,19 +391,20 @@
             "enabled": {
               "type": "boolean",
               "default": true,
-              "description": "Master switch for the whole feature, default true. It is combined with \"a database is configured\" and \"the migration has run\": false makes every /v1/files and /v1/vector_stores route answer 503 file_search_unavailable, and keeps the ingestion worker and the expiry sweeper from starting. Files and stores already stored are left untouched."
+              "description": "Master switch for the whole feature, default true. It is combined with \"a database is configured\" and \"the migration has run\": false makes every /v1/files and /v1/vector_stores route answer 503 file_search_unavailable. The ingestion worker (which also runs re-embedding) and the two sweepers check it only at startup, so after changing it restart the gateway. Files and stores already stored are left untouched."
             },
             "embedding_model": {
               "type": "string",
               "minLength": 1,
               "default": "text-embedding-3-large",
-              "description": "Embedding model requested from the SAP AI Core orchestration deployment, and recorded on every teacher-log event. Default text-embedding-3-large. Changing it does not re-embed anything already stored, so a store built with another model keeps its old vectors and its recall quality drops silently; recreate the store instead."
+              "description": "Embedding model requested from the SAP AI Core orchestration deployment, and recorded on every teacher-log event. Default text-embedding-3-large. Each vector store keeps the model it was built with: its searches and new files use that model, so changing this setting leaves existing stores untouched. They show as outdated in the Grounding cockpit, where their owner or an admin can re-embed them with the new model; until then they keep answering with their old vectors. A model with another vector width also needs embedding_dimensions changed, and re-embedding cannot change a store's width."
             },
             "embedding_dimensions": {
               "type": "integer",
               "minimum": 1,
+              "maximum": 4000,
               "default": 1536,
-              "description": "Vector width, sent as the embedding model's dimensions parameter and used to create the vector column. Default 1536, and fixed once a store exists: a response vector of any other length is refused, and every store pinned to the old width answers 409 - to a SEARCH as well as to an attach, so it stops answering queries and can never take another file. It stays listable, retrievable and deletable. Changing this on a populated deployment therefore strands its stores rather than migrating them."
+              "description": "Vector width, sent as the embedding model's dimensions parameter and used to create the vector column. Default 1536, and fixed once a store exists: a response vector of any other length is refused, and every store pinned to the old width answers 409 - to a SEARCH as well as to an attach, so it stops answering queries and can never take another file. It stays listable, retrievable and deletable. Changing this on a populated deployment therefore strands its stores rather than migrating them: re-embedding from the Grounding cockpit keeps a store's width, so such a store needs an operator migration."
             },
             "rewrite_query": {
               "type": "boolean",
@@ -421,6 +422,7 @@
               "description": "Stage 1 recall and the optional stage 2 rerank. Stage 1 runs a vector-similarity ranking and - when lexical_enabled - a full-text ranking, fuses the two with reciprocal rank fusion, and hands the top `candidates` chunks to the reranker.",
               "properties": {
                 "rrf_k": {
+                  "title": "RRF k",
                   "type": "integer",
                   "minimum": 1,
                   "default": 60,
@@ -430,6 +432,15 @@
                   "type": "boolean",
                   "default": true,
                   "description": "Whether the full-text ranking runs beside the vector ranking. Default true. False fuses the vector ranking alone, so exact keyword and identifier matches that embeddings miss stop being recalled at all."
+                },
+                "lexical_query": {
+                  "type": "string",
+                  "enum": [
+                    "any",
+                    "all"
+                  ],
+                  "default": "any",
+                  "description": "How the full-text ranking matches the query. \"any\" (the default) keeps the query's words that are not common English or German stop words or a single character (a lone letter or digit) and matches a chunk that contains at least one of them, so a question written as a sentence still finds chunks with its key terms; chunks with more of the terms rank higher. \"all\" matches only chunks that contain every word of the query, stop words included - the behaviour of earlier versions, which a natural-language question rarely meets. Only applies while lexical_enabled is true."
                 },
                 "candidates": {
                   "type": "integer",
@@ -458,7 +469,16 @@
                       "type": "string",
                       "minLength": 1,
                       "default": "cohere-reranker",
-                      "description": "The deployment's model-name string for the rerank call. Default \"cohere-reranker\" - verified live against the tenant, and NOT SAP's published \"cohere-reranker-35\". This is not a provider choice: the gateway speaks exactly one rerank protocol and only the model name varies, which is why the teacher log always records the provider as \"cohere\"."
+                      "description": "The model name both used to find the reranker deployment - the first RUNNING foundation-models deployment serving a model of exactly this name - and sent on the rerank call. Default \"cohere-reranker\" - verified live against the tenant, and NOT SAP's published \"cohere-reranker-35\". This is not a provider choice: the gateway speaks exactly one rerank protocol and only the model name varies, which is why the teacher log always records the provider as \"cohere\"."
+                    },
+                    "input": {
+                      "type": "string",
+                      "enum": [
+                        "context_and_text",
+                        "text"
+                      ],
+                      "default": "context_and_text",
+                      "description": "What the reranker reads for each candidate chunk. \"context_and_text\" (the default): the chunk's context, where it has one, followed by its text; chunks without a context (static chunking) are read as their text. \"text\": the chunk text only. The context never appears in search results."
                     }
                   },
                   "additionalProperties": false
@@ -466,21 +486,162 @@
               },
               "additionalProperties": false
             },
+            "ann": {
+              "title": "Approximate Search",
+              "type": "object",
+              "description": "Approximate vector search for large vector stores, through the HNSW index. Off by default: the vector ranking then compares the query with every chunk of the searched stores, which is exact but takes longer the larger the stores are. When enabled, a search uses the index only where it pays off and stays exact otherwise: with an attribute filter, when it searches at most exact_max_chunks chunks or less than min_fraction of all stored chunks, while the index is not yet the kind the rebuild-index command builds, and on pgvector older than 0.8. Approximate search can return a full list of passages that misses most of the best-matching chunks for some questions, so measure its recall on your own data with the recall probe before enabling it.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether searches over large stores use the HNSW index. Default false: every search is exact. When the index returns fewer chunks than requested, the search runs exactly instead."
+                },
+                "exact_max_chunks": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000,
+                  "default": 20000,
+                  "description": "A search over at most this many chunks stays exact, counted over the stores it searches with one embedding model. Default 20000. The same number decides, whether or not approximate search is enabled, when the full-text part of a search is limited: a search over more chunks leaves out of its any-word query the words that more than 5 percent of all stored chunks contain, and ranks the passages with every word plus at most 5000 other full-text matches. On an analyzed table, 0 limits the full-text part of every search."
+                },
+                "min_fraction": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.05,
+                  "description": "A search over less than this share of all stored chunks stays exact: there, exact search is faster than the index. Default 0.05 (5 percent)."
+                }
+              },
+              "additionalProperties": false
+            },
             "chunking": {
               "type": "object",
-              "description": "Chunk-size defaults. Currently ignored by the gateway: what actually cuts a document is the vector store's own chunking_strategy, which resolves from its own constants - the same 800/400, by coincidence. Editing these two fields changes no chunk boundary; set chunking_strategy on the store instead.",
+              "description": "How the documents of a NEW vector store are cut into chunks. A store takes these values when it is created and keeps them: changing them here never re-chunks or alters an existing store. The shipped configuration sets \"structure\" at 800 tokens without overlap, with contexts. A key that is not set means what this form shows for it: static chunking without contexts, so a configuration of an earlier release, or one without this block, keeps static chunking. Stores created before this setting existed use static chunking at 800/400. A file attached with an explicit static chunking_strategy is cut with that strategy instead; \"auto\" or none uses the store's setting. The values are checked when a store is created: chunk_overlap_tokens must not exceed half of max_chunk_size_tokens, and contextual requires the \"structure\" strategy. If the setting is invalid, new stores get static chunking at 800/400 instead and the gateway logs a warning.",
               "properties": {
+                "strategy": {
+                  "type": "string",
+                  "enum": [
+                    "static",
+                    "structure"
+                  ],
+                  "default": "static",
+                  "description": "\"static\" (the default when not set) cuts the text into overlapping windows of a fixed size, as OpenAI's static strategy and earlier releases do. \"structure\" (set in the shipped configuration) follows the document's sections and headings, so a chunk does not run across a section boundary; files cut this way report the chunking strategy type \"other\" through the OpenAI API. Turning contextual on requires \"structure\"."
+                },
                 "max_chunk_size_tokens": {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 100,
+                  "maximum": 4096,
                   "default": 800,
-                  "description": "Target chunk size in ESTIMATED tokens - whitespace word count times 1.3, not a real tokenizer. Default 800, which is also the size an \"auto\" store uses; see this section's note for why editing this value does not reach it."
+                  "description": "Largest chunk, in tokens, between 100 and 4096. Default 800. With \"static\" the size is an estimate (word count times 1.3); with \"structure\" it is counted with a real tokenizer."
                 },
                 "chunk_overlap_tokens": {
                   "type": "integer",
                   "minimum": 0,
-                  "default": 400,
-                  "description": "How many estimated tokens each chunk repeats from its predecessor, so a passage split across a boundary is still recalled whole. Default 400. A per-store static strategy is held to between 0 and half of max_chunk_size_tokens; this field is not fed into that path, so no such check applies here."
+                  "maximum": 2048,
+                  "default": 0,
+                  "description": "How many tokens each chunk repeats from its predecessor, so a passage split across a boundary is still recalled whole. If not set: 0 with \"structure\", 400 with \"static\". Must not exceed half of max_chunk_size_tokens. With \"structure\" the overlap applies only inside a section that needs more than one chunk."
+                },
+                "contextual": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether each chunk also gets a short context, written by a language model, that places it in its document and is searched with it. Off when not set. Requires the strategy \"structure\"; adds a model call per chunk at ingestion, recorded as usage of the store's owner."
+                }
+              },
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "contextual": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "contextual"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "strategy": {
+                        "const": "structure"
+                      }
+                    },
+                    "required": [
+                      "strategy"
+                    ]
+                  }
+                }
+              ]
+            },
+            "contextual": {
+              "type": "object",
+              "title": "Chunk contexts",
+              "description": "How chunk contexts are written for vector stores whose chunking setting is contextual: at ingestion a language model writes a short context for each chunk, which is searched together with the chunk. These values do not turn contextual chunking on; the store's chunking setting does. A failed or timed-out call leaves that chunk without a context and never fails the file.",
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "default": "gemini-3.5-flash-lite",
+                  "description": "The SAP AI Core orchestration model that writes the contexts. Default \"gemini-3.5-flash-lite\". If the model is not available, files are ingested without contexts. The document is sent with every chunk of a file; Claude models cache it between these calls, other models cache it where they do so on their own."
+                },
+                "max_document_tokens": {
+                  "type": "integer",
+                  "minimum": 8192,
+                  "maximum": 200000,
+                  "default": 32000,
+                  "description": "Largest document, in tokens, that is sent whole with each chunk, between 8192 and 200000. Default 32000. A longer document is sent as an excerpt of this size around the chunk. Larger values give each context more of the document but cost more input tokens per chunk."
+                },
+                "concurrency": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16,
+                  "default": 4,
+                  "description": "How many context calls for one file run at the same time, between 1 and 16. Default 4. The first chunk of a file always runs alone."
+                },
+                "request_timeout_ms": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 300000,
+                  "default": 30000,
+                  "description": "Time limit of one context call, in milliseconds. Default 30000. A call that takes longer leaves its chunk without a context."
+                },
+                "file_deadline_ms": {
+                  "type": "integer",
+                  "minimum": 10000,
+                  "maximum": 600000,
+                  "default": 360000,
+                  "description": "Time, in milliseconds, after which no further context call starts for a file. Default 360000 (6 minutes). The remaining chunks are stored without a context; the file is still ingested."
+                },
+                "max_input_tokens_per_file": {
+                  "type": "integer",
+                  "minimum": 10000,
+                  "maximum": 1000000000,
+                  "default": 20000000,
+                  "description": "Input tokens the context calls of one file may use, cached tokens included, between 10000 and 1000000000. Default 20000000. Once a file has used them, no further context call starts for it; the remaining chunks are stored without a context and the file is still ingested."
+                }
+              },
+              "additionalProperties": false
+            },
+            "parent_sections": {
+              "type": "object",
+              "title": "Parent sections",
+              "description": "How search results from vector stores with structure chunking are widened to the section they come from, so the model reads a match in its context. Several matches in one section are returned once, as that section. Results from stores with static chunking are returned as they are.",
+              "properties": {
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 200,
+                  "maximum": 8000,
+                  "default": 1500,
+                  "description": "Largest parent section returned, in tokens, between 200 and 8000. Default 1500. A longer section is returned as an excerpt of this size around the match; a match that is longer on its own is returned alone."
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "tool",
+                    "all",
+                    "off"
+                  ],
+                  "default": "tool",
+                  "description": "Where results are returned as parent sections: \"tool\" (the default) in the file_search tool of the Responses API only; \"all\" also in the vector store search endpoint, which otherwise returns the matching chunks; \"off\" nowhere."
                 }
               },
               "additionalProperties": false
@@ -505,32 +666,130 @@
                   "type": "integer",
                   "minimum": 1,
                   "default": 10000,
-                  "description": "Ceiling on files attached to one vector store, default 10000. It caps the file_ids accepted when a store is created - alongside a hard limit of 500 file ids per create call - and refuses a further attach once the store already holds this many."
+                  "description": "Ceiling on files attached to one vector store, default 10000. It caps the file_ids accepted when a store is created - alongside a hard limit of 500 file ids per create or file batch call - and refuses an attach or a file batch that would take the store past it."
                 }
               },
               "additionalProperties": false
             },
             "ingestion": {
               "type": "object",
-              "description": "The background worker that extracts, chunks, embeds and stores an attached file. It claims work from the same file_search database pool the search path uses, so these knobs trade ingestion throughput against search latency.",
+              "description": "The background worker that extracts, chunks, embeds and stores an attached file, and re-embeds the files of a store whose embedding model is being changed - uploads first. It claims work from the same file_search database pool the search path uses, so these knobs trade ingestion throughput against search latency.",
               "properties": {
                 "concurrency": {
                   "type": "integer",
                   "minimum": 1,
                   "default": 4,
-                  "description": "How many claim-and-process loops the worker starts, default 4. Each one holds a connection from the 10-connection file_search pool while it works. Read once at startup, so a change needs a restart. Unrelated to the embedder's own fan-out."
+                  "description": "How many claim-and-process loops the worker starts, default 4; the same loops also run re-embedding. Each draws connections from the 10-connection file_search pool for its database steps. Read once at startup, so a change needs a restart."
                 },
                 "extract_timeout_ms": {
                   "type": "integer",
                   "minimum": 1,
                   "default": 60000,
-                  "description": "Time limit for extracting the text of one file, default 60000 ms. A timeout fails that file rather than the batch."
+                  "description": "Time limit for converting one document to text with an external converter - PDF, docx, odt, epub and rst - default 60000 ms. Plain-text formats are decoded directly and have no limit. A timeout fails that attempt, not the batch; the file is retried up to max_retries."
                 },
                 "max_retries": {
                   "type": "integer",
                   "minimum": 0,
                   "default": 3,
-                  "description": "Attempts per file before it is failed; default 3. An integer of 1 or more is used as written. 0 is accepted but read as 1, with a warning: it does NOT mean \"do not retry\" - at 0 every freshly attached file is reaped as retry-exhausted before it can run, and the batch still reports \"completed\" over an empty store. Anything else - negative, fractional, non-numeric - counts as unset and falls back to 3, also with a warning."
+                  "description": "Attempts per file before it is failed, default 3; the same budget applies to each file of a re-embed. An integer of 1 or more is used as written. 0 is read as 1, with a warning - taken literally it would fail every attached file before its first attempt. Anything else - negative, fractional, non-numeric - counts as unset and falls back to 3, also with a warning."
+                }
+              },
+              "additionalProperties": false
+            },
+            "parsing": {
+              "type": "object",
+              "title": "Document parsing",
+              "description": "How uploaded documents are read before they are chunked.",
+              "properties": {
+                "ocr": {
+                  "type": "object",
+                  "title": "Text recognition (OCR)",
+                  "description": "Text recognition for PDF pages without a text layer, such as scans. It runs where the tesseract program is installed (the Docker and Kyma images ship it with English); the npm standalone CLI never runs it.",
+                  "properties": {
+                    "languages": {
+                      "type": "array",
+                      "title": "OCR languages",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-z]{3}(_[a-z]+)*$",
+                        "maxLength": 32
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "default": [
+                        "eng"
+                      ],
+                      "description": "Tesseract language codes recognised on a page, such as eng, deu or chi_sim; default eng. A code needs its language data installed where the gateway runs; one that is not installed is skipped with a warning in the gateway log. Each added language makes OCR slower."
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "vision": {
+                  "type": "object",
+                  "title": "Vision transcription",
+                  "description": "Transcription of hard PDF pages by a vision model of SAP AI Core: a page is sent as an image and the model writes out its text, tables included. It runs only for vector stores whose chunking setting has a vision mode (off by default; changing a store's mode chunks the store again). Each page is one model call, recorded as usage of the store's owner; a page whose call fails keeps its text or goes to OCR. Page images are not masked: where pseudonymization is force-enabled for file_search content (for the openai endpoint or for a model), they reach the model unmasked, and the cockpit and the gateway log warn about it. Masking that a single request asks for (a trigger word or a masking field) cannot be foreseen and is not warned about. The npm standalone CLI never runs it.",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "default": "gemini-3.5-flash-lite",
+                      "description": "The SAP AI Core orchestration model that transcribes the pages; it must read images. Default \"gemini-3.5-flash-lite\". If the model is not available, a vector store cannot be switched to a vision mode."
+                    },
+                    "default_mode": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "no_text",
+                        "auto",
+                        "all"
+                      ],
+                      "default": "off",
+                      "description": "The vision mode new vector stores get: off (the default, no vision calls), no_text (pages without a text layer, such as scans), auto (those, pages with little text such as figures, and table-heavy pages) or all (every page). Existing stores keep their own mode. Where pseudonymization is force-enabled for file_search content, the page images reach the model unmasked (a warning is shown); the same holds, without a warning, for masking that a single request asks for."
+                    },
+                    "max_pages_per_file": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000,
+                      "default": 50,
+                      "description": "Most pages of one file sent to the model, between 1 and 1000. Default 50. The remaining pages keep their text or go to OCR."
+                    },
+                    "concurrency": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 8,
+                      "default": 2,
+                      "description": "How many pages of one file are transcribed at the same time, between 1 and 8. Default 2."
+                    },
+                    "request_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 5000,
+                      "maximum": 300000,
+                      "default": 90000,
+                      "description": "Time limit of one page's call, in milliseconds. Default 90000. A page whose call takes longer keeps its text or goes to OCR."
+                    },
+                    "file_deadline_ms": {
+                      "type": "integer",
+                      "minimum": 10000,
+                      "maximum": 1800000,
+                      "default": 240000,
+                      "description": "Longest time, in milliseconds, that vision may spend on one file, and at most 40 % of the time left for the file's ingestion. Default 240000 (4 minutes). No further page starts after it; the file is still ingested."
+                    },
+                    "max_input_tokens_per_file": {
+                      "type": "integer",
+                      "minimum": 10000,
+                      "maximum": 100000000,
+                      "default": 150000,
+                      "description": "Input tokens the calls of one file may use, between 10000 and 100000000. Default 150000 (a page takes about 1250). Once a file has used them, no further page starts for it."
+                    },
+                    "max_output_tokens_per_file": {
+                      "type": "integer",
+                      "minimum": 10000,
+                      "maximum": 100000000,
+                      "default": 120000,
+                      "description": "Output tokens the calls of one file may use, between 10000 and 100000000. Default 120000. Once a file has used them, no further page starts for it."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -547,26 +806,26 @@
                     "s3"
                   ],
                   "default": "db",
-                  "description": "Only \"db\", the default, is production-ready. Choosing \"local\" or \"s3\" does not switch storage: both raise an error that every caller surfaces as 503 file_search_unavailable, so uploads, attaches and downloads stop outright. Those two code paths exist and are unit-tested but have known unresolved defects - a physical-delete race that can permanently lose content on a concurrent re-upload, silent orphaning of existing blobs on a backend switch, and no request timeout on an in-transaction network call."
+                  "description": "Where NEW uploads are stored. \"db\", the default, keeps the bytes inside the file_search Postgres database. \"s3\" writes them as objects to the bucket configured below (AWS or an S3-compatible endpoint) and keeps only their key in the database. Switching moves nothing: every blob is read from the storage it was written to, so existing blobs stay readable as long as that storage is reachable, and a migration from the Blob Storage panel of Grounding Administration moves them. \"local\" is not supported: every upload then answers 503 file_search_unavailable."
                 },
                 "local_path": {
                   "type": "string",
                   "default": "/var/lib/sail-proxy/blobs",
-                  "description": "Filesystem root for the \"local\" backend - one directory per two-character sha256 prefix beneath it. Default /var/lib/sail-proxy/blobs. Read only when backend is \"local\", which the gateway currently refuses, so this value has no effect today."
+                  "description": "Filesystem root reserved for a \"local\" backend, default /var/lib/sail-proxy/blobs. The gateway does not support \"local\" (see backend), so this value is not read."
                 },
                 "s3": {
                   "type": "object",
-                  "description": "Bucket coordinates for the \"s3\" backend; credentials are not configured here, the process's own AWS credentials are used. Read only when backend is \"s3\", which the gateway currently refuses, so every field below has no effect today.",
+                  "description": "Bucket coordinates for the \"s3\" backend. Credentials are not configured here: they come from the gateway's FILE_SEARCH_S3_ACCESS_KEY_ID and FILE_SEARCH_S3_SECRET_ACCESS_KEY environment variables. Read whenever a blob stored in S3 is accessed - also while backend is \"db\" and blobs remain in S3 - and by a migration to or from S3. Changing the bucket, endpoint or prefix moves no objects: blobs written under the previous values cannot be read until those values are restored.",
                   "properties": {
                     "bucket": {
                       "type": "string",
                       "default": "",
-                      "description": "Bucket name. It forms the host <bucket>.s3.<region>.amazonaws.com, or the path /<bucket>/<key> when endpoint is set. Ships empty, which is not a usable bucket - the \"s3\" backend would have to be configured before it could be selected."
+                      "description": "Bucket name. It forms the host <bucket>.s3.<region>.amazonaws.com, or the path /<bucket>/<key> when endpoint is set. Ships empty: until it is set, an upload with backend \"s3\" answers 503 and a migration to S3 is refused."
                     },
                     "prefix": {
                       "type": "string",
                       "default": "sail-proxy/blobs",
-                      "description": "Key prefix every blob is stored under, default sail-proxy/blobs, so one bucket can hold blobs beside unrelated objects."
+                      "description": "Key prefix every blob is stored under, default sail-proxy/blobs, so one bucket can hold blobs beside unrelated objects. Path segments of letters, digits, \".\", \"_\" and \"-\", separated by \"/\". The gateway reads, writes and deletes only keys under this prefix and never lists the bucket. Give every file_search database its own prefix (or bucket): keys are derived from the file content, so two installations sharing a prefix share objects, and one deletes objects the other still uses."
                     },
                     "endpoint": {
                       "type": "string",
@@ -755,14 +1014,6 @@
                     "description": "The id a plugin registered itself under, looked up in the gateway's plugin registry for the phase being run. This schema cannot check the cross-reference: an id no plugin registered for that phase is logged as not found and the hook is skipped, so the request passes through unmodified rather than failing.",
                     "type": "string",
                     "minLength": 1
-                  },
-                  "strategy": {
-                    "description": "Currently ignored by the gateway; kept for compatibility. The before/after phase is a property of the registered plugin, and each phase looks up only its own plugins, so a value here cannot move a plugin from one phase to another. It is declared only because the shipped configuration carries it on one hook (models.overrides.anthropic--claude-3-haiku--deployed) and this object rejects unknown keys - dropping it from the schema would turn that entry into a rejected key without changing any behaviour.",
-                    "type": "string",
-                    "enum": [
-                      "before",
-                      "after"
-                    ]
                   }
                 },
                 "additionalProperties": false
@@ -812,12 +1063,12 @@
                   "minLength": 1
                 },
                 "path": {
-                  "description": "Dot-notation path into the parsed JSON request body for a 'json-path' or 'json-path-regex' rule. A leading '$.' is stripped, so '$.max_tokens' and 'max_tokens' address the same value; there is no further JSONPath support - no wildcards, filters or bracket syntax, and a segment containing a dot cannot be addressed. 'json-path' walks objects only. 'json-path-regex' also walks arrays: a numeric segment indexes the array, a non-numeric one takes the first element that carries it. A request with no parsed body, or a path resolving to nothing, does not match.",
+                  "description": "Dot-notation path into the parsed JSON request body for a 'json-path' or 'json-path-regex' rule. A leading '$.' is stripped, so '$.max_tokens' and 'max_tokens' address the same value; there is no further JSONPath support - no wildcards, filters or bracket syntax, and a segment containing a dot cannot be addressed. 'json-path' follows each segment literally, so a numeric segment indexes an array. 'json-path-regex' additionally lets a non-numeric segment take the first array element that carries it. A request with no parsed body, or a path resolving to nothing, does not match.",
                   "type": "string",
                   "minLength": 1
                 },
                 "equals": {
-                  "description": "The value the addressed thing must equal - compared DIFFERENTLY per type. On a `header` rule it is NOT strict equality: media types are compared (the part before the first `;`, lowercased), so `application/json` also matches `application/json; charset=utf-8`. That exists because the strict compare it replaced let charset-appending clients bypass pseudonymization. On a `json-path` rule it IS strict equality. Matcher semantics: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-13-plugin-system.md#matcher-semantics-equals-and-regex",
+                  "description": "The value the addressed thing must equal - compared DIFFERENTLY per type. On a `header` rule it is NOT strict equality: media types are compared (the part before the first `;`, lowercased), so `application/json` also matches `application/json; charset=utf-8`. That exists because the strict compare it replaced let charset-appending clients bypass pseudonymization. An equals value that itself contains a `;` is compared exactly, so a rule can still pin a charset. On a `json-path` rule it IS strict equality. Matcher semantics: https://st-gr.github.io/sail-proxy/developer/plugins#matcher-semantics-equals-and-regex",
                   "type": [
                     "string",
                     "number",
@@ -833,7 +1084,7 @@
                   "type": "number"
                 },
                 "regex": {
-                  "description": "A JavaScript regular-expression source. A `json-path-regex` rule tests it against whatever the path resolved to (a string directly, an array element by element, any other object against its JSON form). A `url-regex` rule tests it against the request path and query string the gateway sees, NOT an absolute URL, so `^https?://` can never match. Compiled once and cached per rule; an expression the engine rejects counts as no match. Matcher semantics: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-13-plugin-system.md#matcher-semantics-equals-and-regex",
+                  "description": "A JavaScript regular-expression source. A `json-path-regex` rule tests it against whatever the path resolved to (a string directly, an array element by element, any other object against its JSON form). A `url-regex` rule tests it against the request path and query string the gateway sees, NOT an absolute URL, so `^https?://` can never match. Compiled once and cached per rule; an expression the engine rejects counts as no match. Matcher semantics: https://st-gr.github.io/sail-proxy/developer/plugins#matcher-semantics-equals-and-regex",
                   "type": "string",
                   "minLength": 1
                 },
@@ -962,7 +1213,7 @@
               "multipleOf": 0.00001,
               "minimum": 0,
               "default": 1.90385,
-              "description": "SAP GenAI-token to Capacity-Unit conversion factor (SAP Note 3437766; uniform across bills, not published per model). cuFactor() in sapCapacityService reads it - capacityUnits = genAiTokens x this factor, applied to every usage event globally (not per usage type), for both live capture and the retroactive recalc. Change only if SAP republishes the CU conversion. Default 1.90385."
+              "description": "SAP GenAI-token to Capacity-Unit conversion factor (SAP Note 3437766; uniform across bills, not published per model). cuFactor() in sapCapacityService reads it - capacityUnits = genAiTokens x this factor, applied to every usage event globally (not per usage type), for both live capture and the retroactive recalc. Change only if SAP republishes the CU conversion. Default 1.90385. A value of 0 is treated as unset and falls back to the default."
             }
           }
         },
@@ -991,7 +1242,7 @@
           "properties": {
             "components": {
               "type": "object",
-              "description": "Per-component log level override, keyed by the component name exactly as the gateway logs it - for example 'ConfigService' or 'AwsBedrockService'. A component with no entry here uses defaultLevel instead.",
+              "description": "Per-component log level override, keyed by the component name exactly as the gateway logs it - for example 'ConfigService' or 'AwsBedrockService'. A component with no entry here uses LOG_LEVEL when it is set, otherwise defaultLevel. An entry outranks LOG_LEVEL for its own component, so a pinned component ignores the environment; the shipped configuration carries no entries.",
               "x-keySuggestions": [
                 "AnthropicService",
                 "AwsBedrockService",
@@ -1029,7 +1280,7 @@
                 "WARN",
                 "ERROR"
               ],
-              "description": "Log level for any component with no entry in `components`. If `LOG_LEVEL` is set to a recognized level it takes precedence and this field is ignored - and `LOG_LEVEL` ships set in both .env samples and the Kyma manifests, so in a stock deployment the environment wins. Otherwise it is matched case-insensitively against the logger's levels (trace, debug, info, warn, error); an unrecognized value is silently ignored. Precedence: https://github.com/st-gr/sail-proxy/blob/main/docs/developer/chapter-11-debugging.md#log-level-resolution"
+              "description": "Log level for any component with no entry in `components`. If `LOG_LEVEL` is set to a recognized level it takes precedence and this field is ignored - and `LOG_LEVEL` ships set in both .env samples and the Kyma manifests, so in a stock deployment the environment wins. Otherwise it is matched case-insensitively against the logger's levels (trace, debug, info, warn, error); an unrecognized value is silently ignored. Precedence: https://st-gr.github.io/sail-proxy/developer/debugging#log-level-resolution"
             },
             "log_folder_path": {
               "type": "string",
@@ -1038,7 +1289,7 @@
             },
             "payload_logging_enabled": {
               "type": "boolean",
-              "description": "When true, writes full request and response bodies to log_folder_path/payloads for debugging. Known-sensitive headers are redacted, but body content is written as-is, so leave this off outside active debugging. Off by default."
+              "description": "When true, writes full request and response bodies to log_folder_path/payloads for debugging. Known-sensitive headers are redacted, but body content is written as-is, so leave this off outside active debugging. Off by default. The PAYLOAD_LOGGING_ENABLED environment variable, when set to true or false, overrides this value."
             }
           },
           "additionalProperties": false
@@ -1114,18 +1365,19 @@
         "quotas": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Platform-wide default quotas per user, enforced by the gateway on every LLM request. A user's own constraint (Users & Quotas app) overrides each field; null = unlimited. Windows are UTC calendar day, ISO week (Monday 00:00 UTC) and calendar month; spend is the SAP cost in the currency of the SAP capacity unit price.",
+          "description": "Platform-wide default quotas per user, enforced by the gateway on every LLM request. A user's own constraint (Users & Quotas app) overrides each field; null = unlimited. Windows are UTC calendar day, ISO week (Monday 00:00 UTC) and calendar month; spend is the SAP cost plus the Connections cost in the currency of the SAP capacity unit price.",
           "properties": {
             "requestsPerMinute": { "type": ["integer", "null"], "title": "Requests per Minute", "minimum": 0, "default": null, "description": "Requests per user per sliding minute. Per-credential limits (RateLimits) apply as well; a request must pass both." },
-            "spendPerDay": { "type": ["number", "null"], "title": "Spend per Day", "minimum": 0, "default": null, "description": "SAP cost per user per UTC day." },
-            "spendPerWeek": { "type": ["number", "null"], "title": "Spend per Week", "minimum": 0, "default": null, "description": "SAP cost per user per ISO week." },
-            "spendPerMonth": { "type": ["number", "null"], "title": "Spend per Month", "minimum": 0, "default": null, "description": "SAP cost per user per calendar month." },
+            "spendPerDay": { "type": ["number", "null"], "title": "Spend per Day", "minimum": 0, "default": null, "description": "SAP cost plus Connections cost per user per UTC day." },
+            "spendPerWeek": { "type": ["number", "null"], "title": "Spend per Week", "minimum": 0, "default": null, "description": "SAP cost plus Connections cost per user per ISO week." },
+            "spendPerMonth": { "type": ["number", "null"], "title": "Spend per Month", "minimum": 0, "default": null, "description": "SAP cost plus Connections cost per user per calendar month." },
             "tokensPerDay": { "type": ["integer", "null"], "title": "Tokens per Day", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per UTC day; cache reads are not counted." },
             "tokensPerWeek": { "type": ["integer", "null"], "title": "Tokens per Week", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per ISO week; cache reads are not counted." },
             "tokensPerMonth": { "type": ["integer", "null"], "title": "Tokens per Month", "minimum": 0, "default": null, "description": "Input, output and cache-write tokens per user per calendar month; cache reads are not counted." }
           }
         },
         "toolGovernance": {
+          "title": "Tool Governance",
           "type": "object",
           "additionalProperties": false,
           "description": "Tool governance: how long the per-request tool usage rows and their daily aggregates are kept, and how each client program spells the MCP tools it hosts itself.",
@@ -1145,7 +1397,7 @@
                 "clients": {
                   "type": "array",
                   "title": "Client programs",
-                  "description": "One entry per client program. The first whose User Agent text appears in the request's own applies; a request that matches none is still governed by what it declares.",
+                  "description": "One entry per client program. The first whose User Agent text appears in the request's own applies; a request that matches none is still governed by what it declares. A list given here replaces the built-in presets entirely; an entry missing name, userAgent or containerTools is skipped.",
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -1163,6 +1415,17 @@
                         "type": "string",
                         "title": "Nested call pattern",
                         "description": "Regular expression finding a nested tool's name inside a container tool's call body; the first group is the name. Only the names are read, never the arguments."
+                      },
+                      "namePattern": {
+                        "type": "string",
+                        "title": "Tool name pattern",
+                        "description": "Regular expression that replaces the shared tool name pattern for this client only; the first group is the MCP server, the second the tool, and a name counts only when both groups are non-empty. Matching is case-sensitive and finds the pattern anywhere in the name unless it is anchored with ^ and $. Leave it out to use the shared pattern. An empty or invalid expression matches nothing by pattern for this client (it does not fall back to the shared one), though Server names still apply."
+                      },
+                      "serverNames": {
+                        "type": "array",
+                        "title": "Server names",
+                        "description": "The MCP servers this installation runs, for a client whose tool names carry no marker, such as opencode, which declares tool ping_probe of server probe as probe_ping_probe. A declared tool named <server>_<tool> then becomes the mcp:server/tool identity; the name pattern is tried first, then the servers in list order, and the first matching server wins. Server names are case-sensitive. Empty entries are ignored. Leave the list empty and such tools stay ordinary function tools.",
+                        "items": { "type": "string" }
                       }
                     }
                   }
@@ -1216,7 +1479,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Force-activates masking for a request. Read only where this block sits under models.overrides.<model>.pseudonymization or hooks.defaults.<endpoint>.pseudonymization: true there masks that request, with the per-model block winning over the per-endpoint one. False or absent forces nothing - masking can still run when another activation source fires, such as a trigger word or a masking field in the request body. Under observability.pseudonymization this key is currently ignored; that layer contributes entities, org_suffixes, location_gazetteer, min_confidence and thresholds only. Either way the plugin must be wired into the hook chain, or nothing is masked at all."
+          "description": "Force-activates masking for a request. Read only where this block sits under models.overrides.<model>.pseudonymization or hooks.defaults.<endpoint>.pseudonymization: true there masks that request, with the per-model block winning over the per-endpoint one. False or absent forces nothing - masking can still run when another activation source fires, such as a trigger word or a masking field in the request body. Under observability.pseudonymization this key is currently ignored; that layer contributes every other setting here except method and allow_user_bypass. Either way the plugin must be wired into the hook chain, or nothing is masked at all."
         },
         "method": {
           "type": "string",
@@ -1318,7 +1581,7 @@
           }
         },
         "substitute_models": {
-          "description": "Model renames for this provider: a request naming 'from' is forwarded as 'to', and the response reports the client's original name back. The first matching entry wins in both directions, so when several entries share one 'to', the way back resolves it to the earliest of them.",
+          "description": "Model renames for this provider: a request naming 'from' (matched exactly, case included) is forwarded as 'to'; the first matching entry wins and renames do not chain. The response, and the usage recorded for cost, then name the forwarded model, not the name the client sent. Read on the anthropic, aws-bedrock and google routes, on the openrouter chat completions route and on the SAP RPT predict routes (/sap/v1/rpt, from the sap-rpt list), each for its own provider; on /openai/v1/chat/completions and /openai/v1/responses the openai list is consulted first, then the perplexity list.",
           "type": "array",
           "items": {
             "type": "object",
@@ -1439,7 +1702,7 @@
             ]
           },
           "uniqueItems": true,
-          "description": "Event categories to export. 'usage' is one request-completion event per request and is the only category that can carry conversation content; it ships absent from this list, so exporting it is an explicit opt-in."
+          "description": "Event categories to export. 'usage' is one request-completion event per request and is the only category that can carry conversation content; the shipped list omits it, so exporting it is an explicit opt-in; a missing or empty list exports all three, usage included."
         },
         "sinks": {
           "type": "array",

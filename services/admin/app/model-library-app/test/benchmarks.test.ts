@@ -2,7 +2,7 @@
  * Leaderboard and chart derive from LibraryModels.benchmarks (the latest version's metadata array,
  * e.g. [{lmArenaTextArenaScore:"1410"},{helmCapabilitiesAccuracyMeanScore:"0.717"}]).
  */
-import { collectBenchmarkKeys, leaderboardRows, chartPoints, BENCHMARK_LABELS, BENCHMARK_DESCRIPTIONS, benchmarkTooltip } from '../webapp/model/benchmarks';
+import { collectBenchmarkKeys, leaderboardRows, chartPoints, BENCHMARK_LABELS, BENCHMARK_DESCRIPTIONS, benchmarkTooltip, benchmarkLabel } from '../webapp/model/benchmarks';
 
 const rows = [
   { modelId: 'a', displayName: 'A', provider: 'Anthropic', latestVersion: '1', benchmarks: JSON.stringify([{ lmArenaTextArenaScore: '1410' }, { helmCapabilitiesAccuracyMeanScore: '0.717' }]) },
@@ -51,5 +51,25 @@ describe('benchmark descriptions', () => {
   });
   it('falls back to the bare key for a metric it does not know', () => {
     expect(benchmarkTooltip('somethingNew')).toBe('somethingNew');
+  });
+});
+
+describe('benchmark texts in the cockpit language', () => {
+  const de = Object.fromEntries(require('fs').readFileSync(require('path').join(__dirname, '../webapp/i18n/i18n_de.properties'), 'utf8')
+    .split('\n').filter((l: string) => /^[A-Za-z]/.test(l)).map((l: string) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  const t = (key: string) => String(de[key] ?? key);
+  it('keeps the English label and tooltip without a translator', () => {
+    expect(benchmarkLabel('mtebAverageScore')).toBe('MTEB Average Score');
+    expect(benchmarkTooltip('airBenchRefusalRate')).toBe(`${BENCHMARK_LABELS.airBenchRefusalRate} — ${BENCHMARK_DESCRIPTIONS.airBenchRefusalRate}`);
+  });
+  it('translates the label and the sentence, keeping the benchmark name', () => {
+    expect(benchmarkLabel('mtebAverageScore', t)).toBe('MTEB – durchschnittliche Punktzahl');
+    expect(benchmarkTooltip('airBenchRefusalRate', t)).toBe(`AIRBench – Ablehnungsrate — ${de.benchmarkInfo_airBenchRefusalRate}`);
+    expect(de.benchmarkInfo_airBenchRefusalRate).toMatch(/^AIRBench: .*höher ist sicherer\.$/);
+  });
+  it('falls back to English while the bundle has not loaded, and to the bare key for a new metric', () => {
+    expect(benchmarkLabel('meanWinRate', (key) => key)).toBe('HELM Lite Accuracy Mean Win Rate');
+    expect(benchmarkLabel('somethingNew', t)).toBe('somethingNew');
+    expect(benchmarkTooltip('somethingNew', t)).toBe('somethingNew');
   });
 });

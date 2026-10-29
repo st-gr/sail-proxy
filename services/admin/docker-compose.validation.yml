@@ -7,7 +7,9 @@ services:
       context: .
       dockerfile: Dockerfile.validation
     ports:
-      - "4004:4004"
+      # Loopback only (A5): same admin service, same header-trust exposure as
+      # docker/docker-compose.yml.
+      - "127.0.0.1:4004:4004"
     environment:
       - NODE_ENV=development
       - CDS_REQUIRES_DB_KIND=sqlite
@@ -24,7 +26,7 @@ services:
     
   # Test client for validation
   validation-test:
-    image: node:20-alpine
+    image: node:24-alpine
     depends_on:
       - admin-validation
     volumes:

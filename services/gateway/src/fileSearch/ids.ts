@@ -20,3 +20,20 @@ export function newVectorStoreId(): string {
 export function newBatchId(): string {
   return `vsfb_${randomHex24()}`;
 }
+
+/** A job id. Same `<prefix>` + 24 lowercase hex shape as the schema backfill's
+ *  `'job_' || substr(md5(batch_id), 1, 24)`, so a backfilled job and a new one
+ *  are indistinguishable to every consumer of the id. */
+export function newJobId(): string {
+  return `job_${randomHex24()}`;
+}
+
+/** An Uploads API upload id. `upload_` is OpenAI's own prefix for this resource. */
+export function newUploadId(): string {
+  return `upload_${randomHex24()}`;
+}
+
+/** An Uploads API part id. `part_` is OpenAI's own prefix for this resource. */
+export function newUploadPartId(): string {
+  return `part_${randomHex24()}`;
+}

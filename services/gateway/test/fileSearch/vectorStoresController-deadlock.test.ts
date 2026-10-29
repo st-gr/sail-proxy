@@ -7,7 +7,7 @@
 // modification of the existing test/fileSearch/vectorStoresController.test.ts,
 // which mocks the same repository functions for its own, broader purpose)
 // so the mapping itself has a direct regression guard independent of ever
-// reproducing a real deadlock, which repository.ts's lock-ordering fix
+// reproducing a real deadlock, which storeFiles.ts's lock-ordering fix
 // makes intentionally hard to trigger live (see
 // integration/ingestWorker.test.ts's "ingestion-locks-first" tests for the
 // live proof that the fix closes the race that used to cause 40P01 here).

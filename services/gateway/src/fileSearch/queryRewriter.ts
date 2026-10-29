@@ -13,7 +13,7 @@
  * whatever the config says. NOTE that no EXISTING install picks the new default
  * up: standalone copies the template once at first run, and Docker/Kyma take the
  * admin-activated configuration wholesale from the database with no merge.
- * See `docs/developer/chapter-16-file-search-tool.md`.
+ * See `docs/developer/file-search-tool.md`.
  *
  * OpenAI's `file_search` tool rewrites the caller's raw query into a better
  * search query before embedding it. Accepting `rewrite_query` and silently
@@ -27,7 +27,13 @@
  * `true | false | 'auto'`, so there is no operator-facing "require rewriting"
  * mode to honour. A rewrite failure (no deployment discoverable, timeout,
  * malformed response) must never fail the search itself — it degrades to the
- * caller's original query, logged at debug only. Never throws.
+ * caller's original query, with a reason-coded log line. Never throws.
+ *
+ * The call itself goes through the shared internal completion helper
+ * (orchestrationCompletion.ts: deployment discovery, sampling drop, payload
+ * layout, timeout, usage fold). The query travels in `messages_history`, never in
+ * the template SAP parses for placeholders. The tokens spent are reported to the
+ * caller's usage sink as one `file_search/rewrite` record.
  *
  * Query text is user-authored, potentially sensitive search content — never
  * logged at info level or above, matching the rest of file_search.
@@ -41,9 +47,10 @@
  * `getFileSearchConfig().rewriteQueryModel` (default `'gpt-5-mini'`) rather
  * than a constant. Do not restore `gpt-35-turbo-16k` here.
  */
-import axios from 'axios';
-import configService from '../services/configService';
 import { getDefaultLogger } from '@libs/logger';
+import configService from '../services/configService';
+import { CompletionError, orchestrationComplete } from './orchestrationCompletion';
+import { completionUsageRecord, SearchUsage } from './usage';
 
 const logger = getDefaultLogger();
 
@@ -61,56 +68,53 @@ const SYSTEM_PROMPT =
  * retrieval recall. Returns the original `query`, unchanged, on any failure
  * — no deployment discoverable, a network/timeout error, or a malformed
  * response — so a rewrite outage degrades search rather than failing it.
+ * `onUsage` receives the tokens a completed call spent (also when its reply was
+ * empty); a sink that throws is ignored.
  */
-export async function rewriteSearchQuery(query: string): Promise<string> {
+export async function rewriteSearchQuery(query: string, onUsage?: (u: SearchUsage) => void): Promise<string> {
+  let rewriteModel = '';
+  const report = (usage: CompletionError['usage'], elapsedMs: number) => {
+    if (!onUsage || !usage) return;
+    try {
+      onUsage(completionUsageRecord('file_search/rewrite', rewriteModel, usage, elapsedMs));
+    } catch (error: any) {
+      logger.warn('QueryRewriter', `Rewrite usage sink failed and was ignored: ${error?.message}`);
+    }
+  };
   try {
-    const deploymentId = await configService.getDeploymentId();
-    if (!deploymentId) {
-      logger.debug('QueryRewriter', 'No orchestration deployment available; using the original query');
-      return query;
+    rewriteModel = configService.getFileSearchConfig().rewriteQueryModel;
+    const started = Date.now();
+    try {
+      const result = await orchestrationComplete({
+        model: rewriteModel,
+        system: SYSTEM_PROMPT,
+        messages: [{ text: query }],
+        // The model's refused sampling parameters are dropped by the helper's shared
+        // per-model rule (gpt-5 family refuses temperature other than 1).
+        params: { temperature: 0 },
+        timeoutMs: REWRITE_TIMEOUT_MS,
+      });
+      report(result.usage, result.elapsedMs);
+      return result.text;
+    } catch (error) {
+      // An empty or truncated reply still spent tokens.
+      if (error instanceof CompletionError && error.usage) report(error.usage, Date.now() - started);
+      throw error;
     }
-
-    const sapConfig = configService.getSAPAICoreConfig();
-    const accessToken = await configService.getAccessToken();
-    const url = `${sapConfig.url}/v2/inference/deployments/${deploymentId}/v2/completion`;
-    const rewriteModel = configService.getFileSearchConfig().rewriteQueryModel;
-
-    const payload = {
-      config: {
-        modules: {
-          prompt_templating: {
-            prompt: {
-              template: [
-                { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: query },
-              ],
-            },
-            model: { name: rewriteModel, params: { temperature: 0 } },
-          },
-        },
-      },
-    };
-
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'AI-Resource-Group': sapConfig.resourceGroup || 'default',
-        'Content-Type': 'application/json',
-      },
-      timeout: REWRITE_TIMEOUT_MS,
-    });
-
-    const rewritten = response.data?.final_result?.choices?.[0]?.message?.content;
-    if (typeof rewritten !== 'string' || rewritten.trim().length === 0) {
-      logger.debug('QueryRewriter', 'Rewrite returned no usable text; using the original query');
-      return query;
-    }
-    return rewritten.trim();
   } catch (error: any) {
     // Best-effort only: log the failure reason (never the query text itself)
-    // at debug and fall back, rather than letting a rewrite outage fail the
-    // whole search.
-    logger.debug('QueryRewriter', `Query rewrite failed, falling back to the original query: ${error.message}`);
+    // and fall back, rather than letting a rewrite outage fail the whole
+    // search. Warn, not debug: a rewrite that always fails (a refused
+    // parameter, a model the tenant does not serve) must be visible.
+    if (error instanceof CompletionError && error.reason === 'no_deployment') {
+      logger.debug('QueryRewriter', 'Query rewrite skipped, using the original query (reason=no_deployment)');
+    } else if (error instanceof CompletionError && (error.reason === 'empty_response' || error.reason === 'truncated')) {
+      logger.warn('QueryRewriter', `Query rewrite fell back to the original query (reason=${error.reason})`, { model: rewriteModel });
+    } else {
+      logger.warn('QueryRewriter', 'Query rewrite fell back to the original query (reason=request_failed)', {
+        status: error?.status, error: error?.message,
+      });
+    }
     return query;
   }
 }

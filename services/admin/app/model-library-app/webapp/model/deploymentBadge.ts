@@ -24,17 +24,27 @@ export function isDeployment(accessType: string | null | undefined): boolean {
 }
 
 /**
- * "Retires <YYYY-MM-DD>". The word is a constant here rather than an i18n lookup: the resource
- * bundle is async, so a formatter cannot read it. Accepts the raw Edm.Date string the binding
+ * Resolves an i18n key — the view binds the bundle pattern as the formatter's second part; jest
+ * passes none and gets the English default below, so the module keeps no UI5 imports.
+ */
+export type Translator = (key: string) => string;
+/** English defaults: each value is byte-identical to the literal it replaced, so the pure tests hold. */
+const EN_TEXTS: Record<string, string> = { retiresOn: 'Retires {0}' };
+const defaultTranslate: Translator = (key) => EN_TEXTS[key] ?? key;
+
+/**
+ * "Retires <YYYY-MM-DD>" through the bundle pattern `retiresOn` ("Retires {0}"), which the view
+ * binds as the second part (the formatter cannot read the async bundle itself). Accepts the raw Edm.Date string the binding
  * hands over with targetType 'any' (see contextWindow), a Date, or an already type-formatted
  * string, which is passed through unchanged after the prefix.
  */
-export function retires(date: string | Date | null | undefined): string {
+export function retires(date: string | Date | null | undefined, pattern?: string | null): string {
   if (!date) return '';
-  if (date instanceof Date) return `Retires ${date.toISOString().slice(0, 10)}`;
+  const text = (day: string) => (pattern || defaultTranslate('retiresOn')).replace('{0}', day);
+  if (date instanceof Date) return text(date.toISOString().slice(0, 10));
   const s = String(date).trim();
   if (!s) return '';
-  return `Retires ${/^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s}`;
+  return text(/^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s);
 }
 
 /**

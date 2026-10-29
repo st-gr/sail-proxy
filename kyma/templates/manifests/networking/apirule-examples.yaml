@@ -18,7 +18,7 @@ apiVersion: gateway.kyma-project.io/v2
 kind: APIRule
 metadata:
   name: sail-proxy-custom-domain-example
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: sail-proxy
     environment: production
@@ -29,7 +29,7 @@ spec:
   - admin.api.yourcompany.com
   # Reference to your custom Gateway (created separately with TLS certificate)
   # See: https://developers.sap.com/tutorials/prepare-btp-kyma..html
-  gateway: sail-proxy/custom-gateway  # namespace/gateway-name
+  gateway: __NAMESPACE__/custom-gateway  # namespace/gateway-name
   service:
     name: nginx
     port: 8080
@@ -50,7 +50,7 @@ apiVersion: gateway.kyma-project.io/v2
 kind: APIRule
 metadata:
   name: sail-proxy-alternative-example
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: sail-proxy
     environment: development

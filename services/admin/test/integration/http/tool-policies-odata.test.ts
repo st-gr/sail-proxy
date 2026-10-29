@@ -6,6 +6,7 @@ cds.env.requires.auth = { kind: 'mocked', users: {
   'tp-admin@test.com': { id: 'tp-admin@test.com', roles: ['admin', 'user'] },
   'tp-user@test.com': { id: 'tp-user@test.com', roles: ['user'] } } };
 const { GET, POST, PATCH, DELETE, axios } = cds.test(path.resolve(__dirname, '../../..'));
+import * as tp from '../../../src/services/toolPolicyService';
 import * as users from '../../../src/services/usersService';
 const ADMIN = { auth: { username: 'tp-admin@test.com', password: 'x' } };
 const USER = { auth: { username: 'tp-user@test.com', password: 'x' } };
@@ -21,6 +22,10 @@ async function createPolicy(body: any) {
 }
 
 describe('ToolPolicies OData', () => {
+  it('runs its cds.test server on 127.0.0.1, where the client dials (pinEphemeralServersToLoopback)', () => {
+    expect(cds.app.server.address()).toMatchObject({ address: '127.0.0.1' });
+  });
+
   it('lists the seeded default policy for admins and hides the set from users', async () => {
     const list = await GET('/odata/v4/admin/ToolPolicies?$filter=isDefault eq true', ADMIN);
     expect(list.status).toBe(200);
@@ -302,5 +307,17 @@ describe('ToolPolicies OData', () => {
       expect(restriction).toMatch(/InsertRestrictions[\s\S]*?Insertable" Bool="false"/);
       expect(restriction).toMatch(/DeleteRestrictions[\s\S]*?Deletable" Bool="false"/);
     }
+  });
+});
+
+describe('teams that reference a policy', () => {
+  it('a policy assigned to a team cannot be deleted; its affected e-mails include the team\'s members', async () => {
+    const TEAMS = 'sap.llm.gateway.admin.Teams'; const MEMBERS = 'sap.llm.gateway.admin.TeamMembers';
+    const policy = await createPolicy({ name: 'Team policy', mode: 'monitor' });
+    await cds.db.run(cds.ql.INSERT.into(TEAMS).entries({ ID: 't-tp', name: 'Delta', toolPolicy_ID: policy.ID }));
+    await cds.db.run(cds.ql.INSERT.into(MEMBERS).entries({ ID: 'm-tp', team_ID: 't-tp', email: 'tp-user@test.com', role: 'member', isPrimary: true }));
+    expect((await DELETE(`/odata/v4/admin/ToolPolicies(ID=${policy.ID},IsActiveEntity=true)`, ADMIN)).status).toBe(409);
+    expect(await tp.affectedEmails(cds.db, policy.ID)).toContain('tp-user@test.com');
+    await cds.db.run(cds.ql.DELETE.from(MEMBERS)); await cds.db.run(cds.ql.DELETE.from(TEAMS));
   });
 });

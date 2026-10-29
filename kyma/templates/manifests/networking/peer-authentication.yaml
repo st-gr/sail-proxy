@@ -4,7 +4,7 @@ apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
   name: default
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
 spec:
   mtls:
     mode: PERMISSIVE

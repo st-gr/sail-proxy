@@ -28,6 +28,9 @@ sap.ui.define([
 				// with no arguments waits for at least one matching row, which this table never has here.
 				When.onTheObjectPage.iGoToSection("Tools used");
 				Then.onTheObjectPage.onTable({ property: "toolUsageDaily", qualifier: "ForUser" }).iCheckColumns();
+				// every fixture user is a member of the fixture team (user@test.com is its team admin)
+				When.onTheObjectPage.iGoToSection("Teams");
+				Then.onTheObjectPage.iSeeTeamMembership(oFx.team.name);
 				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Entitlement Catalog");
 				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Quota Profile");
 				Then.onTheObjectPage.onForm("Entitlement").iCheckField("Tool Policy");

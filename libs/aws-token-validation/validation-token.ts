@@ -1,4 +1,8 @@
 import crypto from 'crypto';
+import {
+  DEFAULT_VALIDATION_TOKEN_SECRET,
+  REJECTED_VALIDATION_TOKEN_SECRETS
+} from './validation-token-secrets';
 
 export interface ValidationToken {
   accessKeyId: string;
@@ -53,6 +57,8 @@ export interface ValidationResponse {
       mode: 'all' | 'list';
       exclude?: string[];
       include?: string[];
+      teamCatalogId?: string;
+      teamCatalogName?: string;
     };
     // Structurally matches UserBlock (services/gateway/src/clients/adminServiceClient.ts).
     // Duplicated here rather than imported to keep this shared lib free of a service dependency.
@@ -60,11 +66,15 @@ export interface ValidationResponse {
       email: string;
       status: 'active' | 'deactivated';
       roles: string[];
+      teamIds?: string[];
       limits: {
         requestsPerMinute: number | null; spendPerDay: number | null; spendPerWeek: number | null; spendPerMonth: number | null;
         tokensPerDay: number | null; tokensPerWeek: number | null; tokensPerMonth: number | null;
       };
     };
+    // Structurally matches TeamBlock / ToolPolicyBlock in the gateway (spec 2026-10-14 §5).
+    team?: { teamId: string; teamName: string; limits: NonNullable<NonNullable<ValidationResponse['credentialMetadata']>['user']>['limits'] };
+    teamToolPolicy?: any;
   };
   validationToken: string;
   auditInfo: {
@@ -93,9 +103,11 @@ export class ValidationTokenUtils {
   private static readonly DEFAULT_TTL = 300000; // 5 minutes
   
   private static getSecretKey(): string {
-    const secret = process.env.VALIDATION_TOKEN_SECRET || 'dev-secret-change-in-production';
-    if (secret === 'dev-secret-change-in-production' && process.env.NODE_ENV === 'production') {
-      throw new Error('VALIDATION_TOKEN_SECRET must be set in production');
+    const secret = process.env.VALIDATION_TOKEN_SECRET || DEFAULT_VALIDATION_TOKEN_SECRET;
+    // Outside development, neither the built-in default nor the .env.sample placeholder is a
+    // usable secret: both are publicly known (see libs/aws-token-validation/validation-token-secrets.ts).
+    if (process.env.NODE_ENV !== 'development' && REJECTED_VALIDATION_TOKEN_SECRETS.includes(secret)) {
+      throw new Error('VALIDATION_TOKEN_SECRET must be set outside development: unset, the built-in default, and the .env.sample placeholder are all rejected');
     }
     return secret;
   }

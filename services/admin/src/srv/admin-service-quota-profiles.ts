@@ -19,6 +19,8 @@ import { getUser, backfillUsers, USERS } from '../services/usersService';
 import * as profiles from '../services/quotaProfilesService';
 import * as quota from '../services/userQuotaService';
 import { LIMIT_FIELDS, validateConstraints } from '../services/quotaLimits';
+import { TEAMS, teamsUsingProfile, memberEmailsOfTeams } from '../services/teamLookups';
+import { publishTeams } from '../services/teamQuotaService';
 import { invalidateForEmails } from '../services/credentialInvalidation';
 import { recordAuditEvent, AuditEventInput } from '../services/auditEventService';
 import { clientContext } from '../utils/clientIp';
@@ -119,6 +121,13 @@ export function registerQuotaProfileHandlers(service: any): void {
       .where({ quotaProfile_ID: { in: list.map((r: any) => r.ID) } }).groupBy('quotaProfile_ID'));
     const byId = new Map<string, number>(counts.map((c: any) => [c.quotaProfile_ID, Number(c.assigned) || 0]));
     for (const row of list) row.assignedUsers = byId.get(row.ID) ?? 0;
+    // Teams using the profile as pool or member profile; a team using it both ways counts once.
+    const ids = list.map((r: any) => r.ID);
+    const teamRows: any[] = await cds.run(cds.ql.SELECT.from(TEAMS).columns('ID', 'quotaProfile_ID', 'memberQuotaProfile_ID')
+      .where({ quotaProfile_ID: { in: ids } }).or({ memberQuotaProfile_ID: { in: ids } }));
+    const teamsById = new Map<string, Set<string>>();
+    for (const t of teamRows) for (const p of [t.quotaProfile_ID, t.memberQuotaProfile_ID]) if (p) (teamsById.get(p) ?? teamsById.set(p, new Set()).get(p)!).add(t.ID);
+    for (const row of list) row.assignedTeams = teamsById.get(row.ID)?.size ?? 0;
   });
 
   service.after('UPDATE', 'QuotaProfiles', async (row: any, req: any) => {
@@ -135,12 +144,21 @@ export function registerQuotaProfileHandlers(service: any): void {
     // both still carry the old ones.
     const emails = await profiles.assignedEmails(cds, id);
     if (emails.length) { await quota.publishMany(cds, emails); await invalidateForEmails(cds, emails, 'constraints'); }
+    // Every team using the profile, as pool or member profile, now carries different limits.
+    const teamsUsing = await teamsUsingProfile(cds, id);
+    if (teamsUsing.length) {
+      await publishTeams(cds, teamsUsing.map((t) => t.ID));
+      const members = await memberEmailsOfTeams(cds, teamsUsing.map((t) => t.ID));
+      if (members.length) { await quota.publishMany(cds, members); await invalidateForEmails(cds, members, 'constraints'); }
+    }
   });
 
   service.before('DELETE', 'QuotaProfiles', async (req: any) => {
     const emails = await profiles.assignedEmails(cds, keyId(req));
     // Naming the users rather than cascading: dropping the profile would silently move every one of
     // them onto the platform defaults, which is the administrator's decision to make, not ours.
+    const teamsUsing = await teamsUsingProfile(cds, keyId(req));
+    if (!emails.length && teamsUsing.length) { req.reject({ status: 409, code: 'quota_profile_assigned_team', message: `Profile is used by ${teamsUsing.length} team(s): ${teamsUsing.slice(0, 10).map((t) => t.name).join(', ')}` }); return; }
     if (emails.length) req.reject({ status: 409, code: 'quota_profile_assigned', message: `Profile is assigned to ${emails.length} user(s): ${emails.slice(0, 10).join(', ')}` });
   });
   service.after('DELETE', 'QuotaProfiles', async (_: any, req: any) => recordAuditEvent(audit(req, 'quota_profile.delete', keyId(req))));

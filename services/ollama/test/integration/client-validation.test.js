@@ -6,7 +6,7 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, liveModels } = require('@libs/test-utils');
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 
@@ -85,7 +85,7 @@ describe('Client Validation Integration', () => {
 
     it('should validate /api/generate response format', async () => {
       const response = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt: 'Say hello briefly',
         stream: false
       });
@@ -116,7 +116,7 @@ describe('Client Validation Integration', () => {
 
     it('should validate /api/chat response format', async () => {
       const response = await axiosInstance.post('/api/chat', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           { role: 'user', content: 'Say hello briefly' }
         ],
@@ -151,7 +151,7 @@ describe('Client Validation Integration', () => {
     it('should validate /api/embeddings response format or handle gracefully', async () => {
       try {
         const response = await axiosInstance.post('/api/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           prompt: 'Test embedding text'
         });
         
@@ -179,7 +179,7 @@ describe('Client Validation Integration', () => {
   describe('Field Type Validation', () => {
     it('should have consistent timestamp formats', async () => {
       const response = await axiosInstance.post('/api/chat', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [{ role: 'user', content: 'Hi' }],
         stream: false
       });
@@ -197,7 +197,7 @@ describe('Client Validation Integration', () => {
 
     it('should have consistent numeric field types', async () => {
       const response = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt: 'Test',
         stream: false
       });
@@ -298,7 +298,7 @@ describe('Client Validation Integration', () => {
       
       // Empty prompt
       const emptyPromptResponse = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt: '',
         stream: false
       });
@@ -306,7 +306,7 @@ describe('Client Validation Integration', () => {
       
       // Very short prompt
       const shortPromptResponse = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt: 'Hi',
         stream: false
       });
@@ -318,7 +318,7 @@ describe('Client Validation Integration', () => {
   describe('Response Size and Performance', () => {
     it('should return reasonable response sizes', async () => {
       const response = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         prompt: 'Say hello',
         stream: false,
         options: { num_predict: 10 }
@@ -332,7 +332,7 @@ describe('Client Validation Integration', () => {
       const startTime = Date.now();
       
       const response = await axiosInstance.post('/api/chat', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [{ role: 'user', content: 'Hi' }],
         stream: false
       });

@@ -7,6 +7,8 @@
  * a /responses request would bypass PII masking entirely.
  */
 
+import { mapJsonStringLiterals } from './jsonStringLeaves';
+
 /** True when the body looks like a Responses request rather than chat completions. */
 export function isResponsesBody(body: any): boolean {
   if (!body || typeof body !== 'object') return false;
@@ -120,7 +122,10 @@ export function unmaskResponsesOutput(response: any, unmask: (s: string) => stri
         if (part && typeof part.refusal === 'string') part.refusal = unmask(part.refusal);
       }
     }
-    if (typeof item.arguments === 'string') item.arguments = unmask(item.arguments);
+    // JSON text: restored literal by literal so a value with `"` or `\` stays valid JSON.
+    if (typeof item.arguments === 'string') {
+      item.arguments = mapJsonStringLiterals(item.arguments, unmask) ?? unmask(item.arguments);
+    }
     if (Array.isArray(item.summary)) {
       for (const s of item.summary) {
         if (s && typeof s.text === 'string') s.text = unmask(s.text);

@@ -112,6 +112,18 @@ describe('computeUsage', () => {
     expect(doc.sapCostCurrency).toBe('USD');
   });
 
+  it("Connection spend counts toward the user's spend window", async () => {
+    const { INSERT } = cds.ql;
+    await db.run(INSERT.into(KEY_USAGE).entries([
+      keyRow('2026-09-07T09:00:00Z', 100, 1.0),
+      { ...keyRow('2026-09-07T09:05:00Z', 300, 0), sapCost: null, sapCostCurrency: null, origin: 'external', listCost: 2.0, listCostCurrency: 'USD', usageSignature: 'ext-row' }
+    ]));
+    await counters.rebuild(db, { now: NOW });
+    const u = await quota.computeUsage(db, 'q@test.com', NOW, null);
+    expect(u.day.sapCost).toBe(3);
+    expect(u.day.sapCostByCurrency).toEqual({ USD: 3 });
+  });
+
   it('computeUsageMany reads a page of users with one bucket query', async () => {
     const { INSERT } = cds.ql;
     await db.run(INSERT.into(KEY_USAGE).entries([keyRow('2026-09-07T09:00:00Z', 100, 0.1), keyRow('2026-09-07T09:00:00Z', 7, 0.07, 'someone-else@test.com')]));
@@ -136,6 +148,27 @@ describe('quotaCurrency', () => {
     try {
       expect(await quota.quotaCurrency(NOW)).toBe('USD');
     } finally {
+      if (existing.length > 0) await db.run(INSERT.into(PRICE).entries(existing));
+    }
+  });
+});
+
+describe('quotaCurrency without rows', () => {
+  const PRICE = 'sap.llm.gateway.admin.SapCapacityUnitPrice';
+
+  it('quotaCurrency falls back to the billing currency without rows', async () => {
+    const { DELETE, SELECT, INSERT } = cds.ql;
+    const existing = await db.run(SELECT.from(PRICE));
+    await db.run(DELETE.from(PRICE));
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 10 * 60_000); // past the 60 s memo
+    process.env.SAP_BILLING_CURRENCY = 'EUR';
+    try {
+      expect(await quota.quotaCurrency(NOW)).toBe('EUR');
+    } finally {
+      delete process.env.SAP_BILLING_CURRENCY;
+      nowSpy.mockReturnValue(Date.now() + 20 * 60_000);
+      await quota.quotaCurrency(NOW); // re-prime the memo with USD for later tests
+      nowSpy.mockRestore();
       if (existing.length > 0) await db.run(INSERT.into(PRICE).entries(existing));
     }
   });

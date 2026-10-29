@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "SAP AI Core Multi-Provider LLM Gateway Service - Docker Optimized",
   "private": true,
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "pg": "^8.22.0",
     "qs": "^6.11.2",
     "uuid": "^11.1.0",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "wink-eng-lite-web-model": "^1.8.1",
     "wink-nlp": "^2.4.0",
     "winston": "^3.17.0",

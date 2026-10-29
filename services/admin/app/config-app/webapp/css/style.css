@@ -93,6 +93,36 @@
     border: 1px solid #e0e0e0;
 }
 
+/* Dark theme (Settings > Theme): the hard-coded colours above are light-only. UI5 sets
+   sapUiTheme-<id> on <html> at boot and on every Theming.setTheme, so these follow live. */
+html.sapUiTheme-sap_horizon_dark .sapMTextMonospace {
+    background-color: var(--sapBackgroundColor);
+    border-color: var(--sapList_BorderColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .sapMTextSmall,
+html.sapUiTheme-sap_horizon_dark .sapMTextMuted,
+html.sapUiTheme-sap_horizon_dark .configStatusInactive {
+    color: var(--sapContent_LabelColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .jsonEditorContainer {
+    border-color: var(--sapList_BorderColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .configStatusActive,
+html.sapUiTheme-sap_horizon_dark .configStatusValid {
+    color: var(--sapPositiveTextColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .configStatusInvalid {
+    color: var(--sapNegativeTextColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .sapMListTblRow:hover {
+    background-color: var(--sapList_Hover_Background);
+}
+
 /* Dialog layout fixes for create/duplicate configuration dialogs */
 
 /* Turn the panel into a column flexbox so header + content stack,
@@ -178,6 +208,32 @@
 .configFormHelpText {
     overflow-wrap: anywhere;
     word-break: break-word;
+}
+
+/* Detail title: the stored validation messages. The title does not scroll with the page, so an
+   uncapped list would push the form (or the JSON editor) below it off the screen; past this height
+   the list scrolls on its own. About three strips: the form's own scrolling region needs 240 px
+   below the title (model/formViewport.ts) and a 700 px window has little more to give. */
+.cfgDetailValidation {
+    max-height: min(20vh, 9rem);
+    overflow-y: auto;
+}
+
+/* Detail title: the checksum is one unbroken hex run; on a narrow column it has to wrap rather than
+   run out of the title. */
+.cfgDetailChecksum,
+.cfgDetailChecksum .sapMObjectAttributeText {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    white-space: normal;
+}
+
+/* Detail header in the JSON view: it stays visible (so DynamicPage re-measures it) but holds nothing
+   on screen then - the form panel inside is hidden - so it gives back its own padding too. The
+   selector out-ranks the theme's `.sapFDynamicPage-Std-Desktop .sapFDynamicPageHeader.sapFDynamicPageHeaderWithContent`. */
+.sapFDynamicPage .sapFDynamicPageHeader.sapFDynamicPageHeaderWithContent.cfgDetailHeaderIdle {
+    padding-top: 0;
+    padding-bottom: 0;
 }
 
 /* Responsive design */

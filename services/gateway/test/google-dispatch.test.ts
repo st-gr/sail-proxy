@@ -51,6 +51,7 @@ const CATALOGUE: Record<string, any> = {
   'anthropic--claude-4.5-sonnet': {
     id: 'anthropic--claude-4.5-sonnet', model: 'anthropic--claude-4.5-sonnet', owned_by: 'Anthropic',
   },
+  'gpt-4.1-nano': { id: 'gpt-4.1-nano', model: 'gpt-4.1-nano', owned_by: 'OpenAI' },
 };
 jest.mock('../src/services/modelService', () => ({
   __esModule: true,
@@ -64,6 +65,8 @@ const configState: { hookConfig: any } = { hookConfig: undefined };
 jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: {
+    // Read by the forced-pseudonymization check: nothing forces masking here.
+    getConfig: () => ({}),
     getSubstitutedModel: (_p: string, m: string) => m,
     getHookConfig: () => configState.hookConfig,
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap', resourceGroup: 'rg-test' }),
@@ -246,11 +249,13 @@ describe('dispatchBridge: streaming', () => {
     const done = handleGemini(mockReq('anthropic--claude-4.5-sonnet:streamGenerateContent', CONTENTS), res, jest.fn() as any);
     await flushUntil(() => !!onOrchestrationChunk);
 
-    expect(res.headers['X-Accel-Buffering']).toBe('no');
     expect(streamCalls[0].payload.config.modules.prompt_templating.model.name).toBe('anthropic--claude-4.5-sonnet');
     expect(streamCalls[0].payload.config.stream).toEqual({ enabled: true, chunk_size: 200 });
 
+    // The SSE headers go out with the first frame, not before the upstream answered.
+    expect(res.headers['X-Accel-Buffering']).toBeUndefined();
     await onOrchestrationChunk!({ final_result: { choices: [{ delta: { content: 'Hel' } }] } });
+    expect(res.headers['X-Accel-Buffering']).toBe('no');
     await onOrchestrationChunk!({
       final_result: {
         choices: [{ delta: { content: 'lo' }, finish_reason: 'stop' }],
@@ -305,6 +310,37 @@ describe('dispatchBridge: streaming', () => {
     expect(res.writes.join('')).toContain('"promptTokenCount":28');
   });
 
+  it('OpenAI-family model: SAP usage is already inclusive — billed net of the cache, forwarded as-is', async () => {
+    const res = mockRes();
+    const done = handleGemini(mockReq('gpt-4.1-nano:streamGenerateContent', CONTENTS), res, jest.fn() as any);
+    await flushUntil(() => !!onOrchestrationChunk);
+
+    // Live probe of 2026-09-30 (gpt-4.1-nano via orchestration): cached tokens are INSIDE
+    // prompt_tokens (1978 on the cold and the cached call, cached_tokens 0 -> 1792).
+    await onOrchestrationChunk!({
+      final_result: {
+        choices: [{ delta: { content: 'OK' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 1978, completion_tokens: 1, total_tokens: 1979,
+          prompt_tokens_details: { audio_tokens: 0, cached_tokens: 1792 },
+        },
+      },
+    });
+    releaseStream!();
+    await done;
+
+    expect(usageEvents).toHaveLength(1);
+    const metrics = usageEvents[0][1];
+    expect(metrics.inputTokens).toBe(186);
+    expect(metrics.outputTokens).toBe(1);
+    expect(metrics.cacheReadInputTokens).toBe(1792);
+    expect(metrics.cacheCreationInputTokens).toBe(0);
+    const wire = res.writes.join('');
+    expect(wire).toContain('"promptTokenCount":1978');
+    expect(wire).toContain('"cachedContentTokenCount":1792');
+    expect(wire).toContain('"totalTokenCount":1979');
+  });
+
   it('runs after-plugins on every translated frame, so masking sees Gemini shapes', async () => {
     configState.hookConfig = [{ request: { match: ['*'], callback: { id: 'x' } } }];
     afterPlugins = (_r: any, _s: any, body: any) => {
@@ -357,5 +393,59 @@ describe('dispatchBridge: streaming', () => {
     expect(res.writes.join('')).toContain('"code":503');
     expect(res.ended).toBe(true);
     expect(usageEvents[0][3]).toBe(503);
+  });
+
+  // Measured on SAP 2026-10-13: HTTP 200, a templating chunk with an empty delta, then the
+  // rejection as an error chunk. Nothing was framed yet, so the client gets the status.
+  it('an error chunk before any frame is the HTTP status and the Gemini error envelope, no SSE', async () => {
+    const res = mockRes();
+    const done = handleGemini(mockReq('anthropic--claude-4.5-sonnet:streamGenerateContent', CONTENTS), res, jest.fn() as any);
+    await flushUntil(() => !!onOrchestrationChunk);
+
+    await onOrchestrationChunk!({ intermediate_results: { templating: [] }, final_result: { choices: [{ index: 0, delta: { content: '' } }] } });
+    await onOrchestrationChunk!({ error: { code: 400, message: '400 - LLM Module: prompt is too long: 600024 tokens > 200000 maximum', intermediate_results: { templating: 'SECRET' } } });
+    releaseStream!();
+    await done;
+
+    expect(res.writes).toEqual([]);
+    expect(res.headers['Content-Type']).toBeUndefined();
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toEqual({ code: 400, message: '400 - LLM Module: prompt is too long: 600024 tokens > 200000 maximum', status: 'INVALID_ARGUMENT' });
+    expect(JSON.stringify(res.body)).not.toContain('SECRET');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0][3]).toBe(400);
+  });
+
+  it('an upstream that ends without any chunk is still a valid SSE response: headers + one terminal frame', async () => {
+    const res = mockRes();
+    const done = handleGemini(mockReq('anthropic--claude-4.5-sonnet:streamGenerateContent', CONTENTS), res, jest.fn() as any);
+    await flushUntil(() => !!onOrchestrationChunk);
+
+    releaseStream!();
+    await done;
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('text/event-stream; charset=utf-8');
+    expect(res.writes).toHaveLength(1);
+    expect(res.writes[0]).toMatch(/^data: /);
+    expect(res.ended).toBe(true);
+    expect(usageEvents[0][3]).toBe(200);
+  });
+
+  it('a thrown upstream failure before any frame is its HTTP status, with SAP\'s message', async () => {
+    const res = mockRes();
+    const done = handleGemini(mockReq('anthropic--claude-4.5-sonnet:streamGenerateContent', CONTENTS), res, jest.fn() as any);
+    await flushUntil(() => !!onOrchestrationChunk);
+
+    const err: any = new Error('SAP AI Core streaming failed: Request failed with status code 404');
+    err.status = 404;
+    err.details = { status: 404, body: JSON.stringify({ error: { code: 404, message: 'Model not found' } }) };
+    rejectStream!(err);
+    await done;
+
+    expect(res.writes).toEqual([]);
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error).toMatchObject({ code: 404, message: 'Model not found' });
+    expect(usageEvents[0][3]).toBe(404);
   });
 });

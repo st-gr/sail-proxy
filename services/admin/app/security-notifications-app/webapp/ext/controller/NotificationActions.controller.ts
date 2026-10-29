@@ -2,10 +2,50 @@ import ControllerExtension from "sap/ui/core/mvc/ControllerExtension";
 import Log from "sap/base/Log";
 import type Context from "sap/ui/model/odata/v4/Context";
 import MessageToast from "sap/m/MessageToast";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+import type PageController from "sap/fe/core/PageController";
 import NotificationActions from "../NotificationActions";
 
 // Top-level log to confirm module loading
 Log.info("[NotificationActions] Controller extension module loaded");
+
+let bundlePromise: Promise<ResourceBundle> | undefined;
+
+/** The app's i18n bundle, loaded once for the user's language. */
+function getBundle(): Promise<ResourceBundle> {
+	if (!bundlePromise) {
+		bundlePromise = ResourceBundle.create({
+			bundleName: "admin.securitynotifications.i18n.i18n",
+			async: true,
+			supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+			fallbackLocale: ""
+		}) as Promise<ResourceBundle>;
+	}
+	return bundlePromise;
+}
+
+/** The List Report's route in manifest.json. */
+const LIST_ROUTE = "MySecurityNotificationsList";
+
+/** FE names the annotated delete action with its service prefix ("AdminService.deleteSecurityNotification"). */
+function isDeleteAction(actionName: string): boolean {
+	return actionName.split(".").pop() === "deleteSecurityNotification";
+}
+
+/** A caught value as a Log detail: Errors keep their stack, anything else becomes text. */
+function logDetail(error: unknown): string | Error {
+	return error instanceof Error ? error : String(error);
+}
+
+/**
+ * Shows the "deleted successfully" toast from the bundle (fire-and-forget). It is shown while the
+ * app navigates to the List Report, so it must not close on that hash change.
+ */
+function showDeletedToast(): void {
+	getBundle().then((bundle) => {
+		MessageToast.show(bundle.getText("deletedSuccessfully") as string, { closeOnBrowserNavigation: false });
+	}).catch(() => { /* bundle load failure is non-critical for a toast */ });
+}
 
 /**
  * Controller extension for Security Notifications ObjectPage
@@ -21,7 +61,7 @@ export default ControllerExtension.extend("admin.securitynotifications.ext.contr
 			 * Auto-mark notification as seen when ObjectPage is opened
 			 */
 			onAfterBinding(this: any, ctx?: Context) {
-				Log.info("[NotificationActions] routing.onAfterBinding called with context:", !!ctx);
+				Log.info("[NotificationActions] routing.onAfterBinding called with context:", String(!!ctx));
 				
 				// Check if context is invalid (entity was deleted) and navigate back
 				if (!ctx) {
@@ -86,14 +126,23 @@ export default ControllerExtension.extend("admin.securitynotifications.ext.contr
 			}
 		},
 		
-		// Monitor for successful delete operations by watching for side effects errors
-		onAfterRendering: function(this: any) {
-			Log.info("[NotificationActions] onAfterRendering called - setting up delete navigation monitor");
-			
-			// Set up error monitoring for side effects failures after delete
-			if (!this._deleteNavigationSetup) {
-				this._deleteNavigationSetup = true;
-				this._setupDeleteErrorNavigation();
+		// Hook group corresponds to sap.fe.core.controllerextensions.EditFlow
+		editFlow: {
+			/**
+			 * FE calls this only after an action succeeded; a failed action rejects before it and FE
+			 * shows the error, so the page stays. After a successful delete the page's entity is gone,
+			 * so go back to the List Report (FE marked it dirty, it re-reads without the row).
+			 */
+			onAfterActionExecution(this: { base: PageController }, actionName: string) {
+				if (!isDeleteAction(actionName)) {
+					return;
+				}
+				Log.info("[NotificationActions] Delete succeeded - navigating to the List Report");
+				showDeletedToast();
+				this.base.getExtensionAPI().getRouting().navigateToRoute(LIST_ROUTE)
+					.catch((error: unknown) => {
+						Log.error("[NotificationActions] Navigation after delete failed:", logDetail(error));
+					});
 			}
 		}
 	},
@@ -101,293 +150,4 @@ export default ControllerExtension.extend("admin.securitynotifications.ext.contr
 	// Export action handlers for use in manifest.json (only complex actions that need parameters)
 	onSnooze: NotificationActions.onSnooze,
 	onTogglePin: NotificationActions.onTogglePin,
-	onDelete: NotificationActions.onDelete,
-	
-	/**
-	 * Set up monitoring for side effects errors that indicate successful delete
-	 */
-	_setupDeleteErrorNavigation: function(this: any) {
-		Log.info("[NotificationActions] Setting up delete error navigation monitor");
-		
-		// Track failed read path count to detect entity deletion
-		let failedReadCount = 0;
-		let lastFailedReadTime = 0;
-		let deleteActionFailed = false;
-		let navigationTriggered = false;
-		
-		// Monitor console errors for side effects failures
-		const originalConsoleError = console.error;
-		console.error = function(...args: any[]) {
-			const errorMessage = args.join(' ');
-			
-			// Check if the delete action itself failed (before side effects)
-			if (errorMessage.includes('Failed to invoke') && 
-			    errorMessage.includes('deleteSecurityNotification') &&
-			    (errorMessage.includes('400') || errorMessage.includes('Bad Request'))) {
-				Log.info("[NotificationActions] Delete action failed - will not navigate");
-				deleteActionFailed = true;
-				// Reset after 5 seconds
-				setTimeout(() => { 
-					deleteActionFailed = false;
-					navigationTriggered = false; // Also reset navigation flag
-				}, 5000);
-			}
-			
-			// Count "Failed to read path" errors - multiple in quick succession indicate deletion
-			// BUT only if the delete action didn't fail and navigation hasn't been triggered yet
-			if (errorMessage.includes('Failed to read path') && 
-			    errorMessage.includes('/MySecurityNotifications(') &&
-			    !deleteActionFailed &&
-			    !navigationTriggered) {
-				const currentTime = Date.now();
-				
-				// Reset counter if too much time has passed
-				if (currentTime - lastFailedReadTime > 5000) {
-					failedReadCount = 0;
-				}
-				
-				failedReadCount++;
-				lastFailedReadTime = currentTime;
-				
-				// If we get 5+ failed reads in quick succession, entity was likely deleted
-				if (failedReadCount >= 5) {
-					Log.info("[NotificationActions] Multiple failed reads detected - entity deleted, navigating to List Report");
-					navigationTriggered = true; // Prevent duplicate navigation
-					
-					setTimeout(() => {
-						// Use hash navigation since shell component isn't accessible
-						Log.info("[NotificationActions] Using hash navigation to List Report");
-						window.location.hash = "#";
-						
-						// Show success toast after navigation
-						setTimeout(() => {
-							MessageToast.show("Security notification deleted successfully");
-						}, 500);
-					}, 1000);
-				}
-			}
-			
-			// Check if this is a side effects error after SUCCESSFUL delete (not validation error)
-			if (errorMessage.toLowerCase().includes('error while requesting side effects') && 
-			    errorMessage.toLowerCase().includes('deleteSecurityNotification') &&
-			    errorMessage.toLowerCase().includes('not found') &&
-			    !errorMessage.toLowerCase().includes('can only delete') &&
-			    !errorMessage.toLowerCase().includes('validation') &&
-			    !errorMessage.toLowerCase().includes('bad request') &&
-			    !navigationTriggered) {
-				
-				Log.info("[NotificationActions] Delete side effects error detected - entity was successfully deleted");
-				navigationTriggered = true; // Prevent duplicate navigation
-				
-				// Navigate back after a brief delay to allow error handling to complete
-				setTimeout(() => {
-					Log.info("[NotificationActions] BRANCH: Using hash navigation to List Report");
-					window.location.hash = "#";
-					
-					// Show success toast after navigation
-					setTimeout(() => {
-						MessageToast.show("Security notification deleted successfully");
-					}, 500);
-				}, 1000);
-			}
-			
-			// Call original console.error
-			originalConsoleError.apply(console, args);
-		};
-		
-		// Also monitor Log.error for UI5 errors
-		const originalLogError = Log.error;
-		Log.error = function(sMessage: string, sDetails?: any, sComponent?: string, fnSupportInfo?: any) {
-			// First call original Log.error to ensure normal logging
-			originalLogError.call(Log, sMessage, sDetails, sComponent, fnSupportInfo);
-			
-			if (sMessage && sMessage.includes('Error while requesting side effects for the operation AdminService.deleteSecurityNotification') && !navigationTriggered) {
-				Log.info("[NotificationActions] UI5 side effects error detected - navigating after delete");
-				navigationTriggered = true; // Prevent duplicate navigation
-				
-				setTimeout(() => {
-					Log.info("[NotificationActions] BRANCH: Using hash navigation to List Report");
-					window.location.hash = "#";
-					
-					// Show success toast after navigation
-					setTimeout(() => {
-						MessageToast.show("Security notification deleted successfully");
-					}, 500);
-				}, 1000);
-			}
-		};
-		
-		// Also try monitoring the UI5 log messages more broadly
-		const originalLogMessage = Log._log;
-		if (originalLogMessage) {
-			Log._log = function(iLevel: any, sMessage: string, sDetails?: any, sComponent?: string, fnSupportInfo?: any) {
-				// Check for side effects errors
-				if (sMessage && sMessage.includes('Error while requesting side effects') && 
-				    sMessage.includes('deleteSecurityNotification') && !navigationTriggered) {
-					Log.info("[NotificationActions] Internal UI5 side effects error detected - navigating after delete");
-					navigationTriggered = true; // Prevent duplicate navigation
-					
-					setTimeout(() => {
-						Log.info("[NotificationActions] BRANCH: Using hash navigation to List Report");
-						window.location.hash = "#";
-						
-						// Show success toast after navigation
-						setTimeout(() => {
-							MessageToast.show("Security notification deleted successfully");
-						}, 500);
-					}, 1000);
-				}
-				
-				// Call original _log method
-				return originalLogMessage.call(Log, iLevel, sMessage, sDetails, sComponent, fnSupportInfo);
-			};
-		}
-	},
-
-	/**
-	 * Called after any bound action completes - check if it's a delete and navigate
-	 */
-	async onAfterAction(this: any, actionName: string): Promise<void> {
-		if (actionName === 'deleteSecurityNotification') {
-			await this.onAfterDeleteActionSuccess();
-		}
-	},
-
-	/**
-	 * Called after delete action succeeds - navigate back to List Report
-	 * Uses fallback navigation since FE's routing API may not work after entity deletion
-	 */
-	async onAfterDeleteActionSuccess(this: any): Promise<void> {
-		try {
-			Log.info("[NotificationActions] Delete action succeeded, navigating to List Report");
-			
-			// Success message is now shown via req.notify() from backend
-			
-			// Use fallback navigation since the entity is deleted
-			setTimeout(() => {
-				if (window.history?.length > 1) {
-					window.history.back();
-				} else {
-					// Navigate to shell security notifications as final fallback
-					window.location.href = "/shell/index.html#security-notifications";
-				}
-			}, 1000); // Give time for success message to show
-			
-		} catch (error) {
-			Log.error("[NotificationActions] Error navigating after delete:", error);
-			// Immediate fallback navigation
-			if (window.history?.length > 1) {
-				window.history.back();
-			} else {
-				window.location.href = "/shell/index.html";
-			}
-		}
-	},
-
-	/**
-	 * Manual refresh fallback when side effects annotations don't work
-	 * Can be called from action handlers or error scenarios
-	 */
-	async refreshObjectPageContent(this: any): Promise<void> {
-		try {
-			const context = this.base.getView()?.getBindingContext() as Context;
-			if (!context) {
-				Log.warning("[NotificationActions] No binding context available for refresh");
-				return;
-			}
-
-			// Refresh the entire entity instance using Context API
-			await context.requestSideEffects([
-				{ $NavigationPropertyPath: "" }
-			]);
-
-			Log.info("[NotificationActions] Object Page content refreshed manually");
-		} catch (error) {
-			Log.error("[NotificationActions] Error refreshing Object Page content:", error);
-		}
-	},
-
-	/**
-	 * Refresh specific properties after an action
-	 * Useful when automatic side effects fail
-	 */
-	async refreshSpecificProperties(this: any, properties: string[]): Promise<void> {
-		try {
-			const context = this.base.getView()?.getBindingContext() as Context;
-			if (!context) {
-				Log.warning("[NotificationActions] No binding context available for property refresh");
-				return;
-			}
-
-			// Convert property names to $PropertyPath format
-			const propertyPaths = properties.map(prop => ({ $PropertyPath: prop }));
-			
-			await context.requestSideEffects(propertyPaths);
-			
-			Log.info(`[NotificationActions] Properties refreshed: ${properties.join(", ")}`);
-		} catch (error) {
-			Log.error("[NotificationActions] Error refreshing specific properties:", error);
-		}
-	},
-
-	/**
-	 * Fallback refresh handlers for each action type
-	 * Called if side effects annotations don't work reliably
-	 */
-	async onAfterSnoozeActionSuccess(this: any): Promise<void> {
-		await this.refreshSpecificProperties(['snoozeUntil', 'dismissedAt', 'seenAt', 'modifiedAt']);
-	},
-
-	async onAfterDismissActionSuccess(this: any): Promise<void> {
-		await this.refreshSpecificProperties(['dismissedAt', 'seenAt', 'modifiedAt']);
-	},
-
-	async onAfterPinActionSuccess(this: any): Promise<void> {
-		await this.refreshSpecificProperties(['pinned', 'seenAt', 'modifiedAt']);
-	},
-
-	async onAfterMarkSeenActionSuccess(this: any): Promise<void> {
-		await this.refreshSpecificProperties(['seenAt', 'modifiedAt']);
-	},
-
-	/**
-	 * Generic error handler for action failures
-	 * Keeps user on Object Page and ensures consistent state
-	 */
-	onActionError(this: any, error: any): void {
-		Log.error("[NotificationActions] Action failed:", error);
-		
-		// Error dialog should already be shown by FE via req.reject()
-		// Just log for debugging - don't navigate away on errors
-		
-		// Optionally refresh to ensure consistent state
-		this.refreshObjectPageContent().catch((refreshError: any) => {
-			Log.error("[NotificationActions] Failed to refresh after error:", refreshError);
-		});
-	},
-
-	/**
-	 * Update app state before navigating away (for keep-alive scenarios)  
-	 */
-	async updateAppStateBeforeNavigation(this: any): Promise<void> {
-		try {
-			const extensionAPI = this.base.getExtensionAPI();
-			await extensionAPI.updateAppState();
-			Log.info("[NotificationActions] App state updated before navigation");
-		} catch (error) {
-			Log.warning("[NotificationActions] Failed to update app state before navigation:", error);
-			// Don't block navigation if app state update fails
-		}
-	},
-
-	/**
-	 * Enhanced navigation back to List Report with state management
-	 */
-	async navigateToListReport(this: any): Promise<void> {
-		// Update app state for keep-alive scenarios
-		await this.updateAppStateBeforeNavigation();
-		
-		// Navigate using enhanced delete success handler
-		await this.onAfterDeleteActionSuccess();
-	}
 });

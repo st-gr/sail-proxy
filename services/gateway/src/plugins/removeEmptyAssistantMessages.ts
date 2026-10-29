@@ -6,6 +6,7 @@
  */
 
 import { Request, Response } from 'express';
+import { redactUrl } from '../utils/redactUrl';
 
 interface PluginContext {
   req: Request;
@@ -118,7 +119,7 @@ async function beforeHandler({ req, utils }: PluginContext): Promise<PluginResul
   } catch (error: any) {
     logger.error(`Error in removeEmptyAssistantMessages plugin: ${error.message}`, { 
       stack: error.stack,
-      requestUrl: (req as any).originalUrl || req.url,
+      requestUrl: redactUrl((req as any).originalUrl || req.url),
       hasMessages: !!(req.body && (req.body as any).messages)
     });
     

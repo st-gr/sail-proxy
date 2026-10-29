@@ -1,0 +1,75 @@
+{
+  "apiVersion": "security.istio.io/v1",
+  "kind": "AuthorizationPolicy",
+  "metadata": {
+    "name": "allowlist-cp-tunnel",
+    "namespace": "istio-system",
+    "labels": {
+      "app": "connectivity-proxy"
+    }
+  },
+  "spec": {
+    "selector": {
+      "matchLabels": {
+        "istio": "ingressgateway"
+      }
+    },
+    "action": "ALLOW",
+    "rules": [
+      {
+        "to": [
+          {
+            "operation": {
+              "hosts": [
+                "cp.c-abc123.kyma.ondemand.com",
+                "cp.c-abc123.kyma.ondemand.com:443"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "security.istio.io/v1",
+  "kind": "AuthorizationPolicy",
+  "metadata": {
+    "name": "allowlist-cp-healthcheck",
+    "namespace": "istio-system",
+    "labels": {
+      "app": "connectivity-proxy"
+    }
+  },
+  "spec": {
+    "selector": {
+      "matchLabels": {
+        "istio": "ingressgateway"
+      }
+    },
+    "action": "ALLOW",
+    "rules": [
+      {
+        "to": [
+          {
+            "operation": {
+              "hosts": [
+                "healthcheck.cp.c-abc123.kyma.ondemand.com",
+                "healthcheck.cp.c-abc123.kyma.ondemand.com:443"
+              ],
+              "methods": [
+                "GET",
+                "HEAD"
+              ],
+              "paths": [
+                "/healthcheck",
+                "/"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

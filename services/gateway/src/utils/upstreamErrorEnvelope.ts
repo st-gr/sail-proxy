@@ -97,9 +97,12 @@ export function errorTypeForStatus(status: number): string {
   return 'api_error';
 }
 
-function truncate(text: string): string {
+/** Cap an upstream message at MAX_MESSAGE_CHARS — every path that shows one to a client uses this. */
+export function truncateUpstreamMessage(text: string): string {
   return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS)}…` : text;
 }
+
+const truncate = truncateUpstreamMessage;
 
 export interface NormalisedUpstreamError {
   error: {

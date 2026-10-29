@@ -1,4 +1,4 @@
-import { ServiceKey, ParsedConfig } from './types';
+import { ServiceKey, ParsedConfig, SapTenantIdentity } from './types';
 import { extractRegion } from './utils';
 
 /**
@@ -42,4 +42,44 @@ export function parseServiceKey(serviceKeyJson: string): ParsedConfig {
     GATEWAY_STANDALONE: 'true',
     OLLAMA_AUTOSTART: 'false'
   };
+}
+
+/**
+ * Tenant identity of a service key: the tenant key of its auth URL (see tenantFromAuthUrl; stable
+ * across key rotation), the identity zone id and the AI Core region. Validates like
+ * parseServiceKey and requires an identityzone.
+ */
+export function tenantFromServiceKey(serviceKeyJson: string): SapTenantIdentity {
+  const parsed = parseServiceKey(serviceKeyJson);
+  const serviceKey: ServiceKey = JSON.parse(serviceKeyJson);
+  if (!String(serviceKey.identityzone || '').trim()) {
+    throw new Error('Missing required field: identityzone');
+  }
+  return {
+    zone: tenantFromAuthUrl(parsed.AUTH_URL, parsed.SAP_AI_CORE_URL).zone,
+    zoneId: serviceKey.identityzoneid || null,
+    region: parsed.SAP_AI_REGION
+  };
+}
+
+/**
+ * Tenant identity from environment settings. The zone (the tenant key) is `<subdomain>.<landscape>`
+ * of the auth URL (https://<subdomain>.authentication.<landscape>.hana.ondemand.com/oauth/token):
+ * one subdomain may exist on several landscapes. A host without an `authentication` label gives
+ * the whole host.
+ */
+export function tenantFromAuthUrl(authUrl: string, aiCoreUrl: string): SapTenantIdentity {
+  let host: string;
+  try {
+    host = new URL(authUrl).hostname;
+  } catch (error) {
+    throw new Error('Invalid auth URL');
+  }
+  const labels = host.trim().toLowerCase().split('.');
+  const auth = labels.indexOf('authentication');
+  const zone = (auth > 0 && labels[auth + 1] ? `${labels[0]}.${labels[auth + 1]}` : labels.join('.')).slice(0, 100);
+  if (!zone) {
+    throw new Error('Invalid auth URL');
+  }
+  return { zone, zoneId: null, region: extractRegion(aiCoreUrl) };
 }

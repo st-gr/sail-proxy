@@ -31,6 +31,7 @@ const d = DSN ? describe : describe.skip;
 
 const EMBED_DIM = 3;
 const UNIQUE_PHRASE = 'the zorbaxian quokka migrates biannually beneath the aurora';
+const SECOND_PHRASE = 'a cobalt lantern hums whenever the tide reverses at midnight';
 
 let mockConfig: any;
 jest.mock('../../../src/services/configService', () => ({
@@ -53,6 +54,8 @@ jest.mock('../../../src/services/configService', () => ({
 }));
 
 jest.mock('../../../src/fileSearch/embedder', () => ({
+  // The real error classes (search and ingestion test for them with instanceof).
+  ...jest.requireActual<any>('../../../src/fileSearch/embedder'),
   __esModule: true,
   embed: jest.fn(),
 }));
@@ -64,7 +67,8 @@ const { embed } = require('../../../src/fileSearch/embedder');
  *  stand-in for "semantically similar", entirely sufficient to prove
  *  end-to-end wiring without a real embedding model. */
 function fakeEmbedding(text: string): number[] {
-  return text.includes(UNIQUE_PHRASE) ? [1, 0, 0] : [0, 1, 0];
+  if (text.includes(UNIQUE_PHRASE)) return [1, 0, 0];
+  return text.includes(SECOND_PHRASE) ? [0, 0, 1] : [0, 1, 0];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +152,7 @@ d('file_search end-to-end (requires FILE_SEARCH_TEST_DSN)', () => {
       embeddingDimensions: EMBED_DIM,
       rewriteQuery: false, // exercised separately in search.test.ts; no network rewrite call here
       hybrid: { rrfK: 60, lexicalEnabled: true, candidates: 50, rerank: { enabled: false, model: 'unused' } },
-      chunking: { maxChunkSizeTokens: 800, chunkOverlapTokens: 400 },
+      chunking: { strategy: 'static', maxChunkSizeTokens: 800, chunkOverlapTokens: 400, contextual: false },
       limits: { maxFileBytes: 33554432, maxTokensPerFile: 5000000, maxFilesPerStore: 10000 },
       ingestion: { concurrency: 4, extractTimeoutMs: 60000, maxRetries: 3 },
       blobStorage: { backend: 'db', localPath: '', s3: { bucket: '', prefix: '', endpoint: '', region: '' } },
@@ -288,7 +292,7 @@ d('file_search end-to-end (requires FILE_SEARCH_TEST_DSN)', () => {
   });
 
   // Final whole-branch review, Critical #1. Endpoint-level regression guard
-  // for repository.ts's queryText NUL-byte check: reproduced live, pre-fix,
+  // for recallInput.ts's queryText NUL-byte check: reproduced live, pre-fix,
   // as `POST /vector_stores/{id}/search {"query":"a<NUL>b"}` against this
   // exact default configuration (hybrid.lexicalEnabled: true) throwing a raw
   // `[22021] invalid byte sequence for encoding "UTF8": 0x00` out of
@@ -319,5 +323,94 @@ d('file_search end-to-end (requires FILE_SEARCH_TEST_DSN)', () => {
     expect(rawBody).not.toMatch(/invalid byte sequence/i);
     expect(rawBody).not.toMatch(/utf8/i);
     expect(rawBody).not.toMatch(/postgres/i);
+  });
+
+  // The OpenAI SDK calls of the W8 parity batch, in the request shapes openai-node sends
+  // (files.create / files.list({ purpose }) / vectorStores.fileBatches.create({ files }) /
+  // vectorStores.search({ query: [...], ranking_options }) / files.delete), end to end.
+  it('OpenAI parity: file status, purpose filter, files[] batch, a query array fused by RRF, ranker none, delete everywhere', async () => {
+    const owner = 'e2e-parity@example.com';
+    const upA = await uploadFile(owner, 'quokka.md', buildDocument());
+    const upB = await uploadFile(owner, 'lantern.md', Buffer.from(
+      `# Harbour log\n\n${SECOND_PHRASE}, the harbour master wrote.\n\n${DISTRACTOR_PARAGRAPHS[4]}\n`,
+      'utf8'));
+    // G1: a stored file is processed at once (waitForProcessing returns on the first poll).
+    expect(upA.body).toMatchObject({ object: 'file', status: 'processed', status_details: null });
+
+    // G9: files.list({ purpose }).
+    const listAssistants = makeRes();
+    await filesController.listFiles(baseReq(owner, { query: { purpose: 'assistants' } }), listAssistants, throwOnError);
+    expect(listAssistants.body.data.map((f: any) => f.id).sort()).toEqual([upA.body.id, upB.body.id].sort());
+    const listBatch = makeRes();
+    await filesController.listFiles(baseReq(owner, { query: { purpose: 'batch' } }), listBatch, throwOnError);
+    expect(listBatch.body.data).toEqual([]);
+
+    const createRes = makeRes();
+    await vectorStoresController.createVectorStore(baseReq(owner, { body: { name: 'parity store' } }), createRes, throwOnError);
+    const storeId = createRes.body.id;
+
+    // G2: fileBatches.create({ files: [...] }) with per-file attributes and chunking.
+    const small = { type: 'static', static: { max_chunk_size_tokens: 100, chunk_overlap_tokens: 20 } };
+    const batchRes = makeRes();
+    await vectorStoresController.createVectorStoreFileBatch(baseReq(owner, {
+      params: { id: storeId },
+      body: { files: [
+        { file_id: upA.body.id, attributes: { log: 'field' }, chunking_strategy: small },
+        { file_id: upB.body.id, attributes: { log: 'harbour' }, chunking_strategy: small },
+      ] },
+    }), batchRes, throwOnError);
+    expect(batchRes.statusCode).toBe(200);
+    await processOne(storeId, upA.body.id);
+    await processOne(storeId, upB.body.id);
+
+    const search = async (body: Record<string, unknown>): Promise<any> => {
+      const res = makeRes();
+      await vectorStoresController.searchVectorStore(baseReq(owner, { params: { id: storeId }, body }), res, throwOnError);
+      expect(res.statusCode).toBe(200);
+      return res.body;
+    };
+
+    // G3 + G6: two queries, each finding its own document, fused into one page (RRF scores: no
+    // reranker runs with ranker none); the fused order itself is pinned in search.test.ts.
+    const fused = await search({ query: [UNIQUE_PHRASE, SECOND_PHRASE], max_num_results: 20, ranking_options: { ranker: 'none' } });
+    expect(fused.search_query).toEqual([UNIQUE_PHRASE, SECOND_PHRASE]);
+    const texts = fused.data.map((h: any) => h.content[0].text as string);
+    expect(texts.some((t: string) => t.includes(UNIQUE_PHRASE))).toBe(true);
+    expect(texts.some((t: string) => t.includes(SECOND_PHRASE))).toBe(true);
+    expect(new Set(fused.data.map((h: any) => h.attributes.log))).toEqual(new Set(['field', 'harbour']));
+    // One of the two queries alone finds only its own document at the top.
+    const single = await search({ query: SECOND_PHRASE, max_num_results: 1 });
+    expect(single.search_query).toEqual([SECOND_PHRASE]);
+    expect(single.data[0].content[0].text).toContain(SECOND_PHRASE);
+    // G7: the guide's rrf_* spellings are accepted.
+    const weighted = await search({
+      query: [UNIQUE_PHRASE, SECOND_PHRASE], ranking_options: { hybrid_search: { rrf_embedding_weight: 1, rrf_text_weight: 0.5 } },
+    });
+    expect(weighted.data.length).toBeGreaterThan(0);
+
+    // G4: files.delete of an attached file removes it from the store and its chunks with it.
+    const del = makeRes();
+    await filesController.deleteFile(baseReq(owner, { params: { id: upA.body.id } }), del, throwOnError);
+    expect(del.body).toEqual({ id: upA.body.id, object: 'file', deleted: true });
+    const after = await search({ query: [UNIQUE_PHRASE, SECOND_PHRASE] });
+    expect(after.data.every((h: any) => h.file_id === upB.body.id)).toBe(true);
+    const batchAfter = makeRes();
+    await vectorStoresController.retrieveVectorStoreFileBatch(
+      baseReq(owner, { params: { id: storeId, batch_id: batchRes.body.id } }), batchAfter, throwOnError,
+    );
+    expect(batchAfter.body.file_counts).toEqual({ in_progress: 0, completed: 1, failed: 0, cancelled: 0, total: 1 });
+  });
+
+  it('a NUL byte in one element of a query array 400s like a single query', async () => {
+    const owner = 'e2e-nul-array@example.com';
+    const createRes = makeRes();
+    await vectorStoresController.createVectorStore(baseReq(owner, { body: { name: 'nul array' } }), createRes, throwOnError);
+    const searchRes = makeRes();
+    await vectorStoresController.searchVectorStore(
+      baseReq(owner, { params: { id: createRes.body.id }, body: { query: ['fine', `a${String.fromCharCode(0)}b`] } }),
+      searchRes, throwOnError,
+    );
+    expect(searchRes.statusCode).toBe(400);
+    expect(JSON.stringify(searchRes.body)).not.toMatch(/22021|invalid byte sequence/i);
   });
 });

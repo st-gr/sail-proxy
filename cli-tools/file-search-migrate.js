@@ -17,7 +17,7 @@
  * script has no such dependency: it speaks Postgres directly (via the
  * gateway's own compiled fileSearch/db.ts, reusing its exact credential and
  * lock logic), so the same command works for local dev, Docker Compose, and
- * as a Kyma pre-install/init Job — see docs/developer/chapter-14-release.md
+ * as a Kyma pre-install/init Job — see docs/developer/release.md
  * for how each deployment target wires it in.
  *
  * Credentials are read from the environment exactly as the gateway process
@@ -31,6 +31,9 @@
  *
  * Usage:
  *   node cli-tools/file-search-migrate.js
+ *   node cli-tools/file-search-migrate.js rebuild-index [--dry-run] [--parallel] ...
+ *     (builds the approximate-search index over existing chunks without
+ *     blocking writes; an operator command, see migrateCli.ts / rebuildIndex.ts)
  *   FILE_SEARCH_MIGRATION_DATABASE_URL=postgresql://... \
  *     FILE_SEARCH_DATABASE_URL=postgresql://... \
  *     node cli-tools/file-search-migrate.js
@@ -40,7 +43,8 @@
  * build) — this wrapper does not build on the fly, so failures here fail
  * fast and loud rather than silently doing a slow rebuild mid-deploy.
  *
- * Exit code: 0 on success, 1 on any migration failure (see printed log).
+ * Exit code: 0 on success, 1 on any migration failure (see printed log);
+ * rebuild-index also exits 2 on a usage error.
  */
 
 const path = require('path');
@@ -79,13 +83,18 @@ function main() {
 
   ensureLibsAlias();
 
+  // A terminal's Ctrl-C reaches the child too (same process group); rebuild-index
+  // then cancels its build and drops what it left. This process waits for that
+  // instead of exiting first and returning the prompt mid-cleanup.
+  process.on('SIGINT', () => {});
+
   // Run with cwd = services/gateway, matching how the gateway process
   // itself is always started (`pnpm --filter gateway ...` locally, this
   // package's own directory as WORKDIR-relative target in Docker) — several
   // of configService.ts's defaults (e.g. CONFIG_FILE_PATH's fallback to
   // `./api_config.json`) are resolved relative to cwd, and running from the
   // repo root instead would silently read/create the wrong file.
-  const result = spawnSync(process.execPath, [compiledEntry], {
+  const result = spawnSync(process.execPath, [compiledEntry, ...process.argv.slice(2)], {
     stdio: 'inherit',
     cwd: path.join(projectRoot, 'services/gateway'),
     env: process.env,

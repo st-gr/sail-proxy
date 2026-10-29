@@ -1,6 +1,8 @@
 import axios, { AxiosResponse } from 'axios';
 import configService from './configService';
 import { getDefaultLogger } from '@libs/logger';
+import { sapRequest, sapTiming } from '../utils/sapRequest';
+import { currentSapTarget, isLatestSapTarget, onSapTargetChange } from '../sap/sapTarget';
 
 const logger = getDefaultLogger();
 
@@ -40,6 +42,25 @@ let deploymentCache: DeploymentCache = {
 };
 
 /**
+ * GET /v2/lm/deployments, bounded per attempt and retried once on a stall, reset or 502/503/504
+ * (a side-effect-free read). Before, it had no timeout and waited until the socket died.
+ */
+function listDeployments(url: string, accessToken: string, resourceGroup?: string): Promise<AxiosResponse> {
+  return sapRequest(
+    { kind: 'deployment list', attemptTimeoutMs: sapTiming().listAttemptMs, retry: true },
+    ({ timeoutMs, signal }) => axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'AI-Resource-Group': resourceGroup || 'default',
+        'Accept': 'application/json'
+      },
+      timeout: timeoutMs,
+      signal
+    })
+  );
+}
+
+/**
  * Fetch orchestration deployments from SAP AI Core
  * @returns Array of running orchestration deployments
  */
@@ -52,13 +73,7 @@ async function fetchOrchestrationDeployments(): Promise<DeploymentResource[]> {
     
     logger.debug('DeploymentDiscoveryService', 'Fetching deployments from SAP AI Core for orchestration discovery');
     
-    const response: AxiosResponse = await axios.get(url, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'AI-Resource-Group': sapConfig.resourceGroup || 'default',
-        'Accept': 'application/json'
-      }
-    });
+    const response = await listDeployments(url, accessToken, sapConfig.resourceGroup);
 
     if (response.data && response.data.resources) {
       // Filter for running orchestration deployments
@@ -104,6 +119,7 @@ async function fetchOrchestrationDeployments(): Promise<DeploymentResource[]> {
  */
 export async function getOrchestrationDeployments(forceRefresh = false): Promise<DeploymentResource[]> {
   const now = Date.now();
+  const target = currentSapTarget();
 
   // Return cached data if valid and not forcing refresh
   if (!forceRefresh && deploymentCache.expiresAt > now) {
@@ -116,12 +132,14 @@ export async function getOrchestrationDeployments(forceRefresh = false): Promise
   try {
     const deployments = await fetchOrchestrationDeployments();
     
-    // Update cache
-    deploymentCache = {
-      deployments,
-      expiresAt: now + (CACHE_TTL_SECONDS * 1000),
-      lastError: undefined
-    };
+    // Update cache, unless a new SAP target was installed while the list was fetched
+    if (isLatestSapTarget(target)) {
+      deploymentCache = {
+        deployments,
+        expiresAt: now + (CACHE_TTL_SECONDS * 1000),
+        lastError: undefined
+      };
+    }
 
     return deployments;
 
@@ -214,6 +232,7 @@ let perplexityDeploymentCache: {
 export async function getPerplexityDeploymentId(forceRefresh = false): Promise<string | null> {
   const now = Date.now();
 
+  const target = currentSapTarget();
   if (!forceRefresh && perplexityDeploymentCache.expiresAt > now) {
     logger.debug('DeploymentDiscoveryService',
       `Using cached Perplexity deployment ID: ${perplexityDeploymentCache.deploymentId}`);
@@ -228,13 +247,7 @@ export async function getPerplexityDeploymentId(forceRefresh = false): Promise<s
 
     logger.debug('DeploymentDiscoveryService', 'Fetching deployments for Perplexity discovery');
 
-    const response: AxiosResponse = await axios.get(url, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'AI-Resource-Group': sapConfig.resourceGroup || 'default',
-        'Accept': 'application/json'
-      }
-    });
+    const response = await listDeployments(url, accessToken, sapConfig.resourceGroup);
 
     if (response.data?.resources) {
       const perplexityDep = response.data.resources.find((dep: DeploymentResource) =>
@@ -244,10 +257,12 @@ export async function getPerplexityDeploymentId(forceRefresh = false): Promise<s
       );
 
       const id = perplexityDep?.id || null;
-      perplexityDeploymentCache = {
-        deploymentId: id,
-        expiresAt: now + (CACHE_TTL_SECONDS * 1000)
-      };
+      if (isLatestSapTarget(target)) {
+        perplexityDeploymentCache = {
+          deploymentId: id,
+          expiresAt: now + (CACHE_TTL_SECONDS * 1000)
+        };
+      }
 
       if (id) {
         logger.info('DeploymentDiscoveryService',
@@ -266,10 +281,12 @@ export async function getPerplexityDeploymentId(forceRefresh = false): Promise<s
       `Error discovering Perplexity deployment: ${error.message}`);
 
     // Short cache for failures to allow retry
-    perplexityDeploymentCache = {
-      deploymentId: null,
-      expiresAt: now + (CACHE_TTL_SECONDS * 250) // ~25% of normal TTL
-    };
+    if (isLatestSapTarget(target)) {
+      perplexityDeploymentCache = {
+        deploymentId: null,
+        expiresAt: now + (CACHE_TTL_SECONDS * 250) // ~25% of normal TTL
+      };
+    }
 
     return null;
   }
@@ -294,6 +311,7 @@ let rerankerDeploymentCache: {
 export async function getRerankerDeploymentId(forceRefresh = false): Promise<string | null> {
   const now = Date.now();
 
+  const target = currentSapTarget();
   if (!forceRefresh && rerankerDeploymentCache.expiresAt > now) {
     logger.debug('DeploymentDiscoveryService',
       `Using cached reranker deployment ID: ${rerankerDeploymentCache.deploymentId}`);
@@ -309,13 +327,7 @@ export async function getRerankerDeploymentId(forceRefresh = false): Promise<str
 
     logger.debug('DeploymentDiscoveryService', 'Fetching deployments for reranker discovery');
 
-    const response: AxiosResponse = await axios.get(url, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'AI-Resource-Group': sapConfig.resourceGroup || 'default',
-        'Accept': 'application/json'
-      }
-    });
+    const response = await listDeployments(url, accessToken, sapConfig.resourceGroup);
 
     if (response.data?.resources) {
       const rerankerDep = response.data.resources.find((dep: DeploymentResource) =>
@@ -325,10 +337,12 @@ export async function getRerankerDeploymentId(forceRefresh = false): Promise<str
       );
 
       const id = rerankerDep?.id || null;
-      rerankerDeploymentCache = {
-        deploymentId: id,
-        expiresAt: now + (CACHE_TTL_SECONDS * 1000)
-      };
+      if (isLatestSapTarget(target)) {
+        rerankerDeploymentCache = {
+          deploymentId: id,
+          expiresAt: now + (CACHE_TTL_SECONDS * 1000)
+        };
+      }
 
       if (id) {
         logger.info('DeploymentDiscoveryService',
@@ -347,10 +361,12 @@ export async function getRerankerDeploymentId(forceRefresh = false): Promise<str
       `Error discovering reranker deployment: ${error.message}`);
 
     // Short cache for failures to allow retry
-    rerankerDeploymentCache = {
-      deploymentId: null,
-      expiresAt: now + (CACHE_TTL_SECONDS * 250) // ~25% of normal TTL
-    };
+    if (isLatestSapTarget(target)) {
+      rerankerDeploymentCache = {
+        deploymentId: null,
+        expiresAt: now + (CACHE_TTL_SECONDS * 250) // ~25% of normal TTL
+      };
+    }
 
     return null;
   }
@@ -374,6 +390,9 @@ export function clearCache(): void {
   };
   logger.debug('DeploymentDiscoveryService', 'Cache cleared');
 }
+
+// Deployment ids belong to one tenant and resource group: a new SAP target drops them.
+onSapTargetChange(() => clearCache());
 
 export default {
   getOrchestrationDeployments,

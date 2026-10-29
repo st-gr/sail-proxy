@@ -177,6 +177,12 @@ export const editImage = async (req: Request, res: Response): Promise<void> => {
       const message = parsed.tooLargeField
         ? `Uploads must be at most ${MAX_UPLOAD_BYTES} bytes each.`
         : `The upload is too large: at most ${MAX_IMAGES} images of ${MAX_UPLOAD_BYTES} bytes each.`;
+      // The cap trips mid-body, so `parseMultipartFields` only paused the request (see its own
+      // comment) rather than destroying it — destroying it there raced this response and the
+      // client saw ECONNRESET/EPIPE instead of this JSON. `Connection: close` plus destroying the
+      // request only once this response has actually been flushed ensures the client reads it.
+      res.set('Connection', 'close');
+      res.once('finish', () => req.destroy());
       sendError(res, { status: 400, error: { message, type: 'invalid_request_error', param: parsed.tooLargeField || 'image', code: 'file_too_large' } });
       return;
     }

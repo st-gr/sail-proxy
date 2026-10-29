@@ -174,3 +174,33 @@ describe('maintenanceRunAtUtc', () => {
     }
   });
 });
+
+describe('the team member-profile step', () => {
+  const platform = { ...UNLIMITED, spendPerWeek: 500, tokensPerDay: 100000 };
+  const team = { limits: { tokensPerDay: 2000, spendPerDay: 20, spendPerWeek: null }, teamByField: { tokensPerDay: 'Alpha', spendPerDay: 'Beta' } };
+
+  it('resolves user > profile > team > platform > unlimited per field and names the team', () => {
+    const { limits, limitSource } = effectiveLimits({ spendPerDay: 50 }, { tokensPerDay: null, spendPerMonth: 900 }, platform, team);
+    expect(limits).toMatchObject({ spendPerDay: 50, tokensPerDay: 2000, spendPerMonth: 900, spendPerWeek: 500, tokensPerWeek: null });
+    expect(limitSource).toMatchObject({ spendPerDay: 'user', tokensPerDay: 'team', spendPerMonth: 'profile', spendPerWeek: 'platform', tokensPerWeek: 'unlimited' });
+  });
+
+  it('a field every team profile leaves empty falls to the platform default, not to unlimited (review focus 1)', () => {
+    const { limits, limitSource } = effectiveLimits(null, null, platform, { limits: { spendPerWeek: null }, teamByField: {} });
+    expect(limits.spendPerWeek).toBe(500);
+    expect(limitSource.spendPerWeek).toBe('platform');
+  });
+
+  it('an absent or null team argument changes nothing', () => {
+    expect(effectiveLimits(null, null, platform)).toEqual(effectiveLimits(null, null, platform, null));
+  });
+
+  it('defaultText and effectiveLimitText name the team that supplies the figure', () => {
+    const source = { profileLimits: null, platformLimits: platform, quotaProfileName: null, sapCostCurrency: 'USD', teamLimits: team };
+    expect(defaultText('tokensPerDay', source)).toBe('2,000 (Alpha team)');
+    expect(defaultText('spendPerDay', source)).toBe('20.00 USD (Beta team)');
+    expect(defaultText('spendPerWeek', source)).toBe('500.00 USD (platform)');
+    const { limits, limitSource } = effectiveLimits(null, null, platform, team);
+    expect(effectiveLimitText('tokensPerDay', { limits, limitSource, quotaProfileName: null, sapCostCurrency: 'USD', teamByField: team.teamByField })).toBe('2,000 (Alpha team)');
+  });
+});

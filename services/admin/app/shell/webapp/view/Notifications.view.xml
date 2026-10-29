@@ -18,14 +18,14 @@
 		<webc:header>
 			<Bar class="notificationsPopoverBar">
 				<contentLeft>
-					<Title level="H5" text="Security Notifications" />
+					<Title level="H5" text="{i18n>nav.securityEvents}" />
 				</contentLeft>
 
 				<contentRight>
-					<webc:Button design="Transparent" text="Clear All"
-						tooltip="Mark all notifications as seen" click="onClearAllNotifications" 
+					<webc:Button design="Transparent" text="{i18n>notifications.clearAll}"
+						tooltip="{i18n>notifications.markAllSeen}" click="onClearAllNotifications"
 						visible="{= ${notifications>/notifications}.length > 0}" />
-					<webc:Button design="Transparent" icon="action-settings" tooltip="Go to security notifications" />
+					<webc:Button design="Transparent" icon="action-settings" tooltip="{i18n>notifications.goToSecurity}" />
 				</contentRight>
 			</Bar>
 		</webc:header>
@@ -37,8 +37,8 @@
 		<VBox id="emptyStateContainer" visible="{= ${notifications>/notifications}.length === 0 &amp;&amp; !${notifications>/loading} &amp;&amp; !${notifications>/error}}" class="sapUiContentPadding">
 			<VBox alignItems="Center" justifyContent="Center" height="200px">
 				<core:Icon src="sap-icon://bell" size="3rem" color="#0070f2" class="sapUiMediumMarginBottom" />
-				<Title text="No Security Notifications" textAlign="Center" />
-				<Text text="All security notifications have been seen" textAlign="Center" />
+				<Title text="{i18n>notifications.emptyTitle}" textAlign="Center" />
+				<Text text="{i18n>notifications.emptyText}" textAlign="Center" />
 			</VBox>
 		</VBox>
 	</webc:Popover>

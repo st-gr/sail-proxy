@@ -15,17 +15,26 @@ function makeReq(user: any, key?: any, extra: any = {}) {
 function makeRes() { const r: any = { statusCode: 0, body: undefined }; r.status = (c: number) => { r.statusCode = c; return r; }; r.json = (b: any) => { r.body = b; return r; }; return r; }
 
 describe('policyBlocksFromRequest', () => {
+  it('reads the team block and lets a team reject policy bind, administrators included (review focus 5)', () => {
+    const req = makeReq(policy('monitor'), undefined, { unifiedAuth: { authType: 'api_key', data: { keyId: 'k1', email: 'u@test.com', toolPolicy: policy('monitor'), teamToolPolicy: { ...policy('reject', ['function:*']), policyName: 'Team' },
+      user: { email: 'u@test.com', status: 'active', roles: ['admin'], limits: {} } } } });
+    expect(policyBlocksFromRequest(req).team).toMatchObject({ policyName: 'Team', mode: 'reject' });
+    const res = makeRes(); const next = jest.fn();
+    toolGovernance(openaiChatAdapter)(req, res, next);
+    expect(res.statusCode).toBe(403);
+    expect(req.toolGovernance.blocks.map((b: any) => b.policyName)).toEqual(['Team', 'Team']);
+  });
   it('reads both blocks from unifiedAuth and tolerates their absence', () => {
     expect(policyBlocksFromRequest(makeReq(policy('monitor'), policy('strip')))).toEqual({
-      user: { ...policy('monitor'), sensitive: [], untrusted: [] }, key: { ...policy('strip'), sensitive: [], untrusted: [] }
+      user: { ...policy('monitor'), sensitive: [], untrusted: [] }, key: { ...policy('strip'), sensitive: [], untrusted: [] }, team: null
     });
-    expect(policyBlocksFromRequest({ unifiedAuth: { data: {} } })).toEqual({ user: null, key: null });
+    expect(policyBlocksFromRequest({ unifiedAuth: { data: {} } })).toEqual({ user: null, key: null, team: null });
     expect(policyBlocksFromRequest({ unifiedAuth: { data: { toolPolicy: { mode: 'nonsense' } } } }).user).toBeNull();
   });
   it('governs administrators too: a policy assigned to them, or to their key, binds', () => {
     const req = makeReq(policy('reject', ['function:*']));
     req.unifiedAuth.data.user = { email: 'u@test.com', status: 'active', roles: ['admin'], limits: {} };
-    expect(policyBlocksFromRequest(req)).toEqual({ user: { ...policy('reject', ['function:*']), sensitive: [], untrusted: [] }, key: null });
+    expect(policyBlocksFromRequest(req)).toEqual({ user: { ...policy('reject', ['function:*']), sensitive: [], untrusted: [] }, key: null, team: null });
     const res = makeRes(); const next = jest.fn();
     toolGovernance(openaiChatAdapter)(req, res, next);
     expect(next).not.toHaveBeenCalled();

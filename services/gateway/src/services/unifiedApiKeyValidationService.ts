@@ -8,7 +8,7 @@
 import { Request } from 'express';
 import { adminServiceClient } from '../clients/adminServiceClient';
 import { unifiedValidationCache } from './unifiedValidationCache';
-import { getCachedUnifiedAuthConfig, isStandaloneMode } from '../config/unifiedAuthConfig';
+import { getCachedUnifiedAuthConfig, isStandaloneMode, STANDALONE_OWNER_EMAIL } from '../config/unifiedAuthConfig';
 import { UnifiedValidationResponse, UnifiedTokenRequest, ApiKeyValidationData } from '../clients/adminServiceClient';
 import apiKeyService from './apiKeyService';
 import { getDefaultLogger } from '@libs/logger';
@@ -40,6 +40,8 @@ export interface UnifiedApiKeyValidationResult {
     code: string;
     message: string;
     details?: any;
+    /** Row ID of a key the admin refused although it exists (disabled/expired). Never sent to the client. */
+    credentialId?: string;
   };
 }
 
@@ -87,10 +89,12 @@ export class UnifiedApiKeyValidationService {
       }
 
       // Try admin service validation
+      let refusedCredentialId: string | undefined;
       if (this.config.enabled) {
         try {
           const adminResult = await this.validateWithAdminService(request, requestId);
-          if (adminResult) {
+          refusedCredentialId = adminResult?.valid ? undefined : adminResult?.error?.credentialId;
+          if (adminResult?.valid) {
             // Cache the result
             await this.cacheValidationResult(request.apiKey, adminResult);
             return this.createSuccessResult(adminResult, requestId, startTime, 'admin_service');
@@ -116,7 +120,7 @@ export class UnifiedApiKeyValidationService {
       }
 
       // All validation methods failed
-      return this.createErrorResult(requestId, startTime, 'invalid_api_key', 'API key validation failed');
+      return this.createErrorResult(requestId, startTime, 'invalid_api_key', 'API key validation failed', undefined, refusedCredentialId);
 
     } catch (error) {
       logger.error('UnifiedApiKeyValidationService', 'API key validation error', error instanceof Error ? error : new Error(String(error)));
@@ -200,7 +204,8 @@ export class UnifiedApiKeyValidationService {
       // Validate the token
       const validationResult = await adminServiceClient.validateUnifiedAuthByToken({ token });
       
-      if (validationResult.valid && validationResult.authType === 'api_key') {
+      // An invalid answer is returned too: it may name a refused key (error.credentialId).
+      if (validationResult.authType === 'api_key') {
         return validationResult;
       }
 
@@ -232,7 +237,7 @@ export class UnifiedApiKeyValidationService {
         data: {
           keyId: validKey.id,
           name: validKey.name,
-          email: 'local@fallback.com', // Local service doesn't store email
+          email: STANDALONE_OWNER_EMAIL, // Local service doesn't store email
           permissions: ['gateway:access'], // Default permissions for local keys
           rateLimits: {
             requestsPerMinute: 100,
@@ -324,7 +329,8 @@ export class UnifiedApiKeyValidationService {
     startTime: number,
     code: string,
     message: string,
-    details?: any
+    details?: any,
+    credentialId?: string
   ): UnifiedApiKeyValidationResult {
     return {
       valid: false,
@@ -339,7 +345,8 @@ export class UnifiedApiKeyValidationService {
       error: {
         code,
         message,
-        details: details instanceof Error ? details.message : details
+        details: details instanceof Error ? details.message : details,
+        ...(credentialId ? { credentialId } : {})
       }
     };
   }

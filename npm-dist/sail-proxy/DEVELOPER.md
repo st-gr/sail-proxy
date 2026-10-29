@@ -293,7 +293,7 @@ Why the wrapper: `npm publish` re-reads `package.json` from disk *after* packing
 4. Package is packed and published with concrete versions
 5. The wrapper restores `workspace:*` (there is intentionally no `postpack` hook)
 
-For the full release sequence (version bump → npm publish → Docker build/push), see `docs/developer/chapter-14-release.md` — `pnpm release:patch|minor|major` runs all of it.
+For the full release sequence (version bump → npm publish → Docker build/push), see the [release guide](https://st-gr.github.io/sail-proxy/developer/release) — `pnpm release:patch|minor|major` runs all of it.
 
 ### Testing the Package Before Publishing
 

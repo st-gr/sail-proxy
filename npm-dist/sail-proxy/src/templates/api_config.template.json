@@ -28,7 +28,7 @@
         "substitute_models": [
           {
             "from": "claude-3-5-haiku-20241022",
-            "to": "anthropic--claude-3-haiku--deployed"
+            "to": "anthropic--claude-4.5-haiku--deployed"
           },
           {
             "from": "claude-3-5-sonnet-20240229",
@@ -92,7 +92,7 @@
         "substitute_models": [
           {
             "from": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
-            "to": "anthropic--claude-3-haiku--deployed"
+            "to": "anthropic--claude-4.5-haiku--deployed"
           },
           {
             "from": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -148,16 +148,7 @@
           "anthropic--claude-4-opus"
         ],
         "openai_deployment_api_version": "2024-10-01-preview",
-        "substitute_models": [
-          {
-            "from": "GPT-4",
-            "to": "o1"
-          },
-          {
-            "from": "GPT-3.5",
-            "to": "GPT-4"
-          }
-        ]
+        "substitute_models": []
       },
       "openrouter": {
         "default_pricing": {
@@ -205,59 +196,6 @@
     },
     "models": {
         "overrides": {
-          "anthropic--claude-3-haiku--deployed": {
-            "streamingSupported": true,
-            "subpaths_emulated": [],
-            "subpaths_native": [
-              "invoke",
-              "invoke-with-response-stream",
-              "converse",
-              "converse-stream"
-            ],
-            "supports_prompt_caching": false,
-            "anthropic_version": "bedrock-2023-05-31",
-            "hooks": {
-              "invoke": [
-                {
-                  "request": {
-                    "callback": {
-                      "id": "pseudonymizationPlugin"
-                    },
-                    "match": [
-                      "header:contentTypeJson"
-                    ]
-                  }
-                }
-              ],
-              "invoke-with-response-stream": [
-                {
-                  "request": {
-                    "callback": {
-                      "id": "pseudonymizationPlugin"
-                    },
-                    "match": [
-                      "header:contentTypeJson"
-                    ]
-                  }
-                },
-                {
-                  "request": {
-                    "callback": {
-                      "id": "mockWhimsicalGerundVerb",
-                      "strategy": "before"
-                    },
-                    "match": [
-                      "size:1k-3k",
-                      "header:x-app=cli",
-                      "payload:maxTokens512",
-                      "payload:temperature1",
-                      "system:whimsicalPrompt"
-                    ]
-                  }
-                }
-              ]
-            }
-          },
           "anthropic--claude-3.5-sonnet--deployed": {
             "streamingSupported": true,
             "anthropic_version": "bedrock-2023-05-31",
@@ -1568,12 +1506,27 @@
         "hybrid": {
           "rrf_k": 60,
           "lexical_enabled": true,
+          "lexical_query": "any",
           "candidates": 50,
-          "rerank": { "enabled": "auto", "model": "cohere-reranker" }
+          "rerank": { "enabled": "auto", "model": "cohere-reranker", "input": "context_and_text" }
         },
-        "chunking": { "max_chunk_size_tokens": 800, "chunk_overlap_tokens": 400 },
+        "ann": { "enabled": false, "exact_max_chunks": 20000, "min_fraction": 0.05 },
+        "chunking": { "strategy": "structure", "max_chunk_size_tokens": 800, "chunk_overlap_tokens": 0, "contextual": true },
+        "contextual": {
+          "model": "gemini-3.5-flash-lite",
+          "max_document_tokens": 32000,
+          "concurrency": 4,
+          "request_timeout_ms": 30000,
+          "file_deadline_ms": 360000,
+          "max_input_tokens_per_file": 20000000
+        },
+        "parent_sections": { "max_tokens": 1500, "scope": "tool" },
         "limits": { "max_file_bytes": 33554432, "max_tokens_per_file": 5000000, "max_files_per_store": 10000 },
         "ingestion": { "concurrency": 4, "extract_timeout_ms": 60000, "max_retries": 3 },
+        "parsing": {
+          "ocr": { "languages": ["eng"] },
+          "vision": { "model": "gemini-3.5-flash-lite", "default_mode": "off", "max_pages_per_file": 50 }
+        },
         "blob_storage": {
           "backend": "db",
           "local_path": "/var/lib/sail-proxy/blobs",
@@ -1620,23 +1573,6 @@
           "name": "x-app",
           "type": "header"
         },
-        "payload:maxTokens512": {
-          "equals": 512,
-          "path": "$.max_tokens",
-          "type": "json-path"
-        },
-        "payload:temperature1": {
-          "equals": 1,
-          "path": "$.temperature",
-          "type": "json-path"
-        },
-        "size:1k-3k": {
-          "desc": "Reject anything <1 KiB or >3 KiB",
-          "from": 1024,
-          "name": "content-length",
-          "to": 3072,
-          "type": "header"
-        },
         "size:min10kb": {
           "desc": "Cache requests with content-length >= 10 KB",
           "from": 10240,
@@ -1650,12 +1586,6 @@
           "name": "content-length",
           "to": 999999999,
           "type": "header"
-        },
-        "system:whimsicalPrompt": {
-          "flags": "i",
-          "path": "$.system.0.text",
-          "regex": "^Analyze\\s+this\\s+message\\s+and\\s+come\\s+up\\s+with\\s+a\\s+single\\s+positive,\\s+cheerful",
-          "type": "json-path-regex"
         },
         "tools:hasFileSearch": {
           "desc": "Match requests containing a file_search tool",
@@ -1851,6 +1781,30 @@
                 ]
               }
             }
+          ],
+          "converse": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            }
+          ],
+          "converse-stream": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            }
           ]
         }
       }
@@ -1865,19 +1819,7 @@
         "streaming": 600000
       },
       "logging": {
-        "components": {
-          "AnthropicService": "INFO",
-          "awsBedrockResponseCache": "INFO",
-          "AwsBedrockService": "INFO",
-          "ConfigService": "INFO",
-          "ModelService": "INFO",
-          "openaiController": "INFO",
-          "OpenRouterController": "INFO",
-          "OpenRouterService": "INFO",
-          "RateLimitManager": "INFO",
-          "SAPAIService": "INFO",
-          "UsageTrackingService": "INFO"
-        },
+        "components": {},
         "defaultLevel": "INFO",
         "log_folder_path": "./logs",
         "payload_logging_enabled": false
@@ -1889,7 +1831,6 @@
         "max_delay_seconds": 300,
         "model_specific_delays": {
           "anthropic--claude-3.5-sonnet--deployed": 30,
-          "anthropic--claude-3-haiku--deployed": 20,
           "anthropic--claude-4-opus--deployed": 90,
           "anthropic--claude-4-sonnet--deployed": 17,
           "anthropic--claude-4.5-haiku--deployed": 17,

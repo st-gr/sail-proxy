@@ -1,7 +1,10 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   runExtractor,
   resolveBinary,
+  sweepStaleExtractDirs,
   ExtractionTimeoutError,
   ExtractionOutputTooLargeError,
 } from '../../src/fileSearch/extractors/runners';
@@ -73,7 +76,10 @@ describe('runExtractor', () => {
   });
 
   it('kills a SIGTERM-ignoring process on timeout, escalating to SIGKILL, and the promise rejects', async () => {
-    const runPromise = runExtractor(NODE_BIN, [HANGING], Buffer.from('x'), { timeoutMs: 150 });
+    // The marker argument (the fixture ignores it) keeps the "gone" check below from seeing
+    // hangingProcess.js started by another suite running in parallel (runners-extensions.test.ts).
+    const mark = `runners-test-${process.pid}-${Date.now()}`;
+    const runPromise = runExtractor(NODE_BIN, [HANGING, mark], Buffer.from('x'), { timeoutMs: 150 });
     await expect(runPromise).rejects.toThrow(ExtractionTimeoutError);
     await expect(runPromise).rejects.toThrow(/timed out/i);
 
@@ -84,7 +90,7 @@ describe('runExtractor', () => {
     // not from 'close' — see the grandchild-escape test below for why), so
     // the SIGKILL escalation may still be in flight when the promise
     // settles; poll rather than checking immediately.
-    const reaped = await waitUntil(() => findProcessesByCommand(HANGING) === '', 5000);
+    const reaped = await waitUntil(() => findProcessesByCommand(mark) === '', 5000);
     expect(reaped).toBe(true);
   }, 15000);
 
@@ -180,5 +186,56 @@ describe('resolveBinary', () => {
 
   it('throws for an unknown binary name', () => {
     expect(() => resolveBinary('definitely-not-a-real-binary-xyz')).toThrow(/not found on PATH/);
+  });
+});
+
+describe('sweepStaleExtractDirs', () => {
+  let base: string;
+  beforeEach(() => { base = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-base-')); });
+  afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
+
+  const aged = (name: string, ageMs: number): string => {
+    const d = path.join(base, name);
+    fs.mkdirSync(d, { mode: 0o700 });
+    fs.writeFileSync(path.join(d, 'input'), 'x');
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(d, t, t);
+    return d;
+  };
+
+  it('removes fs-extract-* directories older than the limit and counts them', async () => {
+    const old1 = aged('fs-extract-aaaaaa', 120_000);
+    const old2 = aged('fs-extract-bbbbbb', 90_000);
+    await expect(sweepStaleExtractDirs(60_000, base)).resolves.toBe(2);
+    expect(fs.existsSync(old1)).toBe(false);
+    expect(fs.existsSync(old2)).toBe(false);
+  });
+
+  it('leaves a younger directory (a live run, maybe another gateway\'s) and unrelated entries', async () => {
+    const young = aged('fs-extract-cccccc', 5_000);
+    const other = aged('other-dddddd', 600_000);
+    const file = path.join(base, 'fs-extract-file');
+    fs.writeFileSync(file, 'x');
+    const t = new Date(Date.now() - 600_000);
+    fs.utimesSync(file, t, t);
+    await expect(sweepStaleExtractDirs(60_000, base)).resolves.toBe(0);
+    expect(fs.existsSync(young)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('never follows a symlink: the link and its target survive', async () => {
+    const target = path.join(base, 'target');
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'keep'), 'x');
+    const link = path.join(base, 'fs-extract-linked');
+    fs.symlinkSync(target, link);
+    await expect(sweepStaleExtractDirs(0, base)).resolves.toBe(0);
+    expect(fs.existsSync(path.join(target, 'keep'))).toBe(true);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+
+  it('returns 0 for a missing base directory', async () => {
+    await expect(sweepStaleExtractDirs(60_000, path.join(base, 'nope'))).resolves.toBe(0);
   });
 });

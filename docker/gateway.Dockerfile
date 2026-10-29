@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Gateway Service
-FROM node:20-alpine AS base
+FROM node:24-alpine AS base
 # No browser ever runs inside an image: keep puppeteer (a root devDependency
 # used only by the CI UI journeys) from downloading Chrome for Testing into
 # this build stage's layers.
@@ -20,7 +20,7 @@ COPY libs/ ./libs/
 RUN echo "node-linker=hoisted" >> .npmrc && pnpm install --no-frozen-lockfile
 
 # Build stage
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 # No browser ever runs inside an image: keep puppeteer (a root devDependency
 # used only by the CI UI journeys) from downloading Chrome for Testing into
 # this build stage's layers.
@@ -47,7 +47,7 @@ RUN echo "node-linker=hoisted" >> .npmrc && pnpm install --no-frozen-lockfile
 RUN pnpm build:gateway
 
 # Production stage
-FROM node:20-alpine AS production
+FROM node:24-alpine AS production
 
 # OCI provenance labels — connect the published image to its source repo on ghcr
 LABEL org.opencontainers.image.source="https://github.com/st-gr/sail-proxy" \
@@ -61,9 +61,18 @@ WORKDIR /app
 
 # Install file_search extractor binaries: pandoc (.docx/.odt/.epub/.rst/.html/.tex)
 # and pdftotext from poppler-utils (.pdf). Without these, those upload types fail.
+# tesseract-ocr with English language data: OCR for PDF pages without a text layer
+# (scans). Without it such pages stay empty. More languages: see the developer guide
+# (chapter 16, "OCR languages").
+# antiword: legacy Word .doc (Word 97-2003), ~0.5 MiB; without it .doc uploads fail as not
+# supported on this deployment. FILE_SEARCH_DOC=off switches it off.
 # netcat-openbsd: the gateway-migrate compose service's own "wait for
 # postgres" loop (same pattern admin.Dockerfile already uses for cds-deploy).
-RUN apk add --no-cache pandoc poppler-utils netcat-openbsd
+# libssl3/libcrypto3: node:24-alpine can lag Alpine's OpenSSL security releases (on node:20-alpine,
+# 0.10.0 shipped 3.5.6 with CVE-2026-14456 and CVE-2026-45447, both HIGH, fixed in 3.5.8). Upgrading them here
+# takes the fix whenever the base image has not caught up yet.
+RUN apk upgrade --no-cache libssl3 libcrypto3 && \
+    apk add --no-cache pandoc poppler-utils tesseract-ocr tesseract-ocr-data-eng antiword netcat-openbsd
 
 # Install production dependencies only (excludes devDependencies like typescript, types)
 # docker/package.json AS the workspace-root package.json — the SAME file

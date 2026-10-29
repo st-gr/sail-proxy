@@ -14,7 +14,7 @@ export default class Component extends UIComponent {
 		interfaces: ["sap.ui.core.IAsyncContentCreation"]
 	};
 
-	private contentDensityClass: string;
+	private contentDensityClass?: string;
 
 	public init(): void {
 		// call the base component's init function
@@ -52,7 +52,8 @@ export default class Component extends UIComponent {
 				}
 			};
 
-			window.sap.ushell = {
+			// Typed as the stand-in it is, not as the full sap.ushell namespace of the UI5 types
+			(window.sap as { ushell?: UShellStandIn }).ushell = {
 				Container: {
 					getServiceAsync: async (serviceName: string) => {
 						console.log("[UShell Mock] getServiceAsync:", serviceName);

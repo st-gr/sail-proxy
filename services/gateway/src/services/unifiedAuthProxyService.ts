@@ -9,6 +9,7 @@ import { Request, Response, NextFunction } from 'express';
 import { UnifiedAuthRequest } from '../middlewares/unifiedTokenAuth';
 import { getCachedUnifiedAuthConfig } from '../config/unifiedAuthConfig';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 import { getClientIp } from '../utils/clientIp';
 import { getTrustForwardedFor } from './configService';
 const logger = getDefaultLogger();
@@ -54,7 +55,7 @@ export class UnifiedAuthProxyService {
         logger.trace('UnifiedAuthProxyService', 'Processing service authentication', {
           service: options.serviceName,
           method: req.method,
-          url: req.originalUrl,
+          url: redactUrl(req.originalUrl),
           unifiedAuthEnabled: options.enableUnifiedAuth
         });
 

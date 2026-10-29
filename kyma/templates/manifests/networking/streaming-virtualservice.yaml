@@ -5,7 +5,7 @@ apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
   name: sail-proxy-streaming
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: sail-proxy
     purpose: streaming-optimization
@@ -37,7 +37,7 @@ spec:
         - Access-Control-Max-Age
     route:
     - destination:
-        host: nginx.sail-proxy.svc.cluster.local
+        host: nginx.__NAMESPACE__.svc.cluster.local
         port:
           number: 8080
       weight: 100
@@ -62,7 +62,7 @@ spec:
         - Access-Control-Max-Age
     route:
     - destination:
-        host: nginx.sail-proxy.svc.cluster.local
+        host: nginx.__NAMESPACE__.svc.cluster.local
         port:
           number: 8080
       weight: 100
@@ -87,7 +87,7 @@ spec:
         - Access-Control-Max-Age
     route:
     - destination:
-        host: nginx.sail-proxy.svc.cluster.local
+        host: nginx.__NAMESPACE__.svc.cluster.local
         port:
           number: 8080
       weight: 100
@@ -102,7 +102,7 @@ spec:
           x-forwarded-host: <%= domain %>
     route:
     - destination:
-        host: nginx.sail-proxy.svc.cluster.local
+        host: nginx.__NAMESPACE__.svc.cluster.local
         port:
           number: 8080
       weight: 100

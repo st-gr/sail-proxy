@@ -11,7 +11,7 @@ module.exports = {
     isAdmin: true,
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
-        'Model Library', 'Entitlements & Quotas', 'Configuration Management', 'SAP Capacity Unit Prices', 'Users & Quotas'],
+        'Model Library', 'Entitlements & Quotas', 'Vector Stores', 'Files', 'Jobs', 'Administration', 'Configuration Management', 'SAP Capacity Unit Prices', 'Teams', 'Users & Quotas', 'Connections'],
       hiddenNav: [],
       userRoleLabel: 'Admin user'
     },
@@ -29,6 +29,8 @@ module.exports = {
       seesAllModels: true, canEditPrice: true, canDeploy: true, canManageDefault: true, canAssign: true
     },
     users: { canManage: true },
+    teams: { canManage: true, inPopover: true },
+    connections: { canManage: true },
     securityNotifications: { seesClientIp: true },
     quota: { cardVisible: true }
   },
@@ -37,8 +39,8 @@ module.exports = {
     isAdmin: false,
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
-        'Model Library', 'Entitlements & Quotas', 'Configuration Management'],
-      hiddenNav: ['SAP Capacity Unit Prices', 'Users & Quotas'],
+        'Model Library', 'Entitlements & Quotas', 'Vector Stores', 'Files', 'Jobs', 'Configuration Management', 'Teams'],
+      hiddenNav: ['Administration', 'SAP Capacity Unit Prices', 'Users & Quotas', 'Connections'],
       userRoleLabel: 'User'
     },
     apiKeys: {
@@ -55,6 +57,8 @@ module.exports = {
       seesAllModels: false, canEditPrice: false, canDeploy: false, canManageDefault: false, canAssign: false
     },
     users: { canManage: false },
+    teams: { canManage: false, inPopover: true },
+    connections: { canManage: false },
     securityNotifications: { seesClientIp: true },
     quota: { cardVisible: true }
   }

@@ -11,9 +11,10 @@
  */
 
 import { getDefaultLogger } from '../../../../libs/logger';
-import { getCacheBillingFactors, isProductive, cuFactor as getConfiguredCuFactor } from './sapCapacityService';
+import { cacheBillingFactorsByProvider, explicitBillingCurrency, isProductive, cuFactor as getConfiguredCuFactor } from './sapCapacityService';
 import { rebuild } from './usageCounters';
 import { republishAll } from './userQuotaService';
+import { republishAllTeams } from './teamQuotaService';
 import { maintenanceRunAtUtc } from './quotaLimits';
 import { applyRetention } from './toolUsageService';
 const logger = getDefaultLogger();
@@ -28,6 +29,26 @@ export function nextOccurrenceUtc(now: Date, hhmm: string, minLeadMs = 60_000): 
   return candidate;
 }
 
+/**
+ * Connection-model rows (origin 'external', spec 2026-10-23 §6.1) are never re-priced here: their
+ * model's ModelCosts row is a list price, not an SAP GenAI rate. Part of every join condition.
+ */
+const NOT_EXTERNAL = "(u.origin IS NULL OR u.origin <> 'external')";
+
+const USAGE_TABLES = ['sap_llm_gateway_admin_ApiKeyUsage', 'sap_llm_gateway_admin_AwsCredentialUsage'];
+
+/** A SAP tenant's own billing settings (spec 2026-10-25 §6); null = the installation default / any region. */
+export interface TenantTerms {
+  zone: string;
+  productive: boolean | null;
+  priceRegion: string | null;
+}
+
+const quote = (v: string): string => `'${v.replace(/'/g, "''")}'`;
+/** SQL condition limiting price rows to the explicit billing currency; empty when none is set. */
+const currencySql = (): string => { const c = explicitBillingCurrency(); return c ? ` AND p.currency = ${quote(c)}` : ''; };
+const usageTypeOf = (productive: boolean): string => (productive ? 'productive' : 'non-productive');
+
 export class CostRecalculationService {
   private timer?: NodeJS.Timeout;
   private alignTimer?: NodeJS.Timeout;
@@ -37,6 +58,10 @@ export class CostRecalculationService {
   private readonly intervalMs = 24 * 60 * 60 * 1000; // 24 hours
   private readonly startupDelayMs = 5 * 60 * 1000;   // 5 minutes
   private readonly lookbackDays = 30;
+  /** A tenant reprice covers the usage buckets' whole window (62 days), not only the nightly lookback. */
+  private readonly repriceLookbackDays = 62;
+  /** The nightly run and the tenant reprices run one after another, in the order asked. */
+  private tail: Promise<void> = Promise.resolve();
 
   /**
    * Initialize the service — schedules first run after startup delay, then daily
@@ -117,72 +142,153 @@ export class CostRecalculationService {
     }
 
     this.isProcessing = true;
+    // One run at a time with the tenant reprices (repriceTenant): a run due during one waits for it.
+    return this.exclusive(async () => {
+      try {
+        const db = await cds.connect.to('db');
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - this.lookbackDays);
+        const cutoffISO = cutoffDate.toISOString();
 
+        const isPostgreSQL = db.options?.credentials?.kind === 'postgres' ||
+          process.env.CDS_ENV === 'pg' ||
+          process.env.NODE_CONFIG_ENV === 'pg';
+
+        // Read the SAP-native cache factors and usage type once per run, not per row — the SQL
+        // below binds them as literal values into the generated statement. The factors are per
+        // provider: each row gets the factor of its own provider, exactly as live capture does.
+        const factors = cacheBillingFactorsByProvider();
+        const productiveType = isProductive() ? 'productive' : 'non-productive';
+        // Each row is priced with its tenant's terms; tenants without settings keep the default above.
+        const tenants = await this.tenantTerms(db);
+
+        // Recalculate ApiKeyUsage
+        const apiKeyResult = await db.run(
+          this.buildUpdateSQL('sap_llm_gateway_admin_ApiKeyUsage', `u.model = mc.model AND ${NOT_EXTERNAL}`, isPostgreSQL, factors, productiveType, tenants),
+          [cutoffISO]
+        );
+
+        // Recalculate AwsCredentialUsage (uses modelId column)
+        const awsResult = await db.run(
+          this.buildUpdateSQL('sap_llm_gateway_admin_AwsCredentialUsage', `u.modelId = mc.model AND ${NOT_EXTERNAL}`, isPostgreSQL, factors, productiveType, tenants),
+          [cutoffISO]
+        );
+
+        const apiKeyRecords = apiKeyResult?.rowCount ?? apiKeyResult?.changes ?? 0;
+        const awsRecords = awsResult?.rowCount ?? awsResult?.changes ?? 0;
+
+        logger.info('CostRecalculation', 'Daily recalculation complete', {
+          apiKeyRecords,
+          awsRecords,
+          lookbackDays: this.lookbackDays
+        });
+
+        // Rewritten costs must reach the buckets and the documents the same night (spec §3.5), and
+        // both run EVERY night, not only when the recalculation rewrote rows: the rebuild carries
+        // the 62-day retention, and the republish refreshes the quota documents, whose TTL is 24 h.
+        // Gating them on the counts meant that on a quiet system the retention never ran and an
+        // idle user's document simply expired.
+        await this.refreshBucketsAndQuotas(db, { apiKeyRecords, awsRecords });
+
+        return { apiKeyRecords, awsRecords };
+      } catch (error: any) {
+        logger.error('CostRecalculation', `Error during recalculation: ${error.message}`, error);
+        return { apiKeyRecords: 0, awsRecords: 0 };
+      } finally {
+        this.isProcessing = false;
+      }
+    });
+  }
+
+  /**
+   * The buckets and quota documents after rewritten costs. Its own try/catch: a rebuild/republish
+   * failure must not be reported as a recalculation failure or collapse the (already-committed)
+   * UPDATE counts to zero.
+   */
+  private async refreshBucketsAndQuotas(db: any, counts: { apiKeyRecords: number; awsRecords: number }): Promise<void> {
+    try {
+      await rebuild(db);
+      // The tool-usage retention purge gets its own boundary: it is the one step whose failure
+      // must not cost the republish below (the quota documents expire after 24 h, while stale
+      // tool rows only wait for the next night's run).
+      try {
+        await applyRetention(db);
+      } catch (error: any) {
+        logger.warn('CostRecalculation', `The tool usage retention purge failed: ${error?.message ?? error} — the rows stay until the next run`, counts);
+      }
+      await republishAll();
+      await republishAllTeams();
+    } catch (error: any) {
+      logger.warn('CostRecalculation', `The usage buckets were not rebuilt: ${error?.message ?? error} — run rebuildUsageCounters to repair`, counts);
+    }
+  }
+
+  /** The SAP tenants with a billing setting of their own; the others are priced with the defaults. */
+  private async tenantTerms(db: any): Promise<TenantTerms[]> {
+    const rows: any[] = await db.run(cds.ql.SELECT.from('sap.llm.gateway.admin.SapTenants').columns('zone', 'productive', 'priceRegion'));
+    return (rows ?? [])
+      .map((r) => ({ zone: r.zone, productive: r.productive == null ? null : !!r.productive, priceRegion: r.priceRegion || null }))
+      .filter((t) => t.productive !== null || t.priceRegion !== null);
+  }
+
+  /**
+   * Reprice one tenant's SAP rows after its productive flag or price region changed (spec
+   * 2026-10-25 §6): sapCost = capacityUnits × the tenant's CU price, over the last 62 days. Queued
+   * behind a nightly run in progress (and the other way round). capacityUnits does not depend on either setting, so only the price is rewritten; a
+   * row without capacity units or without a matching price keeps its sapCost. Never throws.
+   */
+  repriceTenant(zone: string): Promise<void> {
+    return this.exclusive(() => this.repriceNow(zone));
+  }
+
+  /** Runs `task` after every task queued before it; a failure of one never blocks the next. */
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(task);
+    this.tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async repriceNow(zone: string): Promise<void> {
     try {
       const db = await cds.connect.to('db');
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - this.lookbackDays);
-      const cutoffISO = cutoffDate.toISOString();
-
       const isPostgreSQL = db.options?.credentials?.kind === 'postgres' ||
         process.env.CDS_ENV === 'pg' ||
         process.env.NODE_CONFIG_ENV === 'pg';
-
-      // Read the SAP-native cache factors and usage type once per run, not per row — the SQL
-      // below binds them as literal values into the generated statement.
-      const { read: fRead, write: fWrite } = getCacheBillingFactors('anthropic');
-      const productiveType = isProductive() ? 'productive' : 'non-productive';
-
-      // Recalculate ApiKeyUsage
-      const apiKeyResult = await db.run(
-        this.buildUpdateSQL('sap_llm_gateway_admin_ApiKeyUsage', 'u.model = mc.model', isPostgreSQL, fRead, fWrite, productiveType),
-        [cutoffISO]
-      );
-
-      // Recalculate AwsCredentialUsage (uses modelId column)
-      const awsResult = await db.run(
-        this.buildUpdateSQL('sap_llm_gateway_admin_AwsCredentialUsage', 'u.modelId = mc.model', isPostgreSQL, fRead, fWrite, productiveType),
-        [cutoffISO]
-      );
-
-      const apiKeyRecords = apiKeyResult?.rowCount ?? apiKeyResult?.changes ?? 0;
-      const awsRecords = awsResult?.rowCount ?? awsResult?.changes ?? 0;
-
-      logger.info('CostRecalculation', 'Daily recalculation complete', {
-        apiKeyRecords,
-        awsRecords,
-        lookbackDays: this.lookbackDays
-      });
-
-      // Rewritten costs must reach the buckets and the documents the same night (spec §3.5), and
-      // both run EVERY night, not only when the recalculation rewrote rows: the rebuild carries
-      // the 62-day retention, and the republish refreshes the quota documents, whose TTL is 24 h.
-      // Gating them on the counts meant that on a quiet system the retention never ran and an
-      // idle user's document simply expired. Its own try/catch: a rebuild/republish failure must
-      // not be reported as a recalculation failure or collapse the (already-committed) UPDATE
-      // counts below to zero.
-      try {
-        await rebuild(db);
-        // The tool-usage retention purge gets its own boundary: it is the one step whose failure
-        // must not cost the republish below (the quota documents expire after 24 h, while stale
-        // tool rows only wait for the next night's run).
-        try {
-          await applyRetention(db);
-        } catch (error: any) {
-          logger.warn('CostRecalculation', `The tool usage retention purge failed: ${error?.message ?? error} — the rows stay until the next run`, { apiKeyRecords, awsRecords });
-        }
-        await republishAll();
-      } catch (error: any) {
-        logger.warn('CostRecalculation', `The usage buckets were not rebuilt: ${error?.message ?? error} — run rebuildUsageCounters to repair`, { apiKeyRecords, awsRecords });
+      const tenant = await db.run(cds.ql.SELECT.one.from('sap.llm.gateway.admin.SapTenants').columns('productive', 'priceRegion').where({ zone }));
+      const usageType = usageTypeOf(tenant?.productive == null ? isProductive() : !!tenant.productive);
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - this.repriceLookbackDays);
+      const changed: number[] = [];
+      for (const table of USAGE_TABLES) {
+        const result = await db.run(this.buildTenantRepriceSQL(table, isPostgreSQL, usageType, tenant?.priceRegion || null), [zone, cutoff.toISOString()]);
+        changed.push(result?.rowCount ?? result?.changes ?? 0);
       }
-
-      return { apiKeyRecords, awsRecords };
+      const counts = { apiKeyRecords: changed[0], awsRecords: changed[1] };
+      logger.info('CostRecalculation', `SAP tenant ${zone} repriced`, counts);
+      await this.refreshBucketsAndQuotas(db, counts);
     } catch (error: any) {
-      logger.error('CostRecalculation', `Error during recalculation: ${error.message}`, error);
-      return { apiKeyRecords: 0, awsRecords: 0 };
-    } finally {
-      this.isProcessing = false;
+      logger.error('CostRecalculation', `SAP tenant ${zone} not repriced: ${error?.message ?? error}`, error);
     }
+  }
+
+  /** The UPDATE behind repriceTenant; binds the zone and the lookback cutoff. */
+  private buildTenantRepriceSQL(table: string, isPostgreSQL: boolean, usageType: string, priceRegion: string | null): string {
+    const [zone, cutoff] = isPostgreSQL ? ['$1', '$2'] : ['?', '?'];
+    const order = `${priceRegion ? `CASE WHEN p.region = ${quote(priceRegion)} THEN 0 ELSE 1 END, ` : ''}p.dateFrom DESC`;
+    const price = (col: string) => `(SELECT p.${col} FROM sap_llm_gateway_admin_SapCapacityUnitPrice p
+        WHERE p.usageType = ${quote(usageType)} AND p.dateFrom <= ${table}.validFrom AND p.dateTo >= ${table}.validFrom${currencySql()}
+        ORDER BY ${order} LIMIT 1)`;
+    return `
+      UPDATE ${table}
+      SET
+        sapCost = ROUND(${table}.capacityUnits * ${price('pricePerCu')}, 6),
+        sapCostCurrency = COALESCE(${price('currency')}, ${table}.sapCostCurrency)
+      WHERE ${table}.sapTenant = ${zone}
+        AND ${table}.validFrom >= ${cutoff}
+        AND (${table}.origin IS NULL OR ${table}.origin <> 'external')
+        AND ${table}.capacityUnits IS NOT NULL
+        AND ${price('pricePerCu')} IS NOT NULL
+    `;
   }
 
   /**
@@ -216,12 +322,15 @@ export class CostRecalculationService {
     table: string,
     joinCondition: string,
     isPostgreSQL: boolean,
-    fRead = 1,
-    fWrite = 1,
-    productiveType = 'non-productive'
+    factors: Map<string, { read: number; write: number }> = new Map(),
+    productiveType = 'non-productive',
+    tenants: TenantTerms[] = []
   ): string {
     if (isPostgreSQL) {
-      const sapPriceWhere = `p.usageType = '${productiveType}' AND p.dateFrom <= u.validFrom AND p.dateTo >= u.validFrom`;
+      const sapPriceWhere = `p.usageType = ${this.usageTypeSql('u.sapTenant', tenants, productiveType)} AND p.dateFrom <= u.validFrom AND p.dateTo >= u.validFrom${currencySql()}`;
+      const regionOf = this.priceRegionSql('u.sapTenant', tenants);
+      const fRead = this.cacheFactorSql('u.provider', factors, 'read');
+      const fWrite = this.cacheFactorSql('u.provider', factors, 'write');
 
       // GenAI conversion rates come from the already-joined ModelCosts row (mc) - the model
       // discovery data the gateway syncs from /v2 (SAP Note 3437766: "GenAI tokens per 1,000
@@ -248,8 +357,9 @@ export class CostRecalculationService {
       const textInTokens = `GREATEST(u.inputTokens::numeric - ${audioInTokens}, 0)`;
       const textOutTokens = `GREATEST(u.outputTokens::numeric - ${imageOutTokens} - ${audioOutTokens}, 0)`;
       const cuFactor = `${getConfiguredCuFactor()}::numeric`;
-      const pricePerCu = `(SELECT p.pricePerCu::numeric FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
-      const currency = `(SELECT p.currency FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} ORDER BY p.dateFrom DESC LIMIT 1)`;
+      const priceOf = (col: string, where: string) => `(SELECT p.${col} FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${where} ORDER BY p.dateFrom DESC LIMIT 1)`;
+      const pricePerCu = this.preferRegion((w) => priceOf('pricePerCu::numeric', w), (w) => priceOf('pricePerCu', w), sapPriceWhere, regionOf);
+      const currency = this.preferRegion((w) => priceOf('currency', w), (w) => priceOf('pricePerCu', w), sapPriceWhere, regionOf);
 
       const genAiTokensExpr = `(
               ${textInTokens} * ${inputRate} + ${audioInTokens} * ${audioInputRate}
@@ -349,14 +459,18 @@ export class CostRecalculationService {
 
     // SQLite variant — no UPDATE...FROM support, so every joined value is its own correlated
     // scalar subquery (mirroring the existing per-column ModelCosts pattern above).
-    const sapPriceWhere = `p.usageType = '${productiveType}' AND p.dateFrom <= ${table}.validFrom AND p.dateTo >= ${table}.validFrom`;
+    const sapPriceWhere = `p.usageType = ${this.usageTypeSql(`${table}.sapTenant`, tenants, productiveType)} AND p.dateFrom <= ${table}.validFrom AND p.dateTo >= ${table}.validFrom${currencySql()}`;
+    const regionOf = this.priceRegionSql(`${table}.sapTenant`, tenants);
+    const fRead = this.cacheFactorSql(`${table}.provider`, factors, 'read');
+    const fWrite = this.cacheFactorSql(`${table}.provider`, factors, 'write');
     const mcWhere = `${joinCondition.replace(/u\./g, `${table}.`)} AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom`;
     // GenAI rates from the ModelCosts /v2 discovery data (per 1,000 model tokens), divided
     // by 1000 for the per-model-token rate; the CU factor is the maintained constant.
     const mcRate = (col: string) =>
       `(SELECT mc.${col} / 1000.0 FROM sap_llm_gateway_admin_ModelCosts mc WHERE ${mcWhere} LIMIT 1)`;
-    const priceField = (col: string) =>
-      `(SELECT p.${col} FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${sapPriceWhere} LIMIT 1)`;
+    const priceOf = (col: string) => (where: string) =>
+      `(SELECT p.${col} FROM sap_llm_gateway_admin_SapCapacityUnitPrice p WHERE ${where} LIMIT 1)`;
+    const priceField = (col: string) => this.preferRegion(priceOf(col), priceOf('pricePerCu'), sapPriceWhere, regionOf);
 
     const inputRate = mcRate('inputCost');
     const outputRate = `COALESCE(${mcRate('outputCost')}, ${inputRate})`;
@@ -528,6 +642,56 @@ export class CostRecalculationService {
             AND mc.dateFrom <= ${table}.validFrom AND mc.dateTo >= ${table}.validFrom
         )
     `;
+  }
+
+  /**
+   * The usage type of a row's CU price as a SQL expression over its tenant column: the tenant's own
+   * productive flag where set, else the installation's. Without such tenants it is the plain literal,
+   * so an installation that never set a tenant's flag runs the statement it always ran.
+   */
+  private usageTypeSql(tenantColumn: string, tenants: TenantTerms[], defaultType: string): string {
+    const branches = tenants
+      .filter((t) => t.productive !== null)
+      .map((t) => `WHEN ${quote(t.zone)} THEN ${quote(usageTypeOf(!!t.productive))}`);
+    return branches.length ? `(CASE ${tenantColumn} ${branches.join(' ')} ELSE ${quote(defaultType)} END)` : quote(defaultType);
+  }
+
+  /** A row's tenant price region as a SQL expression over its tenant column; null without tenant price regions. */
+  private priceRegionSql(tenantColumn: string, tenants: TenantTerms[]): string | null {
+    const branches = tenants
+      .filter((t) => t.priceRegion)
+      .map((t) => `WHEN ${quote(t.zone)} THEN ${quote(t.priceRegion as string)}`);
+    return branches.length ? `(CASE ${tenantColumn} ${branches.join(' ')} ELSE NULL END)` : null;
+  }
+
+  /**
+   * A price column of the row's tenant price region when that region has a price row, else of any
+   * region as before (sapCapacityService._lookupPrice). `pick(where)` and `probe(where)` render the
+   * column and the price itself under a WHERE. A subquery's ORDER BY cannot see the outer row on
+   * SQLite, so the region preference is a WHERE condition, not an ordering. Without tenant price
+   * regions the plain lookup is returned unchanged.
+   */
+  private preferRegion(pick: (where: string) => string, probe: (where: string) => string, where: string, region: string | null): string {
+    if (!region) return pick(where);
+    const inRegion = `${where} AND p.region = ${region}`;
+    return `(CASE WHEN ${probe(inRegion)} IS NOT NULL THEN ${pick(inRegion)} ELSE ${pick(where)} END)`;
+  }
+
+  /**
+   * The cache billing factor of a row as a SQL expression over its provider column: the same
+   * case-insensitive provider lookup live capture makes through getCacheBillingFactors
+   * (sapCapacityService.cacheBillingFactorsByProvider), 1 for a provider without an entry.
+   * Only factors other than 1 become a branch; the keys come from api_config.json and are quoted.
+   */
+  private cacheFactorSql(
+    providerColumn: string,
+    factors: Map<string, { read: number; write: number }>,
+    kind: 'read' | 'write'
+  ): string {
+    const branches = [...factors.entries()]
+      .filter(([, f]) => f[kind] !== 1)
+      .map(([key, f]) => `WHEN '${key.replace(/'/g, "''")}' THEN ${f[kind]}`);
+    return branches.length ? `(CASE LOWER(${providerColumn}) ${branches.join(' ')} ELSE 1 END)` : '1';
   }
 
   /**

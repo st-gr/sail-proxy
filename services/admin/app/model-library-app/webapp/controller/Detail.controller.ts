@@ -8,9 +8,13 @@ import MessageToast from "sap/m/MessageToast";
 import Fragment from "sap/ui/core/Fragment";
 import Dialog from "sap/m/Dialog";
 import ResponsivePopover from "sap/m/ResponsivePopover";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
+import formatMessage from "sap/base/strings/formatMessage";
+import Localization from "sap/base/i18n/Localization";
 import * as session from "../model/session";
-import { parseScores, BENCHMARK_LABELS, SAFETY_KEYS } from "../model/benchmarks";
-import { costRows, costUnitLabel } from "../model/costDisplay";
+import { parseScores, BENCHMARK_LABELS, SAFETY_KEYS, benchmarkLabel } from "../model/benchmarks";
+import { capabilityName } from "../model/capabilityIcons";
+import { costRows, externalCostRows, costUnitLabel, localeDecimal } from "../model/costDisplay";
 import { pollUntilSettled, messageFor } from "../model/deploymentPoll";
 import { ownCatalogsFilter, catalogPickSearch, catalogPickCancel } from "../model/catalogPicker";
 
@@ -41,34 +45,38 @@ export default class DetailController extends Controller {
     this.vm().setProperty("/detail/canDeploy", !!this.vm().getProperty("/isAdmin") && d.accessType === "foundation" && !d.deployed);
   }
 
-  private onRouteMatched(e: any): void {
+  private async onRouteMatched(e: any): Promise<void> {
     this.modelId = decodeURIComponent(e.getParameter("arguments").modelId);
+    // The sync text() helper and costRows read the bundle via getProperty, so make sure it is
+    // loaded before the model data (and the cost rows it labels) arrive.
+    await Promise.resolve((this.getView()!.getModel("i18n") as ResourceModel).getResourceBundle()).catch(() => undefined);
     this.vm().setProperty("/detail", {
       ...this.vm().getProperty("/detail"),
       modelId: this.modelId, configView: "rows", metrics: { safety: [], quality: [] },
-      costRows: [], prices: [], hasManualPrice: false, deployments: [], deploymentsFetched: false, catalogs: [],
-      capabilities: [], inputTypes: [], deploymentId: "", deployed: false, canDeploy: false, accessType: "", deploying: false, deployStatus: "",
+      costRows: [], currency: "", prices: [], hasManualPrice: false, deployments: [], deploymentsFetched: false, catalogs: [],
+      capabilities: [], inputTypes: [], deploymentId: "", deployed: false, canDeploy: false, accessType: "", external: false, deploying: false, deployStatus: "",
       config: { overrideRows: [], providerRows: [], overrideJson: "", providerJson: "", providerKey: "" }
     });
     // autoExpandSelect only requests what the view binds; the controller reads these columns itself.
-    const controllerColumns = "benchmarks,capabilities,inputTypes,deployment,provider,accessType,sapInputCost,sapOutputCost,sapCacheReadCost,sapCacheCreationCost";
+    const controllerColumns = "benchmarks,capabilities,inputTypes,deployment,provider,accessType,origin,connection,sapInputCost,sapOutputCost,sapCacheReadCost,sapCacheCreationCost";
     this.getView()!.bindElement({ path: this.entityPath(), parameters: { $select: controllerColumns }, events: { dataReceived: () => this.onModelLoaded() } });
   }
 
   private onModelLoaded(): void {
     const ctx = this.getView()!.getBindingContext();
     if (!ctx || !ctx.getObject()) {
-      MessageBox.error(`Model ${this.modelId} is not in your entitlement or does not exist.`, { onClose: () => this.onNavBack() });
+      MessageBox.error(this.text("modelNotInEntitlement", [this.modelId]), { onClose: () => this.onNavBack() });
       return;
     }
     const m = ctx.getObject() as any;
+    this.vm().setProperty("/detail/external", m.origin === "external");
     // Metrics
     const scores = parseScores(m.benchmarks);
-    const toRows = (keys: string[]) => keys.filter((k) => scores[k] !== undefined).map((k) => ({ label: BENCHMARK_LABELS[k] || k, value: String(scores[k]) }));
+    const toRows = (keys: string[]) => keys.filter((k) => scores[k] !== undefined).map((k) => ({ label: benchmarkLabel(k, (key) => this.text(key)), value: localeDecimal(scores[k], Localization.getLanguageTag().toString()) }));
     this.vm().setProperty("/detail/metrics", { safety: toRows(SAFETY_KEYS), quality: toRows(Object.keys(BENCHMARK_LABELS).filter((k) => !SAFETY_KEYS.includes(k))) });
     // Properties
     const arr = (j: string) => { try { const v = JSON.parse(j || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
-    const nice = (s: string) => s.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+    const nice = (flag: string) => capabilityName(flag, (key) => this.text(key));
     this.vm().setProperty("/detail/capabilities", arr(m.capabilities).map(nice));
     this.vm().setProperty("/detail/inputTypes", arr(m.inputTypes).map(nice));
     // Deployment id: deployment rows carry it in their own JSON; a foundation model is "deployed"
@@ -127,7 +135,7 @@ export default class DetailController extends Controller {
       this.vm().setProperty("/detail/cuFactorSource", "default");
       this.vm().setProperty("/detail/cuFactor", 1.90385);
       this.refreshCostRows(m);
-      MessageToast.show(`Configuration context unavailable: ${err?.message || err}`);
+      MessageToast.show(this.text("configContextUnavailable", [err?.message || err]));
     });
   }
 
@@ -145,7 +153,11 @@ export default class DetailController extends Controller {
     const current = prices.find((p) => String(p.dateTo).startsWith("9999")) || null;
     const cuFactor = this.vm().getProperty("/detail/cuFactor") || 1.90385;
     this.vm().setProperty("/detail/hasManualPrice", !!current && current.source === "manual");
-    this.vm().setProperty("/detail/costRows", costRows(m, current, cuFactor));
+    const locale = Localization.getLanguageTag().toString();
+    // A Connection model's price is a list price in a currency, not an SAP Cost Factor: no CU conversion.
+    const external = m.origin === "external";
+    this.vm().setProperty("/detail/currency", (external && current?.currency) || "");
+    this.vm().setProperty("/detail/costRows", external ? externalCostRows(current, this.translator(), locale) : costRows(m, current, cuFactor, this.translator(), locale));
   }
 
   public onNavBack(): void { this.router().navTo("library"); }
@@ -190,7 +202,7 @@ export default class DetailController extends Controller {
     b.setParameter("audioInputCost", e.audioInputCost === "" ? null : e.audioInputCost);
     b.setParameter("audioOutputCost", e.audioOutputCost === "" ? null : e.audioOutputCost);
     b.invoke().then(() => {
-      MessageToast.show("Price saved");
+      MessageToast.show(this.text("priceSaved"));
       this.priceDialog?.close();
       this.loadPrices(this.getView()!.getBindingContext()!.getObject());
     }).catch((err: any) => MessageBox.error(err?.message || String(err)));
@@ -199,7 +211,7 @@ export default class DetailController extends Controller {
   public onRevertPrice(): void {
     const b = this.odata().bindContext(`${this.entityPath()}/AdminService.revertToSapPrice(...)`);
     b.invoke().then(() => {
-      MessageToast.show("Reverted to the SAP price");
+      MessageToast.show(this.text("priceReverted"));
       this.loadPrices(this.getView()!.getBindingContext()!.getObject());
     }).catch((err: any) => MessageBox.error(err?.message || String(err)));
   }
@@ -238,28 +250,43 @@ export default class DetailController extends Controller {
     return (pattern || "Model Deployments ({0})").replace("{0}", String(n));
   }
 
+  /** Price history costs: the stored figure with the cockpit language's decimal sign. */
+  public formatDecimal(value: string | number | null | undefined): string {
+    return localeDecimal(value, Localization.getLanguageTag().toString());
+  }
+
   /** SAP-RPT models price per 1K cells; everything else per 1K tokens (costUnitLabel). */
   public formatCostFactorHeader(tokensText: string, cellsText: string, modelId: string): string {
     return costUnitLabel(modelId || "") === "cells" ? cellsText : tokensText;
   }
 
-  /** The i18n model's bundle is loaded asynchronously here, so getResourceBundle() is a promise. */
-  private async text(key: string, args?: any[]): Promise<string> {
-    const bundle = await (this.getView()!.getModel("i18n") as any).getResourceBundle();
-    return bundle.getText(key, args);
+  /**
+   * Resolves an i18n key against the component's resource bundle, filling {0}, {1} … from args.
+   * Synchronous: onRouteMatched awaits the bundle before any data arrives, and every other caller
+   * runs on a user action, by which time it is loaded.
+   */
+  private text(key: string, args?: unknown[]): string {
+    const model = this.getOwnerComponent()?.getModel("i18n") as ResourceModel | undefined;
+    const pattern = (model?.getProperty(key) as string | null | undefined) ?? key;
+    return args ? formatMessage(pattern, args) : pattern;
+  }
+
+  /** The sync text() helper as a plain translator, for the pure model helpers (costRows, messageFor). */
+  private translator(): (key: string, args?: (string | number)[]) => string {
+    return (key, args) => this.text(key, args as unknown[]);
   }
 
   public onCopyDeploymentId(e: any): void {
     const id = e.getSource().getBindingContext("viewModel").getProperty("id");
-    navigator.clipboard.writeText(id).then(async () => MessageToast.show(await this.text("deploymentIdCopied")))
+    navigator.clipboard.writeText(id).then(() => MessageToast.show(this.text("deploymentIdCopied")))
       .catch((err: any) => MessageBox.error(err?.message || String(err)));
   }
 
   public async onDeploy(): Promise<void> {
     if (this.vm().getProperty("/detail/deploying")) return;   // a deploy/poll is already in flight for this page
     const m = this.getView()!.getBindingContext()!.getObject() as any;
-    const text = await this.text("deployConfirm", [m.displayName || m.modelId]);
-    MessageBox.confirm(text, { title: "Create deployment", actions: [MessageBox.Action.OK, MessageBox.Action.CANCEL], emphasizedAction: MessageBox.Action.OK, onClose: (a: string) => { if (a === MessageBox.Action.OK) this.deploy(); } });
+    const text = this.text("deployConfirm", [m.displayName || m.modelId]);
+    MessageBox.confirm(text, { title: this.text("createDeploymentTitle"), actions: [MessageBox.Action.OK, MessageBox.Action.CANCEL], emphasizedAction: MessageBox.Action.OK, onClose: (a: string) => { if (a === MessageBox.Action.OK) this.deploy(); } });
   }
 
   /**
@@ -272,20 +299,21 @@ export default class DetailController extends Controller {
     const modelId = this.modelId;
     const b = this.odata().bindContext(`${this.entityPath()}/AdminService.deploy(...)`);
     this.vm().setProperty("/detail/deploying", true);
-    this.vm().setProperty("/detail/deployStatus", "Creating deployment…");
+    this.vm().setProperty("/detail/deployStatus", this.text("creatingDeployment"));
     b.invoke().then(async () => {
       if (this.modelId !== modelId) return;
       const r = b.getBoundContext().getObject() as any;
-      this.vm().setProperty("/detail/deployStatus", `Deployment ${r.deploymentId} created (${r.reusedConfiguration ? "reused" : "new"} configuration ${r.configurationId}); waiting for RUNNING…`);
+      this.vm().setProperty("/detail/deployStatus", this.text("deploymentCreatedWaiting", [r.deploymentId, r.reusedConfiguration ? this.text("configReused") : this.text("configNew"), r.configurationId]));
       const result = await pollUntilSettled(async () => {
         const s = this.odata().bindContext(`/deploymentStatus(deploymentId='${String(r.deploymentId).replace(/'/g, "''")}')`);
         await s.invoke();
         return (s.getBoundContext().getObject() as any).status;
       });
       if (this.modelId !== modelId) return;   // settled after leaving this model's page: drop it
-      this.vm().setProperty("/detail/deployStatus", `${messageFor(result)} (deployment ${r.deploymentId})`);
-      if (result.outcome === "running") { MessageToast.show(messageFor(result)); this.onFetchDeployments(); this.getView()!.getElementBinding()?.refresh(); }
-      else MessageBox.warning(messageFor(result));
+      const t = this.translator();
+      this.vm().setProperty("/detail/deployStatus", this.text("deployStatusWithId", [messageFor(result, t), r.deploymentId]));
+      if (result.outcome === "running") { MessageToast.show(messageFor(result, t)); this.onFetchDeployments(); this.getView()!.getElementBinding()?.refresh(); }
+      else MessageBox.warning(messageFor(result, t));
     }).catch((err: any) => {
       if (this.modelId !== modelId) return;
       this.vm().setProperty("/detail/deployStatus", "");
@@ -333,7 +361,7 @@ export default class DetailController extends Controller {
   private addModelsTo(catalogId: string, modelIds: string[]): Promise<void> {
     const b = this.odata().bindContext(`/ModelCatalogs(${catalogId})/AdminService.addModels(...)`);
     b.setParameter("modelIds", modelIds);
-    return b.invoke().then(() => { const r = b.getBoundContext().getObject() as any; MessageToast.show(`${r.added} model(s) added`); })
+    return b.invoke().then(() => { const r = b.getBoundContext().getObject() as any; MessageToast.show(this.text("modelsAdded", [r.added])); })
       .catch((err: any) => { MessageBox.error(err?.message || String(err)); });
   }
 
@@ -341,7 +369,7 @@ export default class DetailController extends Controller {
     const row = e.getSource().getBindingContext("viewModel").getObject();
     const b = this.odata().bindContext(`/ModelCatalogs(${row.id})/AdminService.removeModels(...)`);
     b.setParameter("modelIds", [this.modelId]);
-    b.invoke().then(() => { const r = b.getBoundContext().getObject() as any; MessageToast.show(r.prunedFromChildren ? `Removed; ${r.prunedFromChildren} model(s) were also removed from child catalogs.` : "Removed"); this.loadCatalogs(); })
+    b.invoke().then(() => { const r = b.getBoundContext().getObject() as any; MessageToast.show(r.prunedFromChildren ? this.text("removedPruned", [r.prunedFromChildren]) : this.text("removed")); this.loadCatalogs(); })
       .catch((err: any) => MessageBox.error(err?.message || String(err)));
   }
 }

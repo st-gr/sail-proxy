@@ -1,0 +1,133 @@
+[
+  {
+    "file": "markdown/developer-chapter-11-debugging.md",
+    "source": "docs/developer/debugging.md",
+    "kind": "markdown",
+    "sha256": "25f6f055cc48d04e7ba12c74eefc99a82ba3359e61635a9cb62c70d6bc3d5ba5",
+    "bytes": 21168
+  },
+  {
+    "file": "markdown/developer-chapter-16-file-search-tool.md",
+    "source": "docs/developer/file-search-tool.md",
+    "kind": "markdown",
+    "sha256": "def75ea742a5603178956c89ef69726c004dd92029d1f862d3b421fde2c96991",
+    "bytes": 79330
+  },
+  {
+    "file": "markdown/user-chapter-2-features.md",
+    "source": "docs/guide/features.md",
+    "kind": "markdown",
+    "sha256": "2d50158f242d14929b4cd2ed82cc7f422b518163d621531bb911fdd246c46941",
+    "bytes": 23335
+  },
+  {
+    "file": "markdown/user-chapter-5-codex.md",
+    "source": "docs/guide/clients/codex.md",
+    "kind": "markdown",
+    "sha256": "27ad576179e462f547e625f299ad887c5449f76d5c17e49f74e4ee928c4fe81a",
+    "bytes": 5661
+  },
+  {
+    "file": "markdown/user-chapter-6-opencode.md",
+    "source": "docs/guide/clients/opencode.md",
+    "kind": "markdown",
+    "sha256": "1618d42dfac94f295bd5c2042b7178ab4da771f58d9dbb09034e2656bfcc0c1a",
+    "bytes": 3611
+  },
+  {
+    "file": "markdown/user-chapter-9-roles.md",
+    "source": "docs/guide/roles.md",
+    "kind": "markdown",
+    "sha256": "13bf9fef4bfa58e8dcbd5df161217b3aa2d2f1c4b46ccc0535d8741143ddc738",
+    "bytes": 10410
+  },
+  {
+    "file": "pdf/developer-chapter-13-plugin-system.pdf",
+    "source": "docs/developer/plugins.md",
+    "kind": "pdf",
+    "sha256": "b695ee90b7f1c47c9957a9c0796908f5038cb0d38091817147fc986146a6aa74",
+    "bytes": 561224
+  },
+  {
+    "file": "pdf/developer-chapter-2-architecture.pdf",
+    "source": "docs/developer/architecture.md",
+    "kind": "pdf",
+    "sha256": "689419a1974cd33997a5019bb823bb858ba600d999575f16df73eb4566354d11",
+    "bytes": 396413
+  },
+  {
+    "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+    "source": "docs/developer/gateway-testing.md",
+    "kind": "pdf",
+    "sha256": "c6627eff58acd19a997833cd50674c6b9b135e67e6db54f99c8e48655f9e87fe",
+    "bytes": 360811
+  },
+  {
+    "file": "pdf/developer-model-library-entitlements.pdf",
+    "source": "docs/developer/model-library-entitlements.md",
+    "kind": "pdf",
+    "sha256": "6b48bf3da0a3e0fdb039d864033efec45245155e78302aca9204963851981d5f",
+    "bytes": 193473
+  },
+  {
+    "file": "pdf/user-chapter-12-google-gemini.pdf",
+    "source": "docs/guide/clients/gemini.md",
+    "kind": "pdf",
+    "sha256": "7e9aaebe0f469eaf06e16368b78b3517ccefc9bd8b06d8cc6008f53d5084188b",
+    "bytes": 198420
+  },
+  {
+    "file": "pdf/user-chapter-15-tabular-prediction.pdf",
+    "source": "docs/guide/clients/tabular-prediction.md",
+    "kind": "pdf",
+    "sha256": "f74fccb2f565b752495212f458f568c2424a51c4a7c2319eb36e207a40adc632",
+    "bytes": 183232
+  },
+  {
+    "file": "pptx/quillmere-operations-review.pptx",
+    "source": "ci/file-search-eval/build-office-corpus.js",
+    "kind": "pptx",
+    "sha256": "23cea8529aed94e449dbd8c806540dae08b71cf12971bce8b4cf6f7f828cf7b8",
+    "bytes": 28959
+  },
+  {
+    "file": "scanned/developer-chapter-6-ollama.pdf",
+    "source": "docs/developer/ollama-service.md",
+    "kind": "scanned",
+    "sha256": "b84938651fd879b958d7c24540bd3e9915e70c51f5390c1fa4d534ba84848299",
+    "bytes": 699350
+  },
+  {
+    "file": "scanned/user-chapter-1-introduction.pdf",
+    "source": "docs/guide/introduction.md",
+    "kind": "scanned",
+    "sha256": "d00d760d9204a20a77de9555bc8e4fab3b9f18b867d36063749a49c67f81906d",
+    "bytes": 303926
+  },
+  {
+    "file": "scanned/user-chapter-14-realtime.pdf",
+    "source": "docs/guide/clients/realtime.md",
+    "kind": "scanned",
+    "sha256": "9b088537e342db68415d31c9370193e6e51ad5a6f394d34c6d0cae9ebb81c613",
+    "bytes": 538605
+  },
+  {
+    "file": "table/developer-tables.pdf",
+    "source": [
+      "docs/developer/release.md",
+      "docs/developer/reranker-datasets.md",
+      "docs/developer/gateway.md",
+      "docs/developer/tool-governance.md"
+    ],
+    "kind": "table",
+    "sha256": "6ab1ec141c3ecfa09129641933767af1f16eca59d33c297cdb29522e49f3d65e",
+    "bytes": 266067
+  },
+  {
+    "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+    "source": "ci/file-search-eval/build-office-corpus.js",
+    "kind": "xlsx",
+    "sha256": "31b154bf75fc1537fe08959efbdd982f726960d6a3676df6b88d2ea0a6d344e1",
+    "bytes": 12665
+  }
+]

@@ -6,6 +6,8 @@
  */
 
 const ollamaAdapter = require('../services/ollamaAdapter');
+const { statusFor, messageFor } = require('../services/upstreamError');
+const { describeRequest, describeError } = require('../services/logSafe');
 
 /**
  * Handle Ollama chat completion requests
@@ -13,7 +15,7 @@ const ollamaAdapter = require('../services/ollamaAdapter');
  */
 exports.handleChat = async (req, res) => {
   try {
-    console.log(`[Ollama Chat] Request: ${JSON.stringify(req.body, null, 2)}`);
+    console.log(`[Ollama Chat] Request: ${describeRequest(req.body)}`);
     
     const { stream = true } = req.body;
     
@@ -29,10 +31,10 @@ exports.handleChat = async (req, res) => {
       res.json(result);
     }
   } catch (error) {
-    console.error('[Ollama Chat] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Chat] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to process chat request',
+        message: messageFor(error, 'Failed to process chat request'),
         type: 'api_error',
         code: 'chat_error'
       }
@@ -46,9 +48,32 @@ exports.handleChat = async (req, res) => {
  */
 exports.handleGenerate = async (req, res) => {
   try {
-    console.log(`[Ollama Generate] Request: ${JSON.stringify(req.body, null, 2)}`);
+    console.log(`[Ollama Generate] Request: ${describeRequest(req.body)}`);
     
     const { stream = true } = req.body;
+    
+    // Ollama treats an empty prompt as a model-load request and answers with
+    // an empty generation; never forward an empty message to the model.
+    if (typeof req.body.prompt !== 'string' || req.body.prompt.trim() === '') {
+      console.log('[Ollama Generate] Empty prompt answered as a model load');
+      const loadResponse = {
+        model: req.body.model,
+        created_at: new Date().toISOString(),
+        response: '',
+        done: true,
+        done_reason: 'load'
+      };
+      if (stream) {
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.write(JSON.stringify(loadResponse) + '\n');
+        res.end();
+      } else {
+        res.json(loadResponse);
+      }
+      return;
+    }
     
     if (stream) {
       // Set up streaming response
@@ -62,10 +87,10 @@ exports.handleGenerate = async (req, res) => {
       res.json(result);
     }
   } catch (error) {
-    console.error('[Ollama Generate] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Generate] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to process generate request',
+        message: messageFor(error, 'Failed to process generate request'),
         type: 'api_error',
         code: 'generate_error'
       }
@@ -79,15 +104,15 @@ exports.handleGenerate = async (req, res) => {
  */
 exports.handleEmbed = async (req, res) => {
   try {
-    console.log(`[Ollama Embed] Request: ${JSON.stringify(req.body, null, 2)}`);
+    console.log(`[Ollama Embed] Request: ${describeRequest(req.body)}`);
     
     const result = await ollamaAdapter.handleEmbeddings(req.body);
     res.json(result);
   } catch (error) {
-    console.error('[Ollama Embed] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Embed] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to process embeddings request',
+        message: messageFor(error, 'Failed to process embeddings request'),
         type: 'api_error',
         code: 'embeddings_error'
       }
@@ -132,11 +157,10 @@ exports.listModels = async (req, res) => {
     
     res.json(result);
   } catch (error) {
-    console.error('[Ollama Models] Error:', error);
-    console.error('[Ollama Models] Error stack:', error.stack);
-    res.status(500).json({
+    console.error('[Ollama Models] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to list models',
+        message: messageFor(error, 'Failed to list models'),
         type: 'api_error',
         code: 'models_error'
       }
@@ -155,10 +179,10 @@ exports.listRunningModels = async (req, res) => {
     const result = await ollamaAdapter.listRunningModels();
     res.json(result);
   } catch (error) {
-    console.error('[Ollama Running Models] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Running Models] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to list running models',
+        message: messageFor(error, 'Failed to list running models'),
         type: 'api_error',
         code: 'running_models_error'
       }
@@ -175,10 +199,10 @@ exports.getVersion = async (req, res) => {
     const result = await ollamaAdapter.getVersion();
     res.json(result);
   } catch (error) {
-    console.error('[Ollama Version] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Version] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to get version',
+        message: messageFor(error, 'Failed to get version'),
         type: 'api_error',
         code: 'version_error'
       }
@@ -259,10 +283,10 @@ exports.showModel = async (req, res) => {
     const result = await ollamaAdapter.showModel(req.body);
     res.json(result);
   } catch (error) {
-    console.error('[Ollama Show Model] Error:', error);
-    res.status(500).json({
+    console.error('[Ollama Show Model] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to show model information',
+        message: messageFor(error, 'Failed to show model information'),
         type: 'api_error',
         code: 'show_model_error'
       }
@@ -345,19 +369,49 @@ exports.handleOpenAIChat = async (req, res) => {
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('Access-Control-Allow-Origin', '*');
       
-      await ollamaAdapter.handleStreamingChat(ollamaRequest, {
+      // Stand-in for `res` that the adapter writes/ends/status()es through.
+      // It must behave like the real response for every call the adapter
+      // makes: `status()` chainable, `writableEnded` live (not stuck at
+      // false), and no write reaching `res` once it has already ended.
+      const streamRes = {
         write: (data) => {
+          if (res.writableEnded) return;
           // Convert Ollama chunk to OpenAI format
           const ollamaChunk = JSON.parse(data);
           const openaiChunk = convertOllamaToOpenAIChunk(ollamaChunk);
           res.write(`data: ${JSON.stringify(openaiChunk)}\n\n`);
         },
         end: () => {
+          if (res.writableEnded) return;
           res.write('data: [DONE]\n\n');
           res.end();
         },
-        writableEnded: false
-      });
+        status: (code) => {
+          if (!res.headersSent) res.status(code);
+          return streamRes;
+        },
+        json: (body) => {
+          if (res.writableEnded) return;
+          if (!res.headersSent) {
+            // Nothing was flushed yet - this is a pre-stream failure (the
+            // adapter's own outer catch, e.g. the gateway rejecting an
+            // unknown model before any chunk streamed). Answer as a normal
+            // JSON error in the same shape the controller's own catch uses,
+            // instead of an SSE frame. res.json() keeps whatever
+            // Content-Type is already set, so override the streaming one.
+            res.setHeader('Content-Type', 'application/json');
+            res.json({ error: body.error || body });
+            return;
+          }
+          res.write(`data: ${JSON.stringify({ error: body.error || body })}\n\n`);
+          res.end();
+        },
+        get writableEnded() {
+          return res.writableEnded;
+        }
+      };
+
+      await ollamaAdapter.handleStreamingChat(ollamaRequest, streamRes);
     } else {
       // Non-streaming response
       const ollamaResponse = await ollamaAdapter.handleNonStreamingChat(ollamaRequest);
@@ -366,10 +420,10 @@ exports.handleOpenAIChat = async (req, res) => {
     }
     
   } catch (error) {
-    console.error('[OpenAI Chat] Error:', error);
-    res.status(500).json({
+    console.error('[OpenAI Chat] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to process OpenAI chat request',
+        message: messageFor(error, 'Failed to process OpenAI chat request'),
         type: 'api_error',
         code: 'openai_chat_error'
       }
@@ -404,10 +458,10 @@ exports.listOpenAIModels = async (req, res) => {
     res.json(openaiModels);
     
   } catch (error) {
-    console.error('[OpenAI Models] Error listing models:', error);
-    res.status(500).json({
+    console.error('[OpenAI Models] Error listing models:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to list models',
+        message: messageFor(error, 'Failed to list models'),
         type: 'api_error',
         code: 'models_error'
       }
@@ -449,10 +503,10 @@ exports.handleOpenAIEmbeddings = async (req, res) => {
     res.json(openaiResponse);
     
   } catch (error) {
-    console.error('[OpenAI Embeddings] Error:', error);
-    res.status(500).json({
+    console.error('[OpenAI Embeddings] Error:', describeError(error));
+    res.status(statusFor(error)).json({
       error: {
-        message: error.message || 'Failed to process embeddings request',
+        message: messageFor(error, 'Failed to process embeddings request'),
         type: 'api_error',
         code: 'embeddings_error'
       }

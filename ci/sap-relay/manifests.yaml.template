@@ -1,0 +1,186 @@
+# SAP AI Core relay for private CI. Rendered by ci/sap-relay/relay.js into ci/sap-relay/.rendered/
+# (gitignored); this template carries placeholders only. See ci/sap-relay/README.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sap-relay
+  labels:
+    app: sap-relay
+    istio-injection: disabled
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sap-relay-config
+  namespace: sap-relay
+  labels:
+    app: sap-relay
+type: Opaque
+stringData:
+  nginx.conf: |
+__NGINX_CONF__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sap-relay
+  namespace: sap-relay
+  labels:
+    app: sap-relay
+spec:
+  replicas: 0  # scaled to 1 only while private CI runs (relay.js up / down)
+  selector:
+    matchLabels:
+      app: sap-relay
+  template:
+    metadata:
+      labels:
+        app: sap-relay
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: nginx
+        image: nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
+        command: ["nginx", "-g", "daemon off;"]  # skip the image entrypoint scripts (they write to /etc/nginx)
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /__KEY__/healthz
+            port: 8080
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: config
+        secret:
+          secretName: sap-relay-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sap-relay
+  namespace: sap-relay
+  labels:
+    app: sap-relay
+spec:
+  selector:
+    app: sap-relay
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# Ingress only from the Istio ingress gateway; egress only to DNS and to public HTTPS (no private ranges).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sap-relay
+  namespace: sap-relay
+  labels:
+    app: sap-relay
+spec:
+  podSelector:
+    matchLabels:
+      app: sap-relay
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+      podSelector:
+        matchLabels:
+          istio: ingressgateway
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+        - 100.64.0.0/10
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: sap-relay
+  namespace: sap-relay
+  labels:
+    app: sap-relay
+spec:
+  gateway: kyma-system/kyma-gateway
+  hosts:
+  - __RELAY_HOST__
+  service:
+    name: sap-relay
+    port: 8080
+  timeout: 600  # seconds, matching nginx's proxy timeouts; the APIRule default is 180
+  rules:
+  - path: /*
+    methods: [GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD]
+    noAuth: true  # authentication is the path key; anything outside it is a 404 from nginx
+---
+# The relay host only; every other host keeps its own allowlist. Not managed by kyma/scripts/deploy-kyma.js.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allowlist-sap-relay
+  namespace: istio-system
+  labels:
+    app: sap-relay
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts: ["__RELAY_HOST__", "__RELAY_HOST__:443"]

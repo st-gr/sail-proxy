@@ -6,6 +6,7 @@
 import { getDefaultLogger } from '@libs/logger';
 import * as tp from '../services/toolPolicyService';
 import { parseInventoryQuery, matchesRow } from '../services/toolInventoryQuery';
+import { teamsUsingPolicy } from '../services/teamLookups';
 import { invalidateForEmails } from '../services/credentialInvalidation';
 import { TOOL_USAGE_DAILY, TOOL_USAGE_AGENT_DAILY } from '../services/toolUsageService';
 const cds = require('@sap/cds');
@@ -150,6 +151,8 @@ export function registerToolPolicyHandlers(service: any): void {
     const policy = await tp.getPolicy(cds.db, req.data.ID);
     if (!policy) return;
     try { tp.assertDeletable(policy); } catch (e: any) { req.reject(400, e.message); return; }
+    const used = await teamsUsingPolicy(cds.db, policy.ID);
+    if (used.length) { req.reject({ status: 409, code: 'tool_policy_assigned_team', message: `Policy is used by team(s): ${used.map((t) => t.name).join(', ')}` }); return; }
     (req as any)._affected = await tp.affectedEmails(cds.db, policy.ID);
     await tp.releaseAssignments(cds.db, policy.ID);
   });

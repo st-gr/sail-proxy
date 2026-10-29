@@ -8,6 +8,7 @@ import {
   setAwsCredentialKeys as setAwsCredentialKeysService
 } from '../services/awsCredentialsService';
 import { getDefaultLogger } from '@libs/logger';
+import { currentSapTarget, awsRegionFromSapRegion } from '../sap/sapTarget';
 import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
 
@@ -61,9 +62,9 @@ export const listAwsCredentials = async (_req: Request, res: Response): Promise<
   try {
     const credentials = await listAwsCredentialsService();
     
-    // Add AWS region information from SAP_AI_REGION for client configuration
-    const sapAiRegion = process.env.SAP_AI_REGION || 'us-east-1';
-    const awsRegion = sapAiRegion.includes('.') ? sapAiRegion.split('.')[1] : sapAiRegion;
+    // Add AWS region information from the SAP AI Core target in force for client configuration
+    const sapAiRegion = currentSapTarget().region;
+    const awsRegion = awsRegionFromSapRegion(sapAiRegion);
     
     const response = {
       credentials,

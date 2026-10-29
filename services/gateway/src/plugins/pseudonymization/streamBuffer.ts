@@ -22,15 +22,21 @@ export class StreamUnmaskBuffer {
   private placeholderRegex: RegExp;
   private maxPrefixLength: number;
   private containment?: ContainmentOptions;
+  private jsonText: boolean;
 
   /**
    * `containment` turns on the handling of placeholders the model invented: they are held until
    * their id is complete, exactly as a known one is, then withheld and reported instead of being
    * passed through. Without it the buffer behaves as it always has.
+   *
+   * `jsonText` is for a stream of JSON-text fragments (tool-call argument deltas): a placeholder
+   * there sits inside a JSON string literal, so the restored value is inserted JSON-escaped and
+   * a value containing `"` or `\` keeps the reassembled arguments valid JSON.
    */
-  constructor(map: ReplacementMap, containment?: ContainmentOptions) {
+  constructor(map: ReplacementMap, containment?: ContainmentOptions, opts: { jsonText?: boolean } = {}) {
     this.reverseMap = map.reverse;
     this.containment = containment;
+    this.jsonText = opts.jsonText === true;
 
     // Collect all unique prefixes from the reverse map
     const prefixes = new Set<string>();
@@ -115,7 +121,11 @@ export class StreamUnmaskBuffer {
       source = contained.text;
     }
     this.placeholderRegex.lastIndex = 0;
-    return source.replace(this.placeholderRegex, (match) => this.reverseMap.get(match) || match);
+    return source.replace(this.placeholderRegex, (match) => {
+      const original = this.reverseMap.get(match);
+      if (!original) return match;
+      return this.jsonText ? JSON.stringify(original).slice(1, -1) : original;
+    });
   }
 
   /**

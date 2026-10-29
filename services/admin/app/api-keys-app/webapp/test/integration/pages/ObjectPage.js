@@ -20,7 +20,34 @@ sap.ui.define(["sap/fe/test/ObjectPage", "sap/ui/test/Opa5"], function (ObjectPa
 	}
 
 	return new ObjectPage({ appId: "admin.app", componentId: "ApiKeysObjectPage", entitySet: "ApiKeys" }, {
+		actions: {
+			iCloseTheOpenDialog: function () {
+				return this.waitFor({
+					controlType: "sap.m.Dialog",
+					searchOpenDialogs: true,
+					success: function (aDialogs) {
+						aDialogs[0].close();
+					},
+					errorMessage: "No open dialog to close"
+				});
+			}
+		},
 		assertions: {
+			iSeeChangeTeamOffering: function (sTeam) {
+				return this.waitFor({
+					controlType: "sap.m.Select",
+					searchOpenDialogs: true,
+					check: function (aSelects) {
+						return aSelects.some(function (oSelect) {
+							return oSelect.getItems().some(function (oItem) { return oItem.getText() === sTeam; });
+						});
+					},
+					success: function () {
+						Opa5.assert.ok(true, "Change Team offers " + sTeam);
+					},
+					errorMessage: "Change Team does not offer " + sTeam
+				});
+			},
 			iSeeStoredValue: function (sProperty, vExpected) {
 				return this.waitFor({
 					controlType: "sap.uxap.ObjectPageLayout",

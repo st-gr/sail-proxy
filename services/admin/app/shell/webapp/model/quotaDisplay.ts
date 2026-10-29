@@ -22,6 +22,43 @@ export interface QuotaStatusLike {
 export type MoneyFormatter = (amount: number, currency: string) => string;
 /** Formats a reset timestamp — the controller injects UI5's DateFormat (medium date, short time, local zone). */
 export type DateFormatter = (iso: string) => string;
+/** Formats a whole number with grouping — the controller injects UI5's locale-aware NumberFormat. */
+export type IntFormatter = (n: number) => string;
+/**
+ * Resolves an i18n key with optional {0}, {1} … arguments — the controller injects the resource
+ * bundle; jest passes none and gets the English defaults below, so the module keeps no UI5 imports.
+ */
+export type Translator = (key: string, args?: (string | number)[]) => string;
+
+/** English defaults: each value is byte-identical to the literal it replaced, so the pure tests hold. */
+const EN_TEXTS: Record<string, string> = {
+  'quota.unavailable': 'Quota information is not available.',
+  'quota.deactivated': 'Your account is deactivated. Contact an administrator.',
+  'quota.spendDay': 'Spend today',
+  'quota.spendWeek': 'Spend this week',
+  'quota.spendMonth': 'Spend this month',
+  'quota.tokensDay': 'Tokens today',
+  'quota.tokensWeek': 'Tokens this week',
+  'quota.tokensMonth': 'Tokens this month',
+  'quota.unlimited': 'unlimited',
+  'quota.resets': 'Resets {0}',
+  'quota.spendLabel': 'Spend',
+  'quota.tokensLabel': 'Tokens',
+  'quota.noSpendLimits': 'No spend limits apply.',
+  'quota.noTokenLimits': 'No token limits apply.',
+  'quota.summary': 'today {0} · this week {1} · this month {2}',
+  'quota.minute': 'Requests this minute: {0} / {1}',
+  'quota.toolPolicy': 'Tool policy: {0} ({1})',
+  'quota.windowsReset': 'Windows reset',
+  'quota.resetPart': '{0} {1}',
+  'quota.windowDay': 'day',
+  'quota.windowWeek': 'week',
+  'quota.windowMonth': 'month'
+};
+const defaultTranslate: Translator = (key, args) => {
+  const pattern = EN_TEXTS[key] ?? key;
+  return args ? pattern.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : pattern;
+};
 export type RowColor = 'Good' | 'Critical' | 'Error' | 'Neutral';
 export interface Threshold { value: number; color: 'Critical' | 'Error'; }
 export interface QuotaRow {
@@ -63,7 +100,8 @@ export const ERROR_PERCENT = 90;
 /** An unlimited row's scale end, as a factor of the largest used value among its siblings. */
 export const UNLIMITED_HEADROOM = 1.25;
 
-const int = (n: number) => Math.round(n).toLocaleString('en-US');
+/** Grouped in en-US: the fallback when no UI5 formatter is injected (jest, and nothing else). */
+const defaultInt: IntFormatter = (n) => Math.round(n).toLocaleString('en-US');
 /** Two decimals and the code, no locale: the fallback when no UI5 formatter is injected (jest, and nothing else). */
 const defaultMoney: MoneyFormatter = (n, currency) => `${n.toFixed(2)} ${currency}`;
 const defaultDate: DateFormatter = (iso) => iso;
@@ -71,10 +109,10 @@ const defaultDate: DateFormatter = (iso) => iso;
 type Unit = 'spend' | 'tokens';
 interface RowSpec { key: string; label: string; unit: Unit; window: 'day' | 'week' | 'month'; used: number; limit: number | null; }
 
-function row(spec: RowSpec, fmt: (n: number) => string, unlimitedMax: number, resetText: string): QuotaRow {
+function row(spec: RowSpec, fmt: (n: number) => string, unlimitedMax: number, resetText: string, unlimitedLabel: string): QuotaRow {
   const { key, label, used, limit } = spec;
   if (limit === null || limit === undefined) {
-    return { key, label, used: fmt(used), limit: 'unlimited', percent: 0, unlimited: true, state: 'None',
+    return { key, label, used: fmt(used), limit: unlimitedLabel, percent: 0, unlimited: true, state: 'None',
       actual: used, target: null, max: unlimitedMax, color: 'Neutral', thresholds: [], resetText, percentText: '' };
   }
   const percent = limit <= 0 ? 100 : Math.min(100, Math.round((used / limit) * 100));
@@ -87,22 +125,24 @@ function row(spec: RowSpec, fmt: (n: number) => string, unlimitedMax: number, re
     percentText: `${Math.round(ratio * 100)} %` };
 }
 
-export function toQuotaView(s: QuotaStatusLike | null, money: MoneyFormatter = defaultMoney, formatDate: DateFormatter = defaultDate): QuotaView {
-  if (!s || !s.used || !s.limits) return { available: false, deactivated: false, statusText: 'Quota information is not available.', rows: [], groups: [], resetText: '', minuteText: '', toolPolicyText: '' };
+export function toQuotaView(s: QuotaStatusLike | null, money: MoneyFormatter = defaultMoney, formatDate: DateFormatter = defaultDate, t: Translator = defaultTranslate, int: IntFormatter = defaultInt): QuotaView {
+  if (!s || !s.used || !s.limits) return { available: false, deactivated: false, statusText: t('quota.unavailable'), rows: [], groups: [], resetText: '', minuteText: '', toolPolicyText: '' };
   const deactivated = s.status === 'deactivated';
+  const unlimited = t('quota.unlimited');
+  const windowKey: Record<'day' | 'week' | 'month', string> = { day: 'quota.windowDay', week: 'quota.windowWeek', month: 'quota.windowMonth' };
   // Every spend figure and spend limit carries its currency ("0.40 USD / 20.00 USD"); a zero is just
   // "0" — nothing was spent, so there is no currency to name.
   const currency = s.sapCostCurrency || 'USD';
   const amount = (n: number) => (n === 0 ? '0' : money(n, currency));
-  const reset = (w: 'day' | 'week' | 'month') => { const iso = s.resetsAt?.[w]; return iso ? `Resets ${formatDate(iso)}` : ''; };
+  const reset = (w: 'day' | 'week' | 'month') => { const iso = s.resetsAt?.[w]; return iso ? t('quota.resets', [formatDate(iso)]) : ''; };
   const minuteLimit = s.limits.requestsPerMinute;
   const specs: RowSpec[] = [
-    { key: 'spendDay', label: 'Spend today', unit: 'spend', window: 'day', used: s.used.day.sapCost, limit: s.limits.spendPerDay },
-    { key: 'spendWeek', label: 'Spend this week', unit: 'spend', window: 'week', used: s.used.week.sapCost, limit: s.limits.spendPerWeek },
-    { key: 'spendMonth', label: 'Spend this month', unit: 'spend', window: 'month', used: s.used.month.sapCost, limit: s.limits.spendPerMonth },
-    { key: 'tokensDay', label: 'Tokens today', unit: 'tokens', window: 'day', used: s.used.day.tokens, limit: s.limits.tokensPerDay },
-    { key: 'tokensWeek', label: 'Tokens this week', unit: 'tokens', window: 'week', used: s.used.week.tokens, limit: s.limits.tokensPerWeek },
-    { key: 'tokensMonth', label: 'Tokens this month', unit: 'tokens', window: 'month', used: s.used.month.tokens, limit: s.limits.tokensPerMonth }
+    { key: 'spendDay', label: t('quota.spendDay'), unit: 'spend', window: 'day', used: s.used.day.sapCost, limit: s.limits.spendPerDay },
+    { key: 'spendWeek', label: t('quota.spendWeek'), unit: 'spend', window: 'week', used: s.used.week.sapCost, limit: s.limits.spendPerWeek },
+    { key: 'spendMonth', label: t('quota.spendMonth'), unit: 'spend', window: 'month', used: s.used.month.sapCost, limit: s.limits.spendPerMonth },
+    { key: 'tokensDay', label: t('quota.tokensDay'), unit: 'tokens', window: 'day', used: s.used.day.tokens, limit: s.limits.tokensPerDay },
+    { key: 'tokensWeek', label: t('quota.tokensWeek'), unit: 'tokens', window: 'week', used: s.used.week.tokens, limit: s.limits.tokensPerWeek },
+    { key: 'tokensMonth', label: t('quota.tokensMonth'), unit: 'tokens', window: 'month', used: s.used.month.tokens, limit: s.limits.tokensPerMonth }
   ];
   // Unlimited rows share one scale per unit: 1.25 x the largest used value among them, so the
   // largest bar ends at 80 % and still has visible headroom (1 when all are 0). A bar without a
@@ -110,25 +150,25 @@ export function toQuotaView(s: QuotaStatusLike | null, money: MoneyFormatter = d
   const unlimitedMax: Record<Unit, number> = { spend: 0, tokens: 0 };
   for (const sp of specs) if (sp.limit === null || sp.limit === undefined) unlimitedMax[sp.unit] = Math.max(unlimitedMax[sp.unit], sp.used || 0);
   for (const u of ['spend', 'tokens'] as Unit[]) unlimitedMax[u] = unlimitedMax[u] > 0 ? unlimitedMax[u] * UNLIMITED_HEADROOM : 1;
-  const rows = specs.map((sp) => row(sp, sp.unit === 'spend' ? amount : int, unlimitedMax[sp.unit], reset(sp.window)));
+  const rows = specs.map((sp) => row(sp, sp.unit === 'spend' ? amount : int, unlimitedMax[sp.unit], reset(sp.window), unlimited));
   // The card groups by unit: one summary line of the three windows, then a chart only under a
   // window that has a limit — a bar without a limit to compare against says nothing.
-  const group = (key: Unit, label: string, noun: string): QuotaGroup => {
+  const group = (key: Unit, label: string, noLimitKey: string): QuotaGroup => {
     const mine = rows.filter((r) => specs.find((sp) => sp.key === r.key)!.unit === key);
     const [d, w, m] = mine;
-    return { key, label, summary: `today ${d.used} · this week ${w.used} · this month ${m.used}`,
-      noLimitText: mine.every((r) => r.unlimited) ? `No ${noun} limits apply.` : '', rows: mine.filter((r) => !r.unlimited) };
+    return { key, label, summary: t('quota.summary', [d.used, w.used, m.used]),
+      noLimitText: mine.every((r) => r.unlimited) ? t(noLimitKey) : '', rows: mine.filter((r) => !r.unlimited) };
   };
   // Day, week and month reset at the same moments for spend and tokens: one footer for the card.
-  const resetParts = (['day', 'week', 'month'] as const).filter((w) => !!s.resetsAt?.[w]).map((w) => `${w} ${formatDate(s.resetsAt![w] as string)}`);
+  const resetParts = (['day', 'week', 'month'] as const).filter((w) => !!s.resetsAt?.[w]).map((w) => t('quota.resetPart', [t(windowKey[w]), formatDate(s.resetsAt![w] as string)]));
   return {
     available: true, deactivated,
-    statusText: deactivated ? 'Your account is deactivated. Contact an administrator.' : '',
+    statusText: deactivated ? t('quota.deactivated') : '',
     // The per-minute requests limit is a rate guard, not a budget: one line of text, no bar.
-    minuteText: `Requests this minute: ${int(s.used.minuteRequests || 0)} / ${minuteLimit === null || minuteLimit === undefined ? 'unlimited' : int(minuteLimit)}`,
-    toolPolicyText: s.toolPolicy?.name ? `Tool policy: ${s.toolPolicy.name} (${s.toolPolicy.mode})` : '',
+    minuteText: t('quota.minute', [int(s.used.minuteRequests || 0), minuteLimit === null || minuteLimit === undefined ? unlimited : int(minuteLimit)]),
+    toolPolicyText: s.toolPolicy?.name ? t('quota.toolPolicy', [s.toolPolicy.name, s.toolPolicy.mode]) : '',
     rows,
-    groups: [group('spend', 'Spend', 'spend'), group('tokens', 'Tokens', 'token')],
-    resetText: resetParts.length ? `Windows reset · ${resetParts.join(' · ')}` : ''
+    groups: [group('spend', t('quota.spendLabel'), 'quota.noSpendLimits'), group('tokens', t('quota.tokensLabel'), 'quota.noTokenLimits')],
+    resetText: resetParts.length ? `${t('quota.windowsReset')} · ${resetParts.join(' · ')}` : ''
   };
 }

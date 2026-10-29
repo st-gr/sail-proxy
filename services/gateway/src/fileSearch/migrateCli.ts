@@ -15,6 +15,11 @@
  * resolves this compiled path for both a local dev checkout and the Docker
  * image — see that file's own header for details.)
  *
+ * `migrateCli.js rebuild-index [...]` is a separate operator command (see
+ * rebuildIndex.ts): it builds the approximate-search index over existing chunks.
+ * It is never part of the deploy step, ignores FILE_SEARCH_MIGRATE_NEVER_BLOCK
+ * and exits 0 on success, 1 on a refusal or failure, 2 on a usage error.
+ *
  * Exit codes:
  *  - 0 when the schema ends up present (migration applied or already there),
  *    AND when no database is configured at all — that is the supported
@@ -56,6 +61,9 @@ import { runMigration, getPool } from './db';
 import { getConfigAsync } from '../services/configService';
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { getDefaultLogger } from '@libs/logger';
+import {
+  parseRebuildIndexArgs, rebuildVectorIndex, RebuildIndexUsageError, RebuildIndexError, REBUILD_INDEX_USAGE,
+} from './rebuildIndex';
 
 const logger = getDefaultLogger();
 
@@ -67,7 +75,69 @@ function hasAnyDsnConfigured(): boolean {
   );
 }
 
-async function main(): Promise<void> {
+/** The DSN that may run DDL, chosen exactly as runMigration() chooses it. */
+function ddlDsn(): string | undefined {
+  return process.env.FILE_SEARCH_MIGRATION_DATABASE_URL || process.env.FILE_SEARCH_DATABASE_URL
+    || process.env.POSTGRES_URL;
+}
+
+async function rebuildIndexCommand(argv: string[]): Promise<void> {
+  let opts;
+  try {
+    opts = parseRebuildIndexArgs(argv);
+  } catch (error: any) {
+    if (!(error instanceof RebuildIndexUsageError)) throw error;
+    console.error(`rebuild-index: ${error.message}\n\n${REBUILD_INDEX_USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (opts.help) {
+    console.log(REBUILD_INDEX_USAGE);
+    return;
+  }
+  const dsn = ddlDsn();
+  if (!dsn) {
+    console.error('rebuild-index: no database configured (FILE_SEARCH_MIGRATION_DATABASE_URL, FILE_SEARCH_DATABASE_URL '
+      + 'or POSTGRES_URL)');
+    process.exitCode = 1;
+    return;
+  }
+  // The first Ctrl-C (or a SIGTERM from `docker stop`/Kubernetes) cancels the build and drops what it left;
+  // a second one exits at once.
+  const abort = new AbortController();
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (abort.signal.aborted) process.exit(130);
+    console.error(`rebuild-index: ${signal}: stopping and cleaning up (again to exit at once)`);
+    abort.abort();
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  try {
+    await rebuildVectorIndex(dsn, opts, { write: (line) => console.log(line), signal: abort.signal });
+  } catch (error: any) {
+    console.error(`rebuild-index: ${error instanceof RebuildIndexError ? error.message : `failed: ${error.message}`}`);
+    process.exitCode = 1;
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+  }
+}
+
+async function main(argv: string[] = []): Promise<void> {
+  if (argv[0] === 'rebuild-index') {
+    await rebuildIndexCommand(argv.slice(1));
+    return;
+  }
+  if (argv.length > 0) {
+    console.error(`file-search-migrate: unknown command ${argv[0]}; with no command it applies the migration\n\n`
+      + REBUILD_INDEX_USAGE);
+    process.exitCode = 2;
+    return;
+  }
+  await migrate();
+}
+
+async function migrate(): Promise<void> {
   const neverBlock = process.env.FILE_SEARCH_MIGRATE_NEVER_BLOCK === 'true';
 
   try {
@@ -136,7 +206,7 @@ async function main(): Promise<void> {
 }
 
 if (require.main === module) {
-  main().finally(() => {
+  main(process.argv.slice(2)).finally(() => {
     // configService.ts starts its own background timers outside standalone
     // mode (Valkey subscriber, periodic admin-service health checks) as a
     // side effect of being imported — those are meant to outlive the

@@ -40,9 +40,9 @@ describe('foldIncrements', () => {
     ];
     const out = counters.foldIncrements(records, (r) => r.email);
     expect(out).toEqual(expect.arrayContaining([
-      { email: 'a@test.com', day: '2026-09-07', currency: 'USD', requests: 2, tokens: 116, sapCost: 0.75 },
-      { email: 'a@test.com', day: '2026-09-07', currency: '', requests: 1, tokens: 3, sapCost: 0 },
-      { email: 'a@test.com', day: '2026-09-06', currency: 'EUR', requests: 1, tokens: 7, sapCost: 0.07 }
+      { email: 'a@test.com', day: '2026-09-07', currency: 'USD', requests: 2, tokens: 116, sapCost: 0.75, externalCost: 0 },
+      { email: 'a@test.com', day: '2026-09-07', currency: '', requests: 1, tokens: 3, sapCost: 0, externalCost: 0 },
+      { email: 'a@test.com', day: '2026-09-06', currency: 'EUR', requests: 1, tokens: 7, sapCost: 0.07, externalCost: 0 }
     ]));
     expect(out).toHaveLength(3);
   });
@@ -51,13 +51,30 @@ describe('foldIncrements', () => {
     const inc = counters.foldIncrements([
       { email: 'a@test.com', validFrom: '2026-09-07T09:00:00Z', inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 1, cacheReadInputTokens: 1000, sapCost: 0.5, sapCostCurrency: 'USD' }
     ], (r) => r.email);
-    expect(inc).toEqual([{ email: 'a@test.com', day: '2026-09-07', currency: 'USD', requests: 1, tokens: 16, sapCost: 0.5 }]);
+    expect(inc).toEqual([{ email: 'a@test.com', day: '2026-09-07', currency: 'USD', requests: 1, tokens: 16, sapCost: 0.5, externalCost: 0 }]);
+  });
+});
+
+describe('external Connection spend', () => {
+  it('an external row folds its listCost into externalCost under its currency', () => {
+    const out = counters.foldIncrements([
+      { email: 'a@test.com', validFrom: '2026-09-07T09:00:00Z', origin: 'external', inputTokens: 10, outputTokens: 5, sapCost: null, sapCostCurrency: null, listCost: 0.5, listCostCurrency: 'USD' }
+    ], (r) => r.email);
+    expect(out).toEqual([{ email: 'a@test.com', day: '2026-09-07', currency: 'USD', requests: 1, tokens: 15, sapCost: 0, externalCost: 0.5 }]);
+  });
+  it('quota windows count SAP and Connection spend in the quota currency only', () => {
+    const w = counters.windowsFromBuckets([
+      { day: '2026-09-02', currency: 'USD', requests: 1, tokens: 1, sapCost: 1, externalCost: 0.5 },
+      { day: '2026-09-02', currency: 'EUR', requests: 1, tokens: 1, sapCost: 0, externalCost: 2 }
+    ], new Date('2026-09-02T10:00:00Z'), 'USD');
+    expect(w.day.sapCost).toBe(1.5);
+    expect(w.day.sapCostByCurrency).toEqual({ USD: 1.5, EUR: 2 });
   });
 });
 
 describe('applyIncrements / readBuckets', () => {
   const inc = (day: string, currency: string, tokens: number, sapCost: number): counters.Increment =>
-    ({ email: 'a@test.com', day, currency, requests: 1, tokens, sapCost });
+    ({ email: 'a@test.com', day, currency, requests: 1, tokens, sapCost, externalCost: 0 });
   it('upserts: a second application adds to the same bucket; the read filters by day', async () => {
     await counters.applyIncrements(db, [inc('2026-09-07', 'USD', 10, 0.1), inc('2026-09-01', 'USD', 5, 0.05)]);
     await counters.applyIncrements(db, [inc('2026-09-07', 'USD', 10, 0.1)]);
@@ -76,7 +93,7 @@ describe('applyIncrements / readBuckets', () => {
 describe('windowsFromBuckets', () => {
   const NOW = new Date('2026-09-02T10:00:00Z');   // Wednesday: the ISO week began Monday Aug 31, last month
   const row = (day: string, currency: string, tokens: number, sapCost: number, requests = 1): counters.BucketRow =>
-    ({ email: 'a@test.com', day, currency, requests, tokens, sapCost });
+    ({ email: 'a@test.com', day, currency, requests, tokens, sapCost, externalCost: 0 });
   it('derives day, week (crossing the month boundary) and month; spend per currency, the quota currency on sapCost', () => {
     const w = counters.windowsFromBuckets([
       row('2026-08-31', 'USD', 100, 1),
@@ -140,7 +157,7 @@ describe('rebuild', () => {
   });
 
   it('rebuilds every user from the horizon on, honouring reset watermarks, signatures, fallbacks and AWS attribution', async () => {
-    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-09-06', currency: 'USD', requests: 9, tokens: 9, sapCost: 9 }]);   // stale, replaced
+    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-09-06', currency: 'USD', requests: 9, tokens: 9, sapCost: 9, externalCost: 0 }]);   // stale, replaced
     const r = await counters.rebuild(db, { now: NOW });
     expect(r.users).toBe(4);
     expect(await bucketsOf('a@test.com')).toEqual([
@@ -160,10 +177,25 @@ describe('rebuild', () => {
     expect(await bucketsOf('future@test.com')).toEqual([['2026-09-06', 'USD', 1, 10, 0.01]]);
   });
 
+  it('a database without external rows rebuilds to the same buckets as before', async () => {
+    await counters.rebuild(db, { now: NOW });
+    const all = await counters.readBuckets(db, ['a@test.com', 'b@test.com', 'r@test.com', 'future@test.com'], new Date('2026-01-01T00:00:00Z'));
+    expect(all.every((b) => b.externalCost === 0)).toBe(true);
+    expect(all.map((r) => [r.email, r.day, r.currency, r.requests, r.tokens, r.sapCost]).sort()).toEqual([
+      ['a@test.com', '2026-09-03', '', 1, 1000, 0],
+      ['a@test.com', '2026-09-07', 'USD', 2, 150, 0.15],
+      ['b@test.com', '2026-09-02', 'USD', 2, 11, 1.1],
+      ['b@test.com', '2026-09-04', 'USD', 1, 7, 0.7],
+      ['future@test.com', '2026-09-06', 'USD', 1, 10, 0.01],
+      ['r@test.com', '2026-09-05', 'USD', 1, 20, 0.02],
+      ['r@test.com', '2026-09-06', 'USD', 1, 30, 0.03]
+    ]);
+  });
+
   it('a scoped rebuild leaves other users alone and keeps buckets before the horizon', async () => {
     await counters.applyIncrements(db, [
-      { email: 'b@test.com', day: '2026-09-02', currency: 'USD', requests: 1, tokens: 1, sapCost: 1 },
-      { email: 'a@test.com', day: '2026-08-15', currency: 'USD', requests: 1, tokens: 1, sapCost: 1 }
+      { email: 'b@test.com', day: '2026-09-02', currency: 'USD', requests: 1, tokens: 1, sapCost: 1, externalCost: 0 },
+      { email: 'a@test.com', day: '2026-08-15', currency: 'USD', requests: 1, tokens: 1, sapCost: 1, externalCost: 0 }
     ]);
     await counters.rebuild(db, { emails: ['a@test.com'], now: NOW });
     expect(await bucketsOf('b@test.com')).toEqual([['2026-09-02', 'USD', 1, 1, 1]]);
@@ -171,7 +203,7 @@ describe('rebuild', () => {
   });
 
   it('a scoped rebuild for a user with only AWS usage scopes the AWS grouped read in SQL', async () => {
-    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-09-06', currency: 'USD', requests: 9, tokens: 9, sapCost: 9 }]);   // untouched: out of scope
+    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-09-06', currency: 'USD', requests: 9, tokens: 9, sapCost: 9, externalCost: 0 }]);   // untouched: out of scope
     await counters.rebuild(db, { emails: ['b@test.com'], now: NOW });
     expect(await bucketsOf('b@test.com')).toEqual([
       ['2026-09-02', 'USD', 2, 11, 1.1],
@@ -181,7 +213,7 @@ describe('rebuild', () => {
   });
 
   it('a full rebuild applies the retention: buckets older than 62 days go', async () => {
-    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-07-06', currency: 'USD', requests: 1, tokens: 1, sapCost: 1 }, { email: 'a@test.com', day: '2026-07-07', currency: 'USD', requests: 1, tokens: 1, sapCost: 1 }]);
+    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-07-06', currency: 'USD', requests: 1, tokens: 1, sapCost: 1, externalCost: 0 }, { email: 'a@test.com', day: '2026-07-07', currency: 'USD', requests: 1, tokens: 1, sapCost: 1, externalCost: 0 }]);
     await counters.rebuild(db, { now: NOW });
     expect((await bucketsOf('a@test.com')).map((b) => b[0])).toEqual(['2026-07-07', '2026-09-03', '2026-09-07']);
   });
@@ -193,5 +225,27 @@ describe('rebuild', () => {
     await db.run(cds.ql.DELETE.from(counters.BUCKETS));
     await db.run(cds.ql.DELETE.from(KEY_USAGE)); await db.run(cds.ql.DELETE.from(AWS_USAGE));
     expect(await counters.rebuildIfEmpty(db, NOW)).toBe(false);          // nothing to rebuild from
+  });
+
+  const teamRow = (validFrom: string) => ({ ...keyRow('a@test.com', validFrom, 40, 0.4, 'USD'), team_ID: 't-scope', teamName: 'Scope' });
+
+  it('emails and teamIds together rebuild both the user and the team buckets (carried Part A finding)', async () => {
+    await db.run(cds.ql.INSERT.into(KEY_USAGE).entries(teamRow('2026-09-06T10:00:00Z')));
+    const r = await counters.rebuild(db, { emails: ['a@test.com'], teamIds: ['t-scope'], now: NOW });
+    expect(r.users).toBe(1);
+    expect(r.teams).toBe(1);
+  });
+
+  it('an empty scope array rebuilds nothing on that side and never renders an empty IN list', async () => {
+    await counters.applyIncrements(db, [{ email: 'a@test.com', day: '2026-09-06', currency: 'EUR', requests: 9, tokens: 9, sapCost: 9, externalCost: 0 }]);
+    expect(await counters.rebuild(db, { teamIds: [], now: NOW })).toMatchObject({ users: 0, buckets: 0, teams: 0, teamBuckets: 0 });
+    expect(await bucketsOf('a@test.com')).toContainEqual(['2026-09-06', 'EUR', 9, 9, 9]);   // untouched
+    expect(await counters.rebuild(db, { emails: [], now: NOW })).toMatchObject({ users: 0, buckets: 0, teams: 0 });
+  });
+
+  it('rebuildTeamsIfEmpty looks only inside the window horizon', async () => {
+    await db.run(cds.ql.DELETE.from(counters.TEAM_BUCKETS));
+    await db.run(cds.ql.INSERT.into(KEY_USAGE).entries(teamRow('2026-06-01T10:00:00Z')));
+    expect(await counters.rebuildTeamsIfEmpty(db, NOW)).toBe(false);
   });
 });

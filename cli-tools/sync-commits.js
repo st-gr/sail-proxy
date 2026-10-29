@@ -217,7 +217,9 @@ function getFileContent(sourceDir, hash, filePath) {
     return execSync(`git show ${hash}:"${filePath}"`, {
       cwd: sourceDir,
       encoding: 'buffer',
-      stdio: 'pipe'
+      stdio: 'pipe',
+      // execSync's default 1 MB buffer failed every larger file (a 2.8 MB screenshot)
+      maxBuffer: 1024 * 1024 * 1024
     });
   } catch (error) {
     return null;
@@ -273,8 +275,11 @@ function applyCommit(sourceDir, destDir, commit, dryRun) {
       // Add or modify file
       const content = getFileContent(sourceDir, commit.hash, change.path);
       if (content === null) {
-        console.warn(`   ⚠️  Could not read file: ${change.path}`);
-        continue;
+        // A skipped file would leave the destination's tree short of the source's: stop instead.
+        console.error(`   ❌ Could not read file: ${change.path}`);
+        gitExec('git reset --hard HEAD', destDir, { silent: true });
+        gitExec('git clean -fd', destDir, { silent: true });
+        return false;
       }
 
       // Create parent directories if needed

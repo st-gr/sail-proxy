@@ -66,6 +66,44 @@ describe('pseudonymization on Gemini bodies', () => {
     expect(result.candidates[0].content.parts[1].functionCall.args.to).toBe('john@test.com');
     expect(result.candidates[0].content.parts[1].functionCall.args.retries).toBe(2);
   });
+
+  // Tool history in `contents`: the model's earlier calls (functionCall.args) and the client's
+  // tool results (functionResponse.response) reach the model like any other text.
+  it('masks string leaves of functionCall.args and functionResponse.response in the history', async () => {
+    const req: any = {
+      body: {
+        model: 'gemini-2.5-pro',
+        masking,
+        contents: [
+          { role: 'user', parts: [{ text: 'Look up the owner' }] },
+          { role: 'model', parts: [{ functionCall: { name: 'lookup', args: { email: 'john@test.com', limit: 3, tags: ['john@test.com'] } } }] },
+          { role: 'user', parts: [{ functionResponse: { name: 'lookup', response: { owner: { contact: 'Owner is john@test.com' }, count: 1 } } }] },
+        ],
+      },
+    };
+    const r = await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+
+    expect(r).toEqual({ stop: false });
+    expect(JSON.stringify(req.body.contents)).not.toContain('john@test.com');
+    const call = req.body.contents[1].parts[0].functionCall;
+    expect(call.name).toBe('lookup');
+    expect(call.args.email).toMatch(/^MASKED_EMAIL_/);
+    expect(call.args.limit).toBe(3);
+    expect(call.args.tags[0]).toMatch(/^MASKED_EMAIL_/);
+    const response = req.body.contents[2].parts[0].functionResponse;
+    expect(response.name).toBe('lookup');
+    expect(response.response.owner.contact).toMatch(/^Owner is MASKED_EMAIL_/);
+    expect(response.response.count).toBe(1);
+
+    // The model's next call that echoes the placeholder is restored for the client.
+    const token = req.__pseudonymizationMap.forward.get('john@test.com');
+    const result = await afterHandler({
+      req,
+      upstreamResponse: { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'send', args: { to: [token] } } }] }, finishReason: 'STOP' }] },
+      utils: { logger: mockLogger },
+    });
+    expect(result.candidates[0].content.parts[0].functionCall.args.to).toEqual(['john@test.com']);
+  });
 });
 
 /**
@@ -122,6 +160,18 @@ describe('installSseUnmaskInterceptor on Gemini stream frames', () => {
     expect(typeof token).toBe('string');
     return token as string;
   }
+
+  it('restores a placeholder in a streamed functionCall.args', async () => {
+    const { res, wire } = captureRes();
+    const token = await maskedRequest(res);
+
+    res.write(`data: ${JSON.stringify({
+      candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'send', args: { to: token, cc: [token] } } }] }, finishReason: 'STOP', index: 0 }],
+    })}\n\n`);
+
+    const frame = JSON.parse(wire().split('\n')[0].slice(6));
+    expect(frame.candidates[0].content.parts[0].functionCall.args).toEqual({ to: 'john@test.com', cc: ['john@test.com'] });
+  });
 
   it('reassembles a placeholder split across two frames and unmasks it', async () => {
     const { res, wire } = captureRes();

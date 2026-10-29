@@ -169,6 +169,33 @@ d('migration savepoints / non-owner re-application (requires FILE_SEARCH_TEST_DS
     }
   }, 60_000);
 
+  it('does NOT create fs_jobs on a non-owner install, names it, and reports unavailable', async () => {
+    // fs_jobs.store_id REFERENCES vector_stores, so fs_jobs is the same shape
+    // as vector_store_batches above: blocked on REFERENCES, reached only
+    // through the deploy step. Its backfill INSERT and indexes fail with it and
+    // roll back alone. Since re-embedding, columns of fs_jobs (and
+    // fs_reembed_items, which references it) are required schema, so the
+    // install reports unavailable rather than available-with-a-warning.
+    const db = await createFreshDatabase(DSN!, 'fs_sp_test_');
+    let role: { user: string; password: string; dsn: string } | null = null;
+    try {
+      await seedSchemaOwnedByAnotherRole(db.dsn, ['fs_reembed_items', 'fs_jobs']);
+      role = await createNonOwnerRole(db.dsn, db.name);
+
+      process.env.FILE_SEARCH_DATABASE_URL = role.dsn;
+      __resetForTests();
+      const warn = jest.spyOn(getDefaultLogger(), 'warn');
+      const ok = await runMigration();
+
+      expect(ok).toBe(false);
+      expect(await tableExists(db.dsn, 'fs_jobs')).toBe(false);
+      expect(warn).toHaveBeenCalledWith('FileSearchDb', expect.stringContaining('fs_jobs'));
+      expect(warn).toHaveBeenCalledWith('FileSearchDb', expect.stringContaining('file-search-migrate.js'));
+    } finally {
+      await db.drop(role ? [role.user] : []);
+    }
+  }, 60_000);
+
   it('leaves NOTHING behind when a first-ever migration cannot complete', async () => {
     // The counterweight to the test above: committing the statements that DID
     // succeed is correct when re-applying over a working install, and wrong on

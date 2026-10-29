@@ -11,7 +11,7 @@ sap.ui.define([
 			var oFx = expectations.expect.fixtures.library;
 			QUnit.module("Model library filters (" + expectations.role + ")");
 			opaTest("Filters narrow the grid; leaderboard and chart render", function (Given, When, Then) {
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN");
 				var iAll = oLib.seesAllModels ? oFx.allIds : oFx.memberIds.length;
 				Then.onTheLibrary.iSeeCards(iAll);
 				// the seed gives the user's two members different provisioning values, so the

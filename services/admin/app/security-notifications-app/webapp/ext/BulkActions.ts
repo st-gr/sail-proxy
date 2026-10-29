@@ -1,5 +1,21 @@
 import MessageToast from "sap/m/MessageToast";
 import MessageBox from "sap/m/MessageBox";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+
+let bundlePromise: Promise<ResourceBundle> | undefined;
+
+/** The app's i18n bundle, loaded once for the user's language. */
+function getBundle(): Promise<ResourceBundle> {
+    if (!bundlePromise) {
+        bundlePromise = ResourceBundle.create({
+            bundleName: "admin.securitynotifications.i18n.i18n",
+            async: true,
+            supportedLocales: ["", "de", "es", "fr", "it", "nl", "pt"],
+            fallbackLocale: ""
+        }) as Promise<ResourceBundle>;
+    }
+    return bundlePromise;
+}
 
 /**
  * Bulk action handlers for Security Notifications
@@ -12,9 +28,16 @@ export default {
      */
     onBulkMarkAsSeen: async function(oBindingContext: any, aSelectedContexts: any[]): Promise<void> {
         console.log("🎉 BulkActions.onBulkMarkAsSeen called!", { oBindingContext, aSelectedContexts });
-        
+        let bundle: ResourceBundle;
+        try {
+            bundle = await getBundle();
+        } catch (error) {
+            MessageBox.error(String(error));
+            return;
+        }
+
         if (!aSelectedContexts || aSelectedContexts.length === 0) {
-            MessageToast.show("Please select notifications to mark as seen");
+            MessageToast.show(bundle.getText("selectToMarkSeen") as string);
             return;
         }
 
@@ -38,11 +61,11 @@ export default {
                 await oListBinding?.refresh();
             }
             
-            MessageToast.show(`Marked ${aIDs.length} notification(s) as seen`);
+            MessageToast.show(bundle.getText("markedAsSeen", [aIDs.length]) as string);
             console.log("✅ Bulk mark as seen completed successfully");
-            
+
         } catch (oError) {
-            MessageToast.show("Error marking notifications as seen");
+            MessageToast.show(bundle.getText("errorMarkingSeen") as string);
             console.error("❌ Bulk mark as seen error:", oError);
         }
     },
@@ -51,21 +74,28 @@ export default {
      * Bulk action to delete selected notifications (admin only)
      * Called directly from Fiori Elements List Report actions
      */
-    onBulkDelete: function(oBindingContext: any, aSelectedContexts: any[]): void {
+    onBulkDelete: async function(oBindingContext: any, aSelectedContexts: any[]): Promise<void> {
         console.log("🎉 BulkActions.onBulkDelete called!", { oBindingContext, aSelectedContexts });
-        
+        let bundle: ResourceBundle;
+        try {
+            bundle = await getBundle();
+        } catch (error) {
+            MessageBox.error(String(error));
+            return;
+        }
+
         if (!aSelectedContexts || aSelectedContexts.length === 0) {
-            MessageToast.show("Please select notifications to delete");
+            MessageToast.show(bundle.getText("selectToDelete") as string);
             return;
         }
 
         const aIDs: string[] = aSelectedContexts.map((oContext: any) => oContext.getProperty("ID"));
         console.log("Selected notification IDs for deletion:", aIDs);
-        
+
         MessageBox.confirm(
-            `Delete ${aSelectedContexts.length} notification(s)?`,
+            bundle.getText("deleteConfirmBulk", [aSelectedContexts.length]) as string,
             {
-                title: "Confirm Deletion",
+                title: bundle.getText("confirmDeletionTitle") as string,
                 onClose: async (sAction: string) => {
                     if (sAction === MessageBox.Action.OK) {
                         try {
@@ -98,12 +128,12 @@ export default {
                                 }
                             } else {
                                 // Fallback message if response is not structured as expected
-                                MessageToast.show(`Processed ${aIDs.length} notification(s)`);
+                                MessageToast.show(bundle.getText("processedCount", [aIDs.length]) as string);
                             }
                             console.log("✅ Bulk delete completed:", oResponse);
-                            
+
                         } catch (oError) {
-                            MessageToast.show("Error deleting notifications");
+                            MessageToast.show(bundle.getText("errorDeleting") as string);
                             console.error("❌ Bulk delete error:", oError);
                         }
                     }

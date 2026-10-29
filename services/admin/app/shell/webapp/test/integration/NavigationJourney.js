@@ -11,7 +11,7 @@ sap.ui.define([
 			QUnit.module("Shell navigation (" + expectations.role + ")");
 			opaTest("The side navigation and the profile match the role matrix", function (Given, When, Then) {
 				// the real shell page (its own bootstrap + ushell mock), relative to this test page
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../../index.html?sap-language=EN");
 				Then.onTheShell.iSeeTheProfile(expectations.email, oShell.userRoleLabel);
 				Then.onTheShell.iSeeNavigationEntries(oShell.visibleNav, oShell.hiddenNav);
 				Then.iTeardownMyApp();

@@ -41,6 +41,18 @@ sap.ui.define([
 		})[0] || null;
 	}
 
+	// The teams table's rows: cells [team, catalog, pool profile, member profile, HBox of the two buttons].
+	function teamRow(oTable, sName) {
+		return oTable.getItems().filter(function (oItem) {
+			return oItem.getCells()[0].getText() === sName;
+		})[0] || null;
+	}
+	function teamButton(oRow, sText) {
+		return oRow.getCells()[4].getItems().filter(function (oButton) {
+			return oButton.getVisible() && oButton.getText() === sText;
+		})[0] || null;
+	}
+
 	// sap.m.MessageBox labels its standard actions from the sap.m library bundle
 	// (MessageBox.js: MessageBox._rb.getText("MSGBOX_" + sAction)), so a step that presses one
 	// must read that bundle rather than hardcode English - and read it from the application
@@ -179,6 +191,31 @@ sap.ui.define([
 							Opa5.assert.ok(true, "staged the unassignment of " + sEmail);
 						},
 						errorMessage: "no unassignable row for " + sEmail
+					});
+				},
+				iOpenTheAssignmentsTab: function () {
+					return this.waitFor({
+						id: "catalogTabs",
+						viewName: sView,
+						success: function (oTabBar) {
+							oTabBar.setSelectedKey("assignments");
+							Opa5.assert.strictEqual(oTabBar.getSelectedKey(), "assignments", "the Assignments tab is open");
+						}
+					});
+				},
+				iPressTeamButton: function (sName, sText) {
+					return this.waitFor({
+						id: "catalogTeamsTable",
+						viewName: sView,
+						check: function (oTable) {
+							var oRow = teamRow(oTable, sName);
+							return !!oRow && !!teamButton(oRow, sText);
+						},
+						success: function (oTable) {
+							teamButton(teamRow(oTable, sName), sText).firePress();
+							Opa5.assert.ok(true, "pressed " + sText + " on team " + sName);
+						},
+						errorMessage: "no '" + sText + "' button on team " + sName
 					});
 				},
 				iPressDeleteProfile: function () {
@@ -367,6 +404,23 @@ sap.ui.define([
 				},
 				// The row's second cell: the profile the user carries, "(unsaved)" while Save has
 				// not written the staged assignment yet.
+				// The team row's catalog cell (1) or profile cells (2 = pool, 3 = member); "(unsaved)" while staged.
+				iSeeTeamCell: function (sName, iCell, sText) {
+					var sLast = null;
+					return this.waitFor({
+						id: "catalogTeamsTable",
+						viewName: sView,
+						check: function (oTable) {
+							var oRow = teamRow(oTable, sName);
+							sLast = oRow ? oRow.getCells()[iCell].getText() : null;
+							return sLast === sText;
+						},
+						success: function () {
+							Opa5.assert.strictEqual(sLast, sText, "team " + sName + " shows \"" + sText + "\"");
+						},
+						errorMessage: "team " + sName + " never showed \"" + sText + "\" (last seen: " + sLast + ")"
+					});
+				},
 				iSeeAssignedProfile: function (sEmail, sText) {
 					var sLast = null;
 					return this.waitFor({
@@ -393,10 +447,10 @@ sap.ui.define([
 						check: function (oList) {
 							var aRows = itemsTitled(oList, sName);
 							sLast = aRows.length ? aRows[0].getInfo() : null;
-							return sLast === iCount + " users";
+							return sLast === "Assigned: " + iCount + " users, 0 teams";
 						},
 						success: function () {
-							Opa5.assert.strictEqual(sLast, iCount + " users", sName + " carries " + iCount + " user(s)");
+							Opa5.assert.strictEqual(sLast, "Assigned: " + iCount + " users, 0 teams", sName + " carries " + iCount + " user(s)");
 						},
 						errorMessage: sName + " never showed " + iCount + " users (last seen: " + sLast + ")"
 					});

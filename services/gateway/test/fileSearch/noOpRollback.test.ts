@@ -9,7 +9,7 @@
 // i.e. in production) turned a legitimate "nothing to do" outcome into a
 // thrown error:
 //
-//   - repository.ts's deleteStoreFile/deleteStoreCascade documented their
+//   - storeFiles.ts's deleteStoreFile/deleteStoreCascade documented their
 //     no-op branches as returning `{ deleted: false }` — "never a
 //     distinguishing error". A failing ROLLBACK on that branch broke that
 //     contract, surfacing as an unmapped 500 instead.
@@ -149,7 +149,7 @@ describe('a dying ROLLBACK on a no-op early-return path does not turn it into a 
     });
     mockPool = fakePool(client);
 
-    await expect(__commitChunksForTests('vs_1', 'file_1', [], [])).resolves.toBeUndefined();
+    await expect(__commitChunksForTests('vs_1', 'file_1', [], {})).resolves.toBe('skipped');
   });
 
   it('ingestWorker.commitChunks: resolves (does not throw, does not reach handleFailure) when the vector_store_files row is gone/not in_progress and ROLLBACK fails', async () => {
@@ -162,7 +162,7 @@ describe('a dying ROLLBACK on a no-op early-return path does not turn it into a 
     });
     mockPool = fakePool(client);
 
-    await expect(__commitChunksForTests('vs_1', 'file_1', [], [])).resolves.toBeUndefined();
+    await expect(__commitChunksForTests('vs_1', 'file_1', [], {})).resolves.toBe('skipped');
   });
 
   it('expirySweeper.sweepOneStore: resolves 0 and does NOT log a spurious "Failed to expire" error when the re-check race resolves the store and ROLLBACK fails', async () => {

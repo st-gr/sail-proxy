@@ -10,7 +10,7 @@ export function prepareCodexCatalog(model: string, homeCatalogPath?: string):
     return { skipped: true, note:
       `web_search skipped: no codex model catalog found. Seed it once with a run against OpenAI ` +
       `(e.g. OPENAI_API_KEY=<key> codex -c model_provider=openai -c model=${model} "hi"), then re-run. ` +
-      `See docs/user/chapter-5-codex.md.` };
+      `See https://st-gr.github.io/sail-proxy/guide/clients/codex.` };
   }
   let cat: any;
   try { cat = JSON.parse(readFileSync(src, 'utf8')); } catch {

@@ -46,6 +46,8 @@
  * @see responsesWebSearchPlugin.ts / webSearchPlugin.ts - the two callers
  */
 
+import { mapJsonStringLiterals } from '../../utils/jsonStringLeaves';
+
 /**
  * Replace every value the pseudonymization plugin masked in this request with the
  * placeholder it minted for it.
@@ -167,7 +169,12 @@ export function remaskResponsesItems(items: any[], req: any): any[] {
       out.content = remaskText(req, item.content);
     }
 
-    if (typeof item.arguments === 'string') out.arguments = remaskText(req, item.arguments);
+    // JSON text whose restored values are JSON-escaped (unmaskResponsesOutput restores it
+    // literal by literal): re-masked on the decoded literals, or a value containing `"`, `\`
+    // or a newline would not be found and would go upstream in clear.
+    if (typeof item.arguments === 'string') {
+      out.arguments = mapJsonStringLiterals(item.arguments, (s) => remaskText(req, s)) ?? remaskText(req, item.arguments);
+    }
     if (typeof item.output === 'string') out.output = remaskText(req, item.output);
 
     if (Array.isArray(item.summary)) {

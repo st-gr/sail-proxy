@@ -10,6 +10,7 @@
  */
 import * as crypto from 'crypto';
 import { mapCachedTokens } from './cacheBreakpoints';
+import { wholePromptTokens } from '../../utils/usageFolding';
 
 function itemId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(12).toString('hex')}`;
@@ -50,9 +51,14 @@ export function statusForFinishReason(
  *
  * A REGIME CONVERSION, done here because here is where the regime is known.
  *
- * What comes in is EXCLUSIVE: `prompt_tokens` counts only full-rate tokens, and
- * `prompt_tokens_details.cached_tokens` / `.cache_creation_tokens` are separate
- * counts alongside it. Measured, arm A2 of
+ * What comes in depends on the model family (`cacheRegimeFor`,
+ * utils/usageFolding.ts). For an OpenAI-family model it is already INCLUSIVE
+ * (probe of 2026-09-30, gpt-4.1-nano: prompt_tokens 1978 with cached_tokens 1792
+ * inside it) and passes through, as it does for Gemini (measured) and every other
+ * unlisted family (assumed). For Claude and Amazon Nova it is EXCLUSIVE (Nova
+ * measured 2026-09-30; the numbers below are Claude's): `prompt_tokens` counts
+ * only full-rate tokens, and `prompt_tokens_details.cached_tokens` /
+ * `.cache_creation_tokens` are separate counts alongside it. Measured, arm A2 of
  * test/fixtures/orchestration/bridge-cache-probe-result.md: prompt_tokens FLAT
  * at 14 across a write and a read turn while the cache field went 0 -> 17692.
  * (That was not always so. Before `requestTranslator.ts` stopped duplicating
@@ -92,7 +98,7 @@ export function statusForFinishReason(
  * at risk. Called with no usage at all it zero-fills, which is also the
  * streaming path's terminal-frame fallback.
  */
-export function translateUsage(usage: any): any {
+export function translateUsage(usage: any, modelName: string): any {
   const details = usage?.prompt_tokens_details || {};
   const promptTokens = usage?.prompt_tokens ?? 0;
   const outputTokens = usage?.completion_tokens ?? 0;
@@ -102,7 +108,7 @@ export function translateUsage(usage: any): any {
   const cacheWriteTokens = typeof details.cache_creation_tokens === 'number'
     ? details.cache_creation_tokens
     : 0;
-  const inputTokens = promptTokens + cachedTokens + cacheWriteTokens;
+  const inputTokens = wholePromptTokens(modelName, promptTokens, cacheWriteTokens, cachedTokens);
   return {
     input_tokens: inputTokens,
     input_tokens_details: { cached_tokens: cachedTokens, cache_write_tokens: cacheWriteTokens },
@@ -112,7 +118,10 @@ export function translateUsage(usage: any): any {
 }
 
 export interface TranslateOptions {
+  /** The client-facing model name, echoed as `response.model`. */
   model: string;
+  /** The model SAP is asked for; decides the usage regime (`cacheRegimeFor`). */
+  sapModel: string;
   responseId: string;
 }
 
@@ -201,8 +210,8 @@ export function translateOrchestrationResponse(envelope: any, opts: TranslateOpt
     model: opts.model,
     status,
     output,
-    // Exclusive SAP counts in, inclusive OpenAI counts out — see translateUsage.
-    usage: translateUsage(usage),
+    // SAP counts in (per-model regime), inclusive OpenAI counts out — see translateUsage.
+    usage: translateUsage(usage, opts.sapModel),
     error: null,
   };
   if (incomplete) response.incomplete_details = incomplete;

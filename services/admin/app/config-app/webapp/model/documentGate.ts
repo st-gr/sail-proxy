@@ -31,6 +31,7 @@
  */
 import { resolveRefsDeep, JsonSchemaNode } from './schemaForm';
 import { validateSection, validateSinkNames } from './validateSection';
+import { ENGLISH_MESSAGES, Translator } from './validationTexts';
 
 /** The six groups `api_config` may carry - the only keys its own `additionalProperties: false` allows. */
 const GROUPS = ['providers', 'models', 'capabilities', 'hooks', 'platform', 'observability'] as const;
@@ -56,12 +57,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `document` may be anything read back from `JSON.parse`: this is the one entry point the gate
  * gives an untrusted document, so it degrades to "invalid" rather than throwing on a shape it does
  * not expect.
+ *
+ * `t` words the messages (`./validationTexts`); omitted, they are the backend's English exactly.
  */
-export function evaluateApiConfigDocument(schema: Record<string, unknown>, document: unknown): DocumentGateResult {
+export function evaluateApiConfigDocument(
+    schema: Record<string, unknown>,
+    document: unknown,
+    t: Translator = ENGLISH_MESSAGES
+): DocumentGateResult {
     const root = schema as unknown as JsonSchemaNode;
 
     if (!isPlainObject(document)) {
-        return { valid: false, errors: [`Schema validation error at 'root': must be object`] };
+        return { valid: false, errors: [t('validationAt', ['root', t('validationType', ['object'])])] };
     }
 
     const apiConfig = document.api_config;
@@ -70,14 +77,14 @@ export function evaluateApiConfigDocument(schema: Record<string, unknown>, docum
         return { valid: true, errors: [] };
     }
     if (!isPlainObject(apiConfig)) {
-        return { valid: false, errors: [`Schema validation error at '/api_config': must be object`] };
+        return { valid: false, errors: [t('validationAt', ['/api_config', t('validationType', ['object'])])] };
     }
 
     const errors: string[] = [];
 
     for (const key of Object.keys(apiConfig)) {
         if (!GROUP_SET.has(key)) {
-            errors.push(`Schema validation error at '/api_config': must NOT have additional properties ('${key}')`);
+            errors.push(t('validationAt', ['/api_config', t('validationAdditionalNamed', [key])]));
         }
     }
 
@@ -89,13 +96,13 @@ export function evaluateApiConfigDocument(schema: Record<string, unknown>, docum
         }
         const pointer = `/api_config/${group}`;
         const groupSchema = resolveRefsDeep(apiConfigProperties[group as Group], root);
-        errors.push(...validateSection(groupSchema as unknown as object, apiConfig[group], pointer));
+        errors.push(...validateSection(groupSchema as unknown as object, apiConfig[group], pointer, t));
 
         if (group === 'observability') {
             const observability = apiConfig[group];
             const siem = isPlainObject(observability) ? observability.siem : undefined;
             if (siem !== undefined) {
-                errors.push(...validateSinkNames(siem, `${pointer}/siem`));
+                errors.push(...validateSinkNames(siem, `${pointer}/siem`, t));
             }
         }
     }

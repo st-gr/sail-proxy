@@ -1,5 +1,5 @@
 # ---- build stage: resolve ONLY ollama's dependencies -------------------------
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 
 RUN corepack enable && corepack prepare pnpm@10.12.4 --activate
 
@@ -67,12 +67,17 @@ RUN echo "inject-workspace-packages=true" >> .npmrc && \
     pnpm deploy --filter=ollama --prod /prod/ollama
 
 # ---- production stage --------------------------------------------------------
-FROM node:20-alpine
+FROM node:24-alpine
 
 # OCI provenance labels — connect the published image to its source repo on ghcr
 LABEL org.opencontainers.image.source="https://github.com/st-gr/sail-proxy" \
       org.opencontainers.image.licenses="AGPL-3.0" \
       org.opencontainers.image.description="SAIL-Proxy Ollama adapter — local model integration service"
+
+# libssl3/libcrypto3: node:24-alpine can lag Alpine's OpenSSL security releases (on node:20-alpine,
+# 0.10.0 shipped 3.5.6 with CVE-2026-14456 and CVE-2026-45447, both HIGH, fixed in 3.5.8). Upgrading them here
+# takes the fix whenever the base image has not caught up yet.
+RUN apk upgrade --no-cache libssl3 libcrypto3
 
 WORKDIR /usr/src/app
 
@@ -82,7 +87,7 @@ WORKDIR /usr/src/app
 # deleted afterwards.
 COPY --from=build /prod/ollama ./
 
-# npm ships in node:20-alpine and nothing here uses it (the entrypoint is
+# npm ships in node:24-alpine and nothing here uses it (the entrypoint is
 # `node`). Its own bundled tar@6.2.1 is a CRITICAL finding on its own, so remove
 # it for the same reason gateway.Dockerfile and admin.Dockerfile already do.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
@@ -110,7 +115,7 @@ ENV OLLAMA_HOST=0.0.0.0
 
 # Health check.
 #
-# wget, not curl: curl is NOT installed in node:20-alpine and this Dockerfile
+# wget, not curl: curl is NOT installed in node:24-alpine and this Dockerfile
 # never added it, so the previous `CMD curl -f …` could only ever fail — the
 # container sat in "starting" until it went unhealthy, regardless of the app.
 # busybox wget ships in the base image, so this needs no extra package (and no

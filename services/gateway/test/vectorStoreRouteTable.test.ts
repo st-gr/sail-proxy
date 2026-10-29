@@ -142,3 +142,50 @@ describe('the shared Files route table', () => {
     expect(handlerCount(openRouterRoutes, 'get', '/files/:id')).toBe(1);
   });
 });
+
+// The Uploads API (G12) is exposed wherever the Files API is: its own table, registered by its
+// own openai router and by the OpenRouter router, with the same auth shape, and mounted by
+// src/app.ts on the same prefixes behind the same NUL-byte guard.
+describe('the shared Uploads route table', () => {
+  // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
+  const { UPLOAD_ROUTES } = require('../src/routes/uploadRouteTable');
+  // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
+  const uploadsRoutes = require('../src/routes/uploadsRoutes').default;
+  // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
+  const filesRoutes = require('../src/routes/filesRoutes').default;
+  // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
+  const openRouterRoutes = require('../src/routes/openRouterRoutes').default;
+
+  const sortKey = (r: { method: string; path: string }): string => `${r.method} ${r.path}`;
+  const EXPECTED = ['post ', 'post /:id/parts', 'post /:id/complete', 'post /:id/cancel'];
+
+  it('declares exactly OpenAI\'s four upload routes', () => {
+    expect(UPLOAD_ROUTES.map((r: any) => `${r.method} ${r.path}`).sort()).toEqual([...EXPECTED].sort());
+  });
+
+  it('is registered in full on the openai router and on the OpenRouter router under /uploads', () => {
+    expect(registeredRoutes(uploadsRoutes).map(sortKey).sort())
+      .toEqual(EXPECTED.map((r) => r.replace(/^(\w+) (.*)$/, (_m, m, p) => `${m} ${p || '/'}`)).sort());
+    expect(registeredRoutes(openRouterRoutes).filter((r) => r.path === '/uploads' || r.path.startsWith('/uploads/')).map(sortKey).sort())
+      .toEqual(EXPECTED.map((r) => r.replace(/^(\w+) (.*)$/, (_m, m, p) => `${m} /uploads${p}`)).sort());
+  });
+
+  it('runs the same guard chain as POST /files on the openai router, and none of its own on OpenRouter', () => {
+    expect(handlerCount(uploadsRoutes, 'post', '/')).toBe(handlerCount(filesRoutes, 'post', '/'));
+    expect(handlerCount(uploadsRoutes, 'post', '/:id/parts')).toBe(4);
+    expect(handlerCount(openRouterRoutes, 'post', '/uploads/:id/complete')).toBe(1);
+  });
+
+  it('src/app.ts mounts it on the Files prefixes, behind the NUL-byte guard', () => {
+    // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
+    const source: string = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'app.ts'), 'utf8');
+    for (const prefix of ['/openai/api/v1', '/openai/v1']) {
+      expect(source).toContain(`app.use('${prefix}/files', filesRoutes);`);
+      expect(source).toContain(`app.use('${prefix}/uploads', uploadsRoutes);`);
+    }
+    const guarded = /app\.use\(\s*\[([^\]]*)\],\s*nulByteGuard,?\s*\)/.exec(source)![1];
+    for (const path of ['/openai/api/v1/uploads', '/openai/v1/uploads', '/openrouter/api/v1/uploads']) {
+      expect(guarded).toContain(`'${path}'`);
+    }
+  });
+});

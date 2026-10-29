@@ -44,67 +44,67 @@ annotate AdminService.MySecurityNotifications with @(
         { 
             $Type: 'UI.DataField', 
             Value: title, 
-            Label: 'Title',
+            Label: '{i18n>securityNotifications.title}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: severity, 
-            Label: 'Severity',
+            Label: '{i18n>securityNotifications.severity}',
             ![@UI.Importance]: #High
         },
         {
             $Type: 'UI.DataField',
             Value: eventType,
-            Label: 'Event Type',
+            Label: '{i18n>securityNotifications.eventType}',
             ![@UI.Importance]: #High
         },
         {
             $Type: 'UI.DataField',
             Value: clientIP,
-            Label: 'Client IP',
+            Label: '{i18n>securityNotifications.clientIp}',
             ![@UI.Importance]: #High
         },
         {
             $Type: 'UI.DataField',
             Value: eventDate,
-            Label: 'Event Date',
+            Label: '{i18n>securityNotifications.eventDate}',
             ![@UI.Importance]: #High
         },
         { 
             $Type: 'UI.DataField', 
             Value: seenAt, 
-            Label: 'Seen',
+            Label: '{i18n>securityNotifications.seen}',
             ![@UI.Importance]: #Medium
         },
         { 
             $Type: 'UI.DataField', 
             Value: pinned, 
-            Label: 'Pinned',
+            Label: '{i18n>securityNotifications.pinned}',
             ![@UI.Importance]: #Medium
         },
         { 
             $Type: 'UI.DataField', 
             Value: isSnoozed, 
-            Label: 'Snoozed',
+            Label: '{i18n>securityNotifications.snoozed}',
             ![@UI.Importance]: #Low
         },
         { 
             $Type: 'UI.DataField', 
             Value: dismissedAt, 
-            Label: 'Dismissed',
+            Label: '{i18n>securityNotifications.dismissed}',
             ![@UI.Importance]: #Low
         },
         { 
             $Type: 'UI.DataField', 
             Value: snoozeUntil, 
-            Label: 'Snoozed Until',
+            Label: '{i18n>securityNotifications.snoozedUntil}',
             ![@UI.Importance]: #Low
         },
         { 
             $Type: 'UI.DataField', 
             Value: createdAt, 
-            Label: 'Created',
+            Label: '{i18n>common.created}',
             ![@UI.Importance]: #Medium
         }
     ],
@@ -126,37 +126,37 @@ annotate AdminService.MySecurityNotifications with @(
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.markNotificationSeen', 
-            Label: 'Mark as Seen'
+            Label: '{i18n>securityNotifications.markAsSeen}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.markNotificationUnseen', 
-            Label: 'Mark as Unseen'
+            Label: '{i18n>securityNotifications.markAsUnseen}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.dismissNotification', 
-            Label: 'Dismiss'
+            Label: '{i18n>securityNotifications.dismiss}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.snoozeNotification', 
-            Label: 'Snooze'
+            Label: '{i18n>securityNotifications.snooze}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.pinNotification', 
-            Label: 'Pin'
+            Label: '{i18n>securityNotifications.pin}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.unpinNotification', 
-            Label: 'Unpin'
+            Label: '{i18n>securityNotifications.unpin}'
         },
         { 
             $Type: 'UI.DataFieldForAction',
             Action: 'AdminService.deleteSecurityNotification', 
-            Label: 'Delete',
+            Label: '{i18n>securityNotifications.delete}',
             Inline: false
         }
     ]
@@ -166,8 +166,8 @@ annotate AdminService.MySecurityNotifications with @(
 annotate AdminService.MySecurityNotifications with @(
     // Header Information
     UI.HeaderInfo: {
-        TypeName: 'Security Notification',
-        TypeNamePlural: 'Security Notifications', 
+        TypeName: '{i18n>securityNotifications.securityNotification}',
+        TypeNamePlural: '{i18n>securityNotifications.securityNotifications}', 
         Title: { Value: title },
         Description: { Value: eventType },
         ImageUrl: icon
@@ -177,7 +177,7 @@ annotate AdminService.MySecurityNotifications with @(
     UI.HeaderFacets: [
         { 
             $Type: 'UI.ReferenceFacet', 
-            Label: 'Status',
+            Label: '{i18n>common.status}',
             Target: '@UI.FieldGroup#HeaderSummary' 
         }
     ],
@@ -186,17 +186,17 @@ annotate AdminService.MySecurityNotifications with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: severity, 
-                Label: 'Severity'
+                Label: '{i18n>securityNotifications.severity}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: eventDate, 
-                Label: 'Event Date'
+                Label: '{i18n>securityNotifications.eventDate}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: type, 
-                Label: 'Type'
+                Label: '{i18n>securityNotifications.type}'
             }
         ]
     },
@@ -205,23 +205,23 @@ annotate AdminService.MySecurityNotifications with @(
     UI.Facets: [
         {
             $Type: 'UI.ReferenceFacet',
-            Label: 'Notification Details',
+            Label: '{i18n>securityNotifications.notificationDetails}',
             Target: '@UI.FieldGroup#Details'
         },
         {
             $Type: 'UI.ReferenceFacet', 
             Target: '@UI.FieldGroup#UserState',
-            Label: 'User State'
+            Label: '{i18n>securityNotifications.userState}'
         },
         {
             $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#ActionInfo', 
-            Label: 'Action Information'
+            Label: '{i18n>securityNotifications.actionInformation}'
         },
         {
             $Type: 'UI.ReferenceFacet',
             Target: '@UI.FieldGroup#Metadata', 
-            Label: 'Record Information'
+            Label: '{i18n>common.recordInformation}'
         }
     ],
     
@@ -231,52 +231,52 @@ annotate AdminService.MySecurityNotifications with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: title,
-                Label: 'Title'
+                Label: '{i18n>securityNotifications.title}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: message,
-                Label: 'Message'
+                Label: '{i18n>securityNotifications.message}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: eventType,
-                Label: 'Event Type'
+                Label: '{i18n>securityNotifications.eventType}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: severity,
-                Label: 'Severity'
+                Label: '{i18n>securityNotifications.severity}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: eventDate,
-                Label: 'Event Date'
+                Label: '{i18n>securityNotifications.eventDate}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: ownerEmail,
-                Label: 'Owner Email'
+                Label: '{i18n>common.ownerEmail}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: clientIP,
-                Label: 'Client IP'
+                Label: '{i18n>securityNotifications.clientIp}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: userAgent,
-                Label: 'User Agent'
+                Label: '{i18n>securityNotifications.userAgent}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: endpoint,
-                Label: 'Endpoint'
+                Label: '{i18n>securityNotifications.endpoint}'
             },
             {
                 $Type: 'UI.DataField',
                 Value: requestId,
-                Label: 'Request ID'
+                Label: '{i18n>securityNotifications.requestId}'
             }
         ]
     },
@@ -287,22 +287,22 @@ annotate AdminService.MySecurityNotifications with @(
             { 
                 $Type: 'UI.DataField',
                 Value: seenAt,
-                Label: 'Seen At'
+                Label: '{i18n>securityNotifications.seenAt}'
             },
             { 
                 $Type: 'UI.DataField',
                 Value: dismissedAt,
-                Label: 'Dismissed At'
+                Label: '{i18n>securityNotifications.dismissedAt}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: snoozeUntil,
-                Label: 'Snooze Until'
+                Label: '{i18n>securityNotifications.snoozeUntil}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: pinned,
-                Label: 'Pinned'
+                Label: '{i18n>securityNotifications.pinned}'
             }
         ]
     },
@@ -313,17 +313,17 @@ annotate AdminService.MySecurityNotifications with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: actionable,
-                Label: 'Actionable'
+                Label: '{i18n>securityNotifications.actionable}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: actionText,
-                Label: 'Action Text'
+                Label: '{i18n>securityNotifications.actionText}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: actionUrl,
-                Label: 'Action URL'
+                Label: '{i18n>securityNotifications.actionUrl}'
             }
         ]
     },
@@ -334,12 +334,12 @@ annotate AdminService.MySecurityNotifications with @(
             { 
                 $Type: 'UI.DataField', 
                 Value: type,
-                Label: 'Type'
+                Label: '{i18n>securityNotifications.type}'
             },
             { 
                 $Type: 'UI.DataField', 
                 Value: createdAt,
-                Label: 'Created At'
+                Label: '{i18n>common.createdAt}'
             }
         ]
     }
@@ -352,122 +352,122 @@ annotate AdminService.MySecurityNotifications with @(
 annotate AdminService.MySecurityNotifications with {
     // Core Identity Fields
     title @(
-        Common.Label: 'Title',
+        Common.Label: '{i18n>securityNotifications.title}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     message @(
-        Common.Label: 'Message',
+        Common.Label: '{i18n>securityNotifications.message}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: true
     );
     
     severity @(
-        Common.Label: 'Severity',
+        Common.Label: '{i18n>securityNotifications.severity}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     eventType @(
-        Common.Label: 'Event Type',
+        Common.Label: '{i18n>securityNotifications.eventType}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     eventDate @(
-        Common.Label: 'Event Date',
+        Common.Label: '{i18n>securityNotifications.eventDate}',
         Common.FieldControl: #ReadOnly
     );
     
     ownerEmail @(
-        Common.Label: 'Owner Email',
+        Common.Label: '{i18n>common.ownerEmail}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false,
         Communication.IsEmailAddress: true
     );
 
     clientIP @(
-        Common.Label: 'Client IP',
-        Common.QuickInfo: 'Address the gateway recorded for the request. With platform.security.trust_forwarded_for off (the default) this is the proxy in front of the gateway; switch it on behind nginx or the Istio ingress to record the caller. Empty for rotation notifications.',
+        Common.Label: '{i18n>securityNotifications.clientIp}',
+        Common.QuickInfo: '{i18n>securityNotifications.clientIpInfo}',
         Common.FieldControl: #ReadOnly
     );
     userAgent @(
-        Common.Label: 'User Agent',
+        Common.Label: '{i18n>securityNotifications.userAgent}',
         Common.FieldControl: #ReadOnly
     );
     endpoint @(
-        Common.Label: 'Endpoint',
+        Common.Label: '{i18n>securityNotifications.endpoint}',
         Common.FieldControl: #ReadOnly
     );
     requestId @(
-        Common.Label: 'Request ID',
+        Common.Label: '{i18n>securityNotifications.requestId}',
         Common.FieldControl: #ReadOnly
     );
 
     type @(
-        Common.Label: 'Type',
+        Common.Label: '{i18n>securityNotifications.type}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     // User State Fields
     seenAt @(
-        Common.Label: 'Seen At',
+        Common.Label: '{i18n>securityNotifications.seenAt}',
         Common.FieldControl: #ReadOnly
     );
     
     dismissedAt @(
-        Common.Label: 'Dismissed At',
+        Common.Label: '{i18n>securityNotifications.dismissedAt}',
         Common.FieldControl: #ReadOnly
     );
     
     snoozeUntil @(
-        Common.Label: 'Snooze Until',
+        Common.Label: '{i18n>securityNotifications.snoozeUntil}',
         Common.FieldControl: #ReadOnly
     );
     
     pinned @(
-        Common.Label: 'Pinned',
+        Common.Label: '{i18n>securityNotifications.pinned}',
         Common.FieldControl: #ReadOnly,
         UI.TextArrangement: #TextOnly
     );
     
     isSnoozed @(
-        Common.Label: 'Snoozed',
+        Common.Label: '{i18n>securityNotifications.snoozed}',
         Common.FieldControl: #ReadOnly,
         UI.TextArrangement: #TextOnly
     );
     
     // Action Information
     actionable @(
-        Common.Label: 'Actionable',
+        Common.Label: '{i18n>securityNotifications.actionable}',
         Common.FieldControl: #ReadOnly,
         UI.TextArrangement: #TextOnly
     );
     
     actionText @(
-        Common.Label: 'Action Text',
+        Common.Label: '{i18n>securityNotifications.actionText}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     actionUrl @(
-        Common.Label: 'Action URL',
+        Common.Label: '{i18n>securityNotifications.actionUrl}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false,
         UI.IsURL: true
     );
     
     icon @(
-        Common.Label: 'Icon',
+        Common.Label: '{i18n>securityNotifications.icon}',
         Common.FieldControl: #ReadOnly,
         UI.MultiLineText: false
     );
     
     // System Metadata - all read-only
     createdAt @(
-        Common.Label: 'Created At',
+        Common.Label: '{i18n>common.createdAt}',
         Common.FieldControl: #ReadOnly
     );
 };

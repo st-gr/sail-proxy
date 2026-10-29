@@ -46,13 +46,21 @@ describe('splitSqlStatements', () => {
   it('splits the real schema into individually executable statements', () => {
     const statements = splitSqlStatements(buildSchemaSql(3));
 
-    // Every statement is a complete DDL command, and none carries a stray
-    // terminator — the two ways a bad split shows up.
+    // Every statement is a complete DDL command (or the fs_jobs backfill
+    // INSERT, or a guarded DO block that adds a column, swaps a key or creates
+    // the approximate-search index on a new install), and
+    // none carries a stray terminator — the two ways a bad split shows up.
     expect(statements.length).toBeGreaterThan(20);
     for (const statement of statements) {
-      expect(statement).toMatch(/^(CREATE|ALTER|DROP)\s/);
+      expect(statement).toMatch(/^(CREATE|ALTER|DROP|INSERT INTO fs_jobs|DO \$\$)\s/);
       expect(statement.endsWith(';')).toBe(false);
     }
+    // A DO block stays one statement: its body's semicolons are not
+    // boundaries, so each block ends with its closing dollar quote.
+    const doBlocks = statements.filter((s) => s.startsWith('DO $$'));
+    expect(doBlocks.length).toBe(17);
+    for (const block of doBlocks) expect(block.endsWith('$$')).toBe(true);
+    expect(doBlocks.some((s) => s.includes('ADD PRIMARY KEY (store_id, file_id, generation, ord)'))).toBe(true);
     // The commentary above vector_store_batches contains prose that must not
     // become a statement of its own.
     expect(statements.some((s) => s.startsWith('CREATE TABLE IF NOT EXISTS vector_store_batches'))).toBe(true);

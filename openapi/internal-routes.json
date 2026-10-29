@@ -1,0 +1,739 @@
+{
+  "gateway": [
+    {
+      "method": "get",
+      "path": "/api/admin/api-config",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "patch",
+      "path": "/api/admin/api-config",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "put",
+      "path": "/api/admin/api-config",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/api-config/deployment-status",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/api-config/rate-limits",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/api-config/rate-limits",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/api-config/reset",
+      "reason": "Gateway configuration. Reachable only with the ADMIN_TO_GATEWAY service key (config:read/write, libs/service-auth/service-keys.ts) or, in standalone mode, by an operator without a credential (the npm launcher prints it as the configuration URL). No client and no service calls it: the admin serves its own /api/api-config (services/admin/src/srv/config-rest-api.ts) and does not proxy to this route.",
+      "upstream": "Gateway configuration (api_config.json)",
+      "credential": "ADMIN_TO_GATEWAY service key; none in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/api-keys",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/api-keys",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/api-keys/revoke-by-email",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/api-keys/{id}",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "patch",
+      "path": "/api/admin/api-keys/{id}",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "patch",
+      "path": "/api/admin/api-keys/{key}/revoke",
+      "reason": "Operator key management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/apikey.ts, src/utils/api-key-manager.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway API key store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/connections/{id}/models",
+      "reason": "The admin service's Connections client (services/admin/src/services/gatewayConnectionsClient.ts) with the ADMIN_TO_GATEWAY service key (connections:read): the connection test and the upstream model list for the Connections app. The gateway calls the provider with the decrypted credential; answers carry a reason code, never the provider's text. Not mounted in standalone mode.",
+      "upstream": "The Connection's provider (Azure OpenAI, OpenAI)",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/connections/{id}/test",
+      "reason": "The admin service's Connections client (services/admin/src/services/gatewayConnectionsClient.ts) with the ADMIN_TO_GATEWAY service key (connections:read): the connection test and the upstream model list for the Connections app. The gateway calls the provider with the decrypted credential; answers carry a reason code, never the provider's text. Not mounted in standalone mode.",
+      "upstream": "The Connection's provider (Azure OpenAI, OpenAI)",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/deployments",
+      "reason": "The admin service's Model Library client (services/admin/src/services/gatewayDeploymentClient.ts) with the ADMIN_TO_GATEWAY service key (deployments:read/write); not mounted in standalone mode.",
+      "upstream": "SAP AI Core deployments API",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/deployments",
+      "reason": "The admin service's Model Library client (services/admin/src/services/gatewayDeploymentClient.ts) with the ADMIN_TO_GATEWAY service key (deployments:read/write); not mounted in standalone mode.",
+      "upstream": "SAP AI Core deployments API",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/deployments/{id}",
+      "reason": "The admin service's Model Library client (services/admin/src/services/gatewayDeploymentClient.ts) with the ADMIN_TO_GATEWAY service key (deployments:read/write); not mounted in standalone mode.",
+      "upstream": "SAP AI Core deployments API",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/blob-storage",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/blob-storage/migrate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/blob-storage/test",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/failed",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/admin/files/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/jobs",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/jobs/{job_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/jobs/{job_id}/cancel",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/jobs/{job_id}/failures",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/jobs/{job_id}/retry",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/overview",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/reembed-outdated",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/reembed-outdated/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/storage",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/stores",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/admin/stores/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/chunking",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/stores/{id}/chunking/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/files/{file_id}/retry",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/reembed",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/stores/{id}/reembed/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/reextract",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/admin/stores/{id}/reextract/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/share",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/admin/stores/{id}/unshare",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/admin/teams/{teamId}/shares",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/file-attachments",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/files/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/files/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/files/{id}/content",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/jobs",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/jobs/{job_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/jobs/{job_id}/cancel",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/jobs/{job_id}/failures",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/jobs/{job_id}/retry",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/status",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/storage",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/stores/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/chunking",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/chunking/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/file_batches",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/file_batches/{batch_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/file_batches/{batch_id}/cancel",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/file_batches/{batch_id}/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/files",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/api/admin/grounding/stores/{id}/files/{file_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/files/{file_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/files/{file_id}",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/files/{file_id}/content",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/files/{file_id}/retry",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/reembed",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/reembed/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/reextract",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/api/admin/grounding/stores/{id}/reextract/estimate",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/search",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/share-team",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/api/admin/grounding/stores/{id}/unshare-team",
+      "reason": "The cockpit's Grounding layer: called by the admin service (services/admin/src/services/groundingGatewayClient.ts) with the ADMIN_TO_GATEWAY service key (grounding:user) on behalf of the signed-in user; not mounted in standalone mode. Clients use the OpenAI-compatible Files, Uploads and Vector Stores routes.",
+      "upstream": "Gateway file store for the file_search tool",
+      "credential": "ADMIN_TO_GATEWAY service key; not mounted in standalone mode",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/aws/api-keys",
+      "reason": "Operator AWS credential management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/awscred.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway AWS credential store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "post",
+      "path": "/aws/api-keys",
+      "reason": "Operator AWS credential management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/awscred.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway AWS credential store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "patch",
+      "path": "/aws/api-keys/set-keys",
+      "reason": "Operator AWS credential management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/awscred.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway AWS credential store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "delete",
+      "path": "/aws/api-keys/{accessKeyId}",
+      "reason": "Operator AWS credential management. Called only by the npm launcher (npm-dist/sail-proxy src/commands/server.ts, src/commands/awscred.ts); gatewayStandaloneOnlyAuth answers 403 outside standalone mode.",
+      "upstream": "Gateway AWS credential store",
+      "credential": "None; served in standalone mode only (403 otherwise)",
+      "section": "Administration"
+    },
+    {
+      "method": "get",
+      "path": "/docs",
+      "reason": "npm gateway's own API page (local deploy target, loopback only)",
+      "upstream": "The gateway itself (services/gateway/src/routes/apiDocsRoutes.ts)",
+      "credential": "None",
+      "section": "Local API page"
+    },
+    {
+      "method": "get",
+      "path": "/docs/init.js",
+      "reason": "npm gateway's own API page (local deploy target, loopback only)",
+      "upstream": "The gateway itself (services/gateway/src/routes/apiDocsRoutes.ts)",
+      "credential": "None",
+      "section": "Local API page"
+    }
+  ],
+  "adminRest": [
+    {
+      "method": "get",
+      "path": "/health",
+      "reason": "Liveness probe, no sign-in. /api/health is answered by services/admin/src/index.ts before the sign-in middleware (the config router's own GET /health under /api is never reached behind it); nginx serves it as /admin/api/health to internal networks only (the Docker and Kubernetes health checks) and denies every other source."
+    },
+    {
+      "method": "post",
+      "path": "/logout",
+      "reason": "Cockpit sign-out: the shell (services/admin/app/shell/webapp/controller/App.controller.ts) posts to /admin/logout, which nginx rewrites to /api/logout. It answers where the browser goes next (the oauth2-proxy sign-out URL or the configured logout page); it is part of the cockpit's sign-in flow, not an API for other clients."
+    },
+    {
+      "method": "get",
+      "path": "/notifications/stream",
+      "reason": "The cockpit's notification stream (Server-Sent Events): the shell (services/admin/app/shell/webapp/controller/App.controller.ts) opens /admin/api/notifications/stream, an nginx location of its own without buffering. It pushes events to the open cockpit; it is not a request and response API."
+    },
+    {
+      "method": "get",
+      "path": "/docs",
+      "reason": "The API reference page itself (Swagger UI), a static subtree mounted at /api/docs in src/index.ts behind the sign-in: the page, its init script, the Swagger UI files and the four OpenAPI documents. It is the viewer of this document, not an API a client calls, so it is not described in it."
+    }
+  ],
+  "ollama": []
+}

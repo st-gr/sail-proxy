@@ -238,7 +238,8 @@ function fieldName(name: string): string {
  * Two independent size caps, both enforced DURING the stream so nothing oversized is ever
  * fully buffered: `maxBytes` over the total bytes consumed across every part, and the
  * optional `maxFileBytes` over each single file part (reported as `tooLarge` with
- * `tooLargeField`). Either one tears the request down.
+ * `tooLargeField`). Either one pauses the request's readable side (never destroys it —
+ * the caller still has to answer on this connection; see the callers' tooLarge branches).
  */
 export function parseMultipartFields(
   req: Readable,
@@ -274,7 +275,13 @@ export function parseMultipartFields(
         totalBytes += chunk.length;
         if (totalBytes > opts.maxBytes) {
           finish({ tooLarge: true, truncated, error: null, files: [], fields: {} });
-          (req as any).destroy?.();
+          // Pause, don't destroy: the caller's tooLarge response is written on
+          // this same connection a few microticks later, and destroying it here
+          // raced that response, delivering ECONNRESET/EPIPE instead of the JSON
+          // body. The 'data' listener is already gone (removed by `finish`
+          // above), so this just applies backpressure until the caller answers
+          // and closes the connection itself.
+          (req as any).pause?.();
           return;
         }
         if (!active || active.kind === 'skip') return;
@@ -296,7 +303,9 @@ export function parseMultipartFields(
           // Per-file cap, enforced here rather than after `onEnd`: a post-hoc check has already
           // buffered the whole upload (up to `maxBytes`) before refusing it.
           finish({ tooLarge: true, tooLargeField: active.field, truncated, error: null, files: [], fields: {} });
-          (req as any).destroy?.();
+          // See the totalBytes cap above: pause, don't destroy — the caller's
+          // response still has to reach the client on this connection.
+          (req as any).pause?.();
           return;
         }
         active.chunks.push(chunk);

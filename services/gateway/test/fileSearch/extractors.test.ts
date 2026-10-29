@@ -1,12 +1,24 @@
 import { extractText, isSupportedExtension, UnsupportedFileTypeError }
   from '../../src/fileSearch/extractors/registry';
+import { DocumentReadError } from '../../src/fileSearch/extractors/ooxml/limits';
 
 describe('extension support', () => {
-  it.each(['txt','md','json','py','js','ts','c','cpp','cs','go','java','php','rb','sh','css','html','tex','docx','odt','epub','rst','pdf'])
+  it.each(['txt','md','json','py','js','ts','c','cpp','cs','go','java','php','rb','sh','css','html','tex','docx','odt','epub','rst','pdf','pptx','xlsx'])
     ('supports .%s', (e) => expect(isSupportedExtension(e)).toBe(true));
 
-  it.each(['pptx','doc'])('rejects .%s as a documented gap', (e) =>
+  it.each(['xls','ppt'])('rejects .%s as a documented gap', (e) =>
     expect(isSupportedExtension(e)).toBe(false));
+
+  // .doc follows antiword's availability and FILE_SEARCH_DOC (legacyDoc.test.ts).
+  it('rejects .doc where FILE_SEARCH_DOC switches it off', () => {
+    const saved = process.env.FILE_SEARCH_DOC;
+    process.env.FILE_SEARCH_DOC = 'off';
+    try {
+      expect(isSupportedExtension('doc')).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.FILE_SEARCH_DOC; else process.env.FILE_SEARCH_DOC = saved;
+    }
+  });
 
   it('is case-insensitive and tolerates a leading dot', () => {
     expect(isSupportedExtension('.TXT')).toBe(true);
@@ -60,15 +72,27 @@ describe('direct read', () => {
 });
 
 describe('unsupported types', () => {
-  it('throws UnsupportedFileTypeError naming the type for .pptx', async () => {
-    await expect(extractText('deck.pptx', Buffer.from('x'), {}))
+  it('throws UnsupportedFileTypeError naming the type for .ppt (the legacy binary format)', async () => {
+    await expect(extractText('deck.ppt', Buffer.from('x'), {}))
       .rejects.toThrow(UnsupportedFileTypeError);
-    await expect(extractText('deck.pptx', Buffer.from('x'), {})).rejects.toThrow(/pptx/);
+    await expect(extractText('deck.ppt', Buffer.from('x'), {})).rejects.toThrow(/\.ppt\b/);
   });
 
-  it('throws UnsupportedFileTypeError naming the type for .doc', async () => {
-    await expect(extractText('report.doc', Buffer.from('x'), {}))
-      .rejects.toThrow(/doc/);
+  it('a .pptx or .xlsx that is not a zip is a DocumentReadError (permanent), not an unsupported type', async () => {
+    await expect(extractText('deck.pptx', Buffer.from('x'), {})).rejects.toThrow(DocumentReadError);
+    await expect(extractText('book.xlsx', Buffer.from('x'), {})).rejects.toThrow(/^Could not read the Excel file/);
+  });
+
+  it('throws an UnsupportedFileTypeError naming legacy .doc where FILE_SEARCH_DOC switches it off', async () => {
+    const saved = process.env.FILE_SEARCH_DOC;
+    process.env.FILE_SEARCH_DOC = 'off';
+    try {
+      const error = await extractText('report.doc', Buffer.from('x'), {}).catch((e) => e);
+      expect(error).toBeInstanceOf(UnsupportedFileTypeError);
+      expect(error.message).toBe('legacy .doc files are not supported on this deployment');
+    } finally {
+      if (saved === undefined) delete process.env.FILE_SEARCH_DOC; else process.env.FILE_SEARCH_DOC = saved;
+    }
   });
 
   it('rejects an extension with no dot in the filename', async () => {

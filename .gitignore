@@ -59,6 +59,8 @@ ci/.ci-backup-*
 ci/.ci-backup-location
 # UI journey reports (HTML, JUnit, screenshots, fixtures.json) written by ci/scripts/ui-journeys
 ci/reports/
+# file_search evaluation results (services/gateway/scripts/file-search-eval.ts)
+ci/file-search-eval/results/
 
 # Admin service Postgres database backups (local docker or Kyma —
 # dumps contain real API keys/credentials, never commit)
@@ -91,6 +93,8 @@ Thumbs.db
 .env
 services/admin/.env
 services/gateway/.env
+# Standalone connections file beside the dev api_config.json: it holds provider secrets
+services/gateway/connections.json
 test/.env
 ollama-adapter/.env
 .claude
@@ -102,10 +106,15 @@ admin-db-export/
 
 # Kubernetes & Kyma - Generated manifests and secrets (created by setup-kyma.js)
 kyma/manifests/
+# Renders for any namespace other than sail-proxy (setup-kyma.js --namespace <ns>)
+kyma/deployments/
 kyma/templates/secrets/*.yaml
 kyma/templates/configmaps/*.yaml
 !kyma/templates/secrets/.gitkeep
 !kyma/templates/configmaps/.gitkeep
+
+# SAP relay for private CI: rendered manifests carry the relay host and its path key
+ci/sap-relay/.rendered/
 
 # Docker configuration (user-specific and generated)
 docker/.env.auth
@@ -127,3 +136,18 @@ docs/superpowers/
 # Competitive analysis and positioning notes. Fully ignored: this repo is public,
 # so even a tracked stub naming the analysis would disclose internal strategy.
 docs/competitive/
+
+# VitePress site
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.vitepress/theme/fonts/
+docs/.generated/
+docs/public/generated/
+docs/public/openapi/
+.superpowers/
+
+# Screencast toolkit: recordings, keys and the redaction map never leave this machine
+screencast/out/
+screencast/redact.local.json
+screencast/redact.extra.local.json
+screencast/videos/*/clips/

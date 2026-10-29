@@ -3,7 +3,7 @@ apiVersion: gateway.kyma-project.io/v2
 kind: APIRule
 metadata:
   name: sail-proxy
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: sail-proxy
 spec:
@@ -24,7 +24,7 @@ spec:
 # kind: APIRule
 # metadata:
 #   name: sail-proxy-admin
-#   namespace: sail-proxy
+#   namespace: __NAMESPACE__
 #   labels:
 #     app: sail-proxy
 # spec:

@@ -49,6 +49,25 @@ describe('nulByteGuard — called directly (function-level)', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('rejects a NUL byte in a file batch files[].file_id', () => {
+    const { res, nexted } = run({ params: {}, query: {}, body: { files: [{ file_id: 'file-ok' }, { file_id: 'file-\0' }] } });
+    expect(nexted).toBe(false);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a NUL byte inside an upload completion\'s part_ids', () => {
+    const { res, nexted } = run({ params: {}, query: {}, body: { part_ids: ['part_ok', 'part_\0'] } });
+    expect(nexted).toBe(false);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('does not crash on a malformed files field (left to the handler\'s 400)', () => {
+    for (const files of ['file-x', [null, 'file-y', 7], { file_id: 'x' }]) {
+      const { nexted } = run({ params: {}, query: {}, body: { files } });
+      expect(nexted).toBe(true);
+    }
+  });
+
   it('rejects a NUL byte in a pagination cursor', () => {
     const { res, nexted } = run({ params: {}, query: { after: 'vs_\0cursor' }, body: {} });
     expect(nexted).toBe(false);
@@ -127,7 +146,7 @@ describe('nulByteGuard — mounted through Express (router.param covers req.para
   beforeAll((done) => {
     app = express();
     app.use(express.json());
-    // Mirrors src/index.ts's mount: the app.use-level guard covers the
+    // Mirrors src/app.ts's mount: the app.use-level guard covers the
     // body/query surface; router.param (registered inside the route files)
     // covers path params. Both are exercised here exactly as in production.
     app.use(

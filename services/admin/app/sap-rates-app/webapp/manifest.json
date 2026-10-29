@@ -7,14 +7,20 @@
             "bundleUrl": "i18n/i18n.properties",
             "supportedLocales": [
                 "",
-                "en"
+                "en",
+                "de",
+                "es",
+                "fr",
+                "it",
+                "nl",
+                "pt"
             ],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "SAP Capacity Unit Prices",
+        "title": "{{sapCapacityUnitPrices}}",
         "description": "Maintenance UI for SAP Capacity-Unit-to-currency prices",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -82,7 +88,13 @@
                     "bundleUrl": "i18n/i18n.properties",
                     "supportedLocales": [
                         "",
-                        "en"
+                        "en",
+                        "de",
+                        "es",
+                        "fr",
+                        "it",
+                        "nl",
+                        "pt"
                     ],
                     "fallbackLocale": "en",
                     "async": true
@@ -158,7 +170,7 @@
                                     "actions": {
                                         "FieldHelp": {
                                             "press": "admin.saprates.ext.FieldHelp.onFieldHelp",
-                                            "text": "Field Help",
+                                            "text": "{{fieldHelpTitle}}",
                                             "visible": true,
                                             "enabled": true,
                                             "requiresSelection": false,

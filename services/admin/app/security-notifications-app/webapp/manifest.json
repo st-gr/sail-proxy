@@ -5,13 +5,13 @@
         "type": "application",
         "i18n": {
             "bundleUrl": "i18n/i18n.properties",
-            "supportedLocales": ["", "en"],
+            "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "Security Notifications",
+        "title": "{{appTitle}}",
         "description": "Administration interface for Security Notifications management",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -77,7 +77,7 @@
                 "type": "sap.ui.model.resource.ResourceModel",
                 "settings": {
                     "bundleUrl": "i18n/i18n.properties",
-                    "supportedLocales": ["", "en"],
+                    "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
                     "fallbackLocale": "en",
                     "async": true
                 }
@@ -142,14 +142,14 @@
                                             "press": "admin.securitynotifications.ext.BulkActions.onBulkMarkAsSeen",
                                             "visible": true,
                                             "enabled": true,
-                                            "text": "Mark as Seen",
+                                            "text": "{{markAsSeen}}",
                                             "requiresSelection": true
                                         },
                                         "BulkDelete": {
                                             "press": "admin.securitynotifications.ext.BulkActions.onBulkDelete",
                                             "visible": "{= ${user>/isAdmin} === true}",
                                             "enabled": "{= ${user>/isAdmin} === true}",
-                                            "text": "Delete",
+                                            "text": "{{deleteNotification}}",
                                             "requiresSelection": true
                                         }
                                     }

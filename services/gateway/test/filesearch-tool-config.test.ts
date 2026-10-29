@@ -159,12 +159,26 @@ describe('getFileSearchConfig — fallback defaults (file_search block entirely 
         hybrid: {
           rrfK: 60,
           lexicalEnabled: true,
+          lexicalQuery: 'any',
           candidates: 50,
-          rerank: { enabled: 'auto', model: 'cohere-reranker' },
+          rerank: { enabled: 'auto', model: 'cohere-reranker', input: 'context_and_text' },
         },
-        chunking: { maxChunkSizeTokens: 800, chunkOverlapTokens: 400 },
+        ann: { enabled: false, exactMaxChunks: 20000, minFraction: 0.05 },
+        chunking: { strategy: 'static', maxChunkSizeTokens: 800, chunkOverlapTokens: 400, contextual: false },
+        contextual: {
+          model: 'gemini-3.5-flash-lite', maxDocumentTokens: 32000, concurrency: 4, requestTimeoutMs: 30000, fileDeadlineMs: 360000,
+          maxInputTokensPerFile: 20000000,
+        },
+        parentSections: { maxTokens: 1500, scope: 'tool' },
         limits: { maxFileBytes: 33554432, maxTokensPerFile: 5000000, maxFilesPerStore: 10000 },
         ingestion: { concurrency: 4, extractTimeoutMs: 60000, maxRetries: 3 },
+        parsing: {
+          ocr: { languages: ['eng'] },
+          vision: {
+            model: 'gemini-3.5-flash-lite', defaultMode: 'off', maxPagesPerFile: 50, concurrency: 2, requestTimeoutMs: 90000,
+            fileDeadlineMs: 240000, maxInputTokensPerFile: 150000, maxOutputTokensPerFile: 120000,
+          },
+        },
         blobStorage: {
           backend: 'db',
           localPath: '/var/lib/sail-proxy/blobs',

@@ -22,6 +22,69 @@ const readline = require('readline');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const { PromptSession } = require('./setup-flow/session');
+const { askKeyRegeneration, askSecret, mask } = require('./setup-flow/secrets');
+const { BILLING_KEYS, askBilling, billingToWrite, billingFromEnv, applyBillingToEnvText, isValidBillingValue } = require('./setup-flow/billing');
+const { readDockerConfigValues, isExternalLdap, usesImageRegistry, githubTeam } = require('./setup-flow/docker-config');
+
+// VALIDATION_TOKEN_SECRET values anyone can know: the built-in default and the .env.sample
+// placeholder. The admin and gateway refuse both outside development, so an existing .env holding
+// one is treated as unset. Mirrors REJECTED_VALIDATION_TOKEN_SECRETS in
+// libs/aws-token-validation/validation-token-secrets.ts (TypeScript, which this plain-node script
+// cannot load); services/gateway/test/setup-docker-validation-secret.test.ts pins them equal.
+const PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS = [
+  'dev-secret-change-in-production',
+  'generate-a-secure-64-character-hex-string'
+];
+
+// Generated values a re-run keeps from the current configuration unless the user regenerates them
+// (the gateway's shared secrets and the admin's credential keys are carried over separately).
+const KEPT_GENERATED_SECRETS = [
+  'AWS_SECRET_ENCRYPTION_KEY',
+  'FILE_SEARCH_RUNTIME_PASSWORD',
+  'OAUTH2_PROXY_CLIENT_SECRET',
+  'OAUTH2_PROXY_COOKIE_SECRET'
+];
+
+function validateDatabaseUsername(input) {
+  if (!input || input.trim().length === 0) {
+    return 'Database username is required';
+  }
+  // PostgreSQL identifier rules
+  if (!/^[a-zA-Z_][a-zA-Z0-9_$]*$/.test(input)) {
+    return 'Username must start with a letter or underscore, followed by letters, numbers, underscores, or dollar signs';
+  }
+  // PostgreSQL restriction: role names cannot start with "pg_"
+  if (input.toLowerCase().startsWith('pg_')) {
+    return 'Username cannot start with "pg_" (reserved for PostgreSQL system roles)';
+  }
+  // Length limit (PostgreSQL NAMEDATALEN = 63 bytes)
+  if (input.length > 63) {
+    return 'Username cannot exceed 63 characters';
+  }
+  return true;
+}
+
+function validateDatabasePassword(input) {
+  if (!input || input.trim() === '' || input.trim().length >= 8) return true;
+  return 'Password must be at least 8 characters long';
+}
+
+function validateBaseUrl(input) {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return 'URL is required';
+  }
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return 'Please enter a valid URL starting with http:// or https://';
+  }
+  return true;
+}
+
+function validateRequired(message) {
+  return (input) => (String(input).trim() ? true : message);
+}
+
 // Check for help/version flags BEFORE loading inquirer
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h') || args.includes('help')) {
@@ -68,7 +131,6 @@ Files created/modified:
   - docker/dex.config.yaml
   - docker/.env.auth
   - docker/nginx.conf
-  - docker/njs/jwt.js
   `);
   process.exit(0);
 }
@@ -236,9 +298,10 @@ const PROVIDER_PROMPTS = {
   github: [
     { key: 'GITHUB_CLIENT_ID', prompt: 'GitHub OAuth App Client ID', required: true },
     { key: 'GITHUB_CLIENT_SECRET', prompt: 'GitHub OAuth App Client Secret', required: true, secret: true },
-    { key: 'GITHUB_ORG', prompt: 'GitHub Organization name', required: true },
-    { key: 'GITHUB_ADMIN_TEAM', prompt: 'Admin team name', default: 'admins' },
-    { key: 'GITHUB_USER_TEAM', prompt: 'User team name', default: 'users' },
+    // Dex matches team names inside the organization, so "my-org/admins" never matches.
+    { key: 'GITHUB_ORG', prompt: 'GitHub Organization name (the org that owns the teams, not a team)', required: true },
+    { key: 'GITHUB_ADMIN_TEAM', prompt: 'Admin team name (inside that org, without the org prefix)', default: 'admins' },
+    { key: 'GITHUB_USER_TEAM', prompt: 'User team name (inside that org, without the org prefix)', default: 'users' },
     { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
   ],
   ldap: [
@@ -285,6 +348,23 @@ class DockerSetup {
     this.configFromJson = options.configFromJson || null;
     this.imageMode = null; // Track image mode for completion logic
     this.registryConfig = null; // Track registry configuration
+    this.session = null; // PromptSession while answers are collected (interactive questions)
+    this.answers = {}; // DockerAnswers while applyAnswers writes them
+    this.currentSecrets = {}; // secrets of the current configuration (interactive re-run without --force)
+    this.databasePasswordReplaced = false; // a re-run's "Enter new" database password
+  }
+
+  /** Asks questions through the prompt session while collecting, else plain inquirer. */
+  prompt(questions) {
+    return this.session ? this.session.ask(questions) : inquirer.prompt(questions);
+  }
+
+  /**
+   * The prompt session for an interactive run (replaced in tests by a scripted one).
+   * @param {object} [current] current values by question id: the first defaults
+   */
+  createSession(current) {
+    return new PromptSession({ inquirer, current });
   }
 
   /**
@@ -812,103 +892,121 @@ class DockerSetup {
     console.log('💡 Tip: Leave password empty to auto-generate a secure random password');
     
     // First, get the username
-    const usernameConfig = await inquirer.prompt([
+    const usernameConfig = await this.prompt([
       {
         type: 'input',
         name: 'POSTGRES_USER',
         message: 'Database username:',
         default: 'admin_user',
-        validate: (input) => {
-          if (!input || input.trim().length === 0) {
-            return 'Database username is required';
-          }
-          // PostgreSQL identifier rules
-          if (!/^[a-zA-Z_][a-zA-Z0-9_$]*$/.test(input)) {
-            return 'Username must start with a letter or underscore, followed by letters, numbers, underscores, or dollar signs';
-          }
-          // PostgreSQL restriction: role names cannot start with "pg_"
-          if (input.toLowerCase().startsWith('pg_')) {
-            return 'Username cannot start with "pg_" (reserved for PostgreSQL system roles)';
-          }
-          // Length limit (PostgreSQL NAMEDATALEN = 63 bytes)
-          if (input.length > 63) {
-            return 'Username cannot exceed 63 characters';
-          }
-          return true;
-        }
+        validate: validateDatabaseUsername
       }
     ]);
 
-    // Then, handle password with confirmation for manual entry
-    let passwordConfig = {};
-    let passwordConfirmed = false;
-    let passwordWasGenerated = false;
-    
-    while (!passwordConfirmed) {
-      passwordConfig = await inquirer.prompt([
-        {
-          type: 'password',
-          name: 'POSTGRES_PASSWORD',
-          message: 'Database password (leave empty for auto-generated):',
-          mask: '*'
-        }
-      ]);
-      
-      if (!passwordConfig.POSTGRES_PASSWORD || passwordConfig.POSTGRES_PASSWORD.trim() === '') {
-        // Auto-generate secure password
-        passwordConfig.POSTGRES_PASSWORD = this.generateDatabasePassword();
-        passwordWasGenerated = true;
-        console.log('✅ Auto-generated secure database password');
-        passwordConfirmed = true;
-      } else {
-        // Validate manually entered password
-        const password = passwordConfig.POSTGRES_PASSWORD.trim();
-        
-        if (password.length < 8) {
-          console.log('❌ Password must be at least 8 characters long');
-          continue;
-        }
-        
-        // Confirm the password
-        const { confirmPassword } = await inquirer.prompt([
-          {
-            type: 'password',
-            name: 'confirmPassword',
-            message: 'Confirm database password:',
-            mask: '*'
-          }
-        ]);
-        
-        if (password !== confirmPassword) {
-          console.log('❌ Passwords do not match. Please try again.');
-          continue;
-        }
-        
-        passwordConfig.POSTGRES_PASSWORD = password;
-        passwordConfirmed = true;
+    // Re-run: the password in use is kept, replaced, or regenerated (askKeyRegeneration).
+    this.databasePasswordReplaced = false;
+    const currentPassword = this.currentSecrets.POSTGRES_PASSWORD;
+    if (this.session && currentPassword) {
+      const { value, origin } = await askSecret(this.session, {
+        name: 'POSTGRES_PASSWORD',
+        message: 'Database password:',
+        current: currentPassword,
+        validate: (input) => (input && input.trim() ? validateDatabasePassword(input) : 'A value is required')
+      });
+      const password = origin === 'kept' ? value : value.trim();
+      if (origin === 'new') {
+        await this.confirmDatabasePassword(password);
+        this.databasePasswordReplaced = true;
       }
+      return { POSTGRES_USER: usernameConfig.POSTGRES_USER, POSTGRES_PASSWORD: password, passwordWasGenerated: false };
     }
-    
+
+    // Then, handle password with confirmation for manual entry. A rejected value is asked again
+    // by the prompt itself (validate), so it never enters the session's answers.
+    const { POSTGRES_PASSWORD: entered } = await this.prompt([
+      {
+        type: 'password',
+        name: 'POSTGRES_PASSWORD',
+        message: 'Database password (leave empty for auto-generated):',
+        mask: '*',
+        review: false,
+        validate: validateDatabasePassword
+      }
+    ]);
+
+    let password;
+    let passwordWasGenerated = false;
+    if (!entered || entered.trim() === '') {
+      // Auto-generate secure password (the same one on every replay of the session)
+      if (this.session) {
+        if (!this.session.generated.has('POSTGRES_PASSWORD')) {
+          this.session.generated.set('POSTGRES_PASSWORD', this.generateDatabasePassword());
+        }
+        password = this.session.generated.get('POSTGRES_PASSWORD');
+      } else {
+        password = this.generateDatabasePassword();
+      }
+      passwordWasGenerated = true;
+      console.log('✅ Auto-generated secure database password');
+    } else {
+      password = entered.trim();
+      await this.confirmDatabasePassword(password);
+    }
+
+    if (this.session) {
+      this.session.record({
+        id: 'POSTGRES_PASSWORD',
+        label: 'Database password',
+        value: password,
+        display: passwordWasGenerated ? 'generated' : 'new',
+        secret: true,
+        changed: true
+      });
+    }
+
     return {
       POSTGRES_USER: usernameConfig.POSTGRES_USER,
-      POSTGRES_PASSWORD: passwordConfig.POSTGRES_PASSWORD,
+      POSTGRES_PASSWORD: password,
       passwordWasGenerated: passwordWasGenerated
     };
+  }
+
+  /**
+   * Asks for the database password again until it matches. The loop also catches a remembered
+   * confirmation that no longer matches after the password was changed (Enter keeps a remembered
+   * secret unchecked).
+   */
+  async confirmDatabasePassword(password) {
+    for (;;) {
+      const { confirmPassword } = await this.prompt([
+        {
+          type: 'password',
+          name: 'confirmPassword',
+          message: 'Confirm database password:',
+          mask: '*',
+          review: false,
+          validate: (input) => (input === password ? true : 'Passwords do not match. Please try again.')
+        }
+      ]);
+      if (confirmPassword === password) return;
+      console.log('❌ Passwords do not match. Please try again.');
+    }
   }
 
   async promptForServiceKey() {
     console.log('\nSAP AI Core Configuration');
     console.log('========================\n');
     
-    // Check for environment variable first
-    const envConfig = this.checkEnvServiceKey();
+    // Check for environment variable first (a read-only probe: once per prompt session)
+    const envConfig = this.session
+      ? await this.session.once('env-service-key', () => this.checkEnvServiceKey())
+      : this.checkEnvServiceKey();
     if (envConfig) {
       console.log('\n🚀 Using SAP AI Core service key from environment variable');
       console.log('   Skipping interactive configuration...\n');
       return envConfig;
     }
-    
-    const { configMethod } = await inquirer.prompt([
+
+    const { configMethod } = await this.prompt([
       {
         type: 'list',
         name: 'configMethod',
@@ -926,58 +1024,52 @@ class DockerSetup {
     }
     
     if (configMethod === 'json') {
-      try {
-        const { serviceKeyJson } = await inquirer.prompt([
-          {
-            type: 'editor',
-            name: 'serviceKeyJson',
-            message: 'Please paste your SAP BTP AI Core service key JSON and save (for vi enter ESC,:wq):',
-            validate: (input) => {
-              if (!input.trim()) {
-                return 'Service key cannot be empty';
-              }
-              try {
-                JSON.parse(input);
-                return true;
-              } catch (error) {
-                return 'Invalid JSON format. Please provide a valid service key.';
-              }
+      // Editor temp files are cleaned up when the run ends (run() → cleanupTempFiles), not
+      // here: nothing in the project changes before the answers are reviewed.
+      const { serviceKeyJson } = await this.prompt([
+        {
+          type: 'editor',
+          name: 'serviceKeyJson',
+          message: 'Please paste your SAP BTP AI Core service key JSON and save (for vi enter ESC,:wq):',
+          validate: (input) => {
+            if (!input.trim()) {
+              return 'Service key cannot be empty';
+            }
+            try {
+              JSON.parse(input);
+              return true;
+            } catch (error) {
+              return 'Invalid JSON format. Please provide a valid service key.';
             }
           }
-        ]);
-        
-        // Clean up temp files after editor prompt
-        this.cleanupTempFiles();
-        
-        try {
-          // Use inline service key parser (no build dependency)
-          const parsedConfig = this.parseServiceKeyInline(serviceKeyJson);
-          
-          console.log('\n✅ Service key parsed successfully!\n');
-          console.log('Extracted configuration:');
-          console.log(`  - SAP AI Core URL: ${parsedConfig.SAP_AI_CORE_URL}`);
-          console.log(`  - Auth URL: ${parsedConfig.AUTH_URL}`);
-          console.log(`  - Region: ${parsedConfig.SAP_AI_REGION}`);
-          
-          return {
-            SAP_AI_CORE_URL: parsedConfig.SAP_AI_CORE_URL,
-            AUTH_URL: parsedConfig.AUTH_URL,
-            CLIENT_ID: parsedConfig.CLIENT_ID,
-            CLIENT_SECRET: parsedConfig.CLIENT_SECRET,
-            SAP_AI_REGION: parsedConfig.SAP_AI_REGION,
-            SAP_AI_RESOURCE_GROUP: parsedConfig.SAP_AI_RESOURCE_GROUP
-          };
-        } catch (error) {
-          console.error(`\n❌ Failed to parse service key: ${error.message}`);
-          return null;
         }
-      } finally {
-        // Always clean up temp files
-        this.cleanupTempFiles();
+      ]);
+
+      try {
+        // Use inline service key parser (no build dependency)
+        const parsedConfig = this.parseServiceKeyInline(serviceKeyJson);
+
+        console.log('\n✅ Service key parsed successfully!\n');
+        console.log('Extracted configuration:');
+        console.log(`  - SAP AI Core URL: ${parsedConfig.SAP_AI_CORE_URL}`);
+        console.log(`  - Auth URL: ${parsedConfig.AUTH_URL}`);
+        console.log(`  - Region: ${parsedConfig.SAP_AI_REGION}`);
+
+        return {
+          SAP_AI_CORE_URL: parsedConfig.SAP_AI_CORE_URL,
+          AUTH_URL: parsedConfig.AUTH_URL,
+          CLIENT_ID: parsedConfig.CLIENT_ID,
+          CLIENT_SECRET: parsedConfig.CLIENT_SECRET,
+          SAP_AI_REGION: parsedConfig.SAP_AI_REGION,
+          SAP_AI_RESOURCE_GROUP: parsedConfig.SAP_AI_RESOURCE_GROUP
+        };
+      } catch (error) {
+        console.error(`\n❌ Failed to parse service key: ${error.message}`);
+        return null;
       }
     } else {
       // Manual entry using inquirer
-      const sapConfig = await inquirer.prompt([
+      const sapConfig = await this.prompt([
         {
           type: 'input',
           name: 'SAP_AI_CORE_URL',
@@ -1072,7 +1164,11 @@ class DockerSetup {
     });
   }
 
-  async setupServiceEnvFiles(sapConfig = null, dbConfig = null) {
+  /**
+   * Writes the service .env files. sapConfig: the SAP AI Core settings, null to skip them, or
+   * undefined to resolve them now (environment key, else ask) when the gateway .env is created.
+   */
+  async setupServiceEnvFiles(sapConfig = undefined, dbConfig = null) {
     console.log('\nChecking service configuration files...\n');
     
     // Generate shared secrets if not already generated
@@ -1086,6 +1182,9 @@ class DockerSetup {
       // credentialStore.ts refuses to encrypt under a default key - and .env.sample ships
       // the placeholder `changeme`, which is a guessable master key, not a usable one.
       this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSecureToken();
+      // Admin-only, like SIEM_CREDENTIAL_KEY: encrypts the Connection credentials
+      // (services/admin/src/services/connectionCredentialStore.ts refuses to work without it).
+      this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = this.generateSecureToken();
       
       // Database credentials (16 chars hex, safe for env files)
       this.sharedSecrets.POSTGRES_PASSWORD = this.generateDatabasePassword();
@@ -1093,6 +1192,16 @@ class DockerSetup {
       // OAuth2 Proxy secrets (matching hardcoded lengths for compatibility)
       this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET = this.generateOAuth2ClientSecret(); // 64 chars
       this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET = this.generateOAuth2CookieSecret(); // 32 chars
+    }
+
+    // Interactive re-run: generated values the current configuration holds are kept, except the
+    // ones the user chose to regenerate (those keep the value generated above).
+    const regenerate = this.answers.regenerateKeys || [];
+    for (const key of KEPT_GENERATED_SECRETS) {
+      if (this.currentSecrets[key] && !regenerate.includes(key)) {
+        this.sharedSecrets[key] = this.currentSecrets[key];
+        if (key === 'FILE_SEARCH_RUNTIME_PASSWORD') this.sharedSecrets.FILE_SEARCH_RUNTIME_USER = 'file_search_app';
+      }
     }
     
     // Prompt for database credentials if not provided via config or environment
@@ -1184,14 +1293,19 @@ class DockerSetup {
       if (this.configFromJson) {
         console.log('   Continuing in configuration mode...');
       } else {
-        const { continueAnyway } = await inquirer.prompt([
-          {
-            type: 'confirm',
-            name: 'continueAnyway',
-            message: 'Continue anyway?',
-            default: false
-          }
-        ]);
+        // Answered before the review (continueDespiteMismatch); undefined in an unattended run,
+        // which asks here as it always did.
+        let continueAnyway = this.answers.continueDespiteMismatch;
+        if (continueAnyway === undefined) {
+          ({ continueAnyway } = await this.prompt([
+            {
+              type: 'confirm',
+              name: 'continueAnyway',
+              message: 'Continue anyway?',
+              default: false
+            }
+          ]));
+        }
         
         if (!continueAnyway) {
           throw new Error('Token validation failed - setup aborted');
@@ -1204,7 +1318,7 @@ class DockerSetup {
     return isValid;
   }
 
-  async setupGatewayEnv(sapConfig = null) {
+  async setupGatewayEnv(sapConfig = undefined) {
     const envPath = path.join(this.projectRoot, 'services/gateway/.env');
     const samplePath = path.join(this.projectRoot, 'services/gateway/.env.sample');
     
@@ -1213,11 +1327,33 @@ class DockerSetup {
       
       // Extract secrets from existing file to share with admin service
       const existingEnv = await this.parseEnvFile(envPath);
-      if (existingEnv.VALIDATION_TOKEN_SECRET) {
+      if (PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS.includes(existingEnv.VALIDATION_TOKEN_SECRET)) {
+        // Never carry a publicly known secret over: write the freshly generated one into this
+        // .env instead (setupAdminEnv does the same for the admin's), so the two still match.
+        if (!this.sharedSecrets.VALIDATION_TOKEN_SECRET || PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS.includes(this.sharedSecrets.VALIDATION_TOKEN_SECRET)) {
+          this.sharedSecrets.VALIDATION_TOKEN_SECRET = this.generateSecureToken();
+        }
+        await this.updateEnvFilePreservingComments(envPath, envPath, { VALIDATION_TOKEN_SECRET: this.sharedSecrets.VALIDATION_TOKEN_SECRET });
+        console.log('🔑 Gateway .env held the default or .env.sample VALIDATION_TOKEN_SECRET: replaced with a generated one');
+      } else if (existingEnv.VALIDATION_TOKEN_SECRET) {
         this.sharedSecrets.VALIDATION_TOKEN_SECRET = existingEnv.VALIDATION_TOKEN_SECRET;
       }
       if (existingEnv.METADATA_ENCRYPTION_KEY) {
         this.sharedSecrets.METADATA_ENCRYPTION_KEY = existingEnv.METADATA_ENCRYPTION_KEY;
+      }
+
+      // Keys the user chose to regenerate on the review screen: a fresh value in this file, which
+      // setupAdminEnv then writes into the admin .env as well.
+      const regenerated = {};
+      for (const key of ['VALIDATION_TOKEN_SECRET', 'METADATA_ENCRYPTION_KEY']) {
+        if ((this.answers.regenerateKeys || []).includes(key)) {
+          this.sharedSecrets[key] = this.generateSecureToken();
+          regenerated[key] = this.sharedSecrets[key];
+        }
+      }
+      if (Object.keys(regenerated).length > 0) {
+        await this.updateEnvFilePreservingComments(envPath, envPath, regenerated);
+        console.log(`🔑 Regenerated in the gateway .env: ${Object.keys(regenerated).join(', ')}`);
       }
       
       return;
@@ -1232,8 +1368,8 @@ class DockerSetup {
     // Prepare updates
     const updates = {};
     
-    // Use provided SAP config or prompt for it
-    const sapConfigToUse = sapConfig || await this.promptForServiceKey();
+    // Use provided SAP config (null: skipped) or prompt for it
+    const sapConfigToUse = sapConfig !== undefined ? sapConfig : await this.promptForServiceKey();
     
     if (sapConfigToUse) {
       // Apply SAP AI Core configuration
@@ -1259,6 +1395,25 @@ class DockerSetup {
     }
   }
 
+  /**
+   * An admin .env from before Connections has no CONNECTION_CREDENTIAL_KEY (or the .env.sample
+   * placeholder): add a generated one, leaving every other line as it is. Without it the admin
+   * refuses to store a connection credential. A real key is never replaced.
+   */
+  async ensureConnectionCredentialKey(envPath) {
+    const existing = (await this.parseEnvFile(envPath)).CONNECTION_CREDENTIAL_KEY;
+    if (existing && existing !== 'changeme') return;
+    const key = this.sharedSecrets.CONNECTION_CREDENTIAL_KEY || this.generateSecureToken();
+    this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = key;
+    if (existing === 'changeme') {
+      await this.updateEnvFilePreservingComments(envPath, envPath, { CONNECTION_CREDENTIAL_KEY: key });
+    } else {
+      const text = fs.readFileSync(envPath, 'utf8');
+      fs.appendFileSync(envPath, `${text.endsWith('\n') ? '' : '\n'}\n# Master key for the Connection credentials (added by setup-docker.js)\nCONNECTION_CREDENTIAL_KEY=${key}\n`, 'utf8');
+    }
+    console.log('🔑 Admin .env had no CONNECTION_CREDENTIAL_KEY: added a generated one');
+  }
+
   async setupAdminEnv(dbConfig = null) {
     const envPath = path.join(this.projectRoot, 'services/admin/.env');
     const samplePath = path.join(this.projectRoot, 'services/admin/.env.sample');
@@ -1269,6 +1424,14 @@ class DockerSetup {
                            (this.sharedSecrets.POSTGRES_USER || this.sharedSecrets.POSTGRES_PASSWORD);
       
       if (!needsDbUpdate) {
+        // A publicly known secret here would not match the generated one setupGatewayEnv put in
+        // its place; replace it in the existing file, leaving everything else as it is.
+        const existingSecret = (await this.parseEnvFile(envPath)).VALIDATION_TOKEN_SECRET;
+        if (PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS.includes(existingSecret) && this.sharedSecrets.VALIDATION_TOKEN_SECRET) {
+          await this.updateEnvFilePreservingComments(envPath, envPath, { VALIDATION_TOKEN_SECRET: this.sharedSecrets.VALIDATION_TOKEN_SECRET });
+          console.log('🔑 Admin .env held the default or .env.sample VALIDATION_TOKEN_SECRET: replaced with the shared generated one');
+        }
+        await this.ensureConnectionCredentialKey(envPath);
         console.log('✅ Admin .env already exists');
         return;
       } else {
@@ -1291,11 +1454,25 @@ class DockerSetup {
     // the same reason - a caller supplying `--config` (or a pre-populated sharedSecrets) skips
     // the generation block in setupServiceEnvFiles entirely, and without this the placeholder
     // `changeme` from .env.sample would be written through as the master key.
+    // A key the user chose to regenerate is not carried over: the value generated for this run
+    // replaces it.
     const existingAdminEnv = fs.existsSync(envPath) ? await this.parseEnvFile(envPath) : {};
-    if (existingAdminEnv.SIEM_CREDENTIAL_KEY && existingAdminEnv.SIEM_CREDENTIAL_KEY !== 'changeme') {
+    const regenerate = this.answers.regenerateKeys || [];
+    if (regenerate.includes('SIEM_CREDENTIAL_KEY')) {
+      this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSecureToken();
+    } else if (existingAdminEnv.SIEM_CREDENTIAL_KEY && existingAdminEnv.SIEM_CREDENTIAL_KEY !== 'changeme') {
       this.sharedSecrets.SIEM_CREDENTIAL_KEY = existingAdminEnv.SIEM_CREDENTIAL_KEY;
     } else if (!this.sharedSecrets.SIEM_CREDENTIAL_KEY) {
       this.sharedSecrets.SIEM_CREDENTIAL_KEY = this.generateSecureToken();
+    }
+    // Same carry-over for the Connection credentials' master key: rotating it would make every
+    // stored connection credential undecryptable.
+    if (regenerate.includes('CONNECTION_CREDENTIAL_KEY')) {
+      this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = this.generateSecureToken();
+    } else if (existingAdminEnv.CONNECTION_CREDENTIAL_KEY && existingAdminEnv.CONNECTION_CREDENTIAL_KEY !== 'changeme') {
+      this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = existingAdminEnv.CONNECTION_CREDENTIAL_KEY;
+    } else if (!this.sharedSecrets.CONNECTION_CREDENTIAL_KEY) {
+      this.sharedSecrets.CONNECTION_CREDENTIAL_KEY = this.generateSecureToken();
     }
     
     // Prepare updates
@@ -1307,6 +1484,8 @@ class DockerSetup {
     updates.AWS_SECRET_ENCRYPTION_KEY = this.sharedSecrets.AWS_SECRET_ENCRYPTION_KEY;
     // Admin-only: encrypts the SiemCredentials rows the SIEM sinks authenticate with.
     updates.SIEM_CREDENTIAL_KEY = this.sharedSecrets.SIEM_CREDENTIAL_KEY;
+    // Admin-only: encrypts the Connection credentials (ConnectionCredentials rows).
+    updates.CONNECTION_CREDENTIAL_KEY = this.sharedSecrets.CONNECTION_CREDENTIAL_KEY;
     
     // Include database credentials for CAP configuration replacement
     if (this.sharedSecrets.POSTGRES_PASSWORD) {
@@ -1383,11 +1562,6 @@ class DockerSetup {
   }
 
   async selectProvider() {
-    if (this.ciMode) {
-      console.log('🤖 CI Mode: Auto-selecting Local Development provider\n');
-      return 'local';
-    }
-    
     console.log('Available authentication providers:\n');
     
     const providerKeys = Object.keys(PROVIDERS);
@@ -1404,7 +1578,7 @@ class DockerSetup {
       };
     });
 
-    const { provider } = await inquirer.prompt([
+    const { provider } = await this.prompt([
       {
         type: 'list',
         name: 'provider',
@@ -1416,28 +1590,30 @@ class DockerSetup {
     return provider;
   }
 
+  /** The provider settings an unattended (--ci) run uses: every question's default. */
+  defaultProviderConfig(provider) {
+    const prompts = PROVIDER_PROMPTS[provider];
+    if (!prompts || prompts.length === 0) return {};
+
+    // Return default values for all prompts
+    const config = {};
+    prompts.forEach(prompt => {
+      if (prompt.default !== undefined) {
+        config[prompt.key] = prompt.default;
+      }
+    });
+    
+    // Generate ROLE_MAPPING based on provider
+    if (provider === 'local') {
+      config.ROLE_MAPPING = '{"admin@example.com":"admin","user@example.com":"user"}';
+    }
+    
+    return config;
+  }
+
   async collectProviderConfig(provider) {
     let prompts = PROVIDER_PROMPTS[provider];
     if (!prompts || prompts.length === 0) return {};
-
-    if (this.ciMode) {
-      console.log(`🤖 CI Mode: Using default configuration for ${PROVIDERS[provider].name}\n`);
-      
-      // Return default values for all prompts
-      const config = {};
-      prompts.forEach(prompt => {
-        if (prompt.default !== undefined) {
-          config[prompt.key] = prompt.default;
-        }
-      });
-      
-      // Generate ROLE_MAPPING based on provider
-      if (provider === 'local') {
-        config.ROLE_MAPPING = '{"admin@example.com":"admin","user@example.com":"user"}';
-      }
-      
-      return config;
-    }
 
     console.log(`\nConfiguring ${PROVIDERS[provider].name}...\n`);
     
@@ -1487,7 +1663,7 @@ class DockerSetup {
     }
     
     // Collect all answers at once
-    const answers = await inquirer.prompt(inquirerPrompts);
+    const answers = await this.prompt(inquirerPrompts);
     
     // Process answers
     for (const [key, value] of Object.entries(answers)) {
@@ -1496,7 +1672,11 @@ class DockerSetup {
         if (answers.OKTA_METADATA_URL) {
           try {
             console.log('Auto-fetching SAML certificate from metadata...');
-            const metadataInfo = await this.fetchSamlCertificateFromMetadata(answers.OKTA_METADATA_URL);
+            // A read-only probe: fetched once per metadata URL while the answers are collected.
+            const fetchMetadata = () => this.fetchSamlCertificateFromMetadata(answers.OKTA_METADATA_URL);
+            const metadataInfo = this.session
+              ? await this.session.once(`saml-metadata:${answers.OKTA_METADATA_URL}`, fetchMetadata)
+              : await fetchMetadata();
             config[key] = metadataInfo.certificate;
             
             // Auto-populate SSO URL (always override with metadata value)
@@ -1507,7 +1687,7 @@ class DockerSetup {
           } catch (error) {
             console.log(`❌ Auto-fetch failed: ${error.message}`);
             // Ask for manual input
-            const { manualCert } = await inquirer.prompt([
+            const { manualCert } = await this.prompt([
               {
                 type: 'editor',
                 name: 'manualCert',
@@ -1520,7 +1700,7 @@ class DockerSetup {
         } else {
           console.log('❌ Metadata URL required for auto-fetch.');
           // Ask for manual input
-          const { manualCert } = await inquirer.prompt([
+          const { manualCert } = await this.prompt([
             {
               type: 'editor',
               name: 'manualCert',
@@ -1532,7 +1712,7 @@ class DockerSetup {
         }
       } else if (key === 'OKTA_SAML_CA_DATA' && value === 'manual') {
         // Ask for manual input
-        const { manualCert } = await inquirer.prompt([
+        const { manualCert } = await this.prompt([
           {
             type: 'editor',
             name: 'manualCert',
@@ -1580,7 +1760,7 @@ class DockerSetup {
       });
       
       // Collect external LDAP configuration
-      const externalAnswers = await inquirer.prompt(inquirerExternalPrompts);
+      const externalAnswers = await this.prompt(inquirerExternalPrompts);
       Object.assign(config, externalAnswers);
     }
     
@@ -1640,13 +1820,8 @@ class DockerSetup {
   }
 
   async getBaseUrl() {
-    if (this.ciMode) {
-      console.log('🤖 CI Mode: Using localhost for development\n');
-      return 'http://localhost:8080';
-    }
-    
     console.log('\nDeployment configuration:');
-    const { useDevelopment } = await inquirer.prompt([
+    const { useDevelopment } = await this.prompt([
       {
         type: 'confirm',
         name: 'useDevelopment',
@@ -1659,21 +1834,12 @@ class DockerSetup {
       return 'http://localhost:8080';
     }
     
-    const { baseUrl } = await inquirer.prompt([
+    const { baseUrl } = await this.prompt([
       {
         type: 'input',
         name: 'baseUrl',
         message: 'Enter your domain (e.g., https://yourdomain.com):',
-        validate: (input) => {
-          const trimmed = input.trim();
-          if (!trimmed) {
-            return 'URL is required';
-          }
-          if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-            return 'Please enter a valid URL starting with http:// or https://';
-          }
-          return true;
-        }
+        validate: validateBaseUrl
       }
     ]);
     
@@ -1681,11 +1847,6 @@ class DockerSetup {
   }
 
   async selectImageMode() {
-    if (this.ciMode) {
-      console.log('🤖 CI Mode: Using local builds for Docker images\n');
-      return { imageMode: 'local', registry: 'ghcr.io', organization: 'st-gr' };
-    }
-
     console.log('\n' + '='.repeat(60));
     console.log('   Docker Image Configuration');
     console.log('='.repeat(60));
@@ -1694,7 +1855,7 @@ class DockerSetup {
     console.log('  • Pull from registry: Use pre-built images from a container registry (faster startup)');
     console.log('');
 
-    const { imageMode } = await inquirer.prompt([
+    const { imageMode } = await this.prompt([
       {
         type: 'list',
         name: 'imageMode',
@@ -1711,30 +1872,20 @@ class DockerSetup {
     let organization = 'st-gr';
 
     if (imageMode === 'registry') {
-      const registryConfig = await inquirer.prompt([
+      const registryConfig = await this.prompt([
         {
           type: 'input',
           name: 'registry',
           message: 'Container registry (e.g., ghcr.io, docker.io):',
           default: 'ghcr.io',
-          validate: (input) => {
-            if (!input.trim()) {
-              return 'Registry is required';
-            }
-            return true;
-          }
+          validate: validateRequired('Registry is required')
         },
         {
           type: 'input',
           name: 'organization',
           message: 'Registry organization/username:',
           default: 'st-gr',
-          validate: (input) => {
-            if (!input.trim()) {
-              return 'Organization is required';
-            }
-            return true;
-          }
+          validate: validateRequired('Organization is required')
         }
       ]);
 
@@ -1759,7 +1910,10 @@ class DockerSetup {
       console.log('⚠️  Warning: Could not read version from package.json, using default: 1.0.0');
     }
 
-    // Create .env.docker file
+    // Create .env.docker file. Registry mode also records DOCKER_IMAGE_MODE=registry: the files
+    // otherwise look the same in both modes (local builds use the default registry and the
+    // compose override can be replaced or removed by the provider step), and a re-run reads the
+    // mode back from it. Local mode (all --ci runs) writes the file as before.
     const envDockerPath = path.join(this.dockerDir, '.env.docker');
     const envDockerContent = `# Docker Image Configuration
 # This file controls which Docker images are used in docker-compose.yml
@@ -1771,7 +1925,7 @@ class DockerSetup {
 DOCKER_REGISTRY=${registry}
 DOCKER_ORGANIZATION=${organization}
 DOCKER_TAG=${version}
-
+${imageMode === 'registry' ? 'DOCKER_IMAGE_MODE=registry\n' : ''}
 # Note: This file is auto-generated by docker/setup-docker.js
 # You can manually edit these values if needed
 `;
@@ -1890,45 +2044,41 @@ services:
     return { registry, organization, version };
   }
 
-  async backupExistingFiles() {
-    const filesToBackup = [
+  /** Files a backup copies, relative to docker/. */
+  backupFileList() {
+    return [
       'nginx.conf',
       'dex.config.yaml',
       '.env.auth',
       '.env.postgres',
-      'njs/jwt.js',
       'docker-compose.override.yml',
       '../services/gateway/.env',
       '../services/admin/.env',
       '../services/ollama/.env'
     ];
-    
-    const hasExistingFiles = filesToBackup.some(file => 
+  }
+
+  hasExistingConfigFiles() {
+    return this.backupFileList().some(file =>
       fs.existsSync(path.join(this.dockerDir, file))
     );
+  }
+
+  /** createBackup: the answer to "Create backup?" (asked before the review). */
+  async backupExistingFiles(createBackup) {
+    const filesToBackup = this.backupFileList();
     
-    if (hasExistingFiles) {
+    if (this.hasExistingConfigFiles()) {
       if (this.ciMode) {
         console.log('🤖 CI Mode: Existing configuration files detected - skipping backup\n');
         return;
       }
-      
-      console.log('\nExisting configuration files detected.');
-      const { createBackup } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'createBackup',
-          message: 'Create backup?',
-          default: false
-        }
-      ]);
       
       if (createBackup) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const backupDir = path.join(this.dockerDir, `backup-${timestamp}`);
         
         fs.mkdirSync(backupDir, { recursive: true });
-        fs.mkdirSync(path.join(backupDir, 'njs'), { recursive: true });
         
         filesToBackup.forEach(file => {
           const filePath = path.join(this.dockerDir, file);
@@ -1964,7 +2114,7 @@ services:
       console.log('✅ Updated admin .env with ROLE_MAPPING');
     }
     
-    // NOTE: nginx.conf and jwt.js are no longer generated here
+    // NOTE: nginx.conf is no longer generated here
     // The new Nginx image uses environment variables for configuration
     console.log('ℹ️  Nginx configuration is now handled via environment variables');
     console.log('   See docker/nginx/README.md for details');
@@ -2064,7 +2214,6 @@ services:
     const nginxEnvContent = `# Nginx configuration environment variables
 # Generated by setup-docker.js
 BASE_URL=${baseUrl}
-JWT_ISSUER_URL=${baseUrl}/dex
 LOGOUT_REDIRECT_URL=${config.LOGOUT_REDIRECT_URL || `${baseUrl}/admin/app/shell/`}
 REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
 `;
@@ -2175,8 +2324,6 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       if (file.endsWith('.yaml') || file.endsWith('.yml')) {
         content = content.replace(/BASE_URL/g, baseUrl);
       }
-      
-      content = content.replace(/JWT_ISSUER_URL/g, `${baseUrl}/dex`);
       
       // Configure logout redirect URL - provider-specific with auto-shell resolution
       let logoutRedirectUrl;
@@ -2427,43 +2574,25 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       existingVolumes.forEach(vol => console.log(`   - ${vol}`));
       console.log('');
 
-      // In CI mode or config mode, auto-delete volumes
-      if (this.ciMode || this.configFromJson) {
+      // In CI mode or config mode, auto-delete volumes - unless the caller
+      // restores this checkout's .env files afterwards (setup-kyma.js), in
+      // which case the old Postgres password stays and deleting would only lose data
+      if (this.configFromJson && this.configFromJson.keepDockerVolumes) {
+        console.log('🤖 Keeping existing volumes (the caller restores the local configuration)');
+        console.log('');
+      } else if (this.ciMode || this.configFromJson) {
         console.log('🤖 Unattended mode: Automatically deleting existing volumes...');
         this.deleteVolumes(existingVolumes);
         console.log('');
-      } else {
-        // Interactive mode: ask user
-        console.log('If you changed your Postgres password then the dex service will report');
-        console.log("'pq: password authentication failed'.");
+      } else if (this.answers.deleteVolumes) {
+        // Interactive mode: answered before the review
+        console.log('🗑️  Deleting existing volumes...');
+        this.deleteVolumes(existingVolumes);
         console.log('');
-
-        try {
-          const { deleteVolumes } = await inquirer.prompt([
-            {
-              type: 'confirm',
-              name: 'deleteVolumes',
-              message: 'Delete volumes to prevent authentication errors? (Choose No only if keeping same credentials)',
-              default: true
-            }
-          ]);
-
-          console.log('');
-
-          if (deleteVolumes) {
-            console.log('🗑️  Deleting existing volumes...');
-            this.deleteVolumes(existingVolumes);
-            console.log('');
-          } else {
-            console.log('⚠️  Volumes preserved. The dex service is likely not starting up unless an');
-            console.log('   identical postgres username and password was chosen.');
-            console.log('');
-          }
-        } catch (error) {
-          // If prompt fails, continue without deletion
-          console.log('⚠️  Volume deletion prompt failed. Continuing without deletion...');
-          console.log('');
-        }
+      } else {
+        console.log('⚠️  Volumes preserved. The dex service is likely not starting up unless an');
+        console.log('   identical postgres username and password was chosen.');
+        console.log('');
       }
     }
 
@@ -2473,69 +2602,55 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       console.log(`Images will be pulled from: ${this.registryConfig.registry}/${this.registryConfig.organization}`);
       console.log('');
       
-      try {
-        const { pullImages } = await inquirer.prompt([
-          {
-            type: 'confirm',
-            name: 'pullImages',
-            message: 'Pull Docker images now? This prevents local builds and ensures immediate startup.',
-            default: true
-          }
-        ]);
+      if (this.answers.pullImages) {
+        console.log('');
+        console.log('🚀 Pulling Docker images from registry...');
         
-        if (pullImages) {
-          console.log('');
-          console.log('🚀 Pulling Docker images from registry...');
+        try {
+          const { spawnSync } = require('child_process');
+          const path = require('path');
           
-          try {
-            const { spawnSync } = require('child_process');
-            const path = require('path');
-            
-            // Use Docker Compose --env-file approach for cross-platform reliability
-            const envFile = path.join(this.dockerDir, '.env.docker');
-            
-            // Use Docker Compose v2 (docker compose) or fallback to v1 (docker-compose)
-            const cmd = 'docker';
-            const args = ['compose', '--env-file', envFile, 'pull'];
-            
-            const result = spawnSync(cmd, args, {
+          // Use Docker Compose --env-file approach for cross-platform reliability
+          const envFile = path.join(this.dockerDir, '.env.docker');
+          
+          // Use Docker Compose v2 (docker compose) or fallback to v1 (docker-compose)
+          const cmd = 'docker';
+          const args = ['compose', '--env-file', envFile, 'pull'];
+          
+          const result = spawnSync(cmd, args, {
+            cwd: this.dockerDir,
+            stdio: 'inherit',
+            env: process.env // Use standard environment, let Compose read .env.docker
+          });
+          
+          if (result.error || result.status !== 0) {
+            // Fallback to docker-compose v1 if docker compose v2 fails
+            console.log('ℹ️  Trying docker-compose v1...');
+            const fallbackResult = spawnSync('docker-compose', ['--env-file', envFile, 'pull'], {
               cwd: this.dockerDir,
               stdio: 'inherit',
-              env: process.env // Use standard environment, let Compose read .env.docker
+              env: process.env
             });
             
-            if (result.error || result.status !== 0) {
-              // Fallback to docker-compose v1 if docker compose v2 fails
-              console.log('ℹ️  Trying docker-compose v1...');
-              const fallbackResult = spawnSync('docker-compose', ['--env-file', envFile, 'pull'], {
-                cwd: this.dockerDir,
-                stdio: 'inherit',
-                env: process.env
-              });
-              
-              if (fallbackResult.error || fallbackResult.status !== 0) {
-                throw new Error('Both docker compose and docker-compose commands failed');
-              }
+            if (fallbackResult.error || fallbackResult.status !== 0) {
+              throw new Error('Both docker compose and docker-compose commands failed');
             }
-            
-            console.log('');
-            console.log('✅ Docker images pulled successfully!');
-            console.log('');
-            this.showDockerCommands(config, archInfo, 'registry', true);
-            
-          } catch (error) {
-            console.log('');
-            console.log('❌ Failed to pull images:', error.message);
-            console.log('You can manually pull images later with the appropriate pull command below.');
-            console.log('');
-            this.showDockerCommands(config, archInfo, 'registry', false);
           }
-        } else {
+          
+          console.log('');
+          console.log('✅ Docker images pulled successfully!');
+          console.log('');
+          this.showDockerCommands(config, archInfo, 'registry', true);
+          
+        } catch (error) {
+          console.log('');
+          console.log('❌ Failed to pull images:', error.message);
+          console.log('You can manually pull images later with the appropriate pull command below.');
           console.log('');
           this.showDockerCommands(config, archInfo, 'registry', false);
         }
-      } catch (error) {
-        // Fallback if inquirer fails
+      } else {
+        console.log('');
         this.showDockerCommands(config, archInfo, 'registry', false);
       }
     } else if (this.imageMode === 'registry') {
@@ -2580,7 +2695,7 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
     
     // Only show password if it was generated (not user-entered) and not called by Kyma script
     if (this.sharedSecrets.passwordWasGenerated && !this.configFromJson) {
-      console.log(`   - Password: ${this.sharedSecrets.POSTGRES_PASSWORD || 'admin_password'}`);
+      console.log(`   - Password: ${mask(this.sharedSecrets.POSTGRES_PASSWORD || 'admin_password')}`);
     } else if (this.configFromJson) {
       console.log('   - Password: [Set via Kyma configuration]');
     } else {
@@ -2588,8 +2703,8 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
     }
     console.log('');
     console.log('   🔐 OAuth2 Proxy Secrets:');
-    console.log(`   - Client Secret: ${this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET || '(using default)'}`);
-    console.log(`   - Cookie Secret: ${this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET || '(using default)'}`);
+    console.log(`   - Client Secret: ${this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET ? mask(this.sharedSecrets.OAUTH2_PROXY_CLIENT_SECRET) : '(using default)'}`);
+    console.log(`   - Cookie Secret: ${this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET ? mask(this.sharedSecrets.OAUTH2_PROXY_COOKIE_SECRET) : '(using default)'}`);
     console.log('');
     console.log('   These credentials are stored in your .env files and used by the services.');
     console.log('   The database password is randomized for security.');
@@ -2604,6 +2719,405 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
     console.log('For troubleshooting, check the logs:');
     console.log('   docker-compose logs');
     console.log('');
+  }
+
+  /**
+   * Generated keys an existing configuration already holds and a run keeps: the gateway's shared
+   * secrets (when its .env is kept) and the admin's credential master keys (carried over).
+   */
+  async existingGeneratedKeys() {
+    const keys = [];
+    const gatewayEnvPath = path.join(this.projectRoot, 'services/gateway/.env');
+    if (fs.existsSync(gatewayEnvPath) && !this.forceOverwrite) {
+      const gatewayEnv = await this.parseEnvFile(gatewayEnvPath);
+      if (gatewayEnv.VALIDATION_TOKEN_SECRET && !PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS.includes(gatewayEnv.VALIDATION_TOKEN_SECRET)) {
+        keys.push('VALIDATION_TOKEN_SECRET');
+      }
+      if (gatewayEnv.METADATA_ENCRYPTION_KEY) keys.push('METADATA_ENCRYPTION_KEY');
+    }
+    const adminEnvPath = path.join(this.projectRoot, 'services/admin/.env');
+    if (fs.existsSync(adminEnvPath)) {
+      const adminEnv = await this.parseEnvFile(adminEnvPath);
+      for (const key of ['SIEM_CREDENTIAL_KEY', 'CONNECTION_CREDENTIAL_KEY']) {
+        if (adminEnv[key] && adminEnv[key] !== 'changeme') keys.push(key);
+      }
+    }
+    // Kept from the current configuration on an interactive re-run (loadCurrentSecrets).
+    // A database password typed in this run is not offered for regeneration.
+    for (const key of [...KEPT_GENERATED_SECRETS, 'POSTGRES_PASSWORD']) {
+      if (key === 'POSTGRES_PASSWORD' && this.databasePasswordReplaced) continue;
+      if (this.currentSecrets[key]) keys.push(key);
+    }
+    return keys;
+  }
+
+  /**
+   * Whether validateSharedTokens will find the gateway and admin tokens apart after writing: a
+   * kept gateway .env without VALIDATION_TOKEN_SECRET or METADATA_ENCRYPTION_KEY (the admin .env
+   * is written with generated values the gateway then lacks). Read-only.
+   */
+  async predictTokenMismatch() {
+    const gatewayEnvPath = path.join(this.projectRoot, 'services/gateway/.env');
+    if (!fs.existsSync(gatewayEnvPath) || this.forceOverwrite) return false;
+    const gatewayEnv = await this.parseEnvFile(gatewayEnvPath);
+    return !gatewayEnv.VALIDATION_TOKEN_SECRET || !gatewayEnv.METADATA_ENCRYPTION_KEY;
+  }
+
+  /** A usable SAP_AI_CORE_SERVICE_KEY in the environment (checked quietly). */
+  hasUsableEnvServiceKey() {
+    const envServiceKey = process.env.SAP_AI_CORE_SERVICE_KEY;
+    if (!envServiceKey || !envServiceKey.trim()) return false;
+    try {
+      this.parseServiceKeyInline(envServiceKey);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** Text of a generated file under docker/, '' when it does not exist. */
+  readDockerFile(name) {
+    const filePath = path.join(this.dockerDir, name);
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+  }
+
+  /** Whether a current value would pass its question (choices, validate); invalid ones are dropped. */
+  isValidCurrentValue(id, value) {
+    const checks = {
+      POSTGRES_USER: validateDatabaseUsername,
+      provider: (v) => Object.keys(PROVIDERS).includes(v),
+      useDevelopment: (v) => typeof v === 'boolean',
+      baseUrl: validateBaseUrl,
+      imageMode: (v) => ['local', 'registry'].includes(v),
+      registry: validateRequired('Registry is required'),
+      organization: validateRequired('Organization is required')
+    };
+    if (BILLING_KEYS.includes(id)) return isValidBillingValue(id, value);
+    if (typeof value !== 'boolean' && typeof value !== 'string') return false;
+    if (checks[id]) return checks[id](value) === true;
+    const prompt = Object.values(PROVIDER_PROMPTS).flat().find((p) => p.key === id);
+    if (!prompt) return false;
+    if (prompt.options && !prompt.options.includes(value)) return false;
+    if (prompt.required && !String(value).trim()) return false;
+    return true;
+  }
+
+  /**
+   * The current configuration's answers, keyed by question id, from the files this script wrote
+   * (docker/.env, .env.docker, .env.nginx, .env.auth, dex.config.yaml, docker-compose.override.yml
+   * and the admin's ROLE_MAPPING through .env.auth). Values a question would reject are left out,
+   * so it falls back to today's default. Secrets the session keeps itself (a provider's client
+   * secret or bind password) are included: the prompt never shows them. {} with --force.
+   * Not read back: the Okta metadata URL and certificate choice, the external LDAP search
+   * attributes and filters (not written to any file), and the SAP AI Core settings (only asked
+   * when the gateway .env is created).
+   */
+  async loadCurrentValues() {
+    if (this.forceOverwrite) return {};
+    const docker = readDockerConfigValues(this.dockerDir);
+    const values = { POSTGRES_USER: docker.POSTGRES_USER };
+
+    // Provider: IDENTITY_PROVIDER in .env.auth; group names from its ROLE_MAPPING.
+    const provider = docker.IDENTITY_PROVIDER;
+    values.provider = provider;
+    values.LOGOUT_REDIRECT_URL = docker.LOGOUT_REDIRECT_URL;
+    const groups = docker.groups;
+    if (provider === 'github') {
+      values.GITHUB_CLIENT_ID = docker.GITHUB_CLIENT_ID;
+      values.GITHUB_CLIENT_SECRET = docker.GITHUB_CLIENT_SECRET;
+      if (docker.GITHUB_ORG !== undefined) {
+        values.GITHUB_ORG = docker.GITHUB_ORG;
+        values.GITHUB_ADMIN_TEAM = githubTeam(values.GITHUB_ORG, groups.admin);
+        values.GITHUB_USER_TEAM = githubTeam(values.GITHUB_ORG, groups.user);
+      }
+    } else if (provider === 'ldap') {
+      const external = isExternalLdap(docker);
+      values.LDAP_SERVER_TYPE = external ? 'external' : 'local';
+      values.LDAP_ADMIN_GROUP = groups.admin;
+      values.LDAP_USER_GROUP = groups.user;
+      if (external) {
+        for (const key of ['LDAP_HOST', 'LDAP_BIND_DN', 'LDAP_BIND_PASSWORD', 'LDAP_USER_BASE_DN', 'LDAP_GROUP_BASE_DN']) {
+          values[key] = docker[key];
+        }
+      }
+    } else if (provider === 'okta') {
+      if (docker.OKTA_SSO_URL !== 'OKTA_SSO_URL') values.OKTA_SSO_URL = docker.OKTA_SSO_URL;
+      values.OKTA_ADMIN_GROUP = groups.admin;
+      values.OKTA_USER_GROUP = groups.user;
+    }
+
+    // Base URL: .env.nginx; localhost is the "Use localhost for development?" answer.
+    if (docker.BASE_URL) {
+      values.useDevelopment = docker.BASE_URL === 'http://localhost:8080';
+      if (!values.useDevelopment) values.baseUrl = docker.BASE_URL;
+    }
+
+    // Image mode: .env.docker. Registry mode records DOCKER_IMAGE_MODE=registry; local builds
+    // always write the default registry, so another registry (a file written before the marker
+    // existed) also means registry mode.
+    if (docker.DOCKER_REGISTRY !== undefined) {
+      values.imageMode = usesImageRegistry(docker) ? 'registry' : 'local';
+      values.registry = docker.DOCKER_REGISTRY;
+      values.organization = docker.DOCKER_ORGANIZATION;
+    }
+
+    // Billing: the admin .env (written by an earlier interactive run).
+    Object.assign(values, billingFromEnv(await this.parseEnvFile(path.join(this.projectRoot, 'services/admin/.env'))));
+
+    const current = {};
+    for (const [id, value] of Object.entries(values)) {
+      if (value !== undefined && value !== null && this.isValidCurrentValue(id, value)) current[id] = value;
+    }
+    return current;
+  }
+
+  /**
+   * Secrets of the current configuration a re-run keeps unless they are regenerated: the database
+   * password (docker/.env), AWS_SECRET_ENCRYPTION_KEY (admin .env), the OAuth2 proxy secrets
+   * (.env.auth) and the file search runtime password (.env.filesearch-runtime). Placeholders from
+   * the templates count as unset. {} with --force.
+   */
+  async loadCurrentSecrets() {
+    if (this.forceOverwrite) return {};
+    const secrets = {};
+    const dockerEnv = await this.parseEnvFile(path.join(this.dockerDir, '.env'));
+    if (dockerEnv.POSTGRES_PASSWORD && validateDatabasePassword(dockerEnv.POSTGRES_PASSWORD) === true) {
+      secrets.POSTGRES_PASSWORD = dockerEnv.POSTGRES_PASSWORD;
+    }
+    const adminEnv = await this.parseEnvFile(path.join(this.projectRoot, 'services/admin/.env'));
+    const adminSample = await this.parseEnvFile(path.join(this.projectRoot, 'services/admin/.env.sample'));
+    if (adminEnv.AWS_SECRET_ENCRYPTION_KEY && adminEnv.AWS_SECRET_ENCRYPTION_KEY !== adminSample.AWS_SECRET_ENCRYPTION_KEY) {
+      secrets.AWS_SECRET_ENCRYPTION_KEY = adminEnv.AWS_SECRET_ENCRYPTION_KEY;
+    }
+    const authEnv = await this.parseEnvFile(path.join(this.dockerDir, '.env.auth'));
+    for (const key of ['OAUTH2_PROXY_CLIENT_SECRET', 'OAUTH2_PROXY_COOKIE_SECRET']) {
+      if (authEnv[key] && authEnv[key] !== `__${key}__`) secrets[key] = authEnv[key];
+    }
+    const runtimePassword = (url) => {
+      const match = (url || '').match(/^postgresql:\/\/[^:]+:([^@]+)@/);
+      if (!match) return undefined;
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return undefined;
+      }
+    };
+    const runtime = runtimePassword(this.readDockerFile('.env.filesearch-runtime').match(/^FILE_SEARCH_DATABASE_URL=(.*)$/m)?.[1]);
+    const templatePath = path.join(this.configsDir, 'shared', '.env.filesearch-runtime');
+    const template = fs.existsSync(templatePath)
+      ? runtimePassword(fs.readFileSync(templatePath, 'utf8').match(/^FILE_SEARCH_DATABASE_URL=(.*)$/m)?.[1])
+      : undefined;
+    if (runtime && runtime !== template) secrets.FILE_SEARCH_RUNTIME_PASSWORD = runtime;
+    return secrets;
+  }
+
+  /**
+   * Asks every interactive question (and runs the read-only probes) without writing anything.
+   * Re-run by the prompt session on Back and on a jump from the review screen.
+   * @returns {Promise<DockerAnswers>} { dbConfig, sapConfig, provider, providerConfig, baseUrl,
+   *   imageMode, registry, organization, createBackup, deleteVolumes, pullImages,
+   *   continueDespiteMismatch, regenerateKeys, billing }
+   */
+  async collectAnswers(session) {
+    this.session = session;
+    const answers = {
+      dbConfig: null,
+      sapConfig: null,
+      provider: null,
+      providerConfig: {},
+      baseUrl: null,
+      imageMode: null,
+      registry: null,
+      organization: null,
+      createBackup: false,
+      deleteVolumes: null,
+      pullImages: false,
+      continueDespiteMismatch: null,
+      regenerateKeys: [],
+      billing: null
+    };
+
+    answers.dbConfig = await this.promptForDatabaseCredentials();
+
+    // The SAP AI Core questions belong to a gateway .env that is created (not kept).
+    const gatewayEnvPath = path.join(this.projectRoot, 'services/gateway/.env');
+    if (!fs.existsSync(gatewayEnvPath) || this.forceOverwrite) {
+      answers.sapConfig = await this.promptForServiceKey();
+    }
+
+    const keys = await this.existingGeneratedKeys();
+    if (keys.length > 0) {
+      answers.regenerateKeys = await askKeyRegeneration(session, keys);
+    }
+    if (answers.regenerateKeys.includes('POSTGRES_PASSWORD') && !this.databasePasswordReplaced) {
+      // The same generated password on every replay of the session.
+      if (!session.generated.has('POSTGRES_PASSWORD')) {
+        session.generated.set('POSTGRES_PASSWORD', this.generateDatabasePassword());
+      }
+      answers.dbConfig = { ...answers.dbConfig, POSTGRES_PASSWORD: session.generated.get('POSTGRES_PASSWORD'), passwordWasGenerated: true };
+    }
+
+    if (await this.predictTokenMismatch()) {
+      console.log('\n⚠️  CRITICAL: Security tokens will not match between services!');
+      console.log('   The existing gateway .env has no VALIDATION_TOKEN_SECRET or METADATA_ENCRYPTION_KEY,');
+      console.log('   so the gateway and admin services would not use the same tokens.');
+      console.log('   Fix services/gateway/.env manually or run setup again with --force.\n');
+      const { continueAnyway } = await this.prompt([
+        {
+          type: 'confirm',
+          name: 'continueAnyway',
+          message: 'Continue anyway?',
+          default: false
+        }
+      ]);
+      if (!continueAnyway) {
+        throw new Error('Token validation failed - setup aborted');
+      }
+      answers.continueDespiteMismatch = true;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('   Authentication Provider Setup');
+    console.log('='.repeat(60) + '\n');
+
+    answers.provider = await this.selectProvider();
+
+    if (this.hasExistingConfigFiles()) {
+      console.log('\nExisting configuration files detected.');
+      ({ createBackup: answers.createBackup } = await this.prompt([
+        {
+          type: 'confirm',
+          name: 'createBackup',
+          message: 'Create backup?',
+          default: false
+        }
+      ]));
+    }
+
+    answers.providerConfig = await this.collectProviderConfig(answers.provider);
+    answers.baseUrl = await this.getBaseUrl();
+
+    const imageModeConfig = await this.selectImageMode();
+    answers.imageMode = imageModeConfig.imageMode;
+    answers.registry = imageModeConfig.registry;
+    answers.organization = imageModeConfig.organization;
+
+    answers.billing = billingToWrite(await askBilling(session, session.current), session.current);
+
+    // Existing volumes would keep the old Postgres password: ask now, delete after the review.
+    const existingVolumes = await session.once('docker-volumes', () =>
+      this.checkExistingVolumes(this.parseDockerComposeVolumes())
+    );
+    if (existingVolumes.length > 0) {
+      console.log('\n⚠️  Warning: Existing Docker volumes detected:');
+      existingVolumes.forEach(vol => console.log(`   - ${vol}`));
+      console.log('');
+      console.log('If you changed your Postgres password then the dex service will report');
+      console.log("'pq: password authentication failed'.");
+      console.log('');
+      // The volumes hold the data: with the database user and password unchanged (a re-run that
+      // kept both) they still match, so Enter keeps them.
+      const credentialsKept = Boolean(this.currentSecrets.POSTGRES_PASSWORD) &&
+        answers.dbConfig.POSTGRES_PASSWORD === this.currentSecrets.POSTGRES_PASSWORD &&
+        answers.dbConfig.POSTGRES_USER === session.current.POSTGRES_USER;
+      ({ deleteVolumes: answers.deleteVolumes } = await this.prompt([
+        {
+          type: 'confirm',
+          name: 'deleteVolumes',
+          message: 'Delete volumes to prevent authentication errors? (Choose No only if keeping same credentials)',
+          default: !credentialsKept
+        }
+      ]));
+    }
+
+    if (answers.imageMode === 'registry') {
+      console.log(`\nImages will be pulled from: ${answers.registry}/${answers.organization}`);
+      ({ pullImages: answers.pullImages } = await this.prompt([
+        {
+          type: 'confirm',
+          name: 'pullImages',
+          message: 'Pull Docker images now? This prevents local builds and ensures immediate startup.',
+          default: true
+        }
+      ]));
+    }
+
+    return answers;
+  }
+
+  /**
+   * What an unattended --ci run decides. undefined leaves a decision to the write step as before
+   * (database credentials and SAP AI Core key from the environment or CI defaults, the token
+   * mismatch confirmation).
+   */
+  unattendedAnswers() {
+    return {
+      dbConfig: undefined,
+      sapConfig: undefined,
+      provider: 'local',
+      providerConfig: this.defaultProviderConfig('local'),
+      baseUrl: 'http://localhost:8080',
+      imageMode: 'local',
+      registry: 'ghcr.io',
+      organization: 'st-gr',
+      createBackup: false,
+      deleteVolumes: true,
+      pullImages: false,
+      continueDespiteMismatch: undefined,
+      regenerateKeys: [],
+      billing: null
+    };
+  }
+
+  /**
+   * Interactive runs only (--ci and --config leave billing null): sets the billing currency in
+   * the admin .env and sets or removes the CU prices to match the answer.
+   */
+  writeBilling(billing) {
+    if (!billing) return;
+    const envPath = path.join(this.projectRoot, 'services/admin/.env');
+    if (!fs.existsSync(envPath)) return;
+    fs.writeFileSync(envPath, applyBillingToEnvText(fs.readFileSync(envPath, 'utf8'), billing), 'utf8');
+    console.log('✅ Updated admin .env with the SAP billing currency');
+  }
+
+  /**
+   * Writes the configuration from the answers, in the order the setup always wrote it: service
+   * .env files, backup, Docker image settings, provider and compose files, then volumes, image
+   * pull and the completion summary.
+   */
+  async applyAnswers(answers) {
+    this.answers = answers;
+
+    await this.setupServiceEnvFiles(answers.sapConfig, answers.dbConfig || null);
+    this.writeBilling(answers.billing);
+
+    if (this.configFromJson) {
+      // Skip backup in config mode
+      console.log('📋 Skipping backup in configuration mode');
+    } else {
+      if (this.ciMode) {
+        console.log('\n' + '='.repeat(60));
+        console.log('   Authentication Provider Setup');
+        console.log('='.repeat(60) + '\n');
+        console.log('🤖 CI Mode: Auto-selecting Local Development provider\n');
+      }
+
+      await this.backupExistingFiles(answers.createBackup);
+
+      if (this.ciMode) {
+        console.log(`🤖 CI Mode: Using default configuration for ${PROVIDERS[answers.provider].name}\n`);
+        console.log('🤖 CI Mode: Using localhost for development\n');
+        console.log('🤖 CI Mode: Using local builds for Docker images\n');
+      }
+
+      // Configure Docker image mode (local builds vs registry)
+      await this.configureDockerImages(answers.imageMode, answers.registry, answers.organization);
+    }
+
+    const config = await this.copyAndConfigureFiles(answers.provider, answers.providerConfig, answers.baseUrl, answers.dbConfig);
+
+    await this.showCompletion(config);
   }
 
   async runWithConfig(config) {
@@ -2647,21 +3161,48 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
         POSTGRES_PASSWORD: config.POSTGRES_PASSWORD
       };
     }
-    
-    // Setup service .env files first
-    await this.setupServiceEnvFiles(config.sapConfig, dbConfig);
-    
-    // Skip backup in config mode
-    console.log('📋 Skipping backup in configuration mode');
-    
-    // Prepare provider configuration
-    const providerConfig = config.providerConfig || {};
-    const baseUrl = config.baseUrl || 'http://localhost:8080';
-    
-    // Run the configuration
-    const finalConfig = await this.copyAndConfigureFiles(config.provider, providerConfig, baseUrl, dbConfig);
-    
-    await this.showCompletion(finalConfig);
+
+    const answers = {
+      dbConfig,
+      sapConfig: config.sapConfig || undefined,
+      provider: config.provider,
+      providerConfig: config.providerConfig || {},
+      baseUrl: config.baseUrl || 'http://localhost:8080',
+      imageMode: this.imageMode,
+      registry: this.registryConfig ? this.registryConfig.registry : null,
+      organization: this.registryConfig ? this.registryConfig.organization : null,
+      createBackup: false,
+      deleteVolumes: !config.keepDockerVolumes,
+      pullImages: false,
+      continueDespiteMismatch: true,
+      regenerateKeys: [],
+      billing: null
+    };
+
+    // What the configuration leaves open and only a person can answer (database credentials
+    // without environment variables, the SAP AI Core key for a new gateway .env) is asked before
+    // anything is written; a run that asks nothing shows no review screen.
+    const askDatabase = !dbConfig && !(process.env.POSTGRES_USER && process.env.POSTGRES_PASSWORD) && !this.ciMode;
+    const gatewayEnvPath = path.join(this.projectRoot, 'services/gateway/.env');
+    const askServiceKey = !answers.sapConfig && (!fs.existsSync(gatewayEnvPath) || this.forceOverwrite) &&
+      !this.hasUsableEnvServiceKey();
+    if (askDatabase || askServiceKey) {
+      const session = this.createSession();
+      try {
+        const asked = await session.run(async (s) => {
+          this.session = s;
+          const out = {};
+          if (askDatabase) out.dbConfig = await this.promptForDatabaseCredentials();
+          if (askServiceKey) out.sapConfig = await this.promptForServiceKey();
+          return out;
+        });
+        Object.assign(answers, asked);
+      } finally {
+        this.session = null;
+      }
+    }
+
+    await this.applyAnswers(answers);
   }
 
   async run() {
@@ -2669,31 +3210,24 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       // If configuration is provided via JSON, use it directly
       if (this.configFromJson) {
         await this.runWithConfig(this.configFromJson);
-      } else {
-        // Normal interactive flow
+      } else if (this.ciMode) {
         await this.showWelcome();
-        
-        // Setup service .env files first (before auth configuration)
-        await this.setupServiceEnvFiles();
-        
-        console.log('\n' + '='.repeat(60));
-        console.log('   Authentication Provider Setup');
-        console.log('='.repeat(60) + '\n');
-        
-        const provider = await this.selectProvider();
-        
-        await this.backupExistingFiles();
-        
-        const providerConfig = await this.collectProviderConfig(provider);
-        const baseUrl = await this.getBaseUrl();
-
-        // Configure Docker image mode (local builds vs registry)
-        const imageModeConfig = await this.selectImageMode();
-        await this.configureDockerImages(imageModeConfig.imageMode, imageModeConfig.registry, imageModeConfig.organization);
-
-        const config = await this.copyAndConfigureFiles(provider, providerConfig, baseUrl);
-
-        await this.showCompletion(config);
+        await this.applyAnswers(this.unattendedAnswers());
+      } else {
+        // Normal interactive flow: every question first (with Back and a review screen), then
+        // the writes. Ctrl-C or an error before "Write configuration" writes nothing.
+        await this.showWelcome();
+        // Without --force a re-run starts from the current configuration (both loaders return {}
+        // with --force, which starts from today's defaults).
+        this.currentSecrets = await this.loadCurrentSecrets();
+        const session = this.createSession(await this.loadCurrentValues());
+        let answers;
+        try {
+          answers = await session.run((s) => this.collectAnswers(s));
+        } finally {
+          this.session = null;
+        }
+        await this.applyAnswers(answers);
       }
       
     } catch (error) {
@@ -2721,3 +3255,4 @@ if (require.main === module) {
 }
 
 module.exports = DockerSetup;
+module.exports.PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS = PUBLICLY_KNOWN_VALIDATION_TOKEN_SECRETS;

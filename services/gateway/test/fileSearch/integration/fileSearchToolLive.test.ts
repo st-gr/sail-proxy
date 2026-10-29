@@ -86,7 +86,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: false 
 
 import { Pool } from 'pg';
 import { getPool, __resetForTests } from '../../../src/fileSearch/db';
-import { embed } from '../../../src/fileSearch/embedder';
+import { embed, configuredEmbeddingTarget } from '../../../src/fileSearch/embedder';
 import { searchVectorStores } from '../../../src/fileSearch/search';
 import { hostedToolBeforeHandler, hostedToolAfterHandler } from '../../../src/plugins/hostedTool/engine';
 import { getFileSearchConfig } from '../../../src/services/configService';
@@ -159,7 +159,7 @@ live('the file_search tool against the live tenant', () => {
     const dim = getFileSearchConfig().embeddingDimensions;
     fixture = await createIsolatedSchema(DSN!, dim);
 
-    // repository.ts and search.ts both reach the database through
+    // The repository modules and search.ts both reach the database through
     // src/fileSearch/db.ts's getPool() singleton, which builds its own Pool
     // from this env var rather than accepting one — point it at the isolated
     // schema the same way the other suites in this directory do.
@@ -194,7 +194,7 @@ live('the file_search tool against the live tenant', () => {
 
     // THE REAL EMBEDDER. If the tenant rejects this call the gate fails here,
     // in beforeAll, with the tenant's own message — which is the point.
-    const { vectors } = await embed(PASSAGES, 'document');
+    const { vectors } = await embed(PASSAGES, 'document', configuredEmbeddingTarget());
     expect(vectors).toHaveLength(PASSAGES.length);
     expect(vectors[0]).toHaveLength(dim);
 

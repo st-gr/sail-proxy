@@ -60,7 +60,7 @@ export class NotificationPopulationService {
         }
         
         // If still not found, try looking up in rotation history (for rotated credentials)
-        if (!credential) {
+        if (!credential && event.credential_ID) {
           const rotation = await SELECT.one.from('sap.llm.gateway.admin.AwsCredentialRotations')
             .columns('credential_ID')
             .where({ oldAccessKeyId: event.credential_ID })

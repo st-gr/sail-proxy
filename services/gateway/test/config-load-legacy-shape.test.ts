@@ -23,6 +23,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { legacyShapeErrorForFile } from '../src/utils/legacyConfigShape';
+import { DEFAULT_CONFIG } from '../src/services/defaultConfig';
 
 const OLD_SHAPE = {
   api_config: {
@@ -128,8 +129,10 @@ describe('non-standalone load of an old-shape file', () => {
     // Kept loading: the caller gets the file's own contents...
     expect(config.api_config.timeouts).toEqual({ default: 600000, streaming: 600000 });
     // ...and specifically NOT DEFAULT_CONFIG, whose stub substitutions would be
-    // actively wrong model routing rather than merely inert settings.
-    expect(config.api_config.providers?.openai?.substitute_models).toBeUndefined();
+    // actively wrong model routing rather than merely inert settings. The marker is
+    // the providers section: the fallback always carries one, this file has none.
+    expect(DEFAULT_CONFIG.api_config.providers).toBeDefined();
+    expect(config.api_config.providers).toBeUndefined();
 
     const reported = errors.filter((message) => message.includes('old flat api_config layout'));
     expect(reported).toHaveLength(1);

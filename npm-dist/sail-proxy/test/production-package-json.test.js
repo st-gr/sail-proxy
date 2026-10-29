@@ -50,5 +50,35 @@ check('dev dependencies are not carried over', () => {
   assert.ok(!('devDependencies' in out));
 });
 
+// A version-scoped root override ("uuid@11") that targets the service's own direct dependency must
+// pin it like a bare-name override: forwarded as-is, npm rejects it (EOVERRIDE, "conflicts with
+// direct dependency") and the bundle fails. One for another major passes through untouched.
+function runScoped(rootOverrides, dependencies) {
+  const root = path.join(dir, 'root');
+  fs.mkdirSync(path.join(root, 'npm-dist', 'sail-proxy', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '9.9.9', pnpm: { overrides: rootOverrides } }));
+  const scriptCopy = path.join(root, 'npm-dist', 'sail-proxy', 'scripts', 'create-production-package-json.js');
+  fs.copyFileSync(script, scriptCopy);
+  const inPath = path.join(dir, 'scoped-in.json');
+  const outPath = path.join(dir, 'scoped-out.json');
+  fs.writeFileSync(inPath, JSON.stringify({ name: 'gateway', version: '0.0.0', dependencies }));
+  execFileSync('node', [scriptCopy, inPath, outPath], { stdio: 'pipe' });
+  return JSON.parse(fs.readFileSync(outPath, 'utf8'));
+}
+check('a version-scoped override of a direct dependency pins it and becomes "$name"', () => {
+  const o = runScoped({ 'uuid@11': '>=11.1.1 <12.0.0', '@scope/lib@2': '>=2.3.0 <3.0.0' },
+    { uuid: '^11.1.0', '@scope/lib': '~2.1.0' });
+  assert.strictEqual(o.dependencies.uuid, '>=11.1.1 <12.0.0');
+  assert.strictEqual(o.overrides.uuid, '$uuid');
+  assert.ok(!('uuid@11' in o.overrides));
+  assert.strictEqual(o.dependencies['@scope/lib'], '>=2.3.0 <3.0.0');
+  assert.strictEqual(o.overrides['@scope/lib'], '$@scope/lib');
+});
+check('a version-scoped override for another major of a direct dependency is forwarded unchanged', () => {
+  const o = runScoped({ 'uuid@8': '>=8.3.3 <9.0.0' }, { uuid: '^11.1.0' });
+  assert.strictEqual(o.dependencies.uuid, '^11.1.0');
+  assert.strictEqual(o.overrides['uuid@8'], '>=8.3.3 <9.0.0');
+});
+
 fs.rmSync(dir, { recursive: true, force: true });
 process.exit(f ? 1 : 0);

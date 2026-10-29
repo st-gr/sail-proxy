@@ -1,36 +1,11 @@
-###############################################################################
-#  Dynamic module for JavaScript (njs) – already present in nginx:alpine
-###############################################################################
-load_module modules/ngx_http_js_module.so;
-
 events { worker_connections 1024; }
 
 http {
     #######################################################################
-    # 1.  njs: JWT helpers – expose claims as nginx variables             #
+    # 1.  Sign-in: every protected route asks oauth2-proxy (section 4.1). #
+    #     There is no bearer-token path: an njs JWT check used to accept #
+    #     tokens without a verified signature.                            #
     #######################################################################
-    js_path   /etc/nginx/njs/;   # jwt.js is bind-mounted here
-    js_import jwt.js;            # namespace is "jwt"
-
-    js_set $jwt_user             jwt.user;
-    js_set $jwt_email            jwt.email;
-    js_set $jwt_groups           jwt.groups;
-    js_set $jwt_is_valid         jwt.isValid;
-    js_set $jwt_validation_error jwt.validationError;
-
-    #######################################################################
-    # 1.1 JWT claim caching and JWKS key caching                         #
-    #######################################################################
-    js_shared_dict_zone zone=jwks_cache:1m;
-    js_shared_dict_zone zone=jwt_claim_cache:2m;
-
-    #######################################################################
-    # 2.  Detect presence of a Bearer token once per request              #
-    #######################################################################
-    map $http_authorization $jwt_token       { "~^Bearer\s+(.+)$" $1; default ""; }
-    map $jwt_token          $is_bearer_token { default 0; "~.+" 1; }
-    map $jwt_is_valid       $is_valid_bearer { default 0; "1" 1; }
-    
     # Deployment mode detection: Kyma uses empty OAUTH2_PROXY_PATH, Docker uses /oauth2
     map "${OAUTH2_PROXY_PATH}" $is_kyma_mode { "" 1; default 0; }
     
@@ -43,8 +18,31 @@ http {
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 
-    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                    '$status $body_bytes_sent "$http_referer" '
+    # Access log without API keys. Keep this block identical to the copy in entrypoint.sh (configmap mode).
+    # Gateway clients may send the key as ?key= or ?api_key= (a name
+    # with a %-escape or a [..] suffix counts too); log_format would write it verbatim through
+    # $request and $http_referer. A map gives one value per match (no global replace), so when
+    # the query carries such a parameter the whole query is replaced, not just the value.
+    # Not covered: error_log lines (e.g. upstream errors) still contain the request line and
+    # cannot be masked by log_format; keep error_log at its default level and access restricted.
+    map $query_string $sail_query_has_key {
+        default 0;
+        "~*(^|&)(key|api_key)(%5b[^=&]*|\[[^=&]*\])?=" 1;
+        "~*(^|&)[^=&]*%[^=&]*=" 1;
+    }
+    map $request_uri $sail_request_path { "~^(?<p>[^?]*)" $p; default $request_uri; }
+    map $sail_query_has_key $sail_logged_uri {
+        default $request_uri;
+        1 "$sail_request_path?<query redacted>";
+    }
+    map $http_referer $sail_logged_referer {
+        default $http_referer;
+        "~*[?&](key|api_key)(%5b[^=&#]*|\[[^=&#]*\])?=" "<referer query redacted>";
+        "~*[?&][^=&#]*%[^=&#]*=" "<referer query redacted>";
+    }
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request_method $sail_logged_uri $server_protocol" '
+                    '$status $body_bytes_sent "$sail_logged_referer" '
                     '"$http_user_agent" "$http_x_forwarded_for"';
     access_log /var/log/nginx/access.log main;
     error_log  /var/log/nginx/error.log;
@@ -89,35 +87,11 @@ http {
         ###################################################################
         # 4.1 Internal auth decision                                      #
         ###################################################################
-        location = /_bearer_or_cookie_auth {
+        location = /_cookie_auth {
             internal;
 
-            # SECURITY FIX: Create auth decision variable
-            set $auth_decision "cookie";
-            
-            # If bearer token present and valid, authorize immediately  
-            if ($is_valid_bearer) {
-                set $auth_decision "jwt_valid";
-            }
-            
-            # If bearer token present but invalid, reject
-            if ($is_bearer_token) {
-                set $auth_decision "jwt_invalid";
-            }
-            if ($is_valid_bearer) {
-                set $auth_decision "jwt_valid";
-            }
-            
-            # Handle JWT validation results
-            if ($auth_decision = "jwt_valid") {
-                return 204;
-            }
-            if ($auth_decision = "jwt_invalid") {
-                add_header Content-Type application/json;
-                return 401 '{"error": "Invalid JWT token", "details": "$jwt_validation_error"}';
-            }
-
-            # Default: fall back to oauth2-proxy cookie check
+            # oauth2-proxy answers 202 for a valid session (with the X-Auth-Request-* identity headers) and
+            # 401 otherwise; nginx never decides on its own.
             proxy_pass http://oauth2_proxy${OAUTH2_AUTH_PATH};
             proxy_pass_request_body off;
             proxy_set_header Content-Length "";
@@ -166,16 +140,6 @@ http {
         location /dex/  { 
             proxy_pass http://dex/dex/;              
             include proxy_params;
-        }
-
-        ###################################################################
-        # 4.3.1 Internal JWKS endpoint for JWT validation                 #
-        ###################################################################
-        location = /internal/jwks {
-            internal;
-            proxy_pass http://dex/dex/keys;
-            proxy_set_header Accept application/json;
-            proxy_set_header User-Agent SAP-LLM-Gateway-Nginx/1.0;
         }
 
         ###################################################################
@@ -228,7 +192,7 @@ http {
         # Server-Sent Events endpoint for notifications - MUST come before general /admin/api/
         location /admin/api/notifications/stream {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -237,10 +201,10 @@ http {
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
             # Pass authentication headers
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
             
             # SSE-specific settings to disable buffering
             proxy_set_header Connection '';
@@ -260,7 +224,7 @@ http {
 
         location /admin/api/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -268,11 +232,11 @@ http {
             auth_request_set $groups $upstream_http_x_auth_request_groups;
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
-            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            # The identity oauth2-proxy answered with (overwrites anything the client sent)
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
 
             proxy_pass http://admin_service/api/;
             include proxy_params;
@@ -292,9 +256,17 @@ http {
             # These are internal endpoints used by gateway for credential validation
             proxy_pass http://admin_service/odata/v4/validation/;
             include proxy_params;
-            
+
             # Add internal service identifier
             proxy_set_header X-Internal-Service "gateway";
+
+            # No auth_request here, so these could only come from the client: the admin's auth
+            # would take them as an oauth2-proxy identity. Callers authenticate with the gateway JWT.
+            proxy_set_header X-Auth-Request-User               "";
+            proxy_set_header X-Auth-Request-Email              "";
+            proxy_set_header X-Auth-Request-Groups             "";
+            proxy_set_header X-Auth-Request-Preferred-Username "";
+            proxy_set_header X-Auth-Request-Access-Token       "";
         }
         
         # Internal admin recordUsage endpoint (restricted access)
@@ -311,12 +283,19 @@ http {
             
             # Add internal service identifier
             proxy_set_header X-Internal-Service "gateway";
+
+            # Same as the validation location: no auth_request, so blank client identity headers.
+            proxy_set_header X-Auth-Request-User               "";
+            proxy_set_header X-Auth-Request-Email              "";
+            proxy_set_header X-Auth-Request-Groups             "";
+            proxy_set_header X-Auth-Request-Preferred-Username "";
+            proxy_set_header X-Auth-Request-Access-Token       "";
         }
 
         # OData v4 admin service endpoints
         location /odata/v4/admin/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -324,11 +303,11 @@ http {
             auth_request_set $groups $upstream_http_x_auth_request_groups;
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
-            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            # The identity oauth2-proxy answered with (overwrites anything the client sent)
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
 
             proxy_pass http://admin_service/odata/v4/admin/;
             include proxy_params;
@@ -336,7 +315,7 @@ http {
         
         location /admin/odata/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -344,11 +323,11 @@ http {
             auth_request_set $groups $upstream_http_x_auth_request_groups;
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
-            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            # The identity oauth2-proxy answered with (overwrites anything the client sent)
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
 
             proxy_pass http://admin_service/odata/;
             include proxy_params;
@@ -356,7 +335,7 @@ http {
 
         location = /admin/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             return 302 /admin/app/shell/;
         }
 
@@ -367,7 +346,7 @@ http {
             
             # All requests go to backend with authentication
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -376,10 +355,10 @@ http {
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
             # Pass authentication headers to admin service
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
             
             # Route to admin service's /api/logout endpoint
             rewrite ^/admin/logout$ /api/logout break;
@@ -395,7 +374,7 @@ http {
         # Handle shared SAPUI5 resources at /admin/resources/ 
         location /admin/resources/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -404,10 +383,10 @@ http {
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
             # Pass authentication headers to admin service
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
             
             # Strip /admin prefix when proxying to admin service
             rewrite ^/admin/(.*)$ /$1 break;
@@ -415,14 +394,15 @@ http {
             include proxy_params;
             
             # Enable caching for SAPUI5 framework resources
-            expires 1y;
-            add_header Cache-Control "public, immutable";
+            # UI5 and app files have unversioned URLs: revalidate every time (the admin sends ETags),
+            # so a release reaches browsers on the next load instead of after a year.
+            add_header Cache-Control "no-cache";
         }
 
         # Handle UI5 app resources directories specifically
-        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|tool-policies-app)/(resources|webapp|images)/ {
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app)/(resources|webapp|images)/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -431,10 +411,10 @@ http {
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
             # Pass authentication headers to admin service
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
             
             # Strip /admin prefix when proxying to admin service
             rewrite ^/admin/(.*)$ /$1 break;
@@ -442,14 +422,15 @@ http {
             include proxy_params;
             
             # Enable caching for static resources
-            expires 1y;
-            add_header Cache-Control "public, immutable";
+            # UI5 and app files have unversioned URLs: revalidate every time (the admin sends ETags),
+            # so a release reaches browsers on the next load instead of after a year.
+            add_header Cache-Control "no-cache";
         }
 
         # UI5 Applications - serve static files with authentication
         location /admin/app/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -457,12 +438,12 @@ http {
             auth_request_set $groups $upstream_http_x_auth_request_groups;
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
-            # Combine JWT values (bearer) with oauth2-proxy values (cookie)
+            # The identity oauth2-proxy answered with (overwrites anything the client sent)
             # Use the headers that the admin service expects
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
 
             # Forward to admin service - strip /admin prefix since admin service expects /app/*
             rewrite ^/admin/(.*)$ /$1 break;
@@ -479,9 +460,9 @@ http {
         }
 
         # Handle UI5 resource paths that apps expect at root level
-        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|tool-policies-app)/resources/ {
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app)/resources/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
             
             # Extract oauth2-proxy headers when using cookie auth
             auth_request_set $user $upstream_http_x_auth_request_user;
@@ -490,10 +471,10 @@ http {
             auth_request_set $preferred_username $upstream_http_x_auth_request_preferred_username;
 
             # Pass authentication headers to admin service
-            proxy_set_header X-Auth-Request-User               "$jwt_user$user";
-            proxy_set_header X-Auth-Request-Email              "$jwt_email$email";
-            proxy_set_header X-Auth-Request-Groups             "$jwt_groups$groups";
-            proxy_set_header X-Auth-Request-Preferred-Username "$jwt_user$preferred_username";
+            proxy_set_header X-Auth-Request-User               "$user";
+            proxy_set_header X-Auth-Request-Email              "$email";
+            proxy_set_header X-Auth-Request-Groups             "$groups";
+            proxy_set_header X-Auth-Request-Preferred-Username "$preferred_username";
             
             # Rewrite to the actual path and proxy to admin service
             rewrite ^/([^/]+)/resources/(.*)$ /app/$1/resources/$2 break;
@@ -501,14 +482,15 @@ http {
             include proxy_params;
             
             # Enable caching for resources
-            expires 1y;
-            add_header Cache-Control "public, immutable";
+            # UI5 and app files have unversioned URLs: revalidate every time (the admin sends ETags),
+            # so a release reaches browsers on the next load instead of after a year.
+            add_header Cache-Control "no-cache";
         }
 
         # Handle cross-app webapp references (e.g., usage-analytics from shell)
-        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users|tool-policies)/webapp/ {
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users|teams|connections|tool-policies|grounding)/webapp/ {
             error_page 401 = @auth_required;
-            auth_request /_bearer_or_cookie_auth;
+            auth_request /_cookie_auth;
 
             # Map shortened names to full app names and proxy
             rewrite ^/usage-analytics/webapp/(.*)$ /app/usage-analytics-app/webapp/$1 break;
@@ -519,7 +501,10 @@ http {
             rewrite ^/sap-rates/webapp/(.*)$ /app/sap-rates-app/webapp/$1 break;
             rewrite ^/model-library/webapp/(.*)$ /app/model-library-app/webapp/$1 break;
             rewrite ^/users/webapp/(.*)$ /app/users-app/webapp/$1 break;
+            rewrite ^/teams/webapp/(.*)$ /app/teams-app/webapp/$1 break;
+            rewrite ^/connections/webapp/(.*)$ /app/connections-app/webapp/$1 break;
             rewrite ^/tool-policies/webapp/(.*)$ /app/tool-policies-app/webapp/$1 break;
+            rewrite ^/grounding/webapp/(.*)$ /app/grounding-app/webapp/$1 break;
             
             proxy_pass http://admin_service;
             include proxy_params;
@@ -575,6 +560,9 @@ http {
             }
             if ($http_x_stainless_key != "") {
                 return 204;  # Allow - gateway will validate API key
+            }
+            if ($http_x_goog_api_key != "") {
+                return 204;  # Allow - gateway will validate API key (Gemini SDK header)
             }
             if ($http_authorization ~ "^AWS4-HMAC-SHA256") {
                 return 204;  # Allow - gateway will validate AWS SigV4
@@ -652,6 +640,12 @@ http {
             # Always pass through authentication headers to gateway service
             proxy_pass http://gateway_service/;
             include proxy_params;
+
+            # AWS SigV4 clients sign /gateway/... and the Host they sent, port included; the
+            # gateway's verifier rebuilds both from these (proxy_pass strips the prefix,
+            # proxy_params sends Host without the port).
+            proxy_set_header X-Forwarded-Prefix /gateway;
+            proxy_set_header X-Forwarded-Host   $http_host;
         }
 
         ###################################################################

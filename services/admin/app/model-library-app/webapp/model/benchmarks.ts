@@ -1,38 +1,65 @@
-/** Benchmark keys as published by SAP AI Core, with the labels the SAP Model Library uses. */
-export const BENCHMARK_LABELS: Record<string, string> = {
-  helmCapabilitiesAccuracyMeanScore: 'HELM Capabilities Accuracy Mean Score',
-  meanWinRate: 'HELM Lite Accuracy Mean Win Rate',
-  lmArenaTextArenaScore: 'LMArena Text Arena Score',
-  chatBotArenaScore: 'ChatBotArena Arena Score',
-  airBenchRefusalRate: 'AIRBench Refusal Rate',
-  biasRefusalRate: 'AIRBench Discrimination/Bias Refusal Rate',
-  mtebAverageScore: 'MTEB Average Score',
-  mtebMultilingualMeanScore: 'MTEB Multilingual Mean Score'
-};
+/**
+ * Resolves an i18n key — the controller injects the resource bundle; jest passes none and gets the
+ * English defaults below, so the module keeps no UI5 imports.
+ */
+export type Translator = (key: string) => string;
+
+/** Benchmark keys as published by SAP AI Core, in the leaderboard's column order. */
+const METRICS = [
+  'helmCapabilitiesAccuracyMeanScore', 'meanWinRate', 'lmArenaTextArenaScore', 'chatBotArenaScore',
+  'airBenchRefusalRate', 'biasRefusalRate', 'mtebAverageScore', 'mtebMultilingualMeanScore'
+];
 
 /**
- * One plain-language sentence per metric for the leaderboard column tooltips (H) — the hint
- * promises "Hover over a metric name for more information", and the benchmark JSON carries only
- * key/value pairs. Each names the source, the scale and the direction. Keep this in step with
- * BENCHMARK_LABELS: benchmarks.test.ts fails if a labelled metric has no description.
+ * English defaults: each value is byte-identical to the literal it replaced, so the pure tests hold.
+ * benchmarkLabel_<metric>: the labels the SAP Model Library uses (the benchmark names - HELM, LMArena,
+ * AIRBench, MTEB … - stay untranslated in every language, only the generic words around them move).
+ * benchmarkInfo_<metric>: one plain-language sentence per metric for the leaderboard column tooltips
+ * (H) — the hint promises "Hover over a metric name for more information", and the benchmark JSON
+ * carries only key/value pairs. Each names the source, the scale and the direction.
  */
-export const BENCHMARK_DESCRIPTIONS: Record<string, string> = {
-  helmCapabilitiesAccuracyMeanScore: "HELM Capabilities: mean accuracy across the suite's scenarios, 0-1, higher is better.",
-  meanWinRate: 'HELM Lite: mean win rate against the other evaluated models, 0-1, higher is better.',
-  lmArenaTextArenaScore: 'LMArena text arena Elo-style score from human pairwise votes; higher is better.',
-  chatBotArenaScore: 'Chatbot Arena score from human pairwise votes; higher is better.',
-  airBenchRefusalRate: 'AIRBench: share of unsafe requests the model refused, 0-1, higher is safer.',
-  biasRefusalRate: 'AIRBench discrimination/bias: share of biased requests refused, 0-1, higher is safer.',
-  mtebAverageScore: 'MTEB: mean embedding-benchmark score across tasks; higher is better.',
-  mtebMultilingualMeanScore: 'MTEB multilingual: mean score across the multilingual tasks; higher is better.'
+const EN_TEXTS: Record<string, string> = {
+  benchmarkLabel_helmCapabilitiesAccuracyMeanScore: 'HELM Capabilities Accuracy Mean Score',
+  benchmarkLabel_meanWinRate: 'HELM Lite Accuracy Mean Win Rate',
+  benchmarkLabel_lmArenaTextArenaScore: 'LMArena Text Arena Score',
+  benchmarkLabel_chatBotArenaScore: 'ChatBotArena Arena Score',
+  benchmarkLabel_airBenchRefusalRate: 'AIRBench Refusal Rate',
+  benchmarkLabel_biasRefusalRate: 'AIRBench Discrimination/Bias Refusal Rate',
+  benchmarkLabel_mtebAverageScore: 'MTEB Average Score',
+  benchmarkLabel_mtebMultilingualMeanScore: 'MTEB Multilingual Mean Score',
+  benchmarkInfo_helmCapabilitiesAccuracyMeanScore: "HELM Capabilities: mean accuracy across the suite's scenarios, 0-1, higher is better.",
+  benchmarkInfo_meanWinRate: 'HELM Lite: mean win rate against the other evaluated models, 0-1, higher is better.',
+  benchmarkInfo_lmArenaTextArenaScore: 'LMArena text arena Elo-style score from human pairwise votes; higher is better.',
+  benchmarkInfo_chatBotArenaScore: 'Chatbot Arena score from human pairwise votes; higher is better.',
+  benchmarkInfo_airBenchRefusalRate: 'AIRBench: share of unsafe requests the model refused, 0-1, higher is safer.',
+  benchmarkInfo_biasRefusalRate: 'AIRBench discrimination/bias: share of biased requests refused, 0-1, higher is safer.',
+  benchmarkInfo_mtebAverageScore: 'MTEB: mean embedding-benchmark score across tasks; higher is better.',
+  benchmarkInfo_mtebMultilingualMeanScore: 'MTEB multilingual: mean score across the multilingual tasks; higher is better.'
 };
+const defaultTranslate: Translator = (key) => EN_TEXTS[key] ?? key;
+
+/** A translator without the text (the bundle not loaded yet) falls back to English. */
+function textOf(key: string, t: Translator): string {
+  const text = typeof t === 'function' ? t(key) : undefined;
+  return text && text !== key ? text : defaultTranslate(key);
+}
+
+/** Metric -> its English label. Keep in step with BENCHMARK_DESCRIPTIONS: benchmarks.test.ts fails if a labelled metric has no description. */
+export const BENCHMARK_LABELS: Record<string, string> = Object.fromEntries(METRICS.map((m) => [m, defaultTranslate(`benchmarkLabel_${m}`)]));
+
+/** Metric -> its English tooltip sentence (see EN_TEXTS). */
+export const BENCHMARK_DESCRIPTIONS: Record<string, string> = Object.fromEntries(METRICS.map((m) => [m, defaultTranslate(`benchmarkInfo_${m}`)]));
+
+/** A metric's label in the cockpit's language, or the bare key for a new metric. */
+export function benchmarkLabel(metric: string, t: Translator = defaultTranslate): string {
+  return BENCHMARK_LABELS[metric] ? textOf(`benchmarkLabel_${metric}`, t) : metric;
+}
 
 /** Leaderboard column tooltip: the label and its sentence, or the bare key for a new metric. */
-export function benchmarkTooltip(key: string): string {
-  const label = BENCHMARK_LABELS[key];
-  if (!label) return key;
-  const description = BENCHMARK_DESCRIPTIONS[key];
-  return description ? `${label} \u2014 ${description}` : label;
+export function benchmarkTooltip(metric: string, t: Translator = defaultTranslate): string {
+  if (!BENCHMARK_LABELS[metric]) return metric;
+  const label = benchmarkLabel(metric, t);
+  return BENCHMARK_DESCRIPTIONS[metric] ? `${label} \u2014 ${textOf(`benchmarkInfo_${metric}`, t)}` : label;
 }
 
 const ORDER = Object.keys(BENCHMARK_LABELS);

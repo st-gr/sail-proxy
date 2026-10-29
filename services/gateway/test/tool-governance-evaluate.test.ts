@@ -69,3 +69,20 @@ describe('decideInvoked', () => {
     expect(decideInvoked(r, 'function:zzz')).toBe('unlisted');
   });
 });
+
+import { evaluateBlocks } from '../src/toolGovernance/evaluate';
+describe('evaluateBlocks with three blocks (team, user, key)', () => {
+  const declared = ['function:a', 'function:b', 'mcp:github'];
+  it('strictest mode wins, any block denies, narrowing intersects all lists, policyId is the first block\'s', () => {
+    const user = block({ policyId: 'u', policyName: 'User', mode: 'monitor', allow: ['function:*', 'mcp:github', 'mcp:github/issues', 'mcp:github/pulls'] });
+    const key = block({ policyId: 'k', policyName: 'Key', mode: 'strip', allow: ['function:*', 'mcp:github', 'mcp:github/pulls', 'mcp:github/issues'] });
+    const team = block({ policyId: 't', policyName: 'Team', mode: 'strip', deny: ['function:b'], allow: ['function:*', 'mcp:github', 'mcp:github/pulls'] });
+    const r = evaluateBlocks(declared, [user, key, team], null);
+    expect(r.mode).toBe('strip');
+    expect(r.decisions.get('function:b')).toBe('stripped');
+    expect(r.narrow.get('github')).toEqual(['pulls']);
+    expect(r.policyNames).toEqual(['User', 'Key', 'Team']);
+    expect(r.policyId).toBe('u');
+    expect(evaluate(declared, user, key, null)).toEqual(evaluateBlocks(declared, [user, key], null));
+  });
+});

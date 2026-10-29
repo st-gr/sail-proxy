@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: postgres
 spec:
@@ -20,7 +20,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: postgres
 spec:
@@ -52,7 +52,7 @@ spec:
         # wrong-results/index-corruption hazard, not a startup failure.
         # "-trixie" matches plain postgres:16's base exactly, so an in-place
         # upgrade never crosses a glibc boundary. See
-        # docs/developer/chapter-14-release.md for the remediation if a
+        # docs/developer/release.md for the remediation if a
         # differently-based pgvector image is ever substituted here.
         image: pgvector/pgvector:pg16-trixie
         envFrom:

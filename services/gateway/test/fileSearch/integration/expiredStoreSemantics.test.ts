@@ -2,7 +2,7 @@
 // an expired store are TERMINAL for use — it must permanently reject new
 // attaches and searches, while remaining retrievable, listable and
 // deletable, matching OpenAI's own "expired keeps its row" behaviour for
-// those read paths. See repository.ts's StoreExpiredError/
+// those read paths. See storeValidation.ts's StoreExpiredError/
 // assertStoreNotExpired doc comments for why the alternative (treating
 // activity as "reviving" an expired store) was rejected: status is never
 // cleared off 'expired' anywhere in this codebase, so a revived store would

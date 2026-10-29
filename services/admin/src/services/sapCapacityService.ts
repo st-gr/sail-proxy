@@ -1,7 +1,6 @@
 import { getDefaultLogger } from '@libs/logger';
-import * as fs from 'fs';
-import * as path from 'path';
 import { pricingTwins } from './pricingTwins';
+import { readApiConfigBlock } from '../utils/apiConfigFile';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -18,8 +17,7 @@ let _apiConfig: any = null;
 function apiConfig(): any {
   if (!_apiConfig) {
     try {
-      const p = path.resolve(__dirname, '../../api_config.json');
-      _apiConfig = JSON.parse(fs.readFileSync(p, 'utf8')).api_config ?? {};
+      _apiConfig = readApiConfigBlock();
     } catch (error) {
       logger.error('sapCapacityService', 'Failed to load api_config.json', error instanceof Error ? error : new Error(String(error)));
       _apiConfig = {};
@@ -28,17 +26,49 @@ function apiConfig(): any {
   return _apiConfig;
 }
 
+/** The currency the SAP capacity-unit prices are billed in: SAP_BILLING_CURRENCY (three letters), else USD. */
+export function billingCurrency(env: NodeJS.ProcessEnv = process.env): string {
+  return explicitBillingCurrency(env) ?? 'USD';
+}
+
+/**
+ * SAP_BILLING_CURRENCY when it is set to a valid code, else null. When set, price rows of other
+ * currencies are not considered for cost; when null, any currency counts (instances that added
+ * non-USD rows by hand keep working).
+ */
+export function explicitBillingCurrency(env: NodeJS.ProcessEnv = process.env): string | null {
+  const v = String(env.SAP_BILLING_CURRENCY ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(v) ? v : null;
+}
+
 export function isProductive(): boolean {
   return apiConfig()?.platform?.billing?.productive === true;
 }
 
-export function getCacheBillingFactors(provider: string): { read: number; write: number } {
-  const p = apiConfig()?.providers?.[provider] ?? {};
+/**
+ * The cache billing factors every configured provider key carries, keyed by the lower-cased key.
+ * The one place that decides which usage rows a factor applies to: live capture
+ * (getCacheBillingFactors) and the nightly cost recalculation (a SQL CASE over the row's
+ * provider) both resolve through it. A usage row's provider is the ModelCosts provider SAP
+ * publishes for the model ("Anthropic"), the configuration key is lower case ("anthropic"), so the
+ * match ignores case. Providers without an entry get 1.
+ */
+export function cacheBillingFactorsByProvider(): Map<string, { read: number; write: number }> {
   const num = (v: any, d: number) => (typeof v === 'number' && v >= 0 ? v : d);
-  return {
-    read: num(p.sap_cache_read_token_billing_factor, 1),
-    write: num(p.sap_cache_write_token_billing_factor, 1)
-  };
+  const out = new Map<string, { read: number; write: number }>();
+  for (const [key, p] of Object.entries<any>(apiConfig()?.providers ?? {})) {
+    const k = key.toLowerCase();
+    if (out.has(k)) continue;
+    out.set(k, {
+      read: num(p?.sap_cache_read_token_billing_factor, 1),
+      write: num(p?.sap_cache_write_token_billing_factor, 1)
+    });
+  }
+  return out;
+}
+
+export function getCacheBillingFactors(provider: string): { read: number; write: number } {
+  return cacheBillingFactorsByProvider().get(String(provider ?? '').toLowerCase()) ?? { read: 1, write: 1 };
 }
 
 // Seams (spied in tests, real in prod).
@@ -65,7 +95,7 @@ export async function _lookupRate(model: string, at: Date): Promise<any | null> 
   // divide by 1,000 for the per-single-model-token rate computeSapNative multiplies by.
   const query = (id: string) => db.run(
     SELECT.from('sap.llm.gateway.admin.ModelCosts')
-      .where('model =', id, 'and dateFrom <=', iso, 'and dateTo >=', iso)
+      .where('model =', id, "and (pricingKind is null or pricingKind <> 'list_price') and dateFrom <=", iso, 'and dateTo >=', iso)
       .orderBy('dateFrom desc')
   );
   // Try every id this model's price may be maintained under, in the same order as
@@ -92,16 +122,21 @@ export async function _lookupRate(model: string, at: Date): Promise<any | null> 
   };
 }
 
-export async function _lookupPrice(usageType: string, at: Date): Promise<any | null> {
+/**
+ * The capacity-unit price in force at `at` for the usage type. With a tenant's price region, a row
+ * of that region is preferred; without one (or without such a row) the newest row of any region,
+ * as before price regions existed.
+ */
+export async function _lookupPrice(usageType: string, at: Date, region: string | null = null): Promise<any | null> {
   const db = await cds.connect.to('db');
   const { SELECT } = cds.ql;
   const iso = at.toISOString();
-  const rows = await db.run(
-    SELECT.from('sap.llm.gateway.admin.SapCapacityUnitPrice')
-      .where('usageType =', usageType, 'and dateFrom <=', iso, 'and dateTo >=', iso)
-      .orderBy('dateFrom desc')
-  );
-  return rows?.[0] ?? null;
+  const currency = explicitBillingCurrency();
+  let query = SELECT.from('sap.llm.gateway.admin.SapCapacityUnitPrice')
+    .where({ usageType }).and({ dateFrom: { '<=': iso } }).and({ dateTo: { '>=': iso } });
+  if (currency) query = query.and({ currency });
+  const rows = await db.run(query.orderBy('dateFrom desc'));
+  return (region ? rows?.find((r: any) => r.region === region) : undefined) ?? rows?.[0] ?? null;
 }
 
 export function _cacheFactors(provider: string): { read: number; write: number } {
@@ -121,6 +156,8 @@ export async function computeSapNative(input: {
   audioOutputTokens?: number;
   at: Date;
   productive: boolean;
+  /** The serving tenant's capacity-unit price region; null = any region. */
+  priceRegion?: string | null;
 }): Promise<SapNativeResult | null> {
   const rate = await (module.exports as any)._lookupRate(input.model, input.at);
   if (!rate) return null;
@@ -157,7 +194,7 @@ export async function computeSapNative(input: {
   const capacityUnits = genAiTokens * n(rate.cuFactor);
 
   const usageType = input.productive ? 'productive' : 'non-productive';
-  const price = await (module.exports as any)._lookupPrice(usageType, input.at);
+  const price = await (module.exports as any)._lookupPrice(usageType, input.at, input.priceRegion ?? null);
   if (!price) {
     return { genAiTokens, capacityUnits, sapCost: null, sapCostCurrency: null };
   }

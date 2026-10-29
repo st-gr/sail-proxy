@@ -6,7 +6,7 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, liveModels } = require('@libs/test-utils');
 
 const BASE_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 const TIMEOUT = 30000;
@@ -74,7 +74,7 @@ describe('Ollama API Integration', () => {
   describe('Text Generation', () => {
     it('should handle generate requests', async () => {
       const response = await axiosInstance.post('/api/generate', {
-        model: 'gpt-4.1-nano', // Using a model that should be available through proxy
+        model: liveModels.cheapChat, // Using a model that should be available through proxy
         prompt: 'Say hello in one word',
         stream: false
       });
@@ -89,7 +89,7 @@ describe('Ollama API Integration', () => {
 
     it('should handle chat requests', async () => {
       const response = await axiosInstance.post('/api/chat', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           {
             role: 'user',
@@ -114,7 +114,7 @@ describe('Ollama API Integration', () => {
     it('should handle embeddings requests or return appropriate error', async () => {
       try {
         const response = await axiosInstance.post('/api/embeddings', {
-          model: 'text-embedding-3-small', // Using embedding model through proxy
+          model: liveModels.embedding, // Using embedding model through proxy
           prompt: 'Test text for embeddings'
         });
         
@@ -157,7 +157,7 @@ describe('Ollama API Integration', () => {
 
     it('should handle OpenAI chat completions', async () => {
       const response = await axiosInstance.post('/v1/chat/completions', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [
           {
             role: 'user',
@@ -193,7 +193,7 @@ describe('Ollama API Integration', () => {
     it('should handle OpenAI embeddings or return appropriate error', async () => {
       try {
         const response = await axiosInstance.post('/v1/embeddings', {
-          model: 'text-embedding-3-small',
+          model: liveModels.embedding,
           input: 'Test text for OpenAI embeddings'
         });
         
@@ -271,7 +271,7 @@ describe('Ollama API Integration', () => {
     it('should handle concurrent requests', async () => {
       const promises = Array(5).fill().map((_, index) => 
         axiosInstance.post('/api/chat', {
-          model: 'gpt-4.1-nano',
+          model: liveModels.cheapChat,
           messages: [{ role: 'user', content: `Request ${index}` }],
           stream: false
         }).catch(error => {
@@ -299,7 +299,7 @@ describe('Ollama API Integration', () => {
       const startTime = Date.now();
       
       const response = await axiosInstance.post('/api/chat', {
-        model: 'gpt-4.1-nano',
+        model: liveModels.cheapChat,
         messages: [{ role: 'user', content: 'Hi' }],
         stream: false
       });

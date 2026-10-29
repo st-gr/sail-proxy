@@ -102,7 +102,7 @@ export default class Notifications extends BaseController {
 	/**
 	 * Load security notifications from OData service
 	 */
-	private async _loadSecurityNotifications(): Promise<void> {
+	public async _loadSecurityNotifications(): Promise<void> {
 		// Wait for the component to fully initialize and model to be available
 		await this._waitForModel();
 		
@@ -169,7 +169,7 @@ export default class Notifications extends BaseController {
 
 		} catch (error) {
 			Log.error("Failed to load security notifications", error as string, "Notifications.controller");
-			this._notificationsModel?.setProperty("/error", "Failed to load notifications");
+			this._notificationsModel?.setProperty("/error", this.text("notifications.loadFailed"));
 		} finally {
 			this._notificationsModel?.setProperty("/loading", false);
 		}
@@ -411,13 +411,13 @@ export default class Notifications extends BaseController {
 			
 			await oActionBinding.execute();
 			
-			MessageToast.show("All notifications marked as seen");
+			MessageToast.show(this.text("notifications.allMarkedSeen"));
 			
 			Log.info(`Bulk marked ${aNotificationIds.length} notifications as seen`, "", "Notifications.controller");
 			
 		} catch (error) {
 			Log.error("Failed to clear all notifications", error as string, "Notifications.controller");
-			MessageToast.show("Failed to clear notifications");
+			MessageToast.show(this.text("notifications.clearFailed"));
 			
 			// On error, reload to get accurate state
 			this._loadSecurityNotifications();
@@ -563,7 +563,7 @@ export default class Notifications extends BaseController {
 		// Create loading text
 		const loadingText = document.createElement("div");
 		loadingText.style.cssText = "margin-top: 0.5rem; color: #666;";
-		loadingText.textContent = "Loading notifications...";
+		loadingText.textContent = this.text("notifications.loading");
 
 		// Add CSS animation
 		const style = document.createElement("style");
@@ -636,7 +636,8 @@ export default class Notifications extends BaseController {
 
 		// Create main container
 		const container = document.createElement("div");
-		container.className = "notification-item";
+		// The severity class carries the dark-theme colours (css/style.css); Light keeps the inline ones
+		container.className = `notification-item notification-item-${notification.severity === "high" ? "high" : "medium"}`;
 		container.dataset.notificationId = notification.ID; // Add data attribute for identification
 		container.style.cssText = `
 			display: flex; 
@@ -675,16 +676,19 @@ export default class Notifications extends BaseController {
 
 		// Create title
 		const titleElement = document.createElement("div");
+		titleElement.className = "notification-item-title";
 		titleElement.style.cssText = "font-weight: bold; font-size: 0.875rem; color: #333; margin-bottom: 0.25rem;";
 		titleElement.textContent = notification.title;
 
 		// Create message
 		const messageElement = document.createElement("div");
+		messageElement.className = "notification-item-message";
 		messageElement.style.cssText = "font-size: 0.75rem; color: #666;";
 		messageElement.textContent = notification.message;
 
 		// Create close button
 		const closeButton = document.createElement("button");
+		closeButton.className = "notification-item-close";
 		closeButton.style.cssText = `
 			background: none; 
 			border: none; 
@@ -696,7 +700,7 @@ export default class Notifications extends BaseController {
 			border-radius: 3px;
 		`;
 		closeButton.textContent = "×";
-		closeButton.title = "Mark as seen";
+		closeButton.title = this.text("notifications.markSeen");
 
 		// Add close button hover effects
 		closeButton.addEventListener("mouseenter", () => {
@@ -765,7 +769,7 @@ export default class Notifications extends BaseController {
 		this._loadSecurityNotifications();
 		
 		// Get popover reference
-		const popover = this.getView().byId("notificationsPopover") as any; // sap.ui.webc.main.Popover
+		const popover = this.view().byId("notificationsPopover") as any; // sap.ui.webc.main.Popover
 		const popEl = popover?.getDomRef?.() as any;
 		
 		if (!openerEl) {

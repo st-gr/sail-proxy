@@ -9,10 +9,14 @@ import { Request } from 'express';
 import { adminServiceClient } from '../clients/adminServiceClient';
 import { unifiedValidationCache } from './unifiedValidationCache';
 import { getCachedUnifiedAuthConfig, isStandaloneMode } from '../config/unifiedAuthConfig';
-import { UnifiedValidationResponse, UnifiedTokenRequest, AwsCredentialValidationData } from '../clients/adminServiceClient';
+import { UnifiedValidationResponse, UnifiedTokenRequest, AwsCredentialValidationData, AwsSigningScope } from '../clients/adminServiceClient';
+import { rememberSigningKeys } from './awsSigningKeyCache';
 import { getDefaultLogger } from '@libs/logger';
 import { secretLabel } from '../utils/secretLabel';
 const logger = getDefaultLogger();
+
+/** Which signing-key provider verifies a validated credential: the admin's keys or the local store's. */
+export type AwsKeySource = 'admin' | 'local';
 
 export interface UnifiedAwsCredentialValidationRequest {
   accessKeyId: string;
@@ -22,12 +26,16 @@ export interface UnifiedAwsCredentialValidationRequest {
   method: string;
   endpoint: string;
   headers?: Record<string, string>;
+  /** The SigV4 scopes to ask the admin for signing keys for (see sigv4Verifier.signingScopesFor). */
+  signingScopes?: AwsSigningScope[];
 }
 
 export interface UnifiedAwsCredentialValidationResult {
   valid: boolean;
   authType: 'aws_credential';
   data?: AwsCredentialValidationData;
+  /** Set on a valid result: where the credential was validated, cached or not. */
+  keySource?: AwsKeySource;
   token?: string; // Unified validation token for subsequent requests
   auditInfo: {
     requestId: string;
@@ -40,6 +48,8 @@ export interface UnifiedAwsCredentialValidationResult {
     code: string;
     message: string;
     details?: any;
+    /** Row ID of a credential the admin refused although it exists (disabled/expired). Never sent to the client. */
+    credentialId?: string;
   };
 }
 
@@ -71,7 +81,7 @@ export class UnifiedAwsCredentialValidationService {
         
         const localResult = await this.validateWithLocalService(request);
         if (localResult) {
-          return this.createSuccessResult(localResult, requestId, startTime, 'local_fallback');
+          return this.createSuccessResult(localResult, requestId, startTime, 'local_fallback', 'local');
         }
         
         // Local validation failed in standalone mode
@@ -82,19 +92,21 @@ export class UnifiedAwsCredentialValidationService {
       if (this.config.enabled) {
         const cachedResult = await this.getCachedValidation(request.accessKeyId);
         if (cachedResult) {
-          return this.createSuccessResult(cachedResult, requestId, startTime, 'cache');
+          return this.createSuccessResult(cachedResult.data, requestId, startTime, 'cache', cachedResult.keySource);
         }
       }
 
       // Try admin service validation
+      let refusedCredentialId: string | undefined;
       if (this.config.enabled) {
         try {
           const adminResult = await this.validateWithAdminService(request, requestId);
-          if (adminResult) {
+          if (adminResult.data) {
             // Cache the result
-            await this.cacheValidationResult(request.accessKeyId, adminResult, 'admin_service');
-            return this.createSuccessResult(adminResult, requestId, startTime, 'admin_service');
+            await this.cacheValidationResult(request.accessKeyId, adminResult.data, 'admin_service', 'admin');
+            return this.createSuccessResult(adminResult.data, requestId, startTime, 'admin_service', 'admin');
           }
+          refusedCredentialId = adminResult.refusedCredentialId;
         } catch (adminError) {
           logger.warn('UnifiedAwsCredentialValidationService', 'Admin service validation failed, trying fallback', {
             error: adminError instanceof Error ? adminError.message : String(adminError),
@@ -106,15 +118,15 @@ export class UnifiedAwsCredentialValidationService {
             const localResult = await this.validateWithLocalService(request);
             if (localResult) {
               // Cache the fallback result too
-              await this.cacheValidationResult(request.accessKeyId, localResult, 'fallback');
-              return this.createSuccessResult(localResult, requestId, startTime, 'local_fallback');
+              await this.cacheValidationResult(request.accessKeyId, localResult, 'fallback', 'local');
+              return this.createSuccessResult(localResult, requestId, startTime, 'local_fallback', 'local');
             }
           }
         }
       }
 
       // All validation attempts failed
-      return this.createErrorResult(requestId, startTime, 'validation_failed', 'AWS credential validation failed');
+      return this.createErrorResult(requestId, startTime, 'validation_failed', 'AWS credential validation failed', undefined, refusedCredentialId);
 
     } catch (error) {
       logger.error('UnifiedAwsCredentialValidationService', 'Validation error', error instanceof Error ? error : new Error(String(error)));
@@ -129,7 +141,7 @@ export class UnifiedAwsCredentialValidationService {
   private async validateWithAdminService(
     request: UnifiedAwsCredentialValidationRequest,
     requestId: string
-  ): Promise<AwsCredentialValidationData | null> {
+  ): Promise<{ data?: AwsCredentialValidationData; refusedCredentialId?: string }> {
     if (!adminServiceClient) {
       throw new Error('Admin service client not available');
     }
@@ -152,7 +164,8 @@ export class UnifiedAwsCredentialValidationService {
         method: request.method,
         endpoint: this.shortenEndpoint(request.endpoint),
         headers: JSON.stringify(securityHeaders),
-        signature: request.signature
+        signature: request.signature,
+        signingScopes: request.signingScopes
       };
 
       const tokenResponse = await adminServiceClient.createUnifiedValidationToken(tokenRequest);
@@ -173,19 +186,50 @@ export class UnifiedAwsCredentialValidationService {
           requestId
         });
         
-        return validationResponse.data as AwsCredentialValidationData;
+        // Signing keys go to process memory only; the result is cached and returned without them.
+        const { signingKeys, ...data } = validationResponse.data as AwsCredentialValidationData;
+        rememberSigningKeys(request.accessKeyId, signingKeys);
+        return { data };
       } else {
         logger.warn('UnifiedAwsCredentialValidationService', 'AWS credential validation failed', {
           error: validationResponse.error,
           requestId
         });
         
-        return null;
+        return { refusedCredentialId: validationResponse.error?.credentialId };
       }
     } catch (error) {
       logger.error('UnifiedAwsCredentialValidationService', 'Admin service validation error', error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
+  }
+
+  /**
+   * The credential ID an access key id resolves to, for the failed-auth event of a request refused
+   * before its signature is checked (a stale or missing x-amz-date). The same validation a request
+   * gets (cache, then admin), but without signing scopes, so no signing key is issued. The ID of a
+   * credential the admin refused (disabled/expired) counts; an unknown key id gives undefined.
+   */
+  async resolveCredentialId(request: Omit<UnifiedAwsCredentialValidationRequest, 'signingScopes'>): Promise<string | undefined> {
+    const result = await this.validateAwsCredential(request);
+    return result.valid ? result.data?.credentialId : result.error?.credentialId;
+  }
+
+  /**
+   * Ask the admin for signing keys only: the admin signing-key provider calls this when process
+   * memory has no key for a scope (e.g. after a validation-cache hit). The keys land in the
+   * in-memory signing-key cache; nothing is written to the validation cache. An admin that no
+   * longer validates the credential returns no keys.
+   */
+  async fetchSigningKeys(accessKeyId: string, signingScopes: AwsSigningScope[]): Promise<void> {
+    await this.validateWithAdminService({
+      accessKeyId,
+      signature: '',
+      clientIp: 'gateway',
+      method: 'KEYS',
+      endpoint: '/signing-keys',
+      signingScopes
+    }, this.generateRequestId());
   }
 
   /**
@@ -204,13 +248,9 @@ export class UnifiedAwsCredentialValidationService {
         return null;
       }
 
-      // For local validation, we need to verify the signature
-      const secretKey = await awsCredentialsService.getSecretForSignature(credential);
-      // Simplified signature validation - in production, implement proper AWS SigV4 validation
-      
+      // No secret here: the caller verifies the signature with the local signing-key provider.
       const validationData: AwsCredentialValidationData = {
         credentialId: credential.id || 'local-' + request.accessKeyId,
-        secretAccessKey: secretKey,
         permissions: ['bedrock:InvokeModel'],
         region: credential.region || 'us-east-1',
         sapAiRegion: credential.sapAiRegion || 'us-east-1',
@@ -241,7 +281,7 @@ export class UnifiedAwsCredentialValidationService {
   /**
    * Get cached validation result using unified cache
    */
-  private async getCachedValidation(accessKeyId: string): Promise<AwsCredentialValidationData | null> {
+  private async getCachedValidation(accessKeyId: string): Promise<{ data: AwsCredentialValidationData; keySource: AwsKeySource } | null> {
     try {
       const cachedResponse = await unifiedValidationCache.getUnifiedToken(accessKeyId, 'aws_credential');
       
@@ -249,7 +289,9 @@ export class UnifiedAwsCredentialValidationService {
         logger.trace('UnifiedAwsCredentialValidationService', 'Cache hit for AWS credential', {
           accessKeyLabel: secretLabel(accessKeyId)
         });
-        return cachedResponse.data as AwsCredentialValidationData;
+        // An entry without a recorded source predates it and came from the admin path.
+        const keySource: AwsKeySource = (cachedResponse as { keySource?: AwsKeySource }).keySource === 'local' ? 'local' : 'admin';
+        return { data: cachedResponse.data as AwsCredentialValidationData, keySource };
       }
       
       return null;
@@ -267,13 +309,16 @@ export class UnifiedAwsCredentialValidationService {
   private async cacheValidationResult(
     accessKeyId: string, 
     data: AwsCredentialValidationData, 
-    source: 'admin_service' | 'local_validation' | 'fallback' = 'admin_service'
+    source: 'admin_service' | 'local_validation' | 'fallback',
+    keySource: AwsKeySource
   ): Promise<void> {
     try {
-      // Create UnifiedValidationResponse format for caching
+      // Create UnifiedValidationResponse format for caching; keySource travels with the entry so a
+      // cache hit is verified with the same signing-key provider as the original validation
       const unifiedResponse = {
         valid: true,
         authType: 'aws_credential' as const,
+        keySource,
         data: data,
         auditInfo: {
           requestId: this.generateRequestId(),
@@ -303,12 +348,14 @@ export class UnifiedAwsCredentialValidationService {
     data: AwsCredentialValidationData,
     requestId: string,
     startTime: number,
-    source: 'admin_service' | 'local_fallback' | 'cache'
+    source: 'admin_service' | 'local_fallback' | 'cache',
+    keySource: AwsKeySource
   ): UnifiedAwsCredentialValidationResult {
     return {
       valid: true,
       authType: 'aws_credential',
       data,
+      keySource,
       auditInfo: {
         requestId,
         validationTime: Date.now() - startTime,
@@ -327,7 +374,8 @@ export class UnifiedAwsCredentialValidationService {
     startTime: number,
     code: string,
     message: string,
-    details?: any
+    details?: any,
+    credentialId?: string
   ): UnifiedAwsCredentialValidationResult {
     return {
       valid: false,
@@ -342,7 +390,8 @@ export class UnifiedAwsCredentialValidationService {
       error: {
         code,
         message,
-        details
+        details,
+        ...(credentialId ? { credentialId } : {})
       }
     };
   }

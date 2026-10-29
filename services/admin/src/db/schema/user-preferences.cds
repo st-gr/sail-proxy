@@ -24,6 +24,7 @@ entity UserPreferences : cuid, managed {
   theme                 : String(50) default 'sap_horizon'; // UI theme
   density               : String(20) default 'cozy'; // UI density (compact/cozy)
   tablePageSize         : Integer default 50; // Default table rows per page
+  language              : String(10); // Cockpit language ('' = browser default, null = never chosen)
   
   // App-specific preferences
   defaultNotificationFilter  : String(100); // Default severity filter

@@ -80,9 +80,6 @@ yarn-error.log*
 
 # Scripts and executables that may have permission issues
 **/*.sh
-# Allow specific required scripts for nginx JWT authentication
-!docker/populate-jwks.sh
-!docker/nginx-entrypoint.sh
 **/*.bat
 **/*.cmd
 **/*.exe
@@ -94,3 +91,7 @@ yarn-error.log*
 **/package-lock.json
 **/yarn.lock
 **/.npmrc
+
+# Documentation site and screencast toolkit are never part of an image
+docs
+screencast

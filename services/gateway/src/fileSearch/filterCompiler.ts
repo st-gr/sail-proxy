@@ -254,7 +254,7 @@ function assertScalarValue(value: unknown): asserts value is string | number | b
 // That is an unhandled 500 out of a routine caller mistake -- `{"type":"gte",
 // "key":"hired","value":"2026-01-01"}` is the obvious one -- and, worse, the
 // driver's message ECHOES THE CALLER'S VALUE VERBATIM into a `pg` DatabaseError
-// that then reaches two log lines (repository.ts's recall catch and
+// that then reaches two log lines (recall.ts's recall catch and
 // descriptor.ts's tool-exec catch). `body.filters` is not pseudonymized, so
 // that value is unmasked. Rejecting it here turns a 500-shaped failure into the
 // 400 it always was.

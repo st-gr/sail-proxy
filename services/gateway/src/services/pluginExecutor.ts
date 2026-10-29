@@ -4,6 +4,8 @@
 import { Request, Response } from 'express';
 import pluginLoader from './pluginLoader';
 import * as sseWriter from '../utils/sseWriter';
+import { FORCED_FLAG, MUST_RUN_FLAG, EXEMPT_FLAG, PSEUDONYMIZATION_RULE_ID, refuseUnmasked, describeErrorWithoutContent } from '../plugins/pseudonymization/failClosed';
+import { readForceSource } from '../plugins/pseudonymization/forcedRun';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
@@ -73,6 +75,20 @@ interface PluginRule {
   strategy: string;
 }
 
+/** Forced for the end-of-chain backstop: the controller's mark, else the configuration's force
+ *  flags for the request (readForceSource); a configuration that cannot be read counts as forced.
+ *  An embedding request is never forced (EXEMPT_FLAG): embeddings are never pseudonymized. */
+function isForcedForBackstop(req: Request): boolean {
+  if ((req as any)[EXEMPT_FLAG] === true) return false;
+  if ((req as any)[MUST_RUN_FLAG] === true) return true;
+  try {
+    return readForceSource(req) !== null;
+  } catch {
+    logger.error('PluginExecutor', 'The pseudonymization force flags could not be read from the configuration; treating the request as forced');
+    return true;
+  }
+}
+
 /**
  * Execute 'before' strategy plugins based on config hooks
  * @param req - Express request object
@@ -90,29 +106,25 @@ export async function executeBeforePlugins(
 
   // Normalize to array format
   const hookArray = Array.isArray(hooks) ? hooks : [hooks];
+  let pseudonymizationReached = false;
   
   // Execute hooks sequentially until one returns stop: true
   for (const hook of hookArray) {
-    if (!hook || !hook.request || !hook.request.match || !hook.request.callback) {
+    // The hook's rule, if it is well formed and all of its matchers fit the request. The same
+    // selection tells a controller whether forced pseudonymization will run (forcedRun.ts).
+    const selected = pluginLoader.selectRule(req, hook, 'before');
+    if (!selected) {
       continue;
     }
 
-    const { match, callback } = hook.request;
-
-    // Check if all rules match - early exit if not
-    const allMatch = pluginLoader.matchAll(req, match);
-    if (!allMatch) {
-      continue;
-    }
-
-    // Get the callback rule ID and lookup the plugin with 'before' strategy
-    const ruleId = callback.id;
-    const rule: PluginRule | null = pluginLoader.getRule(ruleId, 'before');
+    const { ruleId } = selected;
+    const rule: PluginRule | null = selected.rule;
 
     if (!rule) {
       logger.warn('PluginExecutor', `Plugin rule '${ruleId}' with strategy 'before' not found`);
       continue;
     }
+    if (ruleId === PSEUDONYMIZATION_RULE_ID) pseudonymizationReached = true;
 
     // Execute the plugin handler
     try {
@@ -168,10 +180,34 @@ export async function executeBeforePlugins(
 
       // Continue to next hook if this one didn't stop execution
     } catch (error: any) {
+      // A request masking is forced for is never sent on unmasked: an error escaping the
+      // pseudonymization plugin refuses it (the plugin flags the request once it resolved
+      // the force flag). Every other plugin, and an unforced request, continues as before.
+      // Its message is not logged: a masking error can quote the request text.
+      if (ruleId === PSEUDONYMIZATION_RULE_ID) {
+        if ((req as any)[FORCED_FLAG] === true) {
+          logger.error('PluginExecutor', `Plugin '${ruleId}' failed while pseudonymization is forced; request refused: ${describeErrorWithoutContent(error)}`);
+          refuseUnmasked(res);
+          return { stop: true };
+        }
+        logger.error('PluginExecutor', `Error executing plugin '${ruleId}': ${describeErrorWithoutContent(error)}`);
+        continue;
+      }
       // Log the full error object for more details, including stack
       logger.error('PluginExecutor', `Error executing plugin '${ruleId}': ${error.message}. Stack: ${error.stack}`);
       continue;
     }
+  }
+
+  // Backstop for "forced means masked": a forced request the pseudonymization plugin never saw
+  // is refused, not sent on unmasked. Where the controller checked that the plugin would run
+  // (forcedRun.checkForcedPseudonymization) it marked the request, and a plugin earlier in the
+  // chain may since have changed what the masking hook matches on. Elsewhere the executor reads
+  // the force flags itself, with the same resolution.
+  if (!pseudonymizationReached && isForcedForBackstop(req)) {
+    logger.error('PluginExecutor', 'Pseudonymization is forced for this request but the pseudonymization plugin did not run in the before-chain; request refused');
+    refuseUnmasked(res);
+    return { stop: true };
   }
   
   return defaultResponse;

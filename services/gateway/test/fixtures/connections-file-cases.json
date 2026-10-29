@@ -1,0 +1,1515 @@
+[
+  {
+    "name": "empty connections list",
+    "file": {
+      "version": 1,
+      "connections": []
+    },
+    "ok": true
+  },
+  {
+    "name": "all four types",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "azure-prod",
+          "type": "azure-openai",
+          "active": true,
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "apiMode": "v1",
+            "authMode": "api-key"
+          },
+          "secret": {
+            "env": "AZURE_OPENAI_KEY"
+          },
+          "models": [
+            {
+              "upstreamModel": "gpt-mini-deployment",
+              "family": "openai",
+              "displayName": "GPT mini",
+              "capabilities": [
+                "chat",
+                "streaming"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "claude-direct",
+          "type": "anthropic",
+          "active": false,
+          "settings": {
+            "anthropicVersion": "2023-06-01"
+          },
+          "secret": "sk-ant-x",
+          "models": [
+            {
+              "upstreamModel": "claude-sonnet-4-5"
+            }
+          ]
+        },
+        {
+          "name": "aws-east",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "authMode": "access-key",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k",
+          "models": [
+            {
+              "upstreamModel": "anthropic.claude-3-haiku"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "connection without secret, settings or models",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "bare",
+          "type": "openai"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "version 2",
+    "file": {
+      "version": 2,
+      "connections": []
+    },
+    "ok": false,
+    "path": "version"
+  },
+  {
+    "name": "version missing",
+    "file": {
+      "connections": []
+    },
+    "ok": false,
+    "path": "version"
+  },
+  {
+    "name": "unknown top-level key",
+    "file": {
+      "version": 1,
+      "connections": [],
+      "extra": 1
+    },
+    "ok": false,
+    "path": "extra"
+  },
+  {
+    "name": "connections not an array",
+    "file": {
+      "version": 1,
+      "connections": {}
+    },
+    "ok": false,
+    "path": "connections"
+  },
+  {
+    "name": "connection not an object",
+    "file": {
+      "version": 1,
+      "connections": [
+        "oa"
+      ]
+    },
+    "ok": false,
+    "path": "connections[0]"
+  },
+  {
+    "name": "unknown connection key",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "ob",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ],
+          "color": "red"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[1].color"
+  },
+  {
+    "name": "unknown type",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "gemini",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].type"
+  },
+  {
+    "name": "sap-ai-core refused",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "sap",
+          "type": "sap-ai-core",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[1].type"
+  },
+  {
+    "name": "name uppercase",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "A",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "name too short",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "a",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "name with double dash",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "x--y",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "name deployed",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "deployed",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "name missing",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "type": "openai"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "duplicate name",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[1].name"
+  },
+  {
+    "name": "active not a boolean",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ],
+          "active": "yes"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].active"
+  },
+  {
+    "name": "duplicate upstreamModel in a connection",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            },
+            {
+              "upstreamModel": "gpt-4o",
+              "displayName": "again"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[1].upstreamModel"
+  },
+  {
+    "name": "same upstreamModel in two connections",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "ob",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "model without upstreamModel",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {}
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].upstreamModel"
+  },
+  {
+    "name": "model unknown key",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o",
+              "price": 1
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].price"
+  },
+  {
+    "name": "unknown family",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        },
+        {
+          "name": "ob",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            },
+            {
+              "upstreamModel": "b",
+              "family": "gemini"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[1].models[1].family"
+  },
+  {
+    "name": "capabilities not strings",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o",
+              "capabilities": [
+                1
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].capabilities"
+  },
+  {
+    "name": "displayName not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o",
+              "displayName": 3
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].displayName"
+  },
+  {
+    "name": "models not an array",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": "x"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models"
+  },
+  {
+    "name": "settings key of another type",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ],
+          "settings": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.region"
+  },
+  {
+    "name": "settings value not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "sk-x",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ],
+          "settings": {
+            "baseUrl": 5
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.baseUrl"
+  },
+  {
+    "name": "secret empty",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret"
+  },
+  {
+    "name": "secret a number",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": 5,
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret"
+  },
+  {
+    "name": "secret ref with extra key",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": {
+            "env": "A",
+            "value": "b"
+          },
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret.value"
+  },
+  {
+    "name": "secret ref without env name",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": {
+            "env": ""
+          },
+          "models": [
+            {
+              "upstreamModel": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret.env"
+  },
+  {
+    "name": "sessionToken not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k",
+          "sessionToken": 5
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].sessionToken"
+  },
+  {
+    "name": "secret env ref that is not a variable name (a pasted key)",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": {
+            "env": "sk-abc-123"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret.env",
+    "hidden": "sk-abc-123"
+  },
+  {
+    "name": "sessionToken env ref with a space",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k",
+          "sessionToken": {
+            "env": "MY TOKEN"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].sessionToken.env",
+    "hidden": "MY TOKEN"
+  },
+  {
+    "name": "secret env ref starting with a digit",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": {
+            "env": "1KEY"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].secret.env",
+    "hidden": "1KEY"
+  },
+  {
+    "name": "env ref names with underscores, digits and lower case",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": {
+            "env": "_my_Key1"
+          },
+          "sessionToken": {
+            "env": "AWS_SESSION_TOKEN"
+          }
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "name not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": 5,
+          "type": "openai"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].name"
+  },
+  {
+    "name": "type not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": 5
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].type"
+  },
+  {
+    "name": "family not a string",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": "gpt-4o",
+              "family": 1
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].family"
+  },
+  {
+    "name": "settings not an object",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": "x"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings"
+  },
+  {
+    "name": "settings an array",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": []
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings"
+  },
+  {
+    "name": "model not an object",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            "gpt-4o"
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0]"
+  },
+  {
+    "name": "upstreamModel empty",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": ""
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].upstreamModel"
+  },
+  {
+    "name": "upstreamModel with a slash",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": "org/model"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].upstreamModel",
+    "hidden": "org/model"
+  },
+  {
+    "name": "upstreamModel starting with a dot",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": ".hidden"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].upstreamModel"
+  },
+  {
+    "name": "upstreamModel of 65 characters",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].models[0].upstreamModel"
+  },
+  {
+    "name": "upstreamModel of 64 characters with . _ : -",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "models": [
+            {
+              "upstreamModel": "ft:gpt-4o_mini.2024:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "azure-openai without endpoint",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "apiMode": "v1"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.endpoint"
+  },
+  {
+    "name": "azure-openai without settings",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.endpoint"
+  },
+  {
+    "name": "azure-openai with only an endpoint (apiMode v1, authMode api-key by default)",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "azure-openai apiMode outside its enum",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "apiMode": "v2"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.apiMode"
+  },
+  {
+    "name": "azure-openai deployments without apiVersion",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "apiMode": "deployments"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.apiVersion"
+  },
+  {
+    "name": "azure-openai deployments with apiVersion",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "apiMode": "deployments",
+            "apiVersion": "2024-10-21"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "azure-openai authMode outside its enum",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "authMode": "entra"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.authMode"
+  },
+  {
+    "name": "azure-openai entra without tenantId",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "authMode": "entra-client-secret",
+            "clientId": "c"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.tenantId"
+  },
+  {
+    "name": "azure-openai entra without clientId",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "authMode": "entra-client-secret",
+            "tenantId": "t"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.clientId"
+  },
+  {
+    "name": "azure-openai entra with tenantId and clientId",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com",
+            "authMode": "entra-client-secret",
+            "tenantId": "t",
+            "clientId": "c"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "azure-openai endpoint over http",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "http://x.openai.azure.com"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.endpoint",
+    "hidden": "x.openai.azure.com"
+  },
+  {
+    "name": "bedrock without accessKeyId (authMode access-key by default)",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.accessKeyId"
+  },
+  {
+    "name": "bedrock access-key without accessKeyId",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "authMode": "access-key"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.accessKeyId"
+  },
+  {
+    "name": "bedrock bearer without accessKeyId",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "authMode": "bearer"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "bedrock authMode outside its enum",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "authMode": "sso",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.authMode"
+  },
+  {
+    "name": "bedrock malformed region",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "useast1",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.region",
+    "hidden": "useast1"
+  },
+  {
+    "name": "bedrock without region",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.region"
+  },
+  {
+    "name": "bedrock runtimeEndpoint over http",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIAEXAMPLE",
+            "runtimeEndpoint": "http://bedrock.example.com"
+          },
+          "secret": "k"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.runtimeEndpoint",
+    "hidden": "bedrock.example.com"
+  },
+  {
+    "name": "bedrock with a session token",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "aws",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIAEXAMPLE"
+          },
+          "secret": "k",
+          "sessionToken": "t"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "openai baseUrl over http",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": {
+            "baseUrl": "http://api.example.com/v1"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.baseUrl",
+    "hidden": "api.example.com"
+  },
+  {
+    "name": "anthropic baseUrl not a URL",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "an",
+          "type": "anthropic",
+          "settings": {
+            "baseUrl": "not a url"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.baseUrl",
+    "hidden": "not a url"
+  },
+  {
+    "name": "anthropic baseUrl ftp",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "an",
+          "type": "anthropic",
+          "settings": {
+            "baseUrl": "ftp://api.example.com"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].settings.baseUrl"
+  },
+  {
+    "name": "openai baseUrl over http on 127.0.0.1",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": {
+            "baseUrl": "http://127.0.0.1:8080/v1"
+          }
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "openai baseUrl over http on localhost",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": {
+            "baseUrl": "http://localhost:8080/v1"
+          }
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "openai baseUrl https",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "settings": {
+            "baseUrl": "https://api.example.com/v1"
+          }
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "sessionToken on openai",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "oa",
+          "type": "openai",
+          "secret": "k",
+          "sessionToken": "t"
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].sessionToken"
+  },
+  {
+    "name": "sessionToken on azure-openai",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "az",
+          "type": "azure-openai",
+          "settings": {
+            "endpoint": "https://x.openai.azure.com"
+          },
+          "secret": "k",
+          "sessionToken": {
+            "env": "T"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].sessionToken"
+  },
+  {
+    "name": "sessionToken on bedrock bearer (access-key only, as the cockpit)",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "br",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "authMode": "bearer"
+          },
+          "secret": "k",
+          "sessionToken": {
+            "env": "T"
+          }
+        }
+      ]
+    },
+    "ok": false,
+    "path": "connections[0].sessionToken"
+  },
+  {
+    "name": "sessionToken on bedrock access-key",
+    "file": {
+      "version": 1,
+      "connections": [
+        {
+          "name": "bk",
+          "type": "bedrock",
+          "settings": {
+            "region": "us-east-1",
+            "accessKeyId": "AKIDEXAMPLE"
+          },
+          "secret": "k",
+          "sessionToken": {
+            "env": "T"
+          }
+        }
+      ]
+    },
+    "ok": true
+  }
+]

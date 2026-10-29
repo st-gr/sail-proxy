@@ -7,6 +7,10 @@ import { initializeAuthentication, setupUserContext, getAuthenticationMode } fro
 import { getDefaultLogger } from '@libs/logger';
 import { stopSiemDispatcher } from './siem/dispatcherHandle';
 import { stopSecretResolver } from './siem/secretResolverHandle';
+import { warnIfAwsSecretKeyIsPubliclyKnown } from './utils/awsSecretCrypto';
+import * as path from 'path';
+import { createApiDocsRouter } from './srv/api-docs';
+import { announceConnectionsAtBoot } from './srv/admin-service-connections';
 
 const logger = getDefaultLogger();
 
@@ -22,6 +26,11 @@ async function startServer() {
       port,
       nodeEnv: process.env.NODE_ENV
     });
+    try {
+      warnIfAwsSecretKeyIsPubliclyKnown();
+    } catch {
+      // The warning must never stop startup.
+    }
 
     // For docker deployment, use programmatic startup to enable custom auth middleware
     if (process.env.DEPLOY_TARGET === 'docker') {
@@ -117,9 +126,15 @@ async function startProgrammatically(port: number, authMode: string) {
     
     // Apply authentication middleware
     app.use(createAuthMiddleware());
+
+    // API reference (Swagger UI over openapi/), built into dist/api-docs by cli-tools/copy-api-docs.js
+    app.use('/api/docs', createApiDocsRouter(path.join(__dirname, '../../../api-docs')));
+    logger.info('Server', '📖 API reference mounted at /api/docs');
     
     // Mount REST API routes BEFORE CDS middleware to avoid conflicts
     try {
+      const groundingRestApi = await import('./srv/grounding-rest-api');
+      app.use('/api/grounding', (groundingRestApi as any).default || groundingRestApi);
       const configRestApi = await import('./srv/config-rest-api');
       app.use('/api', configRestApi.default || configRestApi);
       logger.info('Server', '🔌 REST API endpoints mounted at /api (before CDS)');
@@ -269,6 +284,24 @@ async function startProgrammatically(port: number, authMode: string) {
           route: `${routePrefix}/users-app`,
           webappPath: path.join(appBasePath, 'users-app/webapp'),
           distPath: path.join(appBasePath, 'users-app/dist')
+        },
+        {
+          name: 'teams-app',
+          route: `${routePrefix}/teams-app`,
+          webappPath: path.join(appBasePath, 'teams-app/webapp'),
+          distPath: path.join(appBasePath, 'teams-app/dist')
+        },
+        {
+          name: 'connections-app',
+          route: `${routePrefix}/connections-app`,
+          webappPath: path.join(appBasePath, 'connections-app/webapp'),
+          distPath: path.join(appBasePath, 'connections-app/dist')
+        },
+        {
+          name: 'grounding-app',
+          route: `${routePrefix}/grounding-app`,
+          webappPath: path.join(appBasePath, 'grounding-app/webapp'),
+          distPath: path.join(appBasePath, 'grounding-app/dist')
         }
       ];
 
@@ -589,6 +622,8 @@ async function startProgrammatically(port: number, authMode: string) {
   // Start the server
   const server = app.listen(port, () => {
     logger.info('Server', `✅ CAP Admin Service listening on port ${port} with ${authMode} authentication`);
+    // cds.serve().in(app) emits no 'listening': the Connections change marker is sent here (spec 2026-10-25 §5).
+    announceConnectionsAtBoot();
   });
   
   // Setup graceful shutdown

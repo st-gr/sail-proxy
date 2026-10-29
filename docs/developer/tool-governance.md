@@ -1,9 +1,13 @@
+---
+title: Tool governance internals
+description: Policies, tool usage indexes and the governance pipeline in the gateway.
+---
+
 # Tool governance — internals
 
-Spec: `docs/superpowers/specs/2026-09-16-tool-governance-design.md`, extended by
-`docs/superpowers/specs/2026-09-22-tool-governance-parity-design.md` §2 (scoped allow lists). Stage
-one (pass-through): the gateway never hosts or executes a tool itself, only decides whether a
-request may declare one and whether an invocation gets recorded.
+Tool governance is pass-through: the gateway never hosts or executes a tool itself, it only decides
+whether a request may declare one and whether an invocation gets recorded. How administrators use it
+is described in [Tool governance](/guide/cockpit/tool-governance).
 
 ## Identity and evaluation
 
@@ -19,7 +23,7 @@ request may declare one and whether an invocation gets recorded.
 | `record.ts` | `req.toolGovernance` state, `recordInvokedTools`, `toolsForEvent` (declared entries first, then invoked, each carrying the identity's decision) |
 | `index.ts` | re-exports |
 
-**Scoped allow lists and narrowing a bare server declaration** (2026-09-22 §2). An allow pattern is
+**Scoped allow lists and narrowing a bare server declaration**. An allow pattern is
 *scoped* when it has the form `mcp:<server>/<tool-or-prefix*>` with a literal server; every other
 allow pattern is *global* (`function:…`, `hosted:…`, `mcp:<server>` alone, `mcp:git*`, `mcp:*`).
 `deniedBy(block, identity)` runs three steps in order: (1) a deny pattern matches → denied; (2) the
@@ -73,6 +77,21 @@ adapter, which only sees the body, can still find the tool it must remove. The c
 `platform.toolGovernance.mcpNaming` (presets for claude-code, codex, pi and opencode), so a new
 client is a configuration change; `mcpNamingConfig.ts` reads them and falls back to the presets.
 
+A client entry (`mcpNaming.clients[]`) is picked by the first `userAgent` that is a case-insensitive
+substring of the request's User-Agent, and carries `name`, `userAgent`, `containerTools` and
+optionally `nestedCallPattern`, `namePattern` and `serverNames`, all six in the schema.
+`mcpIdentity` first tries the client's `namePattern`, else the shared `mcpNaming.namePattern`
+(`^mcp__(.+?)__(.+)$`), compiled without flags, so case-sensitive and unanchored unless the
+pattern says `^`/`$`; a name counts only when group 1 (server) and group 2 (tool) are both
+non-empty. A client `namePattern` replaces the shared one outright, so an empty or invalid one matches nothing by pattern for that client. Then each
+`serverNames` entry in list order: a name starting with `<server>_` and longer than that prefix
+becomes `mcp:<server>/<rest>`, first match wins, case-sensitive, empty entries skipped. The schema
+types `serverNames` as an array of strings and leaves `namePattern` an unvalidated string, because the
+reader tolerates an invalid expression. A client entry missing a required field or with a
+non-string `containerTools` element is dropped by `isClient`; the gateway then uses the remaining
+entries. Tests: `services/gateway/test/tool-governance-mcp-naming.test.ts`,
+`services/admin/app/config-app/test/mcpNamingClients.test.ts`.
+
 **The call gate** (`callGate.ts`) is what governs a tool no request declares. A container call's
 nested MCP tools are read from the call the model sends back - identifiers only, never the arguments
 - and recorded with the `detected` verdict when the policy denies them: used, and not prevented.
@@ -110,9 +129,9 @@ policy decision attached, while the declared row showed no invocations at all. A
 that name; an exact declaration wins, ambiguity is left alone, and `mcp:`/`hosted:` invocations
 (which carry their own namespace) are never reconciled.
 
-## Trust chain (2026-09-22 §3)
+## Trust chain
 
-**`resultSources(body): ResultSource[]`** is this phase's addition to `ToolAdapter`
+**`resultSources(body): ResultSource[]`** is the trust chain's addition to `ToolAdapter`
 (`adapters/types.ts`): the tools whose OUTPUT is already in the request, one entry per result, found
 by pairing each result
 block with the call that produced it (a `Map<callId, ResultSource>` built while walking the body, so
@@ -161,7 +180,7 @@ about to report: `'policy'` if every one of them was denied for that reason, `'t
 one was, `'mixed'` otherwise (`kinds.size > 1`), read off `result.reasons`. `sources: result.taintedBy`
 rides along whenever it is non-empty. `securityEventEmitter.emitToolNotEntitled` (`services/`) builds
 the event `description` from `reason`: the trust-chain sentence names the sources
-("...because the conversation contains content from `<sources>` (tool policy "<name>")"), the mixed
+(`...because the conversation contains content from <sources> (tool policy "<name>")`), the mixed
 sentence keeps the policy clause and appends the trust-chain one, and metadata carries `reason` and
 `sources` verbatim for `recordRejectedTools` to read back on a reject. The wording lives in ONE place
 (`emitToolNotEntitled`), so both `securityEventService`'s notification-title maps and
@@ -205,7 +224,7 @@ never fall through to the real handler and risk a second, conflicting response. 
 reject also emits one `tool_not_entitled` security event
 (`securityEventEmitter.emitToolNotEntitled`).
 
-**AWS Bedrock** (spec 2026-09-22 §4) is governed by a fifth adapter, `bedrockAdapter`
+**AWS Bedrock** is governed by a fifth adapter, `bedrockAdapter`
 (`adapters/bedrock.ts`), mounted in `awsBedrockRoutes.ts` the same way the four REST families are:
 `router.use(conditionalUnifiedAuth, bedrockServiceAuth, toolGovernance(bedrockAdapter),
 quotaEnforcement)` — governance sits between service authentication and quota enforcement, the same
@@ -244,7 +263,7 @@ chunks with no regard for SSE frame boundaries) is still recorded once the rest 
 
 The OpenAI Realtime WebSocket route (`services/gateway/src/realtime/realtimeUpgrade.ts`) never mounts
 the middleware — a WebSocket upgrade never reaches Express — so session state plays the middleware's
-role instead (spec 2026-09-22 §5).
+role instead.
 
 `relay.ts`'s `onClientFrame` hook (`RelayHooks`) runs BEFORE a client frame is forwarded upstream and
 returns a `ClientFrameVerdict`: `void` forwards the frame unchanged, `{forward, thenUpstream?}` sends
@@ -288,7 +307,7 @@ folds it into whichever response's usage event follows), and — whenever the ou
 outcome.refused.mode)` directly, the same function the REST middleware calls, since there is no
 Express `res` here to reach it any other way. `onUpstreamFrame`'s existing `response.done` handling
 still feeds `gate.onResponseDone`, republishes state, and folds `invokedToolsFromResponseDone` into
-that response's usage event, unchanged from before this phase.
+that response's usage event, as it did before the trust chain.
 
 ## Usage event
 
@@ -315,11 +334,11 @@ facet`, the six decision counters plus `requests` and `lastSeen`). `Users.toolPo
 `ApiKeys.toolPolicy` are nullable associations added to the existing entities: null means "the
 default policy" for a user, "no narrowing" for a key.
 
-**Trust chain additions (2026-09-22 §3, §6):** `ToolPolicySensitive`/`ToolPolicyUntrusted` are two
+**Trust chain additions:** `ToolPolicySensitive`/`ToolPolicyUntrusted` are two
 more `policy`-associated pattern tables, same shape as `ToolPolicyAllows`/`ToolPolicyDenies`
 (`pattern`, `note`, unique on `(policy, pattern)`), composed onto `ToolPolicies` as `sensitive` and
 `untrusted`. `ToolUsage.reason: String(12)` (`'policy' | 'trust_chain'`, nullable - null on every row
-from before this phase and on an ordinary allow) carries why a denied identity was denied through to
+from before the trust chain and on an ordinary allow) carries why a denied identity was denied through to
 the raw row, and `ToolUsageDaily.trustChained: Integer default 0` is the same information rolled up
 per day, identity and facet; `facet` on both tables gained a third value, `source` (a tool whose
 output was in the request, never itself allowed/denied - see "Trust chain" above). All four are
@@ -446,9 +465,9 @@ gets their indexes in the same boot.
 compiled DDL, and `ToolUsage.reason`/`ToolUsageDaily.trustChained` are ordinary nullable-or-defaulted
 columns on tables that already exist - none of it hits the one case the heal cannot do additively
 (`NOT NULL` without a default). Verified directly against `planSqliteHeal`/`healSqliteSchema`: applied
-to a database built from the schema as it stood one commit before this phase, the heal created all
+to a database built from the schema as it stood before the trust chain, the heal created all
 four new tables (base pair plus drafts) and added both columns in the same pass, with the new table
-immediately writable. The DDL below is therefore unchanged by this phase; it still exists for the one
+immediately writable. The DDL below is therefore unchanged by the trust chain; it still exists for the one
 case the heal cannot cover and for migrating with the admin stopped.
 
 The DDL below stays documented for the cases the heal deliberately does not cover (a `NOT NULL`
@@ -456,7 +475,7 @@ column without a default, or a database you would rather migrate with the admin 
 running dev admin (`cds serve`) does not deploy schema changes, so an existing `db/admin.db` can also
 be prepared by hand — with the admin stopped, after `PRAGMA wal_checkpoint(TRUNCATE)`, and a
 copy of the file made first (dry-run against the copy — this exact statement list was verified by
-deploying the schema as it stood one commit before this feature, applying it, and diffing the
+deploying the schema as it stood before tool governance, applying it, and diffing the
 result against a fresh deploy of the current schema: identical). The DDL below — the five new base
 tables, the three draft tables `ToolPolicies`' `@odata.draft.enabled` projection needs (SQLite
 never creates draft tables lazily; skipping these breaks Create in the Tool Policies app), the four
@@ -719,7 +738,7 @@ entirely by on-READ handlers, so neither gets a table or a view. Postgres (Docke
 of this by hand: the admin container runs `cds-deploy --profile pg` with `schema_evolution: auto`
 before it starts (and refuses to start if that fails), which adds the tables, draft tables, columns
 and views above to an existing database, and the admin's boot step creates the indexes. Verified on
-PostgreSQL 16 by deploying the schema as it stood one commit before this feature, adding a user and
+PostgreSQL 16 by deploying the schema as it stood before tool governance, adding a user and
 an API key, deploying the current model over it, and booting the admin: the result matched a fresh
 deploy, the existing rows kept a null `toolPolicy_ID` (the Default policy), the Default policy and
 the three indexes were created at boot, and the retention DELETE and the inventory's day range use

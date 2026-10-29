@@ -2,7 +2,8 @@
  * The sidebar filters compile to one OData $filter string over the flag columns plan A put on
  * LibraryModels. Capability is a radio ("all" = no clause); the others are AND-ed groups where
  * ticked boxes inside a group OR together. Deployments are hidden by default:
- * buildFilterExpression appends `accessType eq 'foundation'` whenever "Show Deployments" is off,
+ * buildFilterExpression appends `(accessType eq 'foundation' or accessType eq 'external')` (SAP models and
+ * Connection models) whenever "Show Deployments" is off,
  * so an untouched state yields that one clause (never null); null only occurs with "Show
  * Deployments" on and nothing else ticked. Deprecated rows are no longer filtered out (G) - the
  * gateway drops deprecated foundation models before the snapshot, so the only deprecated rows are
@@ -11,8 +12,8 @@
 import { buildFilterExpression, describeActive, emptyFilters, activeTokens, resetFilterKey, resetFilterGroup } from '../webapp/model/libraryFilters';
 
 describe('buildFilterExpression', () => {
-  it('untouched state yields the foundation clause', () => {
-    expect(buildFilterExpression(emptyFilters())).toBe("accessType eq 'foundation'");
+  it('untouched state yields the foundation-or-external clause', () => {
+    expect(buildFilterExpression(emptyFilters())).toBe("(accessType eq 'foundation' or accessType eq 'external')");
   });
   it('deployments on with nothing else yields null', () => {
     const s = emptyFilters(); s.other.deployments = true;
@@ -24,7 +25,7 @@ describe('buildFilterExpression', () => {
   });
   it('maps the capability radio to its flag column', () => {
     const s = emptyFilters(); s.capability = 'reasoning';
-    expect(buildFilterExpression(s)).toBe("capReasoning eq true and accessType eq 'foundation'");
+    expect(buildFilterExpression(s)).toBe("capReasoning eq true and (accessType eq 'foundation' or accessType eq 'external')");
   });
   it('ORs ticked boxes inside a group and ANDs groups', () => {
     const s = emptyFilters();
@@ -32,14 +33,14 @@ describe('buildFilterExpression', () => {
     s.provisioning.hosted = true;
     s.providers['Mistral AI'] = true; s.providers.NVIDIA = true;
     expect(buildFilterExpression(s)).toBe(
-      "(inImage eq true or inAudio eq true) and (provisioning eq 'hosted') and (provider eq 'Mistral AI' or provider eq 'NVIDIA') and accessType eq 'foundation'");
+      "(inImage eq true or inAudio eq true) and (provisioning eq 'hosted') and (provider eq 'Mistral AI' or provider eq 'NVIDIA') and (accessType eq 'foundation' or accessType eq 'external')");
   });
   it('maps access type and the other filters', () => {
     const s = emptyFilters();
     s.accessType.llmAccess = true; s.accessType.orchestration = true;
     s.other.latestOnly = true; s.other.streaming = true;
     expect(buildFilterExpression(s)).toBe(
-      '(llmAccess eq true or orchestration eq true) and versionCount eq 1 and streamingSupported eq true and accessType eq \'foundation\'');
+      "(llmAccess eq true or orchestration eq true) and versionCount eq 1 and streamingSupported eq true and (accessType eq 'foundation' or accessType eq 'external')");
   });
   it('shows deployments only when asked; escapes quotes in provider names', () => {
     const s = emptyFilters(); s.other.deployments = true; s.providers["O'Brien"] = true;
@@ -80,7 +81,14 @@ describe('activeTokens', () => {
     const s = emptyFilters(); s.providers.unknown = true;
     expect(activeTokens(s)).toContainEqual({ key: 'provider:unknown', text: 'Other' });
     expect(describeActive(s)).toContain('Other');
-    expect(buildFilterExpression(s)).toBe("(provider eq 'unknown') and accessType eq 'foundation'");
+    expect(buildFilterExpression(s)).toBe("(provider eq 'unknown') and (accessType eq 'foundation' or accessType eq 'external')");
+  });
+  it('words "Other" in the cockpit language while the token key and the filter stay "unknown"', () => {
+    const s = emptyFilters(); s.providers.unknown = true;
+    const t = (key: string) => ({ providerOther: 'Andere', capAll: 'Alle' } as Record<string, string>)[key] ?? key;
+    expect(activeTokens(s, t)).toContainEqual({ key: 'provider:unknown', text: 'Andere' });
+    expect(describeActive(s, t)).toEqual(['Alle', 'Andere']);
+    expect(buildFilterExpression(s)).toBe("(provider eq 'unknown') and (accessType eq 'foundation' or accessType eq 'external')");
   });
 });
 

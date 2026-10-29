@@ -38,12 +38,12 @@ export function readCacheWriteTokens(details: any): number {
  * `cacheCreationTokens` — the native Responses path reports no separate
  * cache-write count.
  *
- * `recordOrchestrationUsage` (the orchestration bridge) used to share this,
- * back when that endpoint measured inclusive; it no longer does, and folds with
- * `foldExclusiveUsage` instead. Its doc comment carries the era split and the
- * live numbers. The lesson worth keeping here: which regime applies is a
- * property of the specific source, established by measurement at the call site
- * — never a default this function's existence implies.
+ * It is also the inclusive half of `foldOrchestrationUsageFor` below: SAP
+ * orchestration usage from an OpenAI-family or Gemini model (and any unlisted
+ * family) counts the cache inside `prompt_tokens`. `recordOrchestrationUsage`'s doc comment carries
+ * the Claude-side era split and the live numbers. The lesson worth keeping here:
+ * which regime applies is a property of the specific source, established by
+ * measurement — never a default this function's existence implies.
  *
  * `imageInputTokens` passes straight through to `updateTokenCounts` with no
  * arithmetic of its own: SAP's Responses `usage.input_tokens_details.image_tokens`
@@ -81,14 +81,16 @@ export function foldInclusiveUsage(
  * bridge duplicating its system message, and once the duplicate was removed the
  * bridge measured EXCLUSIVE too — prompt_tokens flat at 14, cache field
  * 0 -> 17692 (arm A2, test/fixtures/orchestration/bridge-cache-probe-result.md).
- * Both known SAP endpoints are exclusive today. This function has two callers,
- * both folding the SAME orchestration `usage` object: `recordOrchestrationUsage`
- * (the Responses bridge, responsesController.ts) and `foldOrchestrationUsage`
- * (the Gemini bridge, controllers/googleWire.ts) — which is the point of routing
- * both through this marker rather than through a bare `updateTokenCounts`, since
- * the second one shipped with a hardcoded 0 for cache-write until review caught
- * it. The regime is still chosen by call site, from a measurement, never guessed
- * from the shape of a usage object.
+ * Both of those captures were on anthropic--claude-4.8-opus, and that is what they
+ * prove: the regime is a property of the MODEL FAMILY behind orchestration, not of
+ * the endpoint. A later probe (2026-09-30, gpt-4.1-nano, both
+ * `/openai/v1/chat/completions` and `/anthropic/v1/messages`) measured SAP's
+ * `prompt_tokens` INCLUSIVE for an OpenAI-family model — see `cacheRegimeFor`
+ * below. So no orchestration call site picks this function directly any more; they
+ * all go through `foldOrchestrationUsageFor`, which picks it for Claude and Amazon
+ * Nova (and for any usage whose prompt is smaller than its cache).
+ * The regime is still chosen from a measurement, never guessed from the shape of a
+ * usage object.
  *
  * On an exclusive source, subtracting is the bug: it was written once and
  * caught in review before it merged, computing `max(0, 14 − 29004) = 0` and
@@ -107,6 +109,132 @@ export function foldExclusiveUsage(
   updateTokenCounts(usageMetrics, promptTokens, completionTokens, cacheCreationTokens, cacheReadTokens);
 }
 
+export type CacheRegime = 'exclusive' | 'inclusive';
+
+/**
+ * Whether SAP orchestration's `prompt_tokens` for this model EXCLUDES or INCLUDES the
+ * `prompt_tokens_details` cache counts (`cached_tokens`, `cache_creation_tokens`).
+ * Orchestration passes each model family's own usage convention through, so the
+ * answer depends on the model behind it, not on the gateway endpoint:
+ *
+ * - Claude: EXCLUSIVE, measured (2026-08-07, anthropic--claude-4.8-opus:
+ *   prompt_tokens flat at 14 while cached_tokens went 0 -> 29004; see
+ *   `foldExclusiveUsage` above; re-measured 2026-09-30 on anthropic--claude-4.5-haiku:
+ *   prompt_tokens 13 with cache_creation_tokens 11266, then 13 with cached_tokens
+ *   11266). Anthropic's own `input_tokens` is exclusive too.
+ * - Amazon Nova: EXCLUSIVE, measured (2026-09-30, amazon--nova-lite with a
+ *   `cache_control` checkpoint: prompt_tokens 7 with cache_creation_tokens 9811,
+ *   total_tokens 9822; then prompt_tokens 7 with cached_tokens 9811). Nova caches
+ *   only at an explicit checkpoint; SAP passes Bedrock's exclusive usage through.
+ * - OpenAI family (gpt-*, o-series): INCLUSIVE, measured (2026-09-30,
+ *   gpt-4.1-nano: prompt_tokens 1978 on the cold and the cached call while
+ *   cached_tokens went 0 -> 1792; total_tokens 1979 = prompt + 1 completion;
+ *   gpt-5-nano: prompt_tokens 1982 flat while cached_tokens went 0 -> 1920).
+ *   OpenAI documents `cached_tokens` as a subset of `prompt_tokens`.
+ * - Gemini: INCLUSIVE, measured (2026-09-30, gemini-2.5-flash-lite: prompt_tokens
+ *   2062 flat while cached_tokens went 0 -> 2034), as Google documents.
+ * - Mistral (mistral-small, 2026-09-30): reports no cache details at all, so either
+ *   answer bills the same.
+ * - Every other family (Llama, …): INCLUSIVE ASSUMED, not measured. A family found
+ *   to be exclusive needs a live capture and a line here; `cacheRegimeForUsage`
+ *   below catches most such cases in the meantime.
+ *
+ * Keyed on "claude" or "nova" anywhere in the lower-cased name, so every form a
+ * model reaches a call site in is covered: SAP's `anthropic--claude-*` and
+ * `amazon--nova-*` names (with or without the `--deployed` suffix), Anthropic's own
+ * `claude-*` ids, OpenRouter's `anthropic/claude-*`, Bedrock's `amazon.nova-*` ids.
+ * A missing name falls to the inclusive default.
+ *
+ * This is the name-only answer. Folding and converting go through
+ * `cacheRegimeForUsage`, which adds an arithmetic check on the numbers.
+ */
+export function cacheRegimeFor(modelName: string | null | undefined): CacheRegime {
+  if (typeof modelName !== 'string') return 'inclusive';
+  const name = modelName.toLowerCase();
+  return name.includes('claude') || name.includes('nova') ? 'exclusive' : 'inclusive';
+}
+
+/**
+ * The regime for one concrete usage: `cacheRegimeFor(modelName)`, overridden to
+ * EXCLUSIVE when `promptTokens < cacheReadTokens + cacheCreationTokens`. An inclusive
+ * `prompt_tokens` contains both cache counts by definition, so it can never be smaller
+ * than their sum; a usage that is must come from an exclusive source, whatever the
+ * name says. Folding it inclusive would clamp the full-rate input to 0 and drop the
+ * uncached tail (what happened to Nova before it was listed above).
+ *
+ * What the net catches: an unlisted exclusive family on any turn whose cache is larger
+ * than its uncached part, which is the usual cached turn (a big cached prefix, a short
+ * new tail). What it cannot catch: an exclusive source whose uncached part is at least
+ * as large as its cache — those numbers are valid under both readings, so only the
+ * per-family entry in `cacheRegimeFor` can decide them.
+ *
+ * The one place `foldOrchestrationUsageFor`, `fullRatePromptTokens` and
+ * `wholePromptTokens` take their regime from.
+ */
+export function cacheRegimeForUsage(
+  modelName: string | null | undefined,
+  promptTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+): CacheRegime {
+  if (promptTokens < cacheReadTokens + cacheCreationTokens) return 'exclusive';
+  return cacheRegimeFor(modelName);
+}
+
+/**
+ * Fold one SAP orchestration usage (already read into numbers) for `modelName`,
+ * picking `foldExclusiveUsage` or `foldInclusiveUsage` by `cacheRegimeForUsage`. The
+ * one entry point every orchestration fold site uses, so no call site chooses a
+ * regime on its own.
+ */
+export function foldOrchestrationUsageFor(
+  modelName: string | null | undefined,
+  usageMetrics: any,
+  promptTokens: number,
+  completionTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+): void {
+  if (cacheRegimeForUsage(modelName, promptTokens, cacheCreationTokens, cacheReadTokens) === 'exclusive') {
+    foldExclusiveUsage(usageMetrics, promptTokens, completionTokens, cacheCreationTokens, cacheReadTokens);
+  } else {
+    foldInclusiveUsage(usageMetrics, promptTokens, completionTokens, cacheCreationTokens, cacheReadTokens);
+  }
+}
+
+/**
+ * SAP `prompt_tokens` → the full-rate share only (Anthropic's `input_tokens`
+ * convention, where cache read/write are reported beside it). Unchanged for an
+ * exclusive source; `max(0, prompt − read − write)` for an inclusive one — the same
+ * arithmetic `foldInclusiveUsage` bills.
+ */
+export function fullRatePromptTokens(
+  modelName: string | null | undefined,
+  promptTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+): number {
+  return cacheRegimeForUsage(modelName, promptTokens, cacheCreationTokens, cacheReadTokens) === 'exclusive'
+    ? promptTokens
+    : Math.max(0, promptTokens - cacheReadTokens - cacheCreationTokens);
+}
+
+/**
+ * SAP `prompt_tokens` → the whole prompt, cache included (the OpenAI Responses
+ * `input_tokens` and Gemini `promptTokenCount` convention). Unchanged for an
+ * inclusive source; prompt + read + write for an exclusive one.
+ */
+export function wholePromptTokens(
+  modelName: string | null | undefined,
+  promptTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+): number {
+  return cacheRegimeForUsage(modelName, promptTokens, cacheCreationTokens, cacheReadTokens) === 'exclusive'
+    ? promptTokens + cacheReadTokens + cacheCreationTokens
+    : promptTokens;
+}
+
 /**
  * Accumulate ONE continuation round's usage onto `req.__responsesExtraUsage`
  * — the per-request accumulator the hosted-tool engine's continuation loop
@@ -118,11 +246,11 @@ export function foldExclusiveUsage(
  * deployment frames are inclusive by OpenAI's own `usage` semantics, and
  * bridge continuation frames are always the OUTPUT of `translateUsage`
  * (`responses/orchestrationBridge/responseTranslator.ts`), which normalizes
- * SAP's exclusive counting into the same inclusive shape
- * (`input_tokens = prompt + cached + creation`) before the engine ever sees
- * it. So one normalization here is correct for both callers — there is no
- * "which regime" branch the way there is in `foldInclusiveUsage` /
- * `foldExclusiveUsage` above.
+ * SAP's per-model counting into the same inclusive shape (`wholePromptTokens`:
+ * `prompt + cached + creation` for an exclusive source such as Claude or Nova,
+ * `prompt` as-is otherwise) before the
+ * engine ever sees it. So one normalization here is correct for both callers — there is no
+ * "which regime" branch the way there is in `foldOrchestrationUsageFor` above.
  *
  * The subtraction is PER ROUND, not on the running sum: `input_tokens`
  * accumulates each round's full-rate remainder

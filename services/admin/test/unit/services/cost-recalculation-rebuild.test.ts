@@ -1,18 +1,22 @@
 /** The nightly cost recalculation rebuilds the usage buckets and republishes every night (spec §3.5). */
-jest.mock('@sap/cds', () => ({ connect: { to: jest.fn() } }));
-jest.mock('../../../src/services/sapCapacityService', () => ({ getCacheBillingFactors: () => ({ read: 1, write: 1 }), isProductive: () => true, cuFactor: () => 1 }));
-jest.mock('../../../../../libs/logger', () => ({ getDefaultLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) }));
+jest.mock('@sap/cds', () => ({ connect: { to: jest.fn() }, ql: { SELECT: { from: () => ({ columns: () => ({ SELECT: 'SapTenants' }) }) } } }));
+jest.mock('../../../src/services/sapCapacityService', () => ({ cacheBillingFactorsByProvider: () => new Map(), explicitBillingCurrency: () => null, isProductive: () => true, cuFactor: () => 1 }));
+const mockLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+jest.mock('../../../../../libs/logger', () => ({ getDefaultLogger: () => mockLogger }));
 jest.mock('../../../src/services/usageCounters', () => ({ rebuild: jest.fn(async () => ({ users: 1, buckets: 1, durationMs: 1 })) }));
 jest.mock('../../../src/services/userQuotaService', () => ({ republishAll: jest.fn(async () => 1) }));
+jest.mock('../../../src/services/teamQuotaService', () => ({ republishAllTeams: jest.fn(async () => 0) }));
 jest.mock('../../../src/services/toolUsageService', () => ({ applyRetention: jest.fn(async () => ({ rawDeleted: 0, dailyDeleted: 0 })) }));
 
 const cds = require('@sap/cds');
 import { CostRecalculationService } from '../../../src/services/costRecalculationService';
 import { rebuild } from '../../../src/services/usageCounters';
 import { republishAll } from '../../../src/services/userQuotaService';
+import { republishAllTeams } from '../../../src/services/teamQuotaService';
 import { applyRetention } from '../../../src/services/toolUsageService';
 
-const dbWith = (changes: number) => ({ options: { credentials: { kind: 'sqlite' } }, run: jest.fn(async () => ({ changes })) });
+// The UPDATE statements are strings; the tenant read (CQN) finds no tenant settings.
+const dbWith = (changes: number) => ({ options: { credentials: { kind: 'sqlite' } }, run: jest.fn(async (q: any) => (typeof q === 'string' ? { changes } : [])) });
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -21,6 +25,8 @@ it('rebuilds and republishes after a run that updated rows', async () => {
   await new CostRecalculationService().runRecalculation();
   expect(rebuild).toHaveBeenCalledTimes(1);
   expect(republishAll).toHaveBeenCalledTimes(1);
+  expect(republishAllTeams).toHaveBeenCalledTimes(1);
+  expect(mockLogger.warn).not.toHaveBeenCalled();
 });
 
 // The retention lives in rebuild() and the quota documents expire after 24 h, so a quiet night —
@@ -30,6 +36,8 @@ it('still rebuilds and republishes after a run that updated no rows', async () =
   await new CostRecalculationService().runRecalculation();
   expect(rebuild).toHaveBeenCalledTimes(1);
   expect(republishAll).toHaveBeenCalledTimes(1);
+  expect(republishAllTeams).toHaveBeenCalledTimes(1);
+  expect(mockLogger.warn).not.toHaveBeenCalled();
 });
 
 it('still returns the real record counts when rebuild rejects; republish is skipped', async () => {
@@ -38,6 +46,7 @@ it('still returns the real record counts when rebuild rejects; republish is skip
   const result = await new CostRecalculationService().runRecalculation();
   expect(result).toEqual({ apiKeyRecords: 3, awsRecords: 3 });
   expect(republishAll).not.toHaveBeenCalled();
+  expect(republishAllTeams).not.toHaveBeenCalled();
 });
 
 // The retention purge is the one step with its own boundary: stale tool rows can wait for the next
@@ -48,5 +57,5 @@ it('still republishes when the tool usage retention purge rejects', async () => 
   const result = await new CostRecalculationService().runRecalculation();
   expect(result).toEqual({ apiKeyRecords: 3, awsRecords: 3 });
   expect(rebuild).toHaveBeenCalledTimes(1);
-  expect(republishAll).toHaveBeenCalledTimes(1);
+  expect(republishAll).toHaveBeenCalledTimes(1);  expect(republishAllTeams).toHaveBeenCalledTimes(1);
 });

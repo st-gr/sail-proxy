@@ -82,3 +82,11 @@ describe('notCallable', () => {
     expect(notCallable('deployment', false, false)).toBe(false);
   });
 });
+
+describe('retires in the cockpit language', () => {
+  it('fills the bundle pattern the view binds as the second part', () => {
+    expect(retires('2026-12-31', 'Außerbetriebnahme am {0}')).toBe('Außerbetriebnahme am 2026-12-31');
+    expect(retires('2026-12-31', undefined)).toBe('Retires 2026-12-31');
+    expect(retires(null, 'Außerbetriebnahme am {0}')).toBe('');
+  });
+});

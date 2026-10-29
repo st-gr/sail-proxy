@@ -112,6 +112,20 @@ export const writeDone = (res: Response): void => {
   }
 };
 
+/**
+ * The OpenAI-style `error` an axios error's upstream body carries (`response.data.error`, as an
+ * object with a string message or as a bare string), or undefined. A streamed or missing body
+ * yields undefined.
+ */
+function upstreamErrorOf(err: any): { message: string; type?: string } | undefined {
+  const e = err?.response?.data?.error;
+  if (typeof e === 'string' && e) return { message: e };
+  if (e && typeof e === 'object' && typeof e.message === 'string' && e.message) {
+    return { message: e.message, ...(typeof e.type === 'string' ? { type: e.type } : {}) };
+  }
+  return undefined;
+}
+
 export const writeError = (res: Response, err: string | ErrorWithDetails | Error | SSEData): void => {
   // Skip if response is already ended or not writable
   if (!res.writable || res.writableEnded) {
@@ -133,6 +147,17 @@ export const writeError = (res: Response, err: string | ErrorWithDetails | Error
   } else if ('error' in err && err.error) {
     // Already formatted error object
     errorPayload = err as SSEData;
+  } else if (err instanceof Error && upstreamErrorOf(err)) {
+    // Axios-style error whose upstream body carries an OpenAI-style `error`: its message, type
+    // and HTTP status. Only those three fields - never the body, headers or request config.
+    const upstream = upstreamErrorOf(err)!;
+    errorPayload = {
+      error: {
+        message: upstream.message,
+        type: upstream.type || 'api_error',
+        code: (err as any).response?.status || (err as ErrorWithDetails).status || 500
+      }
+    };
   } else if (err instanceof Error) {
     // Standard Error object
     const errorWithDetails = err as ErrorWithDetails;
@@ -159,9 +184,20 @@ export const writeError = (res: Response, err: string | ErrorWithDetails | Error
         errorPayload.error.request_id = errorWithDetails.details.request_id;
       }
     }
+  } else if (typeof (err as SSEData).message === 'string') {
+    // Plain `{ message, type?, code? }` object (openaiController's stream error frames). Only
+    // those fields are forwarded: `details` can hold the raw upstream body.
+    const plain = err as SSEData;
+    errorPayload = {
+      error: {
+        message: plain.message,
+        type: typeof plain.type === 'string' ? plain.type : 'api_error',
+        code: typeof plain.code === 'string' || typeof plain.code === 'number' ? plain.code : null
+      }
+    };
   } else {
-    // Unknown error format, convert to string
-    errorPayload = { error: { message: String(err) } };
+    // Unknown error format: a generic message, never the raw object (it may carry credentials)
+    errorPayload = { error: { message: 'Unknown error', type: 'api_error', code: null } };
   }
   
   try {

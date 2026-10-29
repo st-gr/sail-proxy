@@ -6,11 +6,27 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl, getGatewayUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, getGatewayUrl, liveModels } = require('@libs/test-utils');
 
 const OLLAMA_SERVER_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 const MAIN_PROXY_URL = process.env.MAIN_PROXY_URL || getGatewayUrl();
+// Load the service's env file the way the service does (dotenv never overrides exported variables).
+require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const MAIN_PROXY_API_KEY = process.env.MAIN_PROXY_API_KEY;
+
+// A model from liveModels is routable by contract. When the Ollama service reports it
+// unavailable (its 500 wraps the gateway's 400/404), the table is stale: fail loudly and
+// point at the tool that refreshes it instead of skipping.
+function failForModel(modelName, error) {
+  const status = error.response?.status;
+  const body = JSON.stringify(error.response?.data || {});
+  if (status === 404 || (status === 500 && /Main proxy error: 4(00|04)/.test(body))) {
+    throw new Error(
+      `${modelName} is not served by the gateway - refresh libs/test-utils/src/live-models.ts with node cli-tools/check-test-models.js (${body.slice(0, 200)})`
+    );
+  }
+  throw error;
+}
 
 describe('Capabilities Mapping Integration', () => {
   let ollamaClient;
@@ -36,14 +52,14 @@ describe('Capabilities Mapping Integration', () => {
   // Test models with their expected capabilities mapping
   const testCases = [
     {
-      modelName: 'gpt-4.1-nano',
+      modelName: liveModels.vision,
       expectedCapabilities: ['completion', 'vision'],
-      description: 'GPT-4 with vision capabilities'
+      description: 'a vision model'
     },
     {
-      modelName: 'gpt-4.1-nano',
+      modelName: liveModels.cheapChat,
       expectedCapabilities: ['completion'],
-      description: 'GPT-3.5 text-only model'
+      description: 'a text model'
     }
   ];
 
@@ -63,7 +79,7 @@ describe('Capabilities Mapping Integration', () => {
           expect(typeof model.id).toBe('string');
         }
       } catch (error) {
-        console.warn('Main proxy not available, skipping proxy-dependent tests');
+        failForModel('proxy model list', error);
       }
     });
 
@@ -114,11 +130,7 @@ describe('Capabilities Mapping Integration', () => {
             }
           }
         } catch (error) {
-          if (error.response?.status === 404) {
-            console.warn(`Model ${testCase.modelName} not available for testing`);
-          } else {
-            throw error;
-          }
+          failForModel(testCase.modelName, error);
         }
       });
     });
@@ -129,7 +141,7 @@ describe('Capabilities Mapping Integration', () => {
       // Test with a basic model that should support text completion
       try {
         const response = await ollamaClient.post('/api/generate', {
-          model: 'gpt-4.1-nanoo-mini',
+          model: liveModels.cheapChat,
           prompt: 'Complete this: Hello',
           stream: false
         });
@@ -139,14 +151,14 @@ describe('Capabilities Mapping Integration', () => {
         expect(typeof response.data.response).toBe('string');
         expect(response.data.done).toBe(true);
       } catch (error) {
-        console.warn('Completion capability test skipped - model not available');
+        failForModel(liveModels.cheapChat, error);
       }
     });
 
     it('should validate chat capability', async () => {
       try {
         const response = await ollamaClient.post('/api/chat', {
-          model: 'gpt-4.1-nanoo-mini',
+          model: liveModels.cheapChat,
           messages: [
             { role: 'user', content: 'Say hello' }
           ],
@@ -158,24 +170,26 @@ describe('Capabilities Mapping Integration', () => {
         expect(response.data.message.role).toBe('assistant');
         expect(response.data.message.content).toBeDefined();
       } catch (error) {
-        console.warn('Chat capability test skipped - model not available');
+        failForModel(liveModels.cheapChat, error);
       }
     });
 
-    it('should validate embedding capability', async () => {
+    it('returns embeddings through /api/embed', async () => {
       try {
-        const response = await ollamaClient.post('/api/embeddings', {
-          model: 'text-embedding-3-small',
-          prompt: 'Test embedding'
-        });
-        
+        const response = await ollamaClient.post('/api/embed', { model: liveModels.embedding, input: 'Test embedding' });
         expect(response.status).toBe(200);
-        expect(response.data.embedding).toBeDefined();
-        expect(Array.isArray(response.data.embedding)).toBe(true);
-        expect(response.data.embedding.length).toBeGreaterThan(0);
+        expect(Array.isArray(response.data.embeddings)).toBe(true);
+        expect(Array.isArray(response.data.embeddings[0])).toBe(true);
+        expect(response.data.embeddings[0].length).toBeGreaterThan(0);
       } catch (error) {
-        console.warn('Embedding capability test skipped - model not available');
+        failForModel(liveModels.embedding, error);
       }
+    });
+
+    it('the legacy /api/embeddings path is not implemented (answers 404)', async () => {
+      await expect(
+        ollamaClient.post('/api/embeddings', { model: 'any', prompt: 'Test embedding' })
+      ).rejects.toMatchObject({ response: { status: 404 } });
     });
   });
 
@@ -218,8 +232,7 @@ describe('Capabilities Mapping Integration', () => {
           expect(chatResponse.status).toBe(200);
           expect(chatResponse.data.choices[0].message.content).toBeDefined();
         } catch (error) {
-          // If chat fails, the model might not support completion capability
-          console.warn(`Model ${modelId} may not support chat completion`);
+          failForModel(modelId, error);
         }
       }
     });
@@ -227,7 +240,7 @@ describe('Capabilities Mapping Integration', () => {
 
   describe('Model-Specific Capability Tests', () => {
     it('should handle vision models appropriately', async () => {
-      const visionModels = ['gpt-4.1-nanoo', 'gemini-2.0-flash-lite', 'anthropic--claude-3-haiku'];
+      const visionModels = [liveModels.vision, liveModels.claude];
       
       for (const modelName of visionModels) {
         try {
@@ -258,14 +271,13 @@ describe('Capabilities Mapping Integration', () => {
           expect(response.data.message.content).toBeDefined();
           
         } catch (error) {
-          // Model might not be available or might not support vision
-          console.warn(`Vision test skipped for ${modelName}`);
+          failForModel(modelName, error);
         }
       }
     });
 
     it('should handle text-only models correctly', async () => {
-      const textOnlyModels = ['gpt-4.1-nano', 'mistralai--mistral-small-instruct'];
+      const textOnlyModels = [liveModels.cheapChat, liveModels.mistral];
       
       for (const modelName of textOnlyModels) {
         try {
@@ -281,7 +293,7 @@ describe('Capabilities Mapping Integration', () => {
           expect(response.data.message.content).toBeDefined();
           
         } catch (error) {
-          console.warn(`Text completion test skipped for ${modelName}`);
+          failForModel(modelName, error);
         }
       }
     });

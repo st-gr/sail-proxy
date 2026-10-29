@@ -1,6 +1,7 @@
 import {
   emptyPending, pendingCount, stageAdd, stageRemove, stageExclude, stageInclude, stageAssign,
-  mergeMembers, mergeExclusions, mergeUsers, pendingSummary, applyPending, saveSummary, PendingChanges
+  mergeMembers, mergeExclusions, mergeUsers, pendingSummary, applyPending, saveSummary, PendingChanges,
+  EXCLUDED_REASON, exclusionReason, stageTeamAssign, mergeTeams, TeamRow
 } from '../webapp/model/catalogPending';
 
 const m = (modelId: string, displayName = modelId) => ({ modelId, displayName });
@@ -115,7 +116,7 @@ describe('applyPending', () => {
     ]);
     expect(out.remaining).toEqual(emptyPending());
     expect(out.failed).toEqual([]);
-    expect(out.results).toEqual({ added: 2, removed: 1, excluded: 1, included: 1, assigned: 1, unassigned: 1, prunedFromChildren: 6 });
+    expect(out.results).toEqual({ added: 2, removed: 1, excluded: 1, included: 1, assigned: 1, unassigned: 1, teamsAssigned: 0, teamsUnassigned: 0, prunedFromChildren: 6 });
     expect(saveSummary(out.results)).toBe('Saved: 2 added, 1 removed, 1 excluded, 1 included again, 1 user(s) assigned, 1 user(s) unassigned; 6 pruned from child catalogs');
   });
   it('a failed set stays pending with its message; the other sets and users still go through', async () => {
@@ -156,7 +157,86 @@ describe('applyPending', () => {
     expect(calls).toEqual(['assignCatalog:["u@x","profile-1"]', 'unassignCatalog:["v@x"]']);
     expect(out.remaining).toEqual(emptyPending());
     expect(out.failed).toEqual([]);
-    expect(out.results).toEqual({ added: 0, removed: 0, excluded: 0, included: 0, assigned: 1, unassigned: 1, prunedFromChildren: 0 });
+    expect(out.results).toEqual({ added: 0, removed: 0, excluded: 0, included: 0, assigned: 1, unassigned: 1, teamsAssigned: 0, teamsUnassigned: 0, prunedFromChildren: 0 });
     expect(saveSummary(out.results)).toBe('Saved: 1 user(s) assigned, 1 user(s) unassigned');
+  });
+});
+
+describe('the cockpit language', () => {
+  // The German bundle as the controller's translator would resolve it.
+  const de = Object.fromEntries(require('fs').readFileSync(require('path').join(__dirname, '../webapp/i18n/i18n_de.properties'), 'utf8')
+    .split('\n').filter((l: string) => /^[A-Za-z]/.test(l)).map((l: string) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  const t = (key: string, args?: (string | number)[]) => String(de[key] ?? key).replace(/\{(\d+)\}/g, (_m, i) => String(args?.[Number(i)] ?? ''));
+  it('words the pending line, the save toast and the failed steps through the translator', async () => {
+    expect(pendingSummary(stageAdd(emptyPending(), [m('a')], []), t)).toBe('1 nicht gespeicherte Änderung');
+    expect(saveSummary({ added: 2, removed: 0, excluded: 0, included: 0, assigned: 1, unassigned: 0, prunedFromChildren: 3 }, t))
+      .toBe('Gespeichert: 2 hinzugefügt, 1 Benutzer zugeordnet; 3 aus untergeordneten Katalogen entfernt');
+    expect(saveSummary({ added: 0, removed: 0, excluded: 0, included: 0, assigned: 0, unassigned: 0, prunedFromChildren: 0 }, t)).toBe('Gespeichert');
+    const fail = () => Promise.reject(new Error('nein'));
+    const out = await applyPending({ ...emptyPending(), addMembers: [m('a')], assign: { 'v@x': null } },
+      { addModels: fail, removeModels: fail, excludeModels: fail, includeModels: fail, assignCatalog: fail, unassignCatalog: fail }, t);
+    expect(out.failed.map((f) => f.step)).toEqual(['Modelle hinzufügen', 'Zuordnung von v@x aufheben']);
+  });
+});
+
+describe('exclusion reason', () => {
+  it('stores the English sentinel unchanged (it is data)', () => {
+    expect(EXCLUDED_REASON).toBe('Excluded in the Model Library');
+  });
+  it('shows the bundle text for the sentinel, English before the bundle has loaded', () => {
+    expect(exclusionReason(EXCLUDED_REASON, 'In der Modellbibliothek ausgeschlossen')).toBe('In der Modellbibliothek ausgeschlossen');
+    expect(exclusionReason(EXCLUDED_REASON)).toBe('Excluded in the Model Library');
+    expect(exclusionReason(EXCLUDED_REASON, null)).toBe('Excluded in the Model Library');
+  });
+  it('passes any other reason through as stored', () => {
+    expect(exclusionReason('licence review', 'In der Modellbibliothek ausgeschlossen')).toBe('licence review');
+    expect(exclusionReason(null, 'x')).toBe('');
+    expect(exclusionReason(undefined)).toBe('');
+  });
+});
+
+describe('team assignments (teams polish)', () => {
+  const alpha = { teamId: 't-a', name: 'Alpha' };
+  const beta = { teamId: 't-b', name: 'Beta' };
+  const rows: TeamRow[] = [
+    { ID: 't-a', name: 'Alpha', catalogId: null, catalogName: null, poolProfileId: 'p-1', poolProfileName: 'Light', memberProfileId: null, memberProfileName: null },
+    { ID: 't-b', name: 'Beta', catalogId: 'c-1', catalogName: 'Engineering', poolProfileId: null, poolProfileName: null, memberProfileId: 'p-1', memberProfileName: 'Light' }
+  ];
+  it('stages per team and slot; staging the stored value again cancels it; counts towards the pending line', () => {
+    let p = stageTeamAssign(emptyPending(), alpha, 'catalog', 'c-1', null);
+    p = stageTeamAssign(p, beta, 'member', null, 'p-1');
+    p = stageTeamAssign(p, alpha, 'pool', 'p-1', 'p-1');
+    expect(pendingCount(p)).toBe(2);
+    expect(Object.values(p.teams ?? {})).toEqual([{ ...alpha, slot: 'catalog', target: 'c-1' }, { ...beta, slot: 'member', target: null }]);
+    expect(stageTeamAssign(p, alpha, 'catalog', null, null).teams).toEqual({ 't-b|member': { ...beta, slot: 'member', target: null } });
+  });
+  it('the teams table shows each slot with its staged value and says which are unsaved', () => {
+    let p = stageTeamAssign(emptyPending(), alpha, 'member', 'p-2', null);
+    p = stageTeamAssign(p, beta, 'catalog', null, 'c-1');
+    const merged = mergeTeams(rows, p, { ID: 'p-2', name: 'Heavy' });
+    expect(merged[0]).toMatchObject({ memberProfileId: 'p-2', memberProfileName: 'Heavy', pendingMember: true, poolProfileName: 'Light', pendingPool: false, pending: true });
+    expect(merged[1]).toMatchObject({ catalogId: null, catalogName: null, pendingCatalog: true, memberProfileName: 'Light', pending: true });
+  });
+  it('Save writes the teams after the users, one at a time, and keeps a refused one staged', async () => {
+    const calls: string[] = [];
+    const ok = async () => ({});
+    const invoke = {
+      addModels: ok, removeModels: ok, excludeModels: ok, includeModels: ok,
+      assignCatalog: async (e: string) => { calls.push(`user:${e}`); return {}; }, unassignCatalog: ok,
+      assignTeam: async (teamId: string, slot: string, target: string | null) => {
+        calls.push(`team:${teamId}:${slot}:${target}`);
+        if (teamId === 't-b') throw new Error('refused');
+        return {};
+      }
+    };
+    let p = stageAssign(emptyPending(), 'u@x', 'c-1', null);
+    p = stageTeamAssign(p, alpha, 'pool', 'p-2', 'p-1');
+    p = stageTeamAssign(p, beta, 'catalog', null, 'c-1');
+    const out = await applyPending(p, invoke);
+    expect(calls).toEqual(['user:u@x', 'team:t-a:pool:p-2', 'team:t-b:catalog:null']);
+    expect(out.remaining.teams).toEqual({ 't-b|catalog': { ...beta, slot: 'catalog', target: null } });
+    expect(out.failed).toEqual([{ step: 'unassign team Beta', message: 'refused' }]);
+    expect(saveSummary(out.results)).toBe('Saved: 1 user(s) assigned, 1 team(s) assigned');
+    expect(saveSummary({ ...out.results, assigned: 0, teamsAssigned: 0, teamsUnassigned: 2 })).toBe('Saved: 2 team(s) unassigned');
   });
 });

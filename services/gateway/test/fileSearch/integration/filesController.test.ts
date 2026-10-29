@@ -56,9 +56,9 @@ function makeUploadReq(email: string, body: Buffer, boundary: string): any {
   return req;
 }
 
-async function uploadFile(email: string, filename: string, content: Buffer): Promise<any> {
+async function uploadFile(email: string, filename: string, content: Buffer, purpose = 'assistants'): Promise<any> {
   const boundary = `b${crypto.randomBytes(8).toString('hex')}`;
-  const req = makeUploadReq(email, buildMultipartBody(boundary, { filename, content, purpose: 'assistants' }), boundary);
+  const req = makeUploadReq(email, buildMultipartBody(boundary, { filename, content, purpose }), boundary);
   const res = makeRes();
   await filesController.uploadFile(req, res, (err: any) => { throw err; });
   return res;
@@ -162,14 +162,16 @@ d('filesController against a real Postgres database (requires FILE_SEARCH_TEST_D
     );
     expect(ownerAAfterRes.statusCode).toBe(404);
 
-    // And once owner B also deletes theirs, the blob genuinely disappears.
+    // And once owner B also deletes theirs, the blob turns pending delete (the sweeper removes it
+    // after the grace).
     const ownerBDeleteRes = makeRes();
     await filesController.deleteFile(
       baseReq('owner-b@example.com', { params: { id: ownerBRes.body.id } }), ownerBDeleteRes, (e: any) => { throw e; },
     );
     expect(ownerBDeleteRes.statusCode).toBe(200);
-    const { rows: afterBothDeleted } = await pool.query('SELECT 1 FROM file_blobs WHERE sha256=$1', [sha]);
-    expect(afterBothDeleted.length).toBe(0);
+    const { rows: afterBothDeleted } = await pool.query(
+      'SELECT ref_count, delete_after IS NOT NULL AS pending FROM file_blobs WHERE sha256=$1', [sha]);
+    expect(afterBothDeleted).toEqual([{ ref_count: 0, pending: true }]);
   });
 
   it("cross-owner 404-vs-nonexistent parity: another owner's file and a truly nonexistent id produce byte-identical responses", async () => {
@@ -282,6 +284,39 @@ d('filesController against a real Postgres database (requires FILE_SEARCH_TEST_D
     // The starting cursor (the oldest item) is excluded by "before" semantics.
     expect(backward).toEqual(canonical.slice(0, N - 1));
     expect(new Set(backward).size).toBe(N - 1);
+  });
+
+  it('?purpose= lists only files of that purpose, and pages them with after= as without the filter', async () => {
+    const owner = 'purposes@example.com';
+    const byPurpose: Record<string, string[]> = { assistants: [], user_data: [] };
+    for (let i = 0; i < 6; i++) {
+      const purpose = i % 2 === 0 ? 'assistants' : 'user_data';
+      // eslint-disable-next-line no-await-in-loop
+      const res = await uploadFile(owner, `p${i}.txt`, Buffer.from(`purpose content ${i}`), purpose);
+      expect(res.statusCode).toBe(200);
+      expect(res.body.purpose).toBe(purpose);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query('UPDATE fs_files SET created_at = $2 WHERE id = $1', [res.body.id, new Date(2026, 0, 1, 0, 0, i)]);
+      byPurpose[purpose].unshift(res.body.id); // newest first, the default order
+    }
+    for (const purpose of ['assistants', 'user_data']) {
+      const first = makeRes();
+      // eslint-disable-next-line no-await-in-loop
+      await filesController.listFiles(baseReq(owner, { query: { purpose, limit: '2' } }), first, (e: any) => { throw e; });
+      expect(first.body.data.map((f: any) => f.id)).toEqual(byPurpose[purpose].slice(0, 2));
+      expect(first.body.data.every((f: any) => f.purpose === purpose)).toBe(true);
+      expect(first.body.has_more).toBe(true);
+      const second = makeRes();
+      // eslint-disable-next-line no-await-in-loop
+      await filesController.listFiles(
+        baseReq(owner, { query: { purpose, limit: '2', after: first.body.last_id } }), second, (e: any) => { throw e; },
+      );
+      expect(second.body.data.map((f: any) => f.id)).toEqual(byPurpose[purpose].slice(2));
+      expect(second.body.has_more).toBe(false);
+    }
+    const all = makeRes();
+    await filesController.listFiles(baseReq(owner), all, (e: any) => { throw e; });
+    expect(all.body.data).toHaveLength(6);
   });
 
   describe('created_at provenance', () => {

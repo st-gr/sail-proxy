@@ -14,6 +14,8 @@ import { getPool, runMigration, __resetForTests } from '../../../src/fileSearch/
 import { sha256Of, retainBlob } from '../../../src/fileSearch/blob/blobStore';
 import { newFileId } from '../../../src/fileSearch/ids';
 import * as repo from '../../../src/fileSearch/repository';
+import { createBatch, requestBatchCancel } from '../../../src/fileSearch/batches';
+import { retryJob } from '../../../src/fileSearch/jobs';
 import { createIsolatedSchema, IsolatedSchema } from './schemaFixture';
 
 const DSN = process.env.FILE_SEARCH_TEST_DSN;
@@ -32,16 +34,18 @@ jest.mock('../../../src/fileSearch/extractors/registry', () => {
   return { ...actual, extractText: jest.fn() };
 });
 
-jest.mock('../../../src/fileSearch/embedder', () => ({
-  __esModule: true,
-  embed: jest.fn(),
-}));
+jest.mock('../../../src/fileSearch/embedder', () => {
+  const actual = jest.requireActual('../../../src/fileSearch/embedder');
+  return { ...actual, __esModule: true, embed: jest.fn() };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { extractText, UnsupportedFileTypeError } = require('../../../src/fileSearch/extractors/registry');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { embed } = require('../../../src/fileSearch/embedder');
+const { embed, EmbeddingModelUnavailableError } = require('../../../src/fileSearch/embedder');
 
+import { DocumentReadError } from '../../../src/fileSearch/extractors/ooxml/limits';
+import { StructureChunkOutOfMemoryError } from '../../../src/fileSearch/structureChunkThread';
 import {
   claimNext, processOne, startIngestWorker, stopIngestWorker, __commitChunksForTests,
 } from '../../../src/fileSearch/ingestWorker';
@@ -200,6 +204,24 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     expect(lastError.message).toContain('Unsupported file type');
   });
 
+  it('a PowerPoint/Excel file the built-in reader refuses (broken, hostile, over a limit) fails at once as a permanent error', async () => {
+    const { storeId, fileId } = await seedAttached('a@x.com');
+    extractText.mockRejectedValue(new DocumentReadError('Excel', 'it is not a valid zip archive'));
+    await processOne(storeId, fileId);
+    expect(await statusOf(storeId, fileId)).toBe('failed');
+    expect(await attemptsOf(storeId, fileId)).toBe(0);
+    expect((await lastErrorOf(storeId, fileId)).message).toBe('Could not read the Excel file: it is not a valid zip archive');
+  });
+
+  it('a file whose chunking needs more heap than the chunker thread may use fails at once as a permanent error', async () => {
+    const { storeId, fileId } = await seedAttached('a@x.com');
+    extractText.mockRejectedValue(new StructureChunkOutOfMemoryError(256));
+    await processOne(storeId, fileId);
+    expect(await statusOf(storeId, fileId)).toBe('failed');
+    expect(await attemptsOf(storeId, fileId)).toBe(0);
+    expect((await lastErrorOf(storeId, fileId)).message).toBe('Chunking the file needs more memory than the chunker may use (256 MB)');
+  });
+
   it('a transient failure (e.g. a timeout / upstream error) is retried, and only marked failed once the claimed attempt budget is exhausted', async () => {
     const { storeId, fileId } = await seedAttached('a@x.com');
     extractText.mockRejectedValue(new Error('pandoc exited 1'));
@@ -252,6 +274,38 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     const lastError = await lastErrorOf(storeId, fileId);
     expect(lastError.message).toMatch(/dimension/i);
     expect(embed).not.toHaveBeenCalled();
+  });
+
+  // One model per store (plan Decision 2, ruling R3): a file attached to a store is
+  // embedded with the STORE's model and dimension even after the configured model changed,
+  // so the store never holds vectors of two models.
+  it('embeds with the store\'s own model and dimension, not the configured model', async () => {
+    const { storeId, fileId } = await seedAttached('a@x.com');
+    const { rows } = await pool.query('SELECT embedding_model, embedding_dim FROM vector_stores WHERE id = $1', [storeId]);
+    expect(rows[0]).toEqual({ embedding_model: 'test-model', embedding_dim: EMBED_DIM });
+    mockConfig.embeddingModel = 'newer-model'; // configuration moved on; the store did not
+
+    await processOne(storeId, fileId);
+
+    expect(await statusOf(storeId, fileId)).toBe('completed');
+    expect(embed).toHaveBeenCalled();
+    for (const callArgs of embed.mock.calls) {
+      expect(callArgs[1]).toBe('document');
+      expect(callArgs[2]).toEqual({ model: 'test-model', dimensions: EMBED_DIM });
+    }
+  });
+
+  it('a store whose model is no longer served fails the file at once as a permanent error', async () => {
+    const { storeId, fileId } = await seedAttached('a@x.com');
+    embed.mockRejectedValue(new EmbeddingModelUnavailableError('test-model'));
+
+    await processOne(storeId, fileId);
+
+    expect(await statusOf(storeId, fileId)).toBe('failed');
+    expect(await attemptsOf(storeId, fileId)).toBe(0);
+    const lastError = await lastErrorOf(storeId, fileId);
+    expect(lastError.name).toBe('EmbeddingModelUnavailableError');
+    expect(lastError.message).toContain('test-model');
   });
 
   it('a file whose extracted text exceeds limits.maxTokensPerFile fails immediately as a permanent error, without ever calling embed (I3)', async () => {
@@ -424,6 +478,27 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     }
   });
 
+  it('one claim takes exactly one row, even when the planner rescans the claim subquery per outer row', async () => {
+    // Statistics that say the table holds one row (analysed before the second attach, as
+    // autovacuum does on the sparse CI table) make Postgres plan
+    // `WHERE (store_id, file_id) IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` as a Nested Loop
+    // Semi Join that re-runs the subquery for every outer row, unmaterialised. On the second
+    // rescan the row the statement already updated is skipped, so the LIMIT 1 yields the next
+    // row and one UPDATE claimed both - claimNext processes rows[0] only, and the other stays
+    // leased (claimed, never processed) for 15 minutes.
+    const first = await seedAttached('a@x.com');
+    await pool.query('ANALYZE vector_store_files');
+    const second = await seedAttached('b@x.com');
+
+    const job = await claimNext();
+
+    expect(job).toEqual(first);
+    expect(await attemptsOf(second.storeId, second.fileId)).toBe(0);
+    const { rows } = await pool.query('SELECT claimed_at FROM vector_store_files WHERE store_id = $1 AND file_id = $2',
+      [second.storeId, second.fileId]);
+    expect(rows[0].claimed_at).toBeNull();
+  });
+
   it('claiming increments attempts by exactly one per claim, and processOne does not touch attempts at all on success', async () => {
     const { storeId, fileId } = await seedAttached('a@x.com');
     const job = await claimNext();
@@ -543,7 +618,7 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     // completes-before-ingestion-starts). Kicking off the cascade here,
     // while those locks are held, forces the cascade to block on the very
     // FOR SHARE this whole guard exists to prove is load-bearing.
-    await __commitChunksForTests(storeId, fileId, chunks, vectors, undefined, async () => {
+    await __commitChunksForTests(storeId, fileId, chunks, { 'test-model': { vectors, tokens: 0 } }, undefined, async () => {
       cascadePromise = repo.deleteStoreCascade(storeId, ownerEmail);
       // Give the cascade time to actually reach and block on the lock
       // (rather than racing our own subsequent insert/commit) — generous
@@ -575,7 +650,7 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     const vectors = [fakeVector(), fakeVector()];
 
     let detachPromise: Promise<{ deleted: boolean }> | null = null;
-    await __commitChunksForTests(storeId, fileId, chunks, vectors, undefined, async () => {
+    await __commitChunksForTests(storeId, fileId, chunks, { 'test-model': { vectors, tokens: 0 } }, undefined, async () => {
       detachPromise = repo.deleteStoreFile(storeId, fileId, ownerEmail);
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
@@ -602,7 +677,7 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     const vectors = [fakeVector(), fakeVector()];
 
     let detachPromise: Promise<{ deleted: boolean }> | undefined;
-    const commitOutcome = await __commitChunksForTests(storeId, fileId, chunks, vectors, async () => {
+    const commitOutcome = await __commitChunksForTests(storeId, fileId, chunks, { 'test-model': { vectors, tokens: 0 } }, async () => {
       detachPromise = repo.deleteStoreFile(storeId, fileId, ownerEmail);
       // Give the detach a head start to actually issue (not necessarily
       // finish) its first lock request before ingestion proceeds to
@@ -628,4 +703,271 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     expect(await chunkCount(storeId, fileId)).toBe(0);
     expect(await sweepForOrphanedChunks()).toEqual({ noVsfRow: 0, noStoreRow: 0 });
   }, 15000);
+
+  // -- file batches and their jobs -------------------------------------
+
+  async function seedFileRow(ownerEmail: string, text: string): Promise<string> {
+    const content = Buffer.from(text);
+    const sha = sha256Of(content);
+    await retainBlob(sha, content, 'text/plain');
+    const fileId = newFileId();
+    await pool.query(
+      `INSERT INTO fs_files (id, owner_email, filename, purpose, sha256, size_bytes, created_at)
+       VALUES ($1,$2,'doc.txt','assistants',$3,$4, now())`,
+      [fileId, ownerEmail, sha, content.length],
+    );
+    return fileId;
+  }
+
+  /** A store with a file batch of `n` members, attached in DESCENDING file_id
+   *  order (so insertion order and file_id order disagree). `fileIds` comes
+   *  back in that attach order. */
+  async function seedBatch(n: number, ownerEmail = 'jobs@example.test'): Promise<{
+    storeId: string; batchId: string; jobId: string; fileIds: string[];
+  }> {
+    const store = await repo.createStore({ ownerEmail });
+    const ids: string[] = [];
+    for (let i = 0; i < n; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      ids.push(await seedFileRow(ownerEmail, `member ${i} ${'lorem ipsum '.repeat(20)} ${Math.random()}`));
+    }
+    const fileIds = [...ids].sort().reverse();
+    const batch = await createBatch(store.id, fileIds, null, null);
+    const { rows } = await pool.query('SELECT id FROM fs_jobs WHERE batch_id = $1', [batch.id]);
+    return { storeId: store.id, batchId: batch.id, jobId: rows[0].id, fileIds };
+  }
+
+  /** Waits until some backend is blocked by `holderPid`'s locks. */
+  async function waitUntilBlockedBy(holderPid: number): Promise<void> {
+    for (let i = 0; i < 300; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const blocked = await pool.query('SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [holderPid]);
+      if (blocked.rowCount) return;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error('nothing became blocked by the holder');
+  }
+
+  /** Whether another transaction can lock the row right now (NOWAIT). */
+  async function rowIsFree(storeId: string, fileId: string): Promise<boolean> {
+    const probe = await pool.connect();
+    try {
+      await probe.query('BEGIN');
+      await probe.query(
+        'SELECT 1 FROM vector_store_files WHERE store_id = $1 AND file_id = $2 FOR UPDATE NOWAIT', [storeId, fileId]);
+      return true;
+    } catch (e: any) {
+      if (e.code === '55P03') return false;
+      throw e;
+    } finally {
+      await probe.query('ROLLBACK').catch(() => {});
+      probe.release();
+    }
+  }
+
+  /** Holds the LOWEST file_id member locked while `run` starts, and asserts
+   *  that `run` blocks on it before it has locked the highest one — i.e. it
+   *  locks members in file_id order, the same order retry uses. */
+  async function expectLocksInFileIdOrder(storeId: string, fileIds: string[], run: () => Promise<unknown>): Promise<void> {
+    const sorted = [...fileIds].sort();
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        'SELECT 1 FROM vector_store_files WHERE store_id = $1 AND file_id = $2 FOR UPDATE', [storeId, sorted[0]]);
+      const holderPid = (await holder.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const running = run();
+      await waitUntilBlockedBy(holderPid);
+      expect(await rowIsFree(storeId, sorted[sorted.length - 1])).toBe(true);
+      await holder.query('COMMIT');
+      await running;
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      holder.release();
+    }
+  }
+
+  it('cancelling a batch locks its remaining members in file_id order', async () => {
+    const { storeId, batchId, fileIds } = await seedBatch(4);
+    expect(await requestBatchCancel(storeId, batchId)).toBe(true);
+    await expectLocksInFileIdOrder(storeId, fileIds, () => processOne(storeId, fileIds[0]));
+    for (const f of fileIds) {
+      // eslint-disable-next-line no-await-in-loop
+      expect(await statusOf(storeId, f)).toBe('cancelled');
+    }
+  });
+
+  it('reaping zombies locks the rows in file_id order', async () => {
+    const { storeId, fileIds } = await seedBatch(4);
+    await pool.query(
+      `UPDATE vector_store_files SET attempts = 3, claimed_at = now() - interval '1 hour' WHERE store_id = $1`, [storeId]);
+    await expectLocksInFileIdOrder(storeId, fileIds, () => claimNext());
+    for (const f of fileIds) {
+      // eslint-disable-next-line no-await-in-loop
+      expect(await statusOf(storeId, f)).toBe('failed');
+    }
+  });
+
+  // -- job progress: started_at, tokens, finished_at ---------------------
+
+  async function jobRow(jobId: string): Promise<{ started_at: Date | null; finished_at: Date | null; tokens: number }> {
+    const { rows } = await pool.query(
+      'SELECT started_at, finished_at, embedding_tokens FROM fs_jobs WHERE id = $1', [jobId]);
+    return { started_at: rows[0].started_at, finished_at: rows[0].finished_at, tokens: Number(rows[0].embedding_tokens) };
+  }
+
+  /** What the embed mock reports for a file: 10 tokens per chunk. */
+  async function expectedTokens(storeId: string, fileIds: string[]): Promise<number> {
+    let total = 0;
+    for (const f of fileIds) {
+      // eslint-disable-next-line no-await-in-loop
+      total += (await chunkCount(storeId, f)) * 10;
+    }
+    return total;
+  }
+
+  async function claimAndProcess(): Promise<{ storeId: string; fileId: string }> {
+    const job = await claimNext();
+    expect(job).not.toBeNull();
+    await processOne(job!.storeId, job!.fileId);
+    return job!;
+  }
+
+  it('stamps the job\'s started_at on the first claim of a member, and only then', async () => {
+    const { jobId } = await seedBatch(2);
+    expect((await jobRow(jobId)).started_at).toBeNull();
+
+    expect(await claimNext()).not.toBeNull();
+    const first = (await jobRow(jobId)).started_at;
+    expect(first).toBeInstanceOf(Date);
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await claimNext()).not.toBeNull();
+    expect((await jobRow(jobId)).started_at!.getTime()).toBe(first!.getTime());
+  });
+
+  it('adds the provider\'s tokens once per embedded member, and settles the job exactly once on the last one', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(2);
+    const loose = await seedAttached('jobs@example.test');
+
+    const firstDone = await claimAndProcess();
+    const afterFirst = await jobRow(jobId);
+    expect(afterFirst.tokens).toBe(await expectedTokens(storeId, [firstDone.fileId]));
+    expect(afterFirst.tokens).toBeGreaterThan(0);
+    expect(afterFirst.finished_at).toBeNull();
+
+    await claimAndProcess();
+    await claimAndProcess(); // the unbatched file adds to no job
+    const done = await jobRow(jobId);
+    expect(done.tokens).toBe(await expectedTokens(storeId, fileIds));
+    expect(done.finished_at).toBeInstanceOf(Date);
+    expect(await statusOf(loose.storeId, loose.fileId)).toBe('completed');
+
+    // Re-processing a completed member is a no-op: no second count, no new finish.
+    await processOne(storeId, fileIds[0]);
+    const again = await jobRow(jobId);
+    expect(again.tokens).toBe(done.tokens);
+    expect(again.finished_at!.getTime()).toBe(done.finished_at!.getTime());
+  });
+
+  it('counts no tokens for a commit that rolls back, and counts them once when it later succeeds', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(1);
+    // Fails the commit AFTER the token update ran inside it: the settle that
+    // follows it is refused, so the whole transaction rolls back.
+    await pool.query(`
+      CREATE FUNCTION refuse_finish() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'refused by the test'; END $$`);
+    await pool.query(`
+      CREATE TRIGGER refuse_finish BEFORE UPDATE ON fs_jobs FOR EACH ROW
+      WHEN (OLD.finished_at IS NULL AND NEW.finished_at IS NOT NULL) EXECUTE FUNCTION refuse_finish()`);
+    try {
+      await claimAndProcess();
+      expect(await statusOf(storeId, fileIds[0])).toBe('in_progress'); // transient: retried later
+      expect(await chunkCount(storeId, fileIds[0])).toBe(0);
+      const rolledBack = await jobRow(jobId);
+      expect(rolledBack.tokens).toBe(0);
+      expect(rolledBack.finished_at).toBeNull();
+    } finally {
+      await pool.query('DROP TRIGGER refuse_finish ON fs_jobs');
+      await pool.query('DROP FUNCTION refuse_finish()');
+    }
+
+    await claimAndProcess();
+    expect(await statusOf(storeId, fileIds[0])).toBe('completed');
+    const done = await jobRow(jobId);
+    expect(done.tokens).toBe(await expectedTokens(storeId, fileIds));
+    expect(done.finished_at).toBeInstanceOf(Date);
+  });
+
+  it('counts no tokens when the commit finds its member no longer in_progress', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(1);
+    await pool.query(
+      `UPDATE vector_store_files SET status = 'cancelled' WHERE store_id = $1 AND file_id = $2`, [storeId, fileIds[0]]);
+    await __commitChunksForTests(storeId, fileIds[0], [{ ord: 0, text: 'alpha', tokens: 1 }],
+      { 'test-model': { vectors: [fakeVector()], tokens: 40 } });
+    expect((await jobRow(jobId)).tokens).toBe(0);
+  });
+
+  it('settles the job when its last member fails for good', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(1);
+    extractText.mockRejectedValue(new UnsupportedFileTypeError('.doc'));
+    await claimAndProcess();
+    expect(await statusOf(storeId, fileIds[0])).toBe('failed');
+    const row = await jobRow(jobId);
+    expect(row.finished_at).toBeInstanceOf(Date);
+    expect(row.tokens).toBe(0);
+  });
+
+  it('does not settle the job on a transient failure that leaves the member in_progress', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(1);
+    extractText.mockRejectedValue(new Error('upstream timeout'));
+    await claimAndProcess();
+    expect(await statusOf(storeId, fileIds[0])).toBe('in_progress');
+    expect((await jobRow(jobId)).finished_at).toBeNull();
+  });
+
+  it('settles a cancelled batch when the worker stops its remaining members', async () => {
+    const { storeId, batchId, jobId, fileIds } = await seedBatch(3);
+    await claimAndProcess();
+    expect((await jobRow(jobId)).finished_at).toBeNull();
+    expect(await requestBatchCancel(storeId, batchId)).toBe(true);
+    await claimAndProcess();
+    expect(await statusOf(storeId, fileIds[2])).toBe('cancelled');
+    expect((await jobRow(jobId)).finished_at).toBeInstanceOf(Date);
+  });
+
+  it('settles the jobs of batches whose last members are reaped as zombies, and leaves others open', async () => {
+    const reaped = await seedBatch(2);
+    const open = await seedBatch(2);
+    await pool.query(
+      `UPDATE vector_store_files SET attempts = 3, claimed_at = now() - interval '1 hour' WHERE store_id = $1`,
+      [reaped.storeId]);
+    await pool.query(
+      `UPDATE vector_store_files SET attempts = 3, claimed_at = now() - interval '1 hour'
+        WHERE store_id = $1 AND file_id = $2`,
+      [open.storeId, open.fileIds[0]]);
+    await claimNext();
+    expect((await jobRow(reaped.jobId)).finished_at).toBeInstanceOf(Date);
+    expect(await statusOf(open.storeId, open.fileIds[0])).toBe('failed');
+    expect((await jobRow(open.jobId)).finished_at).toBeNull();
+  });
+
+  it('a retry clears finished_at, and the next terminal transition sets it again', async () => {
+    const { storeId, jobId, fileIds } = await seedBatch(1);
+    extractText.mockRejectedValueOnce(new UnsupportedFileTypeError('.doc'));
+    await claimAndProcess();
+    const first = (await jobRow(jobId)).finished_at;
+    expect(first).toBeInstanceOf(Date);
+
+    expect(await retryJob(jobId, 'jobs@example.test')).toEqual({ ok: true, job_id: jobId, retried: 1 });
+    expect((await jobRow(jobId)).finished_at).toBeNull();
+
+    await claimAndProcess();
+    expect(await statusOf(storeId, fileIds[0])).toBe('completed');
+    const second = await jobRow(jobId);
+    expect(second.finished_at).toBeInstanceOf(Date);
+    expect(second.finished_at!.getTime()).toBeGreaterThanOrEqual(first!.getTime());
+    expect(second.tokens).toBe(await expectedTokens(storeId, fileIds));
+  });
 });

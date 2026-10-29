@@ -5,13 +5,13 @@
         "type": "application",
         "i18n": {
             "bundleUrl": "i18n/i18n.properties",
-            "supportedLocales": ["", "en"],
+            "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
             "fallbackLocale": "en"
         },
         "applicationVersion": {
             "version": "1.0.0"
         },
-        "title": "API Keys",
+        "title": "{{apiKeys}}",
         "description": "Administration interface for API Keys, AWS Credentials and Configuration",
         "resources": "resources.json",
         "sourceTemplate": {
@@ -77,7 +77,7 @@
                 "type": "sap.ui.model.resource.ResourceModel",
                 "settings": {
                     "bundleUrl": "i18n/i18n.properties",
-                    "supportedLocales": ["", "en"],
+                    "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
                     "fallbackLocale": "en",
                     "async": true
                 }
@@ -173,14 +173,21 @@
                                             "press": "admin.app.ext.SetApiKey.onSetApiKey",
                                             "visible": "admin.app.ext.SetApiKey.isVisible",
                                             "enabled": true,
-                                            "text": "Set API Key",
+                                            "text": "{{setApiKey}}",
+                                            "requiresSelection": false
+                                        },
+                                        "ChangeTeam": {
+                                            "press": "admin.app.ext.ChangeTeam.onChangeTeam",
+                                            "visible": "admin.app.ext.ChangeTeam.isVisible",
+                                            "enabled": true,
+                                            "text": "{{changeTeam}}",
                                             "requiresSelection": false
                                         },
                                         "CopyApiKey": {
                                             "id": "CopyApiKey",
                                             "press": "admin.app.ext.CopyApiKey.onCopyApiKey",
                                             "visible": true,
-                                            "text": "Copy API Key",
+                                            "text": "{{copyApiKey}}",
                                             "enabled": true,
                                             "requiresSelection": false
                                         }

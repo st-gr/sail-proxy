@@ -76,7 +76,7 @@ export function createGeminiStreamTranslator(opts: { modelName: string }): Gemin
       ...(terminal ? { finishReason: geminiFinishReason(finishReason, sawToolCall) } : {}),
       index: 0,
     }],
-    ...(terminal ? { usageMetadata: usageMetadataFromOrchestration(lastUsage) } : {}),
+    ...(terminal ? { usageMetadata: usageMetadataFromOrchestration(lastUsage, opts.modelName) } : {}),
     modelVersion: opts.modelName,
   });
 

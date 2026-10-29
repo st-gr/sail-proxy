@@ -1,0 +1,377 @@
+<mvc:View
+    controllerName="admin.grounding.controller.Admin"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:core="sap.ui.core"
+    xmlns:f="sap.ui.layout.form"
+    xmlns="sap.m">
+    <Page id="adminPage" title="{i18n>adminTitle}">
+        <headerContent>
+            <Button id="refreshAdminButton" icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefresh"/>
+        </headerContent>
+        <content>
+            <IconTabBar id="adminTabs" selectedKey="{view>/tab}" select=".onTabSelect" expandable="false" stretchContentHeight="false">
+                <items>
+                    <IconTabFilter id="overviewTab" key="overview" text="{i18n>adminTabOverview}">
+                        <FlexBox id="overviewTiles" items="{view>/tiles}" wrap="Wrap" busy="{view>/overviewBusy}" busyIndicatorDelay="0">
+                            <GenericTile header="{view>label}" frameType="OneByOne" class="sapUiTinyMarginEnd sapUiTinyMarginBottom">
+                                <TileContent>
+                                    <Text text="{view>value}" class="groundingTileValue"/>
+                                </TileContent>
+                            </GenericTile>
+                        </FlexBox>
+                        <Panel id="reembedOutdatedPanel" headerText="{i18n>reembedOutdatedTitle}" class="sapUiSmallMarginTop">
+                            <VBox busy="{view>/bulk/busy}" busyIndicatorDelay="0">
+                                <Text id="reembedOutdatedHint" text="{i18n>reembedOutdatedHint}" class="sapUiSmallMarginBottom"/>
+                                <MessageStrip id="reembedBulkStartedStrip" text="{i18n>reembedBulkStarted}" type="Success" showIcon="true"
+                                    visible="{= !!${view>/bulk/jobId} }" class="sapUiSmallMarginBottom">
+                                    <link><Link id="viewBulkJobLink" text="{i18n>viewJob}" press=".onViewBulkJob"/></link>
+                                </MessageStrip>
+                                <Button id="reembedEstimateButton" text="{i18n>reembedShowEstimate}" icon="sap-icon://simulate" press=".onReembedEstimate"/>
+                                <VBox id="reembedEstimateBox" visible="{= ${view>/bulk/loaded} === true }" class="sapUiSmallMarginTop">
+                                    <f:Form id="reembedEstimateForm" editable="false">
+                                        <f:layout><f:ColumnLayout columnsM="2" columnsL="4" columnsXL="4"/></f:layout>
+                                        <f:formContainers>
+                                            <f:FormContainer>
+                                                <f:formElements>
+                                                    <f:FormElement label="{i18n>reembedEstimateStores}">
+                                                        <f:fields><Text id="reembedEstimateStoresText" text="{view>/bulk/figures/stores}"/></f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>columnFiles}">
+                                                        <f:fields><Text text="{view>/bulk/figures/files}"/></f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>reembedEstimateChunks}">
+                                                        <f:fields><Text text="{view>/bulk/figures/chunks}"/></f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>reembedEstimateTokens}">
+                                                        <f:fields><Text text="{view>/bulk/figures/tokens}"/></f:fields>
+                                                    </f:FormElement>
+                                                </f:formElements>
+                                            </f:FormContainer>
+                                        </f:formContainers>
+                                    </f:Form>
+                                    <Text id="reembedNothingText" text="{i18n>errNothingToReembed}" visible="{= ${view>/bulk/stores} === 0 }" class="sapUiSmallMarginTop"/>
+                                    <Button id="reembedOutdatedButton" text="{i18n>reembedOutdatedTitle}" type="Emphasized" class="sapUiSmallMarginTop"
+                                        visible="{= ${view>/bulk/stores} > 0 }" press=".onReembedOutdated"/>
+                                </VBox>
+                                <!-- Outside the estimate: after a start it lists the stores the start skipped. -->
+                                <Table id="reembedSkippedTable" items="{view>/bulk/skipped}" visible="{= ${view>/bulk/skipped}.length > 0 }" class="sapUiSmallMarginTop">
+                                    <headerToolbar>
+                                        <OverflowToolbar>
+                                            <Title text="{i18n>reembedSkippedTitle}" level="H3"/>
+                                        </OverflowToolbar>
+                                    </headerToolbar>
+                                    <columns>
+                                        <Column><Text text="{i18n>columnStore}"/></Column>
+                                        <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                                        <Column><Text text="{i18n>columnReason}"/></Column>
+                                    </columns>
+                                    <items>
+                                        <ColumnListItem>
+                                            <cells>
+                                                <Text text="{view>storeId}"/>
+                                                <Text text="{view>ownerEmail}"/>
+                                                <Text text="{view>reasonText}"/>
+                                            </cells>
+                                        </ColumnListItem>
+                                    </items>
+                                </Table>
+                            </VBox>
+                        </Panel>
+                        <Panel id="blobStoragePanel" headerText="{i18n>blobStorageTitle}" class="sapUiSmallMarginTop">
+                            <VBox busy="{view>/blob/busy}" busyIndicatorDelay="0">
+                                <Text id="blobStorageHint" text="{i18n>blobStorageHint}" class="sapUiSmallMarginBottom"/>
+                                <f:Form id="blobStorageForm" editable="false">
+                                    <f:layout><f:ColumnLayout columnsM="2" columnsL="4" columnsXL="4"/></f:layout>
+                                    <f:formContainers>
+                                        <f:FormContainer>
+                                            <f:formElements>
+                                                <f:FormElement label="{i18n>blobConfiguredBackend}">
+                                                    <f:fields><Text id="blobBackendText" text="{view>/blob/backendText}"/></f:fields>
+                                                </f:FormElement>
+                                                <f:FormElement label="{i18n>blobS3}">
+                                                    <f:fields><ObjectStatus id="blobS3Status" text="{view>/blob/s3Text}" state="{view>/blob/s3State}"/></f:fields>
+                                                </f:FormElement>
+                                                <f:FormElement label="{i18n>blobS3Prefix}" visible="{= !!${view>/blob/prefix} }">
+                                                    <f:fields><Text id="blobPrefixText" text="{view>/blob/prefix}"/></f:fields>
+                                                </f:FormElement>
+                                                <f:FormElement label="{i18n>blobGarbage}">
+                                                    <f:fields><Text id="blobGarbageText" text="{view>/blob/garbageText}"/></f:fields>
+                                                </f:FormElement>
+                                            </f:formElements>
+                                        </f:FormContainer>
+                                    </f:formContainers>
+                                </f:Form>
+                                <MessageStrip id="blobUnreachableStrip" text="{i18n>blobUnreachable}" type="Error" showIcon="true"
+                                    visible="{= ${view>/blob/unreachable} === true }" class="sapUiSmallMarginTop"/>
+                                <MessageStrip id="blobGarbageFailingStrip" text="{view>/blob/garbageFailingText}" type="Warning" showIcon="true"
+                                    visible="{= ${view>/blob/garbageFailing} > 0 }" class="sapUiSmallMarginTop"/>
+                                <MessageStrip id="blobOutsidePrefixStrip" text="{view>/blob/outsidePrefixText}" type="Error" showIcon="true"
+                                    visible="{= ${view>/blob/outsidePrefix} > 0 }" class="sapUiSmallMarginTop"/>
+                                <Table id="blobStorageTable" items="{view>/blob/rows}" noDataText="{i18n>blobNoBlobs}" class="sapUiSmallMarginTop">
+                                    <columns>
+                                        <Column><Text text="{i18n>columnStorage}"/></Column>
+                                        <Column hAlign="End"><Text text="{i18n>columnBlobs}"/></Column>
+                                        <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                                        <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnReleasedBlobs}"/></Column>
+                                        <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnReleasedSize}"/></Column>
+                                        <Column><Text text="{i18n>columnStatus}"/></Column>
+                                    </columns>
+                                    <items>
+                                        <ColumnListItem>
+                                            <cells>
+                                                <Text text="{view>storageText}"/>
+                                                <Text text="{view>liveBlobs}"/>
+                                                <Text text="{view>liveSize}"/>
+                                                <Text text="{view>releasedBlobs}"/>
+                                                <Text text="{view>releasedSize}"/>
+                                                <ObjectStatus text="{view>statusText}" state="{view>statusState}"/>
+                                            </cells>
+                                        </ColumnListItem>
+                                    </items>
+                                </Table>
+                                <Button id="blobTestButton" text="{i18n>blobTestConnection}" icon="sap-icon://connected" press=".onBlobTest"
+                                    busy="{view>/blob/testBusy}" busyIndicatorDelay="0" class="sapUiSmallMarginTop"/>
+                                <MessageStrip id="blobTestStrip" text="{view>/blob/test/text}" type="{view>/blob/test/type}" showIcon="true"
+                                    visible="{= !!${view>/blob/test/text} }" class="sapUiSmallMarginTop"/>
+                                <VBox id="blobMigrationBox" visible="{= !!${view>/blob/migration} }" class="sapUiSmallMarginTop">
+                                    <Title text="{i18n>blobMigrationTitle}" level="H3"/>
+                                    <f:Form id="blobMigrationForm" editable="false">
+                                        <f:layout><f:ColumnLayout columnsM="2" columnsL="4" columnsXL="4"/></f:layout>
+                                        <f:formContainers>
+                                            <f:FormContainer>
+                                                <f:formElements>
+                                                    <f:FormElement label="{i18n>blobMigrationTarget}">
+                                                        <f:fields><Text id="blobMigrationTargetText" text="{view>/blob/migration/targetText}"/></f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>columnState}">
+                                                        <f:fields><ObjectStatus id="blobMigrationState" text="{view>/blob/migration/stateText}" state="{view>/blob/migration/stateColor}"/></f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>columnProgress}">
+                                                        <f:fields>
+                                                            <ProgressIndicator id="blobMigrationProgress" percentValue="{view>/blob/migration/percent}"
+                                                                displayValue="{view>/blob/migration/progress}" showValue="true"/>
+                                                        </f:fields>
+                                                    </f:FormElement>
+                                                    <f:FormElement label="{i18n>blobMigrationFailed}">
+                                                        <f:fields><Text text="{view>/blob/migration/failed}"/></f:fields>
+                                                    </f:FormElement>
+                                                </f:formElements>
+                                            </f:FormContainer>
+                                        </f:formContainers>
+                                    </f:Form>
+                                    <MessageStrip id="blobMigrationWarningStrip" text="{view>/blob/migrationWarning}" type="Warning" showIcon="true"
+                                        visible="{= !!${view>/blob/migrationWarning} }" class="sapUiSmallMarginTop"/>
+                                    <HBox class="sapUiSmallMarginTop">
+                                        <Button id="blobCancelButton" text="{i18n>cancelJob}" visible="{= ${view>/blob/migration/canCancel} === true }"
+                                            press=".onBlobCancel" class="sapUiTinyMarginEnd"/>
+                                        <Button id="blobViewJobButton" text="{i18n>viewJob}" type="Transparent" press=".onViewBlobJob"/>
+                                    </HBox>
+                                </VBox>
+                                <HBox id="blobMigrateBar" alignItems="Center" class="sapUiSmallMarginTop">
+                                    <Label id="blobTargetLabel" text="{i18n>blobMigrateTo}" labelFor="blobTargetSelect" class="sapUiTinyMarginEnd"/>
+                                    <Select id="blobTargetSelect" selectedKey="{view>/blob/target}" enabled="{= ${view>/blob/canMigrate} === true }" class="sapUiTinyMarginEnd">
+                                        <core:Item key="db" text="{i18n>blobStorage_db}"/>
+                                        <core:Item key="s3" text="{i18n>blobStorage_s3}"/>
+                                    </Select>
+                                    <Button id="blobMigrateButton" text="{i18n>blobMigrate}" type="Emphasized" press=".onBlobMigrate"
+                                        enabled="{= ${view>/blob/canMigrate} === true }"/>
+                                </HBox>
+                            </VBox>
+                        </Panel>
+                    </IconTabFilter>
+
+                    <IconTabFilter id="adminStoresTab" key="stores" text="{i18n>adminTabStores}">
+                        <Table id="adminStoresTable" items="{view>/stores/rows}" noDataText="{i18n>adminNoStores}" busy="{view>/stores/busy}" busyIndicatorDelay="0">
+                            <headerToolbar>
+                                <OverflowToolbar>
+                                    <SearchField id="adminStoresOwner" value="{view>/stores/owner}" placeholder="{i18n>adminOwnerFilter}" search=".onFilter" width="18rem"/>
+                                    <Select id="adminStoresStatus" selectedKey="{view>/stores/status}" change=".onFilter">
+                                        <core:Item key="" text="{i18n>adminStatusAll}"/>
+                                        <core:Item key="in_progress" text="{i18n>storeStatus_in_progress}"/>
+                                        <core:Item key="completed" text="{i18n>storeStatus_completed}"/>
+                                        <core:Item key="expired" text="{i18n>storeStatus_expired}"/>
+                                    </Select>
+                                    <Select id="adminStoresShared" selectedKey="{view>/stores/shared}" change=".onFilter">
+                                        <core:Item key="" text="{i18n>adminSharedAll}"/>
+                                        <core:Item key="true" text="{i18n>adminSharedOnly}"/>
+                                        <core:Item key="false" text="{i18n>adminSharedNot}"/>
+                                    </Select>
+                                    <Select id="adminStoresEmbedding" selectedKey="{view>/stores/embeddingState}" change=".onFilter">
+                                        <core:Item key="" text="{i18n>adminEmbeddingAll}"/>
+                                        <core:Item key="current" text="{i18n>embeddingState_current}"/>
+                                        <core:Item key="outdated" text="{i18n>embeddingState_outdated}"/>
+                                        <core:Item key="dimension_mismatch" text="{i18n>embeddingState_dimension_mismatch}"/>
+                                    </Select>
+                                </OverflowToolbar>
+                            </headerToolbar>
+                            <columns>
+                                <Column><Text text="{i18n>columnName}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                                <Column><Text text="{i18n>columnStatus}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnFiles}"/></Column>
+                                <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnSize}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnEmbeddingModel}"/></Column>
+                                <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnLastActive}"/></Column>
+                                <Column hAlign="End" width="20rem"><Text text="{i18n>columnActions}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <VBox>
+                                            <Text text="{view>name}"/>
+                                            <ObjectStatus text="{view>sharedText}" state="Information" inverted="true" visible="{view>shared}"/>
+                                            <ObjectStatus text="{view>teamSharedText}" state="Information" inverted="true" visible="{= ${view>teamIds}.length > 0 }"/>
+                                        </VBox>
+                                        <Text text="{view>ownerEmail}"/>
+                                        <ObjectStatus text="{view>statusText}" state="{view>statusState}"/>
+                                        <Text text="{view>files}"/>
+                                        <Text text="{view>size}"/>
+                                        <VBox>
+                                            <Text text="{view>embeddingModel}"/>
+                                            <ObjectStatus text="{view>embeddingStateText}" state="{view>embeddingStateColor}" visible="{= ${view>embeddingAttention} &amp;&amp; !${view>reembedding} }"/>
+                                            <ObjectStatus text="{i18n>reembeddingBadge}" state="Information" visible="{view>reembedding}"/>
+                                        </VBox>
+                                        <Text text="{view>lastActive}"/>
+                                        <HBox justifyContent="End">
+                                            <Button text="{i18n>reembed}" type="Transparent" visible="{view>canReembed}" press=".onReembedStore"/>
+                                            <Button text="{i18n>changeChunking}" type="Transparent" visible="{view>canChangeChunking}" press=".onChangeChunkingStore"/>
+                                            <Button text="{i18n>reextract}" type="Transparent" visible="{view>canChangeChunking}" press=".onReextractStore"/>
+                                            <Button text="{i18n>deleteStore}" type="Transparent" press=".onDeleteStore"/>
+                                        </HBox>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                        <Button id="adminStoresMore" text="{i18n>adminMore}" visible="{view>/stores/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+                    </IconTabFilter>
+
+                    <IconTabFilter id="adminFilesTab" key="files" text="{i18n>adminTabFiles}">
+                        <Table id="adminFilesTable" items="{view>/files/rows}" noDataText="{i18n>adminNoFiles}" busy="{view>/files/busy}" busyIndicatorDelay="0">
+                            <headerToolbar>
+                                <OverflowToolbar>
+                                    <SearchField id="adminFilesOwner" value="{view>/files/owner}" placeholder="{i18n>adminOwnerFilter}" search=".onFilter" width="18rem"/>
+                                </OverflowToolbar>
+                            </headerToolbar>
+                            <columns>
+                                <Column><Text text="{i18n>columnFile}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                                <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnAttachments}"/></Column>
+                                <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnCreated}"/></Column>
+                                <Column hAlign="End" width="8rem"><Text text="{i18n>columnActions}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <Text text="{view>filename}"/>
+                                        <Text text="{view>ownerEmail}"/>
+                                        <Text text="{view>size}"/>
+                                        <Text text="{view>attachments}"/>
+                                        <Text text="{view>created}"/>
+                                        <Button text="{i18n>deleteFile}" type="Transparent" press=".onDeleteFile"/>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                        <Button id="adminFilesMore" text="{i18n>adminMore}" visible="{view>/files/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+                    </IconTabFilter>
+
+                    <IconTabFilter id="adminFailedTab" key="failed" text="{i18n>adminTabFailed}">
+                        <Table id="adminFailedTable" items="{view>/failed/rows}" noDataText="{i18n>adminNoFailed}" busy="{view>/failed/busy}" busyIndicatorDelay="0">
+                            <headerToolbar>
+                                <OverflowToolbar>
+                                    <SearchField id="adminFailedOwner" value="{view>/failed/owner}" placeholder="{i18n>adminOwnerFilter}" search=".onFilter" width="18rem"/>
+                                </OverflowToolbar>
+                            </headerToolbar>
+                            <columns>
+                                <Column><Text text="{i18n>columnFile}"/></Column>
+                                <Column><Text text="{i18n>columnStore}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnError}"/></Column>
+                                <Column hAlign="End" minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnAttempts}"/></Column>
+                                <Column hAlign="End" width="8rem"><Text text="{i18n>columnActions}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <Text text="{view>filename}"/>
+                                        <Text text="{view>storeName}"/>
+                                        <Text text="{view>ownerEmail}"/>
+                                        <Text text="{view>message}" class="groundingFileError"/>
+                                        <Text text="{view>attempts}"/>
+                                        <Button text="{i18n>retryFile}" type="Transparent" press=".onRetryFailed"/>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                        <Button id="adminFailedMore" text="{i18n>adminMore}" visible="{view>/failed/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+                    </IconTabFilter>
+
+                    <IconTabFilter id="adminStorageTab" key="storage" text="{i18n>adminTabStorage}">
+                        <MessageStrip id="adminStorageHint" text="{i18n>adminStorageHint}" type="Information" showIcon="true" class="sapUiSmallMarginBottom"/>
+                        <Table id="adminStorageTable" items="{view>/storage/rows}" noDataText="{i18n>adminNoStorage}" busy="{view>/storage/busy}" busyIndicatorDelay="0">
+                            <columns>
+                                <Column><Text text="{i18n>columnOwner}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnFiles}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <Text text="{view>ownerEmail}"/>
+                                        <Text text="{view>files}"/>
+                                        <Text text="{view>size}"/>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                        <Button id="adminStorageMore" text="{i18n>adminMore}" visible="{view>/storage/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+                    </IconTabFilter>
+
+                    <IconTabFilter id="adminJobsTab" key="jobs" text="{i18n>adminTabJobs}">
+                        <Table id="adminJobsTable" items="{view>/jobs/rows}" noDataText="{i18n>adminNoJobs}" busy="{view>/jobs/busy}" busyIndicatorDelay="0">
+                            <headerToolbar>
+                                <OverflowToolbar>
+                                    <SearchField id="adminJobsOwner" value="{view>/jobs/owner}" placeholder="{i18n>adminOwnerFilter}" search=".onFilter" width="18rem"/>
+                                </OverflowToolbar>
+                            </headerToolbar>
+                            <columns>
+                                <Column><Text text="{i18n>columnKind}"/></Column>
+                                <Column><Text text="{i18n>columnStore}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                                <Column><Text text="{i18n>columnState}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnProgress}"/></Column>
+                                <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>jobFailedFiles}"/></Column>
+                                <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnStarted}"/></Column>
+                                <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnFinished}"/></Column>
+                                <Column hAlign="End" width="18rem"><Text text="{i18n>columnActions}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <VBox>
+                                            <Text text="{view>kindText}"/>
+                                            <Text text="{view>targetChunkingText}" visible="{view>rechunk}" class="sapUiTinyMarginTop"/>
+                                        </VBox>
+                                        <Text text="{view>storeName}"/>
+                                        <Text text="{view>ownerEmail}"/>
+                                        <ObjectStatus text="{view>stateText}" state="{view>stateColor}"/>
+                                        <Text text="{view>progress}"/>
+                                        <Text text="{view>failed}"/>
+                                        <Text text="{view>started}"/>
+                                        <Text text="{view>finished}"/>
+                                        <HBox justifyContent="End">
+                                            <Button text="{i18n>cancelJob}" type="Transparent" visible="{view>canCancel}" press=".onAdminCancelJob"/>
+                                            <Button text="{i18n>retryJob}" type="Transparent" visible="{view>canRetry}" press=".onAdminRetryJob"/>
+                                        </HBox>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                        <Button id="adminJobsMore" text="{i18n>adminMore}" visible="{view>/jobs/hasMore}" press=".onMore" width="100%" type="Transparent"/>
+                    </IconTabFilter>
+                </items>
+            </IconTabBar>
+        </content>
+    </Page>
+</mvc:View>

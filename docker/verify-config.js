@@ -52,7 +52,6 @@ function main() {
   allGood &= verifyFile(path.join(dockerDir, '.env.auth'), 'OAuth2 configuration');
   allGood &= verifyFile(path.join(dockerDir, 'dex.config.yaml'), 'Dex OIDC configuration');
   allGood &= verifyFile(path.join(dockerDir, '.env.nginx'), 'Nginx environment configuration');
-  allGood &= verifyFile(path.join(dockerDir, 'njs', 'jwt.js'), 'JWT validation script');
   
   console.log('\n' + '='.repeat(60));
   if (allGood) {

@@ -20,7 +20,7 @@ sap.ui.define([
 				if (!oLib.canAssign) {
 					// Admin-only, hash included: #/profiles without the role lands on the catalogs
 					// and the switch is not offered at all.
-					Given.iStartMyAppInAFrame("../../index.html?sap-ui-animationMode=none#/profiles");
+					Given.iStartMyAppInAFrame("../app.html?sap-language=EN&sap-ui-animationMode=none#/profiles");
 					Then.onTheCatalogs.iDoNotSeeTheModeSwitch();
 					Then.onTheCatalogs.iSeeCatalogNamed("Default");
 					Then.iTeardownMyApp();
@@ -30,7 +30,7 @@ sap.ui.define([
 				// continue; under CI load that event can stay out, and the wait polls with a 0 ms timer
 				// OPA counts as blocking until its own timeout. No animations, no wait (sap.f FCL
 				// `hasAnimations` is false for animation mode none).
-				Given.iStartMyAppInAFrame("../../index.html?sap-ui-animationMode=none#/catalogs");
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN&sap-ui-animationMode=none#/catalogs");
 				// The switch navigates to #/profiles, which is what fills the list (its binding is
 				// suspended until an administrator asks for it).
 				When.onTheCatalogs.iSwitchToProfiles();

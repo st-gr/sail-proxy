@@ -11,10 +11,10 @@ export interface Chunk {
   tokens: number;
 }
 
-const DEFAULT_MAX_CHUNK_SIZE_TOKENS = 800;
-const DEFAULT_CHUNK_OVERLAP_TOKENS = 400;
-const MIN_CHUNK_SIZE_TOKENS = 100;
-const MAX_CHUNK_SIZE_TOKENS = 4096;
+export const DEFAULT_MAX_CHUNK_SIZE_TOKENS = 800;
+export const DEFAULT_CHUNK_OVERLAP_TOKENS = 400;
+export const MIN_CHUNK_SIZE_TOKENS = 100;
+export const MAX_CHUNK_SIZE_TOKENS = 4096;
 
 /**
  * Words-to-tokens ratio backing the estimateTokens approximation below. Shared
@@ -124,6 +124,28 @@ export function* slidingWordWindows(
 }
 
 /**
+ * The [start, end) word windows chunkText cuts `wordCount` words into by
+ * `strategy`. Shared with the page computation (pages.ts), which places the
+ * same windows in the document without touching the chunk text.
+ */
+export function staticWordWindows(wordCount: number, strategy: ChunkingStrategy): Generator<{ start: number; end: number }> {
+  const resolved = resolveChunkingStrategy(strategy);
+  // resolveChunkingStrategy always resolves to the 'static' shape (see its own
+  // doc comment); this narrows the type rather than trusting an unsafe cast.
+  if (resolved.type !== 'static') {
+    throw new Error(`resolveChunkingStrategy returned an unexpected type: ${resolved.type}`);
+  }
+  const { max_chunk_size_tokens: maxTokens, chunk_overlap_tokens: overlapTokens } = resolved.static;
+
+  // Convert token-based sizing into a word count by inverting estimateTokens's
+  // ratio, so the sliding window operates on whole words while still tracking
+  // the token budget the caller asked for.
+  const wordsPerChunk = Math.max(1, Math.floor(maxTokens / TOKENS_PER_WORD));
+  const overlapWords = Math.max(0, Math.floor(overlapTokens / TOKENS_PER_WORD));
+  return slidingWordWindows(wordCount, wordsPerChunk, overlapWords);
+}
+
+/**
  * Split text into overlapping chunks using a word-based sliding window, sized by
  * estimateTokens. `resolveChunkingStrategy` already rejects overlap > size/2 at
  * the API boundary; see slidingWordWindows's doc comment for why the internal
@@ -134,25 +156,11 @@ export function chunkText(text: string, strategy: ChunkingStrategy): Chunk[] {
   const trimmed = text.trim();
   if (trimmed === '') return [];
 
-  const resolved = resolveChunkingStrategy(strategy);
-  // resolveChunkingStrategy always resolves to the 'static' shape (see its own
-  // doc comment); this narrows the type rather than trusting an unsafe cast.
-  if (resolved.type !== 'static') {
-    throw new Error(`resolveChunkingStrategy returned an unexpected type: ${resolved.type}`);
-  }
-  const { max_chunk_size_tokens: maxTokens, chunk_overlap_tokens: overlapTokens } = resolved.static;
-
   const words = trimmed.split(/\s+/);
-
-  // Convert token-based sizing into a word count by inverting estimateTokens's
-  // ratio, so the sliding window operates on whole words while still tracking
-  // the token budget the caller asked for.
-  const wordsPerChunk = Math.max(1, Math.floor(maxTokens / TOKENS_PER_WORD));
-  const overlapWords = Math.max(0, Math.floor(overlapTokens / TOKENS_PER_WORD));
 
   const chunks: Chunk[] = [];
   let ord = 0;
-  for (const { start, end } of slidingWordWindows(words.length, wordsPerChunk, overlapWords)) {
+  for (const { start, end } of staticWordWindows(words.length, strategy)) {
     const chunkWords = words.slice(start, end);
     const chunkText = chunkWords.join(' ');
     chunks.push({ ord, text: chunkText, tokens: estimateTokens(chunkText) });

@@ -6,12 +6,14 @@ import * as openRouterController from '../controllers/openRouterController';
 import { handleResponses } from '../controllers/responsesController';
 import { registerVectorStoreRoutes } from './vectorStoreRouteTable';
 import { registerFileRoutes } from './fileRouteTable';
+import { registerUploadRoutes } from './uploadRouteTable';
 import { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { toolGovernance, openaiChatAdapter, responsesAdapter } from '../toolGovernance';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
 import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from '../utils/redactUrl';
 const logger = getDefaultLogger();
 
 const router: express.Router = express.Router();
@@ -40,7 +42,7 @@ router.use(openRouterAuth, openRouterServiceAuth);
 
 // Log all requests to OpenRouter routes
 router.use((req, _res, next) => {
-  logger.info('OpenRouterRoutes', `Received ${req.method} request to ${req.originalUrl}`);
+  logger.info('OpenRouterRoutes', `Received ${req.method} request to ${redactUrl(req.originalUrl)}`);
   next();
 });
 
@@ -67,6 +69,8 @@ router.get('/models', openRouterController.listModels);
 // two prefixes cannot drift. Empty guard: this router's auth/rate-limit chain
 // is already applied by the router.use above.
 registerFileRoutes(router, '/files', []);
+// The Uploads API, from its own shared table (uploadsRoutes.ts registers the same), likewise unguarded here.
+registerUploadRoutes(router, '/uploads', []);
 
 // Vector stores (file_search).
 //

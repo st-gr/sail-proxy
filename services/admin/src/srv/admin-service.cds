@@ -40,7 +40,8 @@ service AdminService {
     deletedAt,
     expiresAt,
     neverExpires,
-    toolPolicy,
+    toolPolicy : redirected to ToolPolicyNames,   // Ruling R9b: name and mode only, no navigation
+    team.ID as team_ID @readonly,   // Ruling R9: the team's ID only, no navigation
     lockedByUserDeactivation @readonly,
     isActiveFC,
     expiresAtFC,
@@ -49,6 +50,8 @@ service AdminService {
     requestsPerHour,
     requestsPerDay,
     ownerRequestsPerMinuteText,
+    effectiveTeamName,
+    followsPrimaryTeam,
     createdAt,
     createdBy,
     modifiedAt,
@@ -82,14 +85,16 @@ service AdminService {
     { grant: ['READ'], to: 'user', where: 'email = $user.id' },
     { grant: ['READ'], to: 'admin' }
   ])
-  entity ActiveApiKeys as projection on admin.ActiveApiKeys;
+  entity ActiveApiKeys as projection on admin.ActiveApiKeys { *, toolPolicy : redirected to ToolPolicyNames, team.ID as team_ID @readonly } excluding { team };
   
   entity RateLimits as projection on admin.RateLimits;
   entity RateLimitWindows as projection on admin.RateLimitWindows;
   entity ApiKeyPermissions as projection on admin.ApiKeyPermissions;
   
   @readonly
-  entity ApiKeyUsage as projection on admin.ApiKeyUsage;
+  // Teams (Ruling R9): only the team's ID, never the `team` navigation - CAP applies neither the Teams
+  // read check nor @restrict to an expand, so the association would hand a user the full Teams row.
+  entity ApiKeyUsage as projection on admin.ApiKeyUsage { *, team.ID as team_ID @readonly } excluding { team };
   
   @readonly 
   @(restrict: [
@@ -136,10 +141,12 @@ service AdminService {
     { grant: 'setRateLimits', to: 'admin' }
   ])
   entity AwsCredentials as projection on admin.AwsCredentials {
-    *
+    *,
+    team.ID as team_ID @readonly   // Ruling R9: the team's ID only, no navigation
   } excluding { 
     secretHash,       // Never expose hashes
-    salt             // Never expose salt
+    salt,            // Never expose salt
+    team
   };
 
   // Put actions in a separate extend so the projection stays pure
@@ -211,9 +218,9 @@ service AdminService {
     { grant: ['READ'], to: 'admin' }
   ])
   entity ActiveAwsCredentials as projection on admin.ActiveAwsCredentials {
-    *
+    *, team.ID as team_ID @readonly
   } excluding { 
-    secretAccessKey, secretHash, salt 
+    secretAccessKey, secretHash, salt, team
   };
   
   @readonly
@@ -222,9 +229,9 @@ service AdminService {
     { grant: ['READ'], to: 'admin' }
   ])
   entity ExpiredAwsCredentials as projection on admin.ExpiredAwsCredentials {
-    *
+    *, team.ID as team_ID @readonly
   } excluding { 
-    secretAccessKey, secretHash, salt 
+    secretAccessKey, secretHash, salt, team
   };
   
   entity AwsCredentialIPRestrictions as projection on admin.AwsCredentialIPRestrictions;
@@ -236,7 +243,7 @@ service AdminService {
     { grant: ['READ'], to: 'user', where: 'credential.email = $user.id' },
     { grant: ['READ'], to: 'admin' }
   ])
-  entity AwsCredentialUsage as projection on admin.AwsCredentialUsage;
+  entity AwsCredentialUsage as projection on admin.AwsCredentialUsage { *, team.ID as team_ID @readonly } excluding { team };
   
   @readonly
   @(restrict: [
@@ -247,7 +254,10 @@ service AdminService {
   
   @readonly
   @cds.redirection.target
-  @(requires: 'admin')
+  @(restrict: [
+    { grant: ['READ'], to: 'user', where: 'credential.email = $user.id' },
+    { grant: ['READ'], to: 'admin' }
+  ])
   entity AwsCredentialSecurityEvents as projection on admin.AwsCredentialSecurityEvents;
 
   // Expose ApiKeySecurityEvents (previously missing)
@@ -469,13 +479,9 @@ service AdminService {
       message: String;
     };
     
-    @(
-      cds.odata.bindingparameter.name: 'in',
-      Common.SideEffects: {
-        // Trigger a refresh that will fail for deleted entity, causing navigation
-        TargetProperties: ['in']
-      }
-    )
+    // No side effects: the entity is gone afterwards, so there is nothing to re-read; the
+    // Object Page's controller extension (editFlow.onAfterActionExecution) navigates to the list.
+    @(cds.odata.bindingparameter.name: 'in')
     action deleteSecurityNotification() returns {
       success: Boolean;
       message: String;
@@ -496,11 +502,11 @@ service AdminService {
     ]
   )
   @Fiori.UI.LineItem: [
-    { Value: name, Label: 'Name' },
-    { Value: version, Label: 'Version' },
-    { Value: isActive, Label: 'Status' },
-    { Value: deployedAt, Label: 'Deployed' },
-    { Value: deployedBy, Label: 'Deployed By' }
+    { Value: name, Label: '{i18n>common.name}' },
+    { Value: version, Label: '{i18n>apiConfigurations.version}' },
+    { Value: isActive, Label: '{i18n>common.status}' },
+    { Value: deployedAt, Label: '{i18n>apiConfigurations.deployed}' },
+    { Value: deployedBy, Label: '{i18n>apiConfigurations.deployedBy}' }
   ]
   @Fiori.UI.SelectionFields: [ isActive, deployedBy ]
   // excluding siemCredentials: that composition's target holds ciphertext/iv/salt/authTag -
@@ -515,10 +521,10 @@ service AdminService {
   @readonly
   @(requires: 'admin')
   @Fiori.UI.LineItem: [
-    { Value: name, Label: 'Name' },
-    { Value: version, Label: 'Version' },
-    { Value: deployedAt, Label: 'Deployed' },
-    { Value: deployedBy, Label: 'Deployed By' }
+    { Value: name, Label: '{i18n>common.name}' },
+    { Value: version, Label: '{i18n>apiConfigurations.version}' },
+    { Value: deployedAt, Label: '{i18n>apiConfigurations.deployed}' },
+    { Value: deployedBy, Label: '{i18n>apiConfigurations.deployedBy}' }
   ]
   // excluding siemCredentials - see the note on the ApiConfigurations projection above;
   // this view selects from ApiConfigurations with no column list, so it inherits the
@@ -528,11 +534,11 @@ service AdminService {
   @readonly
   @(requires: 'admin')
   @Fiori.UI.LineItem: [
-    { Value: name, Label: 'Name' },
-    { Value: version, Label: 'Version' },
-    { Value: isActive, Label: 'Status' },
-    { Value: createdAt, Label: 'Created' },
-    { Value: deployedAt, Label: 'Deployed' }
+    { Value: name, Label: '{i18n>common.name}' },
+    { Value: version, Label: '{i18n>apiConfigurations.version}' },
+    { Value: isActive, Label: '{i18n>common.status}' },
+    { Value: createdAt, Label: '{i18n>common.created}' },
+    { Value: deployedAt, Label: '{i18n>apiConfigurations.deployed}' }
   ]
   @Fiori.UI.SelectionFields: [ createdBy, deployedBy ]
   entity ConfigurationHistory as projection on admin.ConfigurationHistory;
@@ -593,7 +599,8 @@ service AdminService {
     invoiceGenAiTokens: Decimal(20,4),
     invoiceCapacityUnits: Decimal(20,6),
     invoiceCacheReadInputTokens: Decimal(20,4),
-    invoiceCacheWriteInputTokens: Decimal(20,4)
+    invoiceCacheWriteInputTokens: Decimal(20,4),
+    tenant: String(100)   // optional: only that SAP tenant's (subaccount's) rows; null = all
   ) returns {
     capacityUnits: Decimal(20,6);
     sapCostByCurrency: array of {
@@ -615,6 +622,7 @@ service AdminService {
   type ApiKeyUsageItem : {
     keyId: UUID;
     keyName: String;
+    isServiceKey: Boolean;   // the admin service key: cockpit usage on behalf of users
     totalRequests: Integer;
     totalTokens: Integer;
     totalCost: Decimal;
@@ -638,10 +646,29 @@ service AdminService {
     errorRate: Decimal;
   };
   
+  type TeamUsageItem : {
+    teamId: UUID; teamName: String; totalRequests: Integer; totalTokens: Integer; totalCost: Decimal; uniqueUsers: Integer; lastActivity: Timestamp;
+  };
+
+  // Connection (external provider) spend, one row per connection, provider and list-price currency;
+  // the unpriced requests of a connection land under currency null.
+  type ConnectionUsageItem : {
+    connection: String;
+    provider: String;
+    currency: String(3);
+    totalRequests: Integer;
+    totalTokens: Integer;
+    totalListCost: Decimal;
+    unpricedRequests: Integer;
+  };
+
   type UsageStatisticsResult : {
     apiKeyUsage: array of ApiKeyUsageItem;
     awsCredentialUsage: array of AwsCredentialUsageItem;
     providerUsage: array of ProviderUsageItem;
+    teamUsage: array of TeamUsageItem;
+    connectionUsage: array of ConnectionUsageItem;
+    connectionNames: array of String(31);   // connections with external usage in the period, whatever the connection filter
   };
 
   // ========================================
@@ -657,7 +684,8 @@ service AdminService {
       requestsPerMinute: Integer;
       requestsPerHour: Integer;
       requestsPerDay: Integer;
-    }
+    },
+    teamId: UUID
   ) returns {
     id: UUID;
     ![key]: String;
@@ -721,7 +749,8 @@ service AdminService {
     name: String,
     description: String,
     expiresAt: Timestamp,
-    permissions: array of String
+    permissions: array of String,
+    teamId: UUID
   ) returns {
     id: UUID; 
     accessKeyId: String;
@@ -924,7 +953,10 @@ service AdminService {
   function getUsageStatistics(
     startDate: Date,
     endDate: Date,
-    granularity: String  // hour, day, week, month
+    granularity: String,  // hour, day, week, month
+    teamId: UUID,         // optional: only that team's rows (platform admin or an admin of the team)
+    tenant: String(100),  // optional: only that SAP tenant's rows (Connection rows stay); null = all
+    connection: String(31) // optional: only that Connection's external rows (SAP rows stay); null = all
   ) returns UsageStatisticsResult;
   
   @(requires: 'admin')
@@ -956,6 +988,27 @@ service AdminService {
       outputTokens: Integer;
       responseTime: Integer;
       statusCode: Integer;
+      endpoint: String;
+      // Every optional field the gateway's UsageEvent carries: CAP rejects the whole call with
+      // 400 for any member a struct does not declare.
+      cacheCreationInputTokens: Integer;
+      cacheReadInputTokens: Integer;
+      imageInputTokens: Integer;
+      imageOutputTokens: Integer;
+      audioInputTokens: Integer;
+      audioOutputTokens: Integer;
+      usageEstimated: Boolean;
+      onBehalfOf: String(255); // the cockpit user a service key acted for (Grounding); honoured for service keys only
+      teamId: String;
+      unit: String(6);         // tokens | cells | units
+      userAgent: String;
+      tools: array of {
+        identity: String;
+        facet: String;
+        count: Integer;
+        decision: String;
+        reason: String;
+      };
     }
   ) returns {
     processed: Integer;
@@ -973,6 +1026,7 @@ service AdminService {
     isAdmin: Boolean;
     isUser: Boolean;
     deployTarget: String;
+    isTeamAdmin: Boolean;
   };
 
   // ========================================
@@ -1176,12 +1230,14 @@ service AdminService {
     canDeleteOld: Boolean;
     canManageKeys: Boolean;
     canManageAWS: Boolean;
+    isTeamAdmin: Boolean;
     
     // UI preferences
     sidePanelCollapsed: Boolean;
     theme: String;
     density: String;
     tablePageSize: Integer;
+    language: String;
     
     // App preferences
     defaultNotificationFilter: String;
@@ -1241,7 +1297,7 @@ service AdminService {
   entity ModelPrices as projection on admin.ModelCosts {
     ID, model, displayName, dateFrom, dateTo, inputCost, outputCost,
     cacheReadInputCost, cacheCreationInputCost, imageOutputCost, audioInputCost, audioOutputCost,
-    provider, version, source, createdAt, createdBy
+    provider, version, source, currency, createdAt, createdBy
   };
 
   type PruneResult { prunedFromChildren : Integer; }
@@ -1334,7 +1390,7 @@ service AdminService {
     scope : String(4);            // 'self' (the caller's own usage) or 'all' (every user; administrators)
     monthStart : Date;
     requests : Integer64; tokens : Integer64; users : Integer;
-    sapCost : Decimal(14,6); sapCostCurrency : String(3); otherCurrencies : array of String(3);
+    sapCost : Decimal(14,6); externalCost : Decimal(14,6); sapCostCurrency : String(3); otherCurrencies : array of String(3);
   }
   type UserLifecycleResult {
     email : String(255); status : String(12);
@@ -1463,9 +1519,126 @@ service AdminService {
   function myUsageSummary() returns UsageSummary;
 
   type UsageUnit { model : String(200); unit : String(6); }
-  /** The models whose usage is counted in cells (SAP-RPT), not tokens - names models, not usage, so
-   *  every signed-in caller may read it. */
+  /** The models whose usage is counted in cells (SAP-RPT) or units (rerank), not tokens - names
+   *  models, not usage, so every signed-in caller may read it. */
   function usageUnits() returns array of UsageUnit;
+
+  // ========================================
+  // Teams (spec 2026-10-14 §7)
+  // ========================================
+  type TeamQuotaStatus {
+    teamId : UUID; name : String(100);
+    limits : QuotaLimits; limitSource : QuotaLimitSources; quotaProfileName : String(100); sapCostCurrency : String(3);
+    used : { minuteRequests : Decimal(10,2); day : QuotaWindowUsage; week : QuotaWindowUsage; month : QuotaWindowUsage; };
+    remaining : { spendDay : Decimal(12,6); spendWeek : Decimal(12,6); spendMonth : Decimal(12,6);
+                  tokensDay : Integer64; tokensWeek : Integer64; tokensMonth : Integer64; };
+    resetsAt : { day : Timestamp; week : Timestamp; month : Timestamp; };
+    quotaResetAt : Timestamp;
+  }
+  type MyTeam { teamId : UUID; name : String(100); role : String(8); isPrimary : Boolean; pool : TeamQuotaStatus; }
+  /** SAP billing by team: GenAI tokens, capacity units and SAP cost per team and currency over both usage tables (on-READ, admin-service-teams.ts). */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity TeamSapBillingStats {
+    key teamId : UUID; key sapCostCurrency : String(3); teamName : String(100);
+    sapTenant : String(100);   // filter only: the rows are summed over tenants unless a tenant is asked for
+    totalRequests : Integer64; totalGenAiTokens : Decimal(16,4); totalCapacityUnits : Decimal(16,6); totalSapCost : Decimal(14,6);
+  };
+  type TeamMemberCandidate { email : String(255); displayName : String(255); status : String(12); }
+  type TeamQuotaResetResult { teamId : UUID; ok : Boolean; message : String; quotaResetAt : Timestamp; }
+
+  // Platform admins edit a team (draft) and create or delete one; a team admin reads the teams they
+  // administer and runs the four member actions on them; everyone else reads nothing here
+  // (admin-service-teams.ts filters the rows and re-checks every action).
+  @odata.draft.enabled
+  @cds.redirection.target: true
+  @(Capabilities: { UpdateRestrictions: { Updatable: canEdit } })
+  @(restrict: [
+    { grant: ['READ', 'addMember', 'removeMember', 'setMemberRole', 'setPrimary'], to: 'authenticated-user' },
+    { grant: ['CREATE', 'UPDATE', 'DELETE', 'resetQuota'], to: 'admin' }
+  ])
+  entity Teams as projection on admin.Teams {
+    *,
+    virtual null as canEdit : Boolean @Core.Computed,
+    virtual null as canManageMembers : Boolean @Core.Computed,
+    virtual null as canResetQuota : Boolean @Core.Computed,     // platform admin and a saved team (Reset Quota)
+    virtual null as quotaProfileName : String(100) @Core.Computed,
+    virtual null as memberQuotaProfileName : String(100) @Core.Computed,
+    virtual null as sapCostCurrency : String(3) @Core.Computed,
+    virtual null as usedRequestsMinute : Decimal(10,2) @Core.Computed,
+    virtual null as requestsPerMinuteDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerDayDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerWeekDefaultText : String(60) @Core.Computed,
+    virtual null as spendPerMonthDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerDayDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerWeekDefaultText : String(60) @Core.Computed,
+    virtual null as tokensPerMonthDefaultText : String(60) @Core.Computed,
+    virtual null as effectiveSpendPerDayCurrency : String(3) @Core.Computed,
+    virtual null as effectiveSpendPerWeekCurrency : String(3) @Core.Computed,
+    virtual null as effectiveSpendPerMonthCurrency : String(3) @Core.Computed,
+    virtual null as usedSpendDay : Decimal(12,6) @Core.Computed,
+    virtual null as usedSpendWeek : Decimal(12,6) @Core.Computed,
+    virtual null as usedSpendMonth : Decimal(12,6) @Core.Computed,
+    virtual null as usedTokensDay : Integer64 @Core.Computed,
+    virtual null as usedTokensWeek : Integer64 @Core.Computed,
+    virtual null as usedTokensMonth : Integer64 @Core.Computed,
+    virtual null as effectiveRequestsPerMinute : Integer @Core.Computed,
+    virtual null as effectiveSpendPerDay : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveSpendPerWeek : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveSpendPerMonth : Decimal(12,4) @Core.Computed,
+    virtual null as effectiveTokensPerDay : Integer64 @Core.Computed,
+    virtual null as effectiveTokensPerWeek : Integer64 @Core.Computed,
+    virtual null as effectiveTokensPerMonth : Integer64 @Core.Computed,
+    virtual null as limitSourceRequestsPerMinute : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerDay : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerWeek : String(9) @Core.Computed,
+    virtual null as limitSourceSpendPerMonth : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerDay : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerWeek : String(9) @Core.Computed,
+    virtual null as limitSourceTokensPerMonth : String(9) @Core.Computed,
+    virtual null as resetsAtDay : Timestamp @Core.Computed,
+    virtual null as resetsAtWeek : Timestamp @Core.Computed,
+    virtual null as resetsAtMonth : Timestamp @Core.Computed,
+    virtual null as criticalitySpendDay : Integer @Core.Computed,
+    virtual null as criticalitySpendWeek : Integer @Core.Computed,
+    virtual null as criticalitySpendMonth : Integer @Core.Computed,
+    virtual null as criticalityTokensDay : Integer @Core.Computed,
+    virtual null as criticalityTokensWeek : Integer @Core.Computed,
+    virtual null as criticalityTokensMonth : Integer @Core.Computed
+  } actions {
+    action addMember(email : String(255), role : String(8)) returns Teams;
+    action removeMember(email : String(255)) returns Teams;
+    action setMemberRole(email : String(255), role : String(8)) returns Teams;
+    action setPrimary(email : String(255)) returns Teams;
+    action resetQuota() returns TeamQuotaResetResult;
+  };
+
+  /** What the caller may do on the Teams list; Fiori Elements reads it for Create and Delete (UI.CreateHidden/DeleteHidden). */
+  @odata.singleton @cds.persistence.skip @readonly
+  entity TeamPermissions { key ID : Integer; createHidden : Boolean; deleteHidden : Boolean; }
+
+  // Membership changes go through the bound actions above; the composition is read here only.
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'authenticated-user' }])
+  entity TeamMembers as projection on admin.TeamMembers;
+
+  /** The caller's memberships with each team's pool status (the avatar block). */
+  function myTeams() returns array of MyTeam;
+  @(requires: 'admin') function teamQuotaStatus(teamId : UUID) returns TeamQuotaStatus;
+  /** Active users who are not yet members of the team, for the Add Member dialog (team admins may not read Users). */
+  function teamMemberCandidates(teamId : UUID) returns array of TeamMemberCandidate;
+  /** Binds a credential to one of its owner's teams; a null teamId lets it follow the primary again. Owner or admin. */
+  action setApiKeyTeam(keyId : UUID, teamId : UUID) returns ApiKeys;
+  action setAwsCredentialTeam(credentialId : UUID, teamId : UUID) returns AwsCredentials;
+  type CredentialTeamChoice { teamId : UUID; name : String(100); isPrimary : Boolean; }
+  /** The teams a credential owner may bind a credential to (the Change Team dialog). Owner or admin. */
+  function credentialTeamChoices(email : String(255)) returns array of CredentialTeamChoice;
+  @(requires: 'admin') action resetTeamQuotas(teamIds : array of UUID) returns array of TeamQuotaResetResult;
+  /** Entitlements & Quotas writes one association of a saved team outside its draft: the catalog
+   *  (null = the default catalog) or a profile slot ('pool' | 'member'; null = none). */
+  @(requires: 'admin') action assignTeamCatalog(teamId : UUID, catalogId : UUID) returns Teams;
+  @(requires: 'admin') action assignTeamQuotaProfile(teamId : UUID, profileId : UUID, slot : String(6)) returns Teams;
 
   // ========================================
   // Tool governance (spec 2026-09-16 §4/§5)
@@ -1478,6 +1651,15 @@ service AdminService {
   ])
   @odata.draft.enabled
   entity ToolPolicies as projection on admin.ToolPolicies;
+  // What a user-readable row (ApiKeys, ActiveApiKeys) shows of its tool policy (Ruling R9b): the name
+  // and mode, no navigation. CAP applies neither @restrict nor the Teams read check to an expanded
+  // target, so the full ToolPolicies projection would lead a user on to assignedTeams,
+  // assignedUsersList/memberships/team and every other user of the policy. Direct reads stay admin-only;
+  // `toolPolicy/name` through the expand is what the API Keys and Tool Policies apps display.
+  @readonly
+  @cds.redirection.target: false
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity ToolPolicyNames as projection on admin.ToolPolicies { ID, name, mode };
   // The draft root is the only write path that is meant to be used, but these two cannot be
   // @readonly: the Fiori list creates an entry inline by POSTing onto the DRAFT root's
   // `allows`/`denies` navigation, and lean-draft's onNew answers that with 405 as soon as the
@@ -1582,6 +1764,164 @@ service AdminService {
   @(requires: 'admin') action assignToolPolicy(email : String(255), policyId : UUID) returns Users;
   @(requires: 'admin') action unassignToolPolicy(email : String(255)) returns Users;
   @(requires: 'admin') action setApiKeyToolPolicy(keyId : UUID, policyId : UUID) returns ApiKeys;
+
+  // ========================================
+  // Connections (spec 2026-10-23 §4): external provider accounts, admin only. The credential is
+  // written through actions and never read back; ConnectionCredentials has no projection here.
+  // name and providerType are immutable and the status fields are set by the server
+  // (admin-service-connections.ts).
+  // ========================================
+  // Bound actions are authorized against the entity's @restrict with the action name as the event.
+  // The answer of a connection test: a reason code, the provider's status and error code at most, never its text.
+  type ConnectionTestResult {
+    ok     : Boolean;
+    reason : String(40);
+    status : Integer;
+    code   : String(60);
+  }
+
+  // Edited through the Fiori draft; activation runs the CREATE/UPDATE rules. @odata.draft.bypass keeps
+  // the direct API for scripts: POST with IsActiveEntity true, PATCH/DELETE on IsActiveEntity=true
+  // (a plain POST creates a draft). models is an association here, not the schema's composition,
+  // so ConnectionModels has no draft and is written through its own entity only.
+  @odata.draft.enabled
+  @odata.draft.bypass
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE', 'setCredential', 'clearCredential', 'testConnection', 'fetchModels', 'addModel', 'activate', 'deactivate'], to: 'admin' }])
+  entity ProviderConnections as projection on admin.ProviderConnections {
+    *,
+    @Core.Immutable name,
+    @(Core.Immutable, Common.ValueListWithFixedValues, Common.ValueList: { CollectionPath: 'ConnectionProviderTypes', Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: providerType, ValueListProperty: 'code' },
+      { $Type: 'Common.ValueListParameterDisplayOnly', ValueListProperty: 'text' }
+    ] }) providerType,
+    @readonly credentialHint,
+    @readonly credentialUpdatedAt,
+    @readonly lastTestAt,
+    @readonly lastTestResult,
+    @(Common.ValueListWithFixedValues, Common.ValueList: { CollectionPath: 'ConnectionApiModes', Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: apiMode, ValueListProperty: 'code' },
+      { $Type: 'Common.ValueListParameterDisplayOnly', ValueListProperty: 'text' }
+    ] }) apiMode,
+    @(Common.ValueListWithFixedValues, Common.ValueList: { CollectionPath: 'ConnectionAuthModes', Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: authMode, ValueListProperty: 'code' },
+      { $Type: 'Common.ValueListParameterIn', LocalDataProperty: providerType, ValueListProperty: 'providerType' },
+      { $Type: 'Common.ValueListParameterDisplayOnly', ValueListProperty: 'text' }
+    ] }) authMode,
+    // sap-ai-core: the regions of the SAP CU prices; not fixed values, so a region can be set before its price exists.
+    @(Common.ValueList: { CollectionPath: 'ConnectionPriceRegions', Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: priceRegion, ValueListProperty: 'region' }
+    ] }) priceRegion,
+    models : Association to many ConnectionModels on models.connection = $self,
+    // Filled after READ: the type's text (the value list's) and how many of its models the gateway serves.
+    virtual null as providerTypeText : String(60) @Core.Computed,
+    virtual null as publishedModels : Integer @Core.Computed
+  } excluding { models } actions {
+    // Write-only: the value is encrypted with CONNECTION_CREDENTIAL_KEY and only its masked hint is read back.
+    // sessionToken: an AWS session token, for bedrock with access-key auth only.
+    // sap-ai-core: secret is the service key JSON (400 service_key_invalid when it does not parse).
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/IsActiveEntity' } }
+    action setCredential(secret : String(8000), sessionToken : String(8000)) returns ProviderConnections;
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/IsActiveEntity' } }
+    action clearCredential() returns ProviderConnections;
+    // Through the gateway, which holds the decrypted credential; the result is kept in lastTestAt / lastTestResult.
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/IsActiveEntity' } }
+    action testConnection() returns ConnectionTestResult;
+    // The provider's model (Azure: deployment) names, for choosing upstream models; nothing is stored.
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/IsActiveEntity' } }
+    action fetchModels() returns array of String(64);
+    // Through ConnectionModels' own rules (computed model id, family default, clashes, audit, change marker).
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/IsActiveEntity' } }
+    action addModel(upstreamModel : String(64), displayName : String(100), family : String(8)) returns ConnectionModels;
+    // sap-ai-core only: the installation's one SAP target. activate needs a stored key and a passing
+    // test and deactivates every other SAP AI Core connection; deactivate returns to the environment key.
+    @Core.OperationAvailable: { $edmJson: { $And: [{ $Path: 'in/IsActiveEntity' }, { $Eq: [{ $Path: 'in/providerType' }, 'sap-ai-core'] }] } }
+    action activate() returns ProviderConnections;
+    @Core.OperationAvailable: { $edmJson: { $And: [{ $Path: 'in/IsActiveEntity' }, { $Eq: [{ $Path: 'in/providerType' }, 'sap-ai-core'] }] } }
+    action deactivate() returns ProviderConnections;
+  };
+
+  /** SAP AI Core tenants (spec 2026-10-25 §6), written by setCredential; only the display name is edited here. */
+  @(restrict: [{ grant: ['READ', 'UPDATE'], to: 'admin' }])
+  entity SapTenants as projection on admin.SapTenants {
+    *,
+    @readonly zoneId,
+    @readonly region,
+    @readonly productive,
+    @readonly priceRegion
+  };
+
+  /** Value help for ProviderConnections.providerType, served by an on-READ handler with _i18n texts. */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ConnectionProviderTypes {
+    key code : String(16);
+    text     : String(60);
+  }
+
+  /** Value help for ProviderConnections.apiMode (azure-openai), like ConnectionProviderTypes. */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ConnectionApiModes {
+    key code : String(12);
+    text     : String(60);
+  }
+
+  /** Value help for ProviderConnections.authMode: the modes of each provider type (the value list filters by it). */
+  @readonly
+  @cds.persistence.skip
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ConnectionAuthModes {
+    key code     : String(24);
+    providerType : String(16);
+    text         : String(60);
+  }
+
+  /** Value help for ProviderConnections.priceRegion: the distinct regions of SapCapacityUnitPrice. */
+  @readonly
+  @cds.persistence.skip
+  @Capabilities.SearchRestrictions.Searchable: false
+  @(restrict: [{ grant: 'READ', to: 'admin' }])
+  entity ConnectionPriceRegions {
+    key region : String(50) @Common.Label: '{i18n>common.region}';
+  }
+
+  @(restrict: [{ grant: ['READ', 'CREATE', 'UPDATE', 'DELETE', 'setListPrice', 'publish', 'unpublish', 'remove'], to: 'admin' }])
+  entity ConnectionModels as projection on admin.ConnectionModels {
+    *,
+    @readonly modelId,
+    @readonly isPublished,
+    // The list price in force now (per 1K tokens, in priceCurrency); null when the model has none.
+    virtual null as inputCost : Decimal(10,6) @Core.Computed,
+    virtual null as outputCost : Decimal(10,6) @Core.Computed,
+    virtual null as cacheReadCost : Decimal(10,6) @Core.Computed,
+    virtual null as cacheCreationCost : Decimal(10,6) @Core.Computed,
+    virtual null as priceCurrency : String(3) @Core.Computed,
+    // What the price dialog proposes: the current price if any, else the LiteLLM suggestion (USD installations only).
+    virtual null as suggestedInputCost : Decimal(10,6) @Core.Computed,
+    virtual null as suggestedOutputCost : Decimal(10,6) @Core.Computed,
+    virtual null as suggestedCacheReadCost : Decimal(10,6) @Core.Computed,
+    virtual null as suggestedCacheCreationCost : Decimal(10,6) @Core.Computed,
+    virtual null as isPriced : Boolean @Core.Computed
+  } actions {
+    // Per 1K tokens; currency defaults to the installation billing currency (the SAP capacity-unit price row's).
+    // The dialog opens with the model's current price, else the suggestion.
+    action setListPrice(
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/suggestedInputCost' } }         inputCost : Decimal(10,6),
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/suggestedOutputCost' } }        outputCost : Decimal(10,6),
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/suggestedCacheReadCost' } }     cacheReadCost : Decimal(10,6),
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/suggestedCacheCreationCost' } } cacheCreationCost : Decimal(10,6),
+      @UI.ParameterDefaultValue: { $edmJson: { $Path: 'in/priceCurrency' } }              currency : String(3)
+    ) returns ConnectionModels;
+    // Refused (409 model_unpriced) without an active list price: no price, no inference.
+    @Core.OperationAvailable: { $edmJson: { $And: [{ $Path: 'in/isPriced' }, { $Not: { $Path: 'in/isPublished' } }] } }
+    action publish() returns ConnectionModels;
+    @Core.OperationAvailable: { $edmJson: { $Path: 'in/isPublished' } }
+    action unpublish() returns ConnectionModels;
+    // Deletes the model through the same rules as a direct DELETE and closes its open list price.
+    action remove();
+  };
 }
 
 // ========================================

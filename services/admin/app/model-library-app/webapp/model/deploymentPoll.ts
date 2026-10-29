@@ -24,8 +24,24 @@ export async function pollUntilSettled(getStatus: () => Promise<string>, opts: P
   }
 }
 
-export function messageFor(r: PollResult): string {
-  if (r.outcome === 'running') return 'Deployment is now RUNNING';
-  if (r.outcome === 'failed') return `Deployment failed with status: ${r.status}`;
-  return `Timeout reached after ${r.elapsedSeconds} seconds. Last known status: ${r.status}`;
+/**
+ * Resolves an i18n key with optional {0} arguments — the controller injects the resource bundle;
+ * jest passes none and gets the English defaults below, so the module keeps no UI5 imports.
+ */
+export type Translator = (key: string, args?: (string | number)[]) => string;
+/** English defaults: byte-identical to the bundle, so the pure test holds. */
+const EN_TEXTS: Record<string, string> = {
+  deployRunning: 'Deployment is now RUNNING',
+  deployFailed: 'Deployment failed with status: {0}',
+  deployTimeout: 'Timeout reached after {0} seconds. Last known status: {1}'
+};
+const defaultTranslate: Translator = (key, args) => {
+  const pattern = EN_TEXTS[key] ?? key;
+  return args ? pattern.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : pattern;
+};
+
+export function messageFor(r: PollResult, t: Translator = defaultTranslate): string {
+  if (r.outcome === 'running') return t('deployRunning');
+  if (r.outcome === 'failed') return t('deployFailed', [r.status]);
+  return t('deployTimeout', [r.elapsedSeconds, r.status]);
 }

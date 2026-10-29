@@ -26,8 +26,10 @@ const logger = getDefaultLogger();
 export interface SecurityEventFromGateway {
   eventId: string;
   credentialId: string;
-  // See utils/credentialIdentity.ts (gateway): set only when credentialId is a hash of an
-  // unresolved credential, not a resolved row ID or a sentinel.
+  // See utils/credentialIdentity.ts (gateway): set with every presented credential, never
+  // with a sentinel. credentialId is the admin row UUID whenever the gateway resolved the
+  // credential (API key or AWS: wrong signature/payload, disabled, expired, stale request
+  // date), and the hash only when nothing was resolved.
   credentialHint?: string;
   credentialMaterial?: string;
   authType: 'api_key' | 'aws_credential';
@@ -70,6 +72,16 @@ const ALL_SIEM_CATEGORIES: readonly string[] = ['security', 'audit', 'usage'];
  */
 function isUsageEvent(event: SecurityEventFromGateway): boolean {
   return event?.category === 'usage';
+}
+
+/**
+ * A Postgres data exception (SQLSTATE class 22, e.g. 22001 value too long) or integrity
+ * violation (class 23). The same entry fails the same way on every redelivery, so it is as
+ * unprocessable as a malformed payload; a connection or lock failure has another code.
+ */
+function isPermanentDataError(error: unknown): boolean {
+  const code = (error as any)?.code;
+  return typeof code === 'string' && /^2[23][0-9A-Z]{3}$/.test(code);
 }
 
 class SecurityEventSubscriber {
@@ -209,9 +221,9 @@ class SecurityEventSubscriber {
    * ack. Acking before either step would drop the event on a crash — the loss this design
    * exists to prevent. A persistence or outbox-write failure leaves the entry unacked, so
    * XAUTOCLAIM redelivers it via reclaimPending once the underlying failure clears. Only
-   * entries that are structurally unprocessable — a missing `event` field, or a payload that
-   * is not valid JSON — are acked without being persisted, since redelivering those forever
-   * could never succeed.
+   * entries that are structurally unprocessable — a missing `event` field, a payload that
+   * is not valid JSON, or a write rejected with a data error (isPermanentDataError) — are
+   * acked without being persisted, since redelivering those forever could never succeed.
    */
   private async handleStreamEntry(id: string, fields: string[]): Promise<void> {
     const fieldIndex = fields.indexOf('event');
@@ -272,6 +284,11 @@ class SecurityEventSubscriber {
       await this.valkeyClient!.xack(STREAM_NAME, CONSUMER_GROUP, id);
 
     } catch (error) {
+      if (isPermanentDataError(error)) {
+        logger.error('SecurityEventSubscriber', 'Stream entry failed with a data error no redelivery can fix; acking rather than redelivering it forever:', error as Error, { id });
+        await this.valkeyClient!.xack(STREAM_NAME, CONSUMER_GROUP, id);
+        return;
+      }
       logger.error('SecurityEventSubscriber', 'Failed to persist stream entry; leaving unacked for XAUTOCLAIM redelivery:', error as Error, { id });
     }
   }
@@ -377,6 +394,7 @@ class SecurityEventSubscriber {
     if (event.authType === 'aws_credential') {
       await SecurityEventService.createAwsSecurityEventOrThrow({
         credentialId: event.credentialId,
+        credentialHint: event.credentialHint,
         eventType: event.eventType as any,
         severity: event.severity as any,
         description: event.description,
@@ -390,6 +408,7 @@ class SecurityEventSubscriber {
     } else if (event.authType === 'api_key') {
       await SecurityEventService.createApiKeySecurityEventOrThrow({
         keyId: event.credentialId,
+        credentialHint: event.credentialHint,
         eventType: event.eventType as any,
         severity: event.severity as any,
         description: event.description,

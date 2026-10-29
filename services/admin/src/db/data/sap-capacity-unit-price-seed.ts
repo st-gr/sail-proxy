@@ -1,3 +1,5 @@
+import { billingCurrency } from '../../services/sapCapacityService';
+
 const cds = require('@sap/cds');
 
 interface PriceRow {
@@ -15,7 +17,9 @@ export const SAP_CU_PRICE_SEED: PriceRow[] = [
   { dateFrom: '2026-04-23T00:00:00.000Z', dateTo: '2026-07-29T23:59:59.999Z', pricePerCu: 1.23, currency: 'USD', servicePlan: 'extended', usageType: 'non-productive', region: 'US', sku: '8017491' },
 ];
 
-export async function seedSapCapacityUnitPrice(db: any): Promise<number> {
+/** The seed rows are USD list prices: they are inserted only when the billing currency is USD. */
+export async function seedSapCapacityUnitPrice(db: any, currency: string = billingCurrency()): Promise<number> {
+  if (currency !== 'USD') return 0;
   const { INSERT, SELECT } = cds.ql;
   const existing = await db.run(SELECT.from('sap.llm.gateway.admin.SapCapacityUnitPrice').columns('usageType', 'dateFrom'));
   const have = new Set(existing.map((r: any) => `${r.usageType}|${r.dateFrom}`));

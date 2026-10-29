@@ -306,6 +306,17 @@ describe('createVectorStore', () => {
     expect(mockCreateStore).not.toHaveBeenCalled();
   });
 
+  // OpenAI caps a store create's file_ids at 500 (spec CreateVectorStoreRequest maxItems), and a
+  // file batch at 2000 (integration/batchesController.test.ts): the create keeps its 500.
+  it('rejects 501 file_ids on a store create with 400 naming the cap of 500', async () => {
+    const req = baseReq({ body: { file_ids: Array.from({ length: 501 }, (_, i) => `file-${i}`) } });
+    const res = makeRes();
+    await vectorStoresController.createVectorStore(req, res, jest.fn());
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.message).toBe('file_ids must contain at most 500 entries for this store');
+    expect(mockCreateStore).not.toHaveBeenCalled();
+  });
+
   it('creates an empty store with status completed and zeroed file_counts, touching no vector_store_files row', async () => {
     mockCreateStore.mockResolvedValue(storeRow({ status: 'completed' }));
     const req = baseReq({ body: { name: 'empty store' } });
@@ -364,8 +375,8 @@ describe('createVectorStore', () => {
     expect(res.statusCode).toBe(200);
     expect(mockCreateStore).toHaveBeenCalledWith(expect.objectContaining({ initialStatus: 'in_progress' }));
     expect(mockAttachFile).toHaveBeenCalledTimes(2);
-    expect(mockAttachFile).toHaveBeenCalledWith(created.id, 'file-1', {}, null);
-    expect(mockAttachFile).toHaveBeenCalledWith(created.id, 'file-2', {}, null);
+    expect(mockAttachFile).toHaveBeenCalledWith(created.id, 'file-1', {}, null, null, { credentialId: null, authType: 'api_key', onBehalfOf: null });
+    expect(mockAttachFile).toHaveBeenCalledWith(created.id, 'file-2', {}, null, null, { credentialId: null, authType: 'api_key', onBehalfOf: null });
     expect(mockEnqueueIngestion).toHaveBeenCalledWith(created.id, 'file-1');
     expect(mockEnqueueIngestion).toHaveBeenCalledWith(created.id, 'file-2');
   });
@@ -771,7 +782,8 @@ describe('createVectorStoreFile', () => {
     await vectorStoresController.createVectorStoreFile(req, res, jest.fn());
     expect(res.statusCode).toBe(200);
     expect(res.body.status).toBe('in_progress');
-    expect(mockAttachFile).toHaveBeenCalledWith('vs_aaaaaaaaaaaaaaaaaaaaaaaa', 'file-1', { lang: 'en' }, null);
+    expect(mockAttachFile).toHaveBeenCalledWith('vs_aaaaaaaaaaaaaaaaaaaaaaaa', 'file-1', { lang: 'en' }, null,
+      null, { credentialId: null, authType: 'api_key', onBehalfOf: null });
     expect(mockEnqueueIngestion).toHaveBeenCalledWith('vs_aaaaaaaaaaaaaaaaaaaaaaaa', 'file-1');
   });
 });

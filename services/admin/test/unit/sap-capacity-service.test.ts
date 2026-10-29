@@ -35,6 +35,13 @@ describe('_lookupRate resolves a manual price across the --deployed twin', () =>
     expect(whereCalls.map((c) => c[1])).toEqual(['gemini-3.1-flash-image', 'gemini-3.1-flash-image--deployed']);
     expect(rate.inputGenAiRate).toBeCloseTo(0.0005 / 1000, 12);
   });
+  it('_lookupRate ignores a list price under the same id', async () => {
+    // The mocked query builder cannot filter, so the assertion is on the condition handed to where():
+    // a list_price row must be excluded by it, the stored row being only a list price.
+    cds.connect.to.mockResolvedValue({ run: jest.fn().mockResolvedValue([]) });
+    expect(await (svc as any)._lookupRate('x--oa', new Date('2026-09-15'))).toBeNull();
+    expect(whereCalls[0].join(' ')).toContain("and (pricingKind is null or pricingKind <> 'list_price')");
+  });
   it('returns null when neither id has a row', async () => {
     cds.connect.to.mockResolvedValue({ run: jest.fn().mockResolvedValue([]) });
     expect(await (svc as any)._lookupRate('nope--deployed', new Date('2026-09-15'))).toBeNull();

@@ -169,3 +169,39 @@ describe('reconciliationService.reconcile (real sqlite, un-mocked)', () => {
     expect(result.impliedCacheReadFactor).toBeNull();
   });
 });
+
+describe('reconciliationService.reconcile ignores Connection usage (real sqlite, un-mocked)', () => {
+  const from = new Date('2026-03-01T00:00:00.000Z');
+  const to = new Date('2026-03-31T23:59:59.999Z');
+
+  beforeAll(async () => {
+    const db = await cds.connect.to('db');
+    await cds.deploy(join(__dirname, '../../src/db/schema')).to(db);
+    const { INSERT } = cds.ql;
+    const base = {
+      provider: 'anthropic',
+      model: 'reconcile-model',
+      validFrom: '2026-03-10T00:00:00.000Z',
+      validTo: VALID_TO_SENTINEL,
+      inputTokens: 1000,
+      outputTokens: 500,
+      inputCost: 0,
+      outputCost: 0,
+      totalCost: 0
+    };
+    await db.run(INSERT.into(USAGE).entries({
+      ...base, ID: uuidv4(), cacheReadInputTokens: 100, genAiTokens: 10, capacityUnits: 2, sapCost: 3, sapCostCurrency: 'USD'
+    }));
+    await db.run(INSERT.into(USAGE).entries({
+      ...base, ID: uuidv4(), origin: 'external', cacheReadInputTokens: 5000, genAiTokens: 900, capacityUnits: 800, sapCost: 700, sapCostCurrency: 'EUR'
+    }));
+  });
+
+  it('reconcile counts SAP rows only', async () => {
+    const result = await reconcile({ from, to });
+
+    expect(result.capturedCacheReadInputTokens).toBe(100);
+    expect(result.capacityUnits).toBeCloseTo(2, 6);
+    expect(result.sapCostByCurrency).toEqual({ USD: 3 });
+  });
+});

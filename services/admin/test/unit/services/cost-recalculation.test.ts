@@ -14,7 +14,9 @@ const mockDb = {
 jest.mock('@sap/cds', () => ({
   connect: {
     to: jest.fn(() => Promise.resolve(mockDb))
-  }
+  },
+  // The run reads the SAP tenants' billing settings (a CQN query) before its UPDATEs.
+  ql: { SELECT: { from: () => ({ columns: () => ({ SELECT: 'SapTenants' }) }) } }
 }));
 
 // Mock logger
@@ -70,7 +72,8 @@ describe('CostRecalculationService', () => {
 
   describe('runRecalculation', () => {
     beforeEach(() => {
-      mockDb.run.mockResolvedValue({ rowCount: 3 });
+      // The UPDATE statements are strings; the tenant read (CQN) finds no tenant settings.
+      mockDb.run.mockImplementation(async (q: any) => (typeof q === 'string' ? { rowCount: 3 } : []));
     });
 
     it('should execute UPDATE on ApiKeyUsage joining ModelCosts', async () => {
@@ -255,7 +258,7 @@ describe('CostRecalculationService', () => {
     });
 
     it('should log results with record counts', async () => {
-      mockDb.run.mockResolvedValue({ rowCount: 5 });
+      mockDb.run.mockImplementation(async (q: any) => (typeof q === 'string' ? { rowCount: 5 } : []));
 
       await service.runRecalculation();
 
@@ -268,6 +271,7 @@ describe('CostRecalculationService', () => {
 
     it('should return record counts', async () => {
       mockDb.run
+        .mockResolvedValueOnce([])                // SapTenants (no tenant settings)
         .mockResolvedValueOnce({ rowCount: 7 })   // ApiKeyUsage
         .mockResolvedValueOnce({ rowCount: 3 });   // AwsCredentialUsage
 
@@ -280,8 +284,8 @@ describe('CostRecalculationService', () => {
 
   describe('concurrency', () => {
     it('should prevent concurrent execution (mutex)', async () => {
-      mockDb.run.mockImplementation(() => new Promise(resolve =>
-        setTimeout(() => resolve({ rowCount: 1 }), 100)
+      mockDb.run.mockImplementation((q: any) => new Promise(resolve =>
+        setTimeout(() => resolve(typeof q === 'string' ? { rowCount: 1 } : []), 100)
       ));
 
       jest.useRealTimers();
@@ -292,8 +296,8 @@ describe('CostRecalculationService', () => {
 
       await Promise.all([first, second]);
 
-      // Should only have run once (2 SQL calls: ApiKey + AWS)
-      expect(mockDb.run).toHaveBeenCalledTimes(2);
+      // Should only have run once (2 SQL calls: ApiKey + AWS; the CQN reads around them not counted)
+      expect(mockDb.run.mock.calls.filter((c: any[]) => typeof c[0] === 'string')).toHaveLength(2);
     });
   });
 

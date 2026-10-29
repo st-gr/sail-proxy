@@ -1,0 +1,482 @@
+# SAP AI Core Multi-Provider Gateway - Environment Configuration Sample
+# Copy this file to .env and configure with your actual values
+
+# ==============================
+# CORE SERVICE CONFIGURATION
+# ==============================
+
+# Runtime Environment
+# Options: development, production, test
+NODE_ENV=development
+
+# Logging Configuration
+# Options: ERROR, WARN, INFO, DEBUG, TRACE
+LOG_LEVEL=INFO
+
+# Server Configuration
+# Port for the gateway service to listen on
+PORT=3000
+
+# ==============================
+# REVERSE PROXY / CLIENT IP
+# ==============================
+
+# Number of trusted reverse proxies in front of this service (passed to Express's
+# `trust proxy`, and gates how far into X-Forwarded-For the gateway will look).
+# 0 means "trust nothing" — forwarded headers are ignored and the socket peer is
+# used, which is correct for a gateway reached directly. Do NOT set this to
+# match `true`, which trusts the entire chain and lets a client spoof it.
+#
+# The correct value is a deployment property, not something to guess from code:
+# it depends on how many proxies actually sit in front of the gateway (e.g.
+# Istio sidecar + nginx). Measure it against your live ingress chain rather than
+# assuming.
+#
+# To determine it: send a request from a known external address and check the
+# `clientIP` recorded on the resulting security event. If it does not match the
+# address you sent from, increment this value by one and repeat until it does.
+# In the Kyma deployment the ingress chain is Istio in front of nginx, but the
+# hop count still depends on your specific ingress setup and cannot be derived
+# by reading code — measure it.
+TRUST_PROXY_HOPS=0
+
+# ==============================
+# SAP AI CORE INTEGRATION
+# ==============================
+
+# SAP AI Core Service Configuration
+# Base URL for SAP AI Core API
+SAP_AI_CORE_URL=https://api.ai.example.invalid
+
+# SAP AI Core resource group (usually 'default')
+SAP_AI_RESOURCE_GROUP=default
+
+# SAP AI Region
+SAP_AI_REGION=eu10
+
+# SAP_DEPLOYMENT_URL_BASE=   # CI only: route SAP deployment URLs through a relay (same value as SAP_AI_CORE_URL there). Leave unset.
+
+# SAP Authentication (OAuth2)
+# OAuth token endpoint URL
+AUTH_URL=https://auth.example.invalid
+
+# OAuth client ID (from your SAP BTP service key)
+CLIENT_ID=golden-client-id
+
+# OAuth client secret (from your SAP BTP service key)
+CLIENT_SECRET=golden-client-secret
+
+# ==============================
+# SAP AI CORE DEPLOYMENT CONFIGURATION
+# ==============================
+
+# Deployment ID for SAP AI Core orchestration services
+# You can either:
+# 1. Set this manually to a specific deployment ID
+# 2. Enable auto-discovery to automatically find running orchestration deployments
+# SAP_AI_DEPLOYMENT_ID=your-deployment-id
+
+# Auto-discovery of orchestration deployments
+# When enabled, automatically finds and uses running orchestration deployments
+# Set to 'true' to enable, 'false' or omit to disable
+SAP_AI_AUTO_DISCOVER_DEPLOYMENT=true
+
+# Scenario filter for auto-discovery (default: orchestration)
+# Only deployments with this scenario ID will be considered
+SAP_AI_DEPLOYMENT_FILTER_SCENARIO=orchestration
+
+# Cache TTL for deployment discovery in seconds (default: 300 = 5 minutes)
+# How long to cache discovered deployments before re-checking
+# 604800 = 1 week, suitable for stable production deployments
+SAP_AI_DEPLOYMENT_CACHE_TTL_SECONDS=604800
+
+# ==============================
+# UNIFIED AUTHENTICATION SYSTEM
+# ==============================
+
+# Gateway Operation Mode
+# Set to 'true' to force standalone mode, disabling distributed services (Valkey, admin service)
+# regardless of other configuration. Useful for local development or testing without dependencies.
+GATEWAY_STANDALONE=false
+
+# Standalone mode only (no admin): requests per minute per API key, counted in memory. Ignored when
+# an admin is configured — per-key limits then come from the credential's RateLimits row.
+# RATE_LIMIT_RPM=100
+
+# Unified Token System Configuration
+# Enable the unified token-based authentication system
+UNIFIED_TOKEN_SYSTEM_ENABLED=true
+
+# Allow fallback to local validation when admin service is unavailable
+UNIFIED_AUTH_FALLBACK_TO_LOCAL=true
+
+# Cache Configuration
+# Cache TTL for validation responses (seconds)
+UNIFIED_AUTH_CACHE_TTL_SECONDS=300
+
+# Cache TTL specifically for token validation data (seconds)
+UNIFIED_AUTH_TOKEN_CACHE_TTL_SECONDS=60
+
+# Maximum number of entries in the validation cache
+UNIFIED_AUTH_CACHE_MAX_SIZE=5000
+
+# Encrypt sensitive data in cache
+UNIFIED_AUTH_CACHE_ENCRYPT_SECRETS=true
+
+# Request Settings
+# Timeout for requests to admin service (milliseconds)
+UNIFIED_AUTH_REQUEST_TIMEOUT_MS=5000
+
+# Maximum retry attempts for failed requests
+UNIFIED_AUTH_MAX_RETRY_ATTEMPTS=3
+
+# Circuit Breaker Configuration
+# Number of failures before circuit breaker opens
+UNIFIED_AUTH_CIRCUIT_BREAKER_THRESHOLD=5
+
+# Circuit breaker timeout (milliseconds)
+UNIFIED_AUTH_CIRCUIT_BREAKER_TIMEOUT_MS=30000
+
+# Health check interval (milliseconds)
+UNIFIED_AUTH_HEALTH_CHECK_INTERVAL_MS=30000
+
+# ==============================
+# ADMIN SERVICE INTEGRATION
+# ==============================
+
+# Admin Service Connection
+# URL of the admin service for API key and credential management
+# Leave empty or comment out for standalone mode
+ADMIN_SERVICE_URL=http://localhost:4004
+
+# Admin service request timeout (milliseconds)
+ADMIN_SERVICE_TIMEOUT=10000
+
+# Number of retry attempts for admin service requests
+ADMIN_SERVICE_RETRIES=2
+
+# Delay between retry attempts (milliseconds)
+ADMIN_SERVICE_RETRY_DELAY=1000
+
+# Configuration Management Settings
+# Number of retries for configuration fetching from admin service
+CONFIG_FETCH_RETRIES=8
+
+# Initial delay for configuration fetch retries (milliseconds)
+CONFIG_FETCH_INITIAL_DELAY=2000
+
+# Maximum delay for configuration fetch retries (milliseconds)
+CONFIG_FETCH_MAX_DELAY=30000
+
+# Security Configuration must match keys in .env of admin service
+# JWT secret for admin service authentication (generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+# AWS SigV4 through the admin needs the same generated value here and in the admin's .env
+VALIDATION_TOKEN_SECRET=<hex64>
+
+# Encryption key for metadata (generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+METADATA_ENCRYPTION_KEY=<hex64>
+
+# ==============================
+# CACHE CONFIGURATION
+# ==============================
+
+# Valkey/Redis Configuration (Optional - for distributed cache)
+# URL for Valkey/Redis instance. Leave empty for local-only cache.
+# Example: redis://localhost:6379 or redis://user:password@host:port/database
+VALKEY_URL=redis://localhost:6379
+
+# SEPARATE host/port form, read ONLY by the pseudonymization plugin's entity
+# cache (plugins/pseudonymization/entityCache.ts). It does not parse VALKEY_URL
+# above — so a gateway configured only with the URL runs that cache in
+# memory-only mode, which is correct but per-process: two replicas will not
+# share pseudonym mappings.
+#
+# With no host set, the cache is memory-only and no connection is attempted.
+# REDIS_HOST / REDIS_PORT are accepted as fallbacks for each. Port defaults to
+# 6379.
+# VALKEY_HOST=
+# VALKEY_PORT=6379
+
+# Valkey pub/sub channel the gateway listens on for admin configuration
+# changes. Default: sap-llm-gateway:config-changed
+#
+# Override it when running a gateway against a shared Valkey that a real
+# instance is also using — channels are GLOBAL and are not scoped by database
+# index, so a second gateway publishing on the default channel will overwrite
+# the live one's configuration. That has happened.
+# CONFIG_CHANGE_CHANNEL=sap-llm-gateway:config-changed
+
+# ==============================
+# FILE SEARCH (RAG) CONFIGURATION
+# ==============================
+
+# Database DSN for the file_search feature (OpenAI-compatible /v1/files and
+# /v1/vector_stores endpoints). Requires a Postgres database with the pgvector
+# extension available (the gateway runs `CREATE EXTENSION IF NOT EXISTS vector`
+# at startup). Falls back to POSTGRES_URL if unset.
+#
+# Leave empty/omit for standalone installs: with no DSN configured, getPool()
+# returns null and every file_search endpoint answers 503 file_search_unavailable.
+# This is intended behaviour, not a misconfiguration — standalone npm installs
+# have no database by default.
+#
+# FOR LOCAL DEVELOPMENT, give this its OWN database — never the one
+# FILE_SEARCH_TEST_DSN points at. The gateway migrates into that database's
+# `public` schema at boot, and the DSN-gated test suites run in isolated schemas
+# whose search_path falls back to `public` (it has to, so unqualified `vector(N)`
+# resolves). A populated `public` therefore shadows any table a test drops or
+# renames away, and those suites fail for reasons that name nothing. The fixture
+# now refuses to run in that state and says so; a separate database avoids it.
+#
+# Example: postgresql://user:password@localhost:5432/sap_llm_gateway
+# FILE_SEARCH_DATABASE_URL=
+
+# Optional SEPARATE credential used only for the schema migration and for
+# provisioning the runtime role. When set, the DDL runs as this privileged
+# credential while FILE_SEARCH_DATABASE_URL above names the DML-only role the
+# gateway's own connection pool uses — so the running gateway never holds
+# CREATE rights, which is a boot-time need only.
+#
+# Omit it and the DDL is applied as the single role configured above. That is
+# the default, and it is correct for local development and any install that
+# does not want the split.
+#
+# Example: postgresql://migration_user:password@localhost:5432/sap_llm_gateway
+# FILE_SEARCH_MIGRATION_DATABASE_URL=
+
+# Set to 'true' to stop a FAILED migration from failing the deploy step
+# (cli-tools/file-search-migrate.js). The deploy then proceeds and file_search
+# reports 503 file_search_unavailable, instead of stopping where the failure is
+# visible — a deliberate trade, not a default worth taking casually.
+#
+# Not needed for the common case it gets reached for: with NO DSN configured at
+# all (neither of the two above, nor POSTGRES_URL) the migration CLI already
+# exits cleanly and does nothing, because "no database" is a supported
+# configuration rather than a failure.
+#
+# FILE_SEARCH_MIGRATE_NEVER_BLOCK=false
+
+# S3 credentials for the object-storage blob backend. Needed when
+# `file_search.blob_storage.backend` is "s3" in api_config.json, AND for as long
+# as any blob is still stored in S3 under another backend (every blob is read
+# from the storage it was written to), AND by a blob migration to or from S3.
+# The shipped default is "db": an install that never uses S3 leaves these unset.
+#
+# Note the split, which is deliberate and is not visible from either side alone:
+# the bucket, prefix, endpoint and region live in api_config.json under
+# `file_search.blob_storage.s3`, and ONLY the credentials come from the
+# environment — they are the part that must not sit in a config file the admin
+# cockpit can export.
+#
+# When they are needed and unset, the failure appears on the first blob
+# operation (an upload or download answers 503 blob_storage_unavailable), not at
+# startup; the Grounding Administration "Test S3 Connection" button checks them
+# by writing and reading back one small fixed probe object under the prefix (it
+# stays there: a file with identical content would share its key).
+#
+# Give these keys only what the gateway uses — never an account's root keys.
+# Recommended IAM policy (replace <bucket> and <prefix> with your values):
+#   - s3:GetObject, s3:PutObject, s3:DeleteObject on arn:aws:s3:::<bucket>/<prefix>/*
+#   - optional: s3:ListBucket on arn:aws:s3:::<bucket>, with the condition
+#     "StringLike": { "s3:prefix": ["<prefix>/*"] }
+# The gateway never lists the bucket and sends no request on the bucket itself;
+# every request names a key under the prefix. Under a prefix-scoped policy S3
+# may answer 403 rather than 404 for a key that does not exist; the gateway does
+# not rely on 404: a read it cannot complete is reported as unavailable, and an
+# object counts as deleted only when its DELETE succeeded.
+#
+# FILE_SEARCH_S3_ACCESS_KEY_ID=
+# FILE_SEARCH_S3_SECRET_ACCESS_KEY=
+
+# Converting uploaded documents also requires the `pandoc` and `pdftotext`
+# (poppler-utils) binaries to be installed and on PATH. Without them, uploads
+# of .docx/.odt/.epub/.rst/.html/.tex (pandoc) or .pdf (pdftotext) fail;
+# plain-text formats are unaffected.
+#
+# PDF pages without a text layer (scans) are read with OCR when `tesseract` is
+# on PATH with the language data for the languages in api_config
+# file_search.parsing.ocr.languages (default eng); otherwise they stay empty and
+# the gateway logs once that OCR is off. A configured language without data is
+# skipped with a warning.
+# FILE_SEARCH_OCR=off disables OCR even where tesseract is installed (unset or
+# `auto`: on when the tools are there). The npm standalone CLI always sets it
+# to off.
+# FILE_SEARCH_OCR=auto
+#
+# FILE_SEARCH_VISION=off disables the vision transcription of PDF pages (a
+# per-store opt-in that sends page images to an SAP model) even for stores that
+# opted in; their pages fall back to OCR or their text layer. Unset or `auto`:
+# available. The npm standalone CLI always sets it to off.
+# FILE_SEARCH_VISION=auto
+#
+# Legacy Word files (.doc, Word 97-2003) are read with `antiword` when it is on
+# PATH (the gateway image ships it); otherwise a .doc upload fails as "legacy
+# .doc files are not supported on this deployment". FILE_SEARCH_DOC=off
+# switches .doc reading off even where antiword is installed (unset or `auto`:
+# on when antiword is there). The npm standalone CLI always sets it to off.
+# FILE_SEARCH_DOC=auto
+#
+# TESSDATA_PREFIX: a directory holding every .traineddata file OCR should use
+# (eng included), when it is not tesseract's built-in data directory - e.g. a
+# mounted volume with extra languages. The gateway passes it on to tesseract.
+# TESSDATA_PREFIX=/opt/tessdata
+
+# --- Reranker teacher-label collection ----------------------------------
+# There is deliberately NO environment variable for this. Teacher-label
+# collection (the `reranker_search_events` / `reranker_candidate_labels`
+# training dataset) is configured entirely through `api_config.json`, under
+# `file_search.teacher_logging`, so it can be turned on and off at runtime
+# from the admin cockpit without a redeploy — and so it is auditable in one
+# place rather than spread across each deployment's environment.
+#
+# It is OFF by default (`teacher_logging.enabled: false`): a gateway that is
+# merely configured with FILE_SEARCH_DATABASE_URL collects nothing. The
+# tables are created by the migration either way; they simply stay empty.
+#
+# `store_chunk_text` is a SEPARATE key, also false by default. Enabling
+# collection alone never begins persisting document contents — only the
+# sha256 `chunk_hash` of each chunk is written, which is enough to measure
+# teacher/RRF agreement. See docs/developer/reranker-datasets.md.
+#
+#   "file_search": {
+#     "teacher_logging": {
+#       "enabled": false,            <- master switch
+#       "store_chunk_text": false,   <- persists verbatim chunk text when true
+#       "sample_rate": 1.0,
+#       "source": "production",
+#       "max_concurrent_writes": 2
+#     }
+#   }
+
+# ==============================
+# DEVELOPMENT AND DEBUGGING
+# ==============================
+
+# Debug Configuration
+# Enable debug mode (activates verbose logging and test credentials)
+DEBUG=false
+
+# Test AWS Credentials (only used when DEBUG=true)
+# These values are used for testing AWS signature validation
+TEST_AWS_ACCESS_KEY_ID=<aws-access-key-id>
+TEST_AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+TEST_AWS_SALT=test-salt-12345
+
+# Payload Logging (for debugging API requests/responses)
+# WARNING: This logs sensitive data - only enable for debugging
+PAYLOAD_LOGGING_ENABLED=false
+
+# Where payload logs are written. FALLBACK ONLY: the path normally comes from
+# the admin configuration (`logging.log_folder_path`), and this is consulted
+# just when that lookup fails — so setting it does not override a configured
+# value. Default: ./logs
+#
+# Payload logs contain full request and response bodies, i.e. prompt content.
+# Point it somewhere with the access controls that implies.
+# LOG_FOLDER_PATH=./logs
+
+# Forces web search down the SAP orchestration path instead of a direct
+# Perplexity deployment. Set to the string 'true' to enable.
+#
+# The direct deployment is preferred because it returns REAL citation URLs;
+# the orchestration path is the fallback used when no such deployment is
+# found. Forcing it therefore degrades citation quality, and exists for
+# reproducing orchestration-path behaviour, not for normal operation.
+# WEBSEARCH_FORCE_ORCHESTRATION=false
+
+# SAP Model Configuration
+# Include extended model attributes in API responses
+SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES=true
+
+# Model information cache duration (seconds)
+SAP_MODEL_CACHE_DURATION_SECONDS=3600
+
+# Per-image fixed token overhead added on top of the tile-count formula when the
+# gateway computes image input tokens itself (SAP orchestration route only — the
+# native Responses route gets a real count back from SAP and never uses this).
+# Matches the small fixed overhead OpenAI/SAP add per image alongside the
+# resolution-based tile count. See src/utils/imageDimensions.ts.
+IMAGE_TOKEN_OVERHEAD=85
+
+# ==============================
+# OPTIONAL ADVANCED CONFIGURATION
+# ==============================
+
+# Configuration File Management
+# Path to store dynamic API configuration
+CONFIG_FILE_PATH=./api_config.json
+
+# Standalone only: path of connections.json (connections to external providers).
+# Unset: connections.json in the directory of CONFIG_FILE_PATH. The sail-proxy CLI sets it.
+# CONNECTIONS_FILE_PATH=./connections.json
+
+# Configuration backup directory
+CONFIG_BACKUP_DIR=./config-backups
+
+# Maximum number of configuration backup files to keep
+MAX_CONFIG_BACKUPS=10
+
+# Configuration backup retention period (days)
+CONFIG_BACKUP_RETENTION_DAYS=30
+
+# Audit Configuration
+# Directory for audit logs
+AUDIT_LOG_DIR=./logs/audit
+
+# Enable encryption for audit logs
+ENABLE_AUDIT_ENCRYPTION=true
+
+# Microsoft Entra authority for Azure OpenAI connections with Entra (client secret) auth.
+# Default https://login.microsoftonline.com; set it only for a sovereign cloud.
+# AZURE_AUTHORITY_HOST=https://login.microsoftonline.com
+
+# ==============================
+# DEPLOYMENT MODES
+# ==============================
+
+# The gateway supports different deployment modes:
+#
+# 1. STANDALONE MODE:
+#    - Set GATEWAY_STANDALONE=true OR
+#    - Leave ADMIN_SERVICE_URL empty OR
+#    - Set UNIFIED_TOKEN_SYSTEM_ENABLED=false OR  
+#    - Leave VALKEY_URL empty
+#    
+#    In standalone mode:
+#    - No admin service integration
+#    - Local memory cache only
+#    - No distributed cache invalidation
+#    - Suitable for development and simple deployments
+#
+# 2. DISTRIBUTED MODE:
+#    - Set GATEWAY_STANDALONE=false
+#    - Configure ADMIN_SERVICE_URL
+#    - Set UNIFIED_TOKEN_SYSTEM_ENABLED=true
+#    - Configure VALKEY_URL for distributed caching
+#    
+#    In distributed mode:
+#    - Full admin service integration
+#    - Distributed caching with Valkey/Redis
+#    - Cache invalidation across services
+#    - Suitable for production deployments
+
+# ==============================
+# SECURITY NOTES
+# ==============================
+
+# 1. Generate secure secrets, e. g. (use better tools like openssl for this and rotate keys on a regular basis):
+#    node -e "console.log('VALIDATION_TOKEN_SECRET=' + require('crypto').randomBytes(32).toString('hex'))"
+#    node -e "console.log('METADATA_ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('hex'))"
+#
+# 2. In production:
+#    - Set NODE_ENV=production
+#    - Set DEBUG=false
+#    - Set PAYLOAD_LOGGING_ENABLED=false
+#    - Use strong, unique secrets
+#    - Use HTTPS for all service URLs
+#    - Secure your Valkey/Redis instance
+#
+# 3. Keep this file secure:
+#    - Add .env to .gitignore
+#    - Restrict file permissions (chmod 600 .env)
+#    - Use environment variable injection in containers/CI/CD

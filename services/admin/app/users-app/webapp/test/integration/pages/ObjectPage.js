@@ -73,6 +73,12 @@ sap.ui.define(["sap/fe/test/ObjectPage", "sap/ui/test/Opa5"], function (ObjectPa
 						" never reached editable=" + bEditable + " (last edit mode: '" + sLastMode + "')"
 				});
 			},
+			iSeeTeamMembership: function (sTeam) {
+				return this.waitFor({ controlType: "sap.ui.mdc.Table",
+					check: function (aTables) { return aTables.some(function (t) { return /memberships/.test(t.getId()) && t.getRowBinding() && t.getRowBinding().getContexts().some(function (c) { return c.getProperty("team/name") === sTeam; }); }); },
+					success: function () { Opa5.assert.ok(true, "The Teams section lists " + sTeam); },
+					errorMessage: "The Teams section does not list " + sTeam });
+			},
 			// The "Usage charts" custom section draws one macros:MicroChart per UI.Chart #Bullet
 			// qualifier, each of which ends up as a sap.suite.ui.microchart.BulletMicroChart.
 			// One bullet chart per budget window that has an effective limit (the "Usage charts"

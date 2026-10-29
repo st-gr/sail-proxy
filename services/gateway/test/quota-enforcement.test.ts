@@ -184,3 +184,18 @@ describe('degradation and standalone', () => {
     }
   });
 });
+
+describe('team requests per minute', () => {
+  const team = { teamId: 't-a', teamName: 'Alpha', limits: { requestsPerMinute: 2, spendPerDay: null, spendPerWeek: null, spendPerMonth: null, tokensPerDay: null, tokensPerWeek: null, tokensPerMonth: null } };
+  const withTeam = (email: string, keyId: string) => req({ unifiedAuth: { valid: true, authType: 'api_key', data: { keyId, email, rateLimits: {}, user: null, team } } });
+  beforeEach(() => { emitted.length = 0; now = Date.parse('2026-09-07T10:00:00Z'); });
+  it('counts every member\'s requests in one rl:team bucket and answers 429 with scope team and the team name', async () => {
+    const mw = createQuotaEnforcement({ store: () => new MemoryRateLimitStore(clock), clock, standalone: () => false });
+    expect((await call(mw, withTeam('a@test.com', 'k-1'))).next).toHaveBeenCalled();
+    expect((await call(mw, withTeam('b@test.com', 'k-2'))).next).toHaveBeenCalled();
+    const r = await call(mw, withTeam('c@test.com', 'k-3'));
+    expect(r.s.statusCode).toBe(429);
+    expect(r.s.body).toEqual({ error: { type: 'rate_limit_exceeded', scope: 'team', team: 'Alpha', dimension: 'requests', window: 'minute', limit: 2, used: 3, resets_at: '2026-09-07T10:01:00.000Z' } });
+    expect(emitted.find((e) => e.kind === 'exceeded')).toMatchObject({ scope: 'team', credentialId: 'k-3' });
+  });
+});

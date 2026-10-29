@@ -12,7 +12,8 @@
  *
  * This is the set the plugin starts from for TRIGGERWORD and FORCE-CONFIG activation only.
  * `api_config.json` toggles are layered over it per request (see `resolveDefaultEntities`
- * in index.ts), and an explicit caller-supplied body `masking` config replaces it wholesale.
+ * in index.ts), and an explicit caller-supplied body `masking` config replaces it wholesale
+ * (on a request masking is forced for, it can only add to it: widenForcedConfig in index.ts).
  *
  * @see index.ts - resolveDefaultEntities, the per-request layering
  * @see ../fileSearch/chunkMasking.ts - the second consumer, and why it can only use the base set

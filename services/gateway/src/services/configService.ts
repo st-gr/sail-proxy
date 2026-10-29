@@ -10,6 +10,8 @@ import pluginLoader from './pluginLoader';
 import { DEFAULT_CONFIG as FALLBACK_CONFIG } from './defaultConfig';
 import { legacyShapeErrorForFile } from '../utils/legacyConfigShape';
 import { getDefaultLogger } from '@libs/logger';
+import { currentSapTarget, isLatestSapTarget, onSapTargetChange } from '../sap/sapTarget';
+import { isPublishableModelList } from '../connections/mergeExternalModels';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import { selectPluginCacheKeysToClear } from '../utils/pluginCacheSelector';
@@ -34,8 +36,8 @@ interface ModelSubstitution {
  *
  * - substitute_models is ModelSubstitution[] (array of {from, to}), NOT
  *   Record<string, string> — $defs/providerConfig.substitute_models actually
- *   schemas an array of {from, to[, description]}, and getSubstitutedModel/
- *   getOriginalModel/DEFAULT_CONFIG below already consume it that way.
+ *   schemas an array of {from, to[, description]}, and getSubstitutedModel and
+ *   DEFAULT_CONFIG below already consume it that way.
  * - supports_prompt_caching?: boolean is added (9th field). It isn't declared
  *   under $defs/providerConfig's own properties, but the schema's own
  *   supports_prompt_caching description ("then the provider-level
@@ -256,7 +258,7 @@ function providerConfig(api: ApiConfig, provider: string): ProviderConfig | unde
  * stays `Record<string, unknown>` (every section's *internal* shape stays
  * untyped except where a reader already needs one) so reaching into it
  * needs a single local, honest cast rather than threading `unknown` through
- * isPseudonymizationForced/getHookConfig below. Exported so
+ * getHookConfig below. Exported so
  * plugins/pseudonymization/index.ts casts into the same shape rather than
  * inventing its own.
  *
@@ -307,6 +309,8 @@ let valkeyInitialized = false;
 // test publishing here once wiped the live gateway's config mid-session —
 // Valkey pub/sub channels are global, they are NOT scoped by database index).
 const CONFIG_CHANGE_CHANNEL = process.env.CONFIG_CHANGE_CHANNEL || 'sap-llm-gateway:config-changed';
+// The admin's Connections change marker (services/admin/src/services/connectionsNotifier.ts); same override rule.
+const CONNECTIONS_CHANGE_CHANNEL = process.env.CONNECTIONS_CHANGE_CHANNEL || 'sap-llm-gateway:connections-changed';
 const MODEL_LIST_CHANNEL = 'sap-llm-gateway:model-list-updated';
 const STARTUP_READY_CHANNEL = 'sap-llm-gateway:service-ready';
 
@@ -543,7 +547,7 @@ const initializeValkey = async (): Promise<void> => {
     });
 
     // Subscribe to configuration changes only (Gateway doesn't need to listen to startup events)
-    await valkeySubscriber.subscribe(CONFIG_CHANGE_CHANNEL);
+    await valkeySubscriber.subscribe(CONFIG_CHANGE_CHANNEL, CONNECTIONS_CHANGE_CHANNEL);
     valkeySubscriber.on('message', handleValkeyEvent);
     
     // Initial configuration request will be handled by getConfigAsync when needed
@@ -588,16 +592,25 @@ export const closeValkeyConnections = async (): Promise<void> => {
   }
 };
 
+/** Called on the Connections change marker; index.ts points it at the connection registry (kept out of here to avoid an import cycle). */
+let connectionsChangedHandler: (() => void) | null = null;
+export function setConnectionsChangedHandler(handler: () => void): void {
+  connectionsChangedHandler = handler;
+}
+
 /**
  * Handle all Valkey events (configuration changes, startup coordination)
  */
-const handleValkeyEvent = async (channel: string, message: string): Promise<void> => {
+export const handleValkeyEvent = async (channel: string, message: string): Promise<void> => {
   try {
     const event = JSON.parse(message);
     
     switch (channel) {
       case CONFIG_CHANGE_CHANNEL:
         await handleConfigChangeEvent(event);
+        break;
+      case CONNECTIONS_CHANGE_CHANNEL:
+        connectionsChangedHandler?.();
         break;
       default:
         logger.debug('ConfigService', `Received unknown channel event: ${channel}`);
@@ -871,7 +884,9 @@ const publishModelListAfterConfigUpdate = async (): Promise<void> => {
     const modelListResponse = await modelService.getModels(false, { includeUnroutable: true });
     const modelList = modelListResponse.data;
     
-    if (modelList && modelList.length > 0) {
+    // A list without SAP models was built on a failed SAP fetch (connection models only): not
+    // published, and the flag stays unset so the next configuration update tries again.
+    if (isPublishableModelList(modelList)) {
       await publishModelList(modelList);
       modelListPublished = true;
       logger.info('ConfigService', 'Model list published after configuration update');
@@ -1254,9 +1269,10 @@ export const patchConfig = async (patchData: Partial<Config>): Promise<Config> =
  * Get the substituted model name based on configuration
  * @param provider - The provider (openai, anthropic, etc.)
  * @param modelName - The original model name
+ * @param options - `quiet`: no info line for a substitution (a lookup that only reads settings)
  * @returns The substituted model name or original if no substitution
  */
-export const getSubstitutedModel = (provider: string, modelName: string): string => {
+export const getSubstitutedModel = (provider: string, modelName: string, options?: { quiet?: boolean }): string => {
   try {
     const config = getConfig();
     const pc = config.api_config && providerConfig(config.api_config, provider);
@@ -1270,7 +1286,7 @@ export const getSubstitutedModel = (provider: string, modelName: string): string
     const substitutions = pc.substitute_models || [];
     const substitution = substitutions.find((sub) => sub.from === modelName);
     
-    if (substitution) {
+    if (substitution && !options?.quiet) {
       logger.info('ConfigService', `Substituting model: ${modelName} -> ${substitution.to}`);
     }
     
@@ -1278,37 +1294,6 @@ export const getSubstitutedModel = (provider: string, modelName: string): string
   } catch (error: any) {
     logger.error('ConfigService', `Error getting substituted model: ${error.message}`);
     return modelName;
-  }
-};
-
-/**
- * Get the original model name by reversing substitution
- * @param provider - The provider (openai, anthropic, etc.)
- * @param substitutedModelName - The substituted model name
- * @returns The original model name or substituted if no reverse mapping found
- */
-export const getOriginalModel = (provider: string, substitutedModelName: string): string => {
-  try {
-    const config = getConfig();
-    const pc = config.api_config && providerConfig(config.api_config, provider);
-
-    // Check if provider exists in config
-    if (!pc) {
-      return substitutedModelName;
-    }
-
-    // Check for reverse substitutions
-    const substitutions = pc.substitute_models || [];
-    const reverseSubstitution = substitutions.find((sub) => sub.to === substitutedModelName);
-    
-    if (reverseSubstitution) {
-      logger.info('ConfigService', `Reverse substituting model: ${substitutedModelName} -> ${reverseSubstitution.from}`);
-    }
-    
-    return reverseSubstitution ? reverseSubstitution.from : substitutedModelName;
-  } catch (error: any) {
-    logger.error('ConfigService', `Error getting original model: ${error.message}`);
-    return substitutedModelName;
   }
 };
 
@@ -1461,23 +1446,21 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
 };
 
 /**
- * True when pseudonymization is force-enabled for an endpoint via
- * `hooks.defaults[endpoint].pseudonymization.enabled` — the same source the
- * pseudonymization plugin reads for its per-endpoint force flag.
- *
- * Callers use this to fail closed when the force flag is on but the plugin hook
- * for their subpath is missing (an admin-activated configuration replaces the
- * file config wholesale, so a configuration older than a route has none of its
- * hook keys).
- *
- * @param endpoint - endpoint identifier, e.g. 'openai'
+ * True when retrieved file_search content may be pseudonymized: masking is force-enabled for the
+ * `openai` endpoint (the Responses and Chat Completions routes, where the hosted file_search tool
+ * runs and masks the passages it retrieves) or for any model through
+ * `models.overrides.<model>.pseudonymization.enabled`. Masking a request can also be asked for per
+ * request (trigger word, `masking` field); that cannot be known ahead. The file_search vision
+ * transcriber warns on this: page images reach the vision model unmasked (masking reads text only).
  */
-export const isPseudonymizationForced = (endpoint: string): boolean => {
+export const isPseudonymizationForcedForFileSearch = (): boolean => {
   try {
-    const config = getConfig();
-    return defaultHookEntry(config.api_config, endpoint)?.pseudonymization?.enabled === true;
+    const api = getConfig().api_config;
+    if (defaultHookEntry(api, 'openai')?.pseudonymization?.enabled === true) return true;
+    const overrides = (api?.models?.overrides ?? {}) as Record<string, { pseudonymization?: { enabled?: unknown } }>;
+    return Object.values(overrides).some((o) => o?.pseudonymization?.enabled === true);
   } catch (error: any) {
-    logger.error('ConfigService', `Error getting pseudonymization force flag: ${error.message}`);
+    logger.error('ConfigService', `Error reading the pseudonymization force flags: ${error.message}`);
     return false;
   }
 };
@@ -1604,12 +1587,44 @@ export interface FileSearchConfig {
   hybrid: {
     rrfK: number;
     lexicalEnabled: boolean;
+    /** 'any' (default): the full-text arm ORs the query's terms that are not stop words;
+     *  'all': every word must match (plainto_tsquery), the behaviour before 2026-10-08. */
+    lexicalQuery: 'any' | 'all';
     candidates: number;
-    rerank: { enabled: 'auto' | boolean; model: string };
+    /** `input`: what the reranker reads per candidate — 'context_and_text' (default since the
+     *  chunking evaluation of 2026-10-09: the stored context, a blank line and the chunk text, where
+     *  a chunk has a context) or 'text' (the chunk text only). */
+    rerank: { enabled: 'auto' | boolean; model: string; input: 'text' | 'context_and_text' };
   };
-  chunking: { maxChunkSizeTokens: number; chunkOverlapTokens: number };
+  /** Approximate (HNSW) vector search for large stores (fileSearch/annPath.ts), off unless `enabled` is true.
+   *  A vector arm stays exact while it searches at most `exactMaxChunks` chunks or less than `minFraction`
+   *  of the table; both are clamped to the schema's ranges (`annConfig`). */
+  ann: { enabled: boolean; exactMaxChunks: number; minFraction: number };
+  /** Installation default for NEW stores (`file_search.chunking`), resolved and written onto each
+   *  store at creation (fileSearch/chunkingSetting.ts); existing stores never follow a change.
+   *  Validated there, not here: an invalid value falls back to static 800/400 with a warning.
+   *  An absent key takes the value the cockpit's Configuration form shows for it (see
+   *  `chunkingConfig`); the shipped api_config.json sets structure 800/0 with contexts explicitly
+   *  (the chunking evaluation of 2026-10-09). */
+  chunking: { strategy: 'static' | 'structure'; maxChunkSizeTokens: number; chunkOverlapTokens: number; contextual: boolean };
+  /** How the context writer (fileSearch/contextWriter.ts) runs for a store whose chunking
+   *  setting is contextual; validated there (an invalid value falls back to its default). */
+  contextual: {
+    model: string; maxDocumentTokens: number; concurrency: number; requestTimeoutMs: number; fileDeadlineMs: number;
+    maxInputTokensPerFile: number;
+  };
+  /** Parent sections (fileSearch/parentSections.ts): a structured hit is returned as its section,
+   *  at most maxTokens tokens around the hit; scope says where: the Responses tool only, every
+   *  search, or nowhere. Validated there (an invalid value falls back to its default). */
+  parentSections: { maxTokens: number; scope: 'tool' | 'all' | 'off' };
   limits: { maxFileBytes: number; maxTokensPerFile: number; maxFilesPerStore: number };
   ingestion: { concurrency: number; extractTimeoutMs: number; maxRetries: number };
+  /** Document parsing. `ocr.languages`: tesseract codes for OCR (fileSearch/extractors/ocrAvailability.ts
+   *  keeps the installed ones); validated by ocrLanguagesConfig below. `vision`: the vision
+   *  transcriber's model and limits (fileSearch/visionTranscriber.ts resolveVisionSettings, which
+   *  falls back to its defaults for an invalid value) and `defaultMode`, the vision mode a NEW store
+   *  gets (fileSearch/chunkingSetting.ts installationChunking; 'off' unless configured). */
+  parsing: { ocr: { languages: string[] }; vision: FileSearchVisionConfig };
   blobStorage: {
     backend: 'db' | 'local' | 's3';
     localPath: string;
@@ -1617,17 +1632,110 @@ export interface FileSearchConfig {
   };
 }
 
+/** `file_search.parsing.vision`, camelCased. */
+export interface FileSearchVisionConfig {
+  model: string;
+  defaultMode: 'off' | 'no_text' | 'auto' | 'all';
+  maxPagesPerFile: number;
+  concurrency: number;
+  requestTimeoutMs: number;
+  fileDeadlineMs: number;
+  maxInputTokensPerFile: number;
+  maxOutputTokensPerFile: number;
+}
+
+const VISION_DEFAULT_MODES = new Set(['off', 'no_text', 'auto', 'all']);
+
+/** `file_search.parsing.vision` over the defaults; an unknown `default_mode` is 'off'. */
+function visionConfig(
+  v: NonNullable<NonNullable<FileSearchRawConfig['parsing']>['vision']> | undefined, d: FileSearchVisionConfig,
+): FileSearchVisionConfig {
+  const mode = v?.default_mode;
+  return {
+    model: typeof v?.model === 'string' ? v.model : d.model,
+    defaultMode: typeof mode === 'string' && VISION_DEFAULT_MODES.has(mode)
+      ? (mode as FileSearchVisionConfig['defaultMode']) : d.defaultMode,
+    maxPagesPerFile: v?.max_pages_per_file ?? d.maxPagesPerFile,
+    concurrency: v?.concurrency ?? d.concurrency,
+    requestTimeoutMs: v?.request_timeout_ms ?? d.requestTimeoutMs,
+    fileDeadlineMs: v?.file_deadline_ms ?? d.fileDeadlineMs,
+    maxInputTokensPerFile: v?.max_input_tokens_per_file ?? d.maxInputTokensPerFile,
+    maxOutputTokensPerFile: v?.max_output_tokens_per_file ?? d.maxOutputTokensPerFile,
+  };
+}
+
+/** The schema's ranges for `file_search.ann` (api-config-schema.json). */
+const ANN_EXACT_MAX_CHUNKS_MAX = 1000000;
+
+/** A finite number clamped to [min, max] (floored when `integer`); anything else is the fallback. */
+function clampedNumber(raw: unknown, fallback: number, min: number, max: number, integer: boolean): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback;
+  return Math.min(Math.max(integer ? Math.floor(raw) : raw, min), max);
+}
+
+/** `file_search.ann`: on only for the boolean true; each threshold clamped to its schema range, a value that is
+ *  not a number falls back to the default. */
+function annConfig(a: FileSearchRawConfig['ann'] | null | undefined, d: FileSearchConfig['ann']): FileSearchConfig['ann'] {
+  return {
+    enabled: a?.enabled === true,
+    exactMaxChunks: clampedNumber(a?.exact_max_chunks, d.exactMaxChunks, 0, ANN_EXACT_MAX_CHUNKS_MAX, true),
+    minFraction: clampedNumber(a?.min_fraction, d.minFraction, 0, 1, false),
+  };
+}
+
+/** Static's own overlap default (the pre-W2 shipped value). */
+const STATIC_OVERLAP_TOKENS = 400;
+/** Structure's overlap default (overlap applies only inside a section that needs several chunks). */
+const STRUCTURE_OVERLAP_TOKENS = 0;
+
+/**
+ * `file_search.chunking` with every absent key resolved to what the cockpit's Configuration form
+ * shows for it, so the form never misstates what the gateway runs:
+ * - `strategy` absent → "static" (the schema default), except that `contextual: true` without a
+ *   strategy means "structure" (contexts exist only there; the form gate refuses that shape, a
+ *   hand-edited file gets what it asked for);
+ * - `contextual` absent → false (the form's switch shows off);
+ * - `chunk_overlap_tokens` absent → 400 with static, 0 with structure; `max_chunk_size_tokens` → 800.
+ *
+ * A missing block, an empty block and a block written before `strategy` existed (every stored
+ * configuration of an earlier release) are therefore static without contexts: an upgrade never
+ * starts context calls nobody asked for. The shipped api_config.json sets structure 800/0 with
+ * contexts explicitly, so new installations get the evaluated default.
+ */
+function chunkingConfig(
+  f: { strategy?: 'static' | 'structure'; max_chunk_size_tokens?: number; chunk_overlap_tokens?: number; contextual?: boolean } | null | undefined,
+  d: FileSearchConfig['chunking'],
+): FileSearchConfig['chunking'] {
+  const strategy = f?.strategy ?? (f?.contextual === true ? 'structure' : d.strategy);
+  return {
+    strategy,
+    maxChunkSizeTokens: f?.max_chunk_size_tokens ?? d.maxChunkSizeTokens,
+    chunkOverlapTokens: f?.chunk_overlap_tokens ?? (strategy === 'static' ? STATIC_OVERLAP_TOKENS : STRUCTURE_OVERLAP_TOKENS),
+    contextual: f?.contextual ?? false,
+  };
+}
 export const FILE_SEARCH_DEFAULTS: FileSearchConfig = {
   enabled: true,
   embeddingModel: 'text-embedding-3-large',
   embeddingDimensions: 1536,
   rewriteQuery: false,
   rewriteQueryModel: 'gpt-5-mini',
-  hybrid: { rrfK: 60, lexicalEnabled: true, candidates: 50,
-            rerank: { enabled: 'auto', model: 'cohere-reranker' } },
-  chunking: { maxChunkSizeTokens: 800, chunkOverlapTokens: 400 },
+  hybrid: { rrfK: 60, lexicalEnabled: true, lexicalQuery: 'any', candidates: 50,
+            rerank: { enabled: 'auto', model: 'cohere-reranker', input: 'context_and_text' } },
+  ann: { enabled: false, exactMaxChunks: 20000, minFraction: 0.05 },
+  chunking: { strategy: 'static', maxChunkSizeTokens: 800, chunkOverlapTokens: STATIC_OVERLAP_TOKENS, contextual: false },
+  contextual: { model: 'gemini-3.5-flash-lite', maxDocumentTokens: 32000, concurrency: 4, requestTimeoutMs: 30000,
+                fileDeadlineMs: 360000, maxInputTokensPerFile: 20000000 },
+  parentSections: { maxTokens: 1500, scope: 'tool' },
   limits: { maxFileBytes: 33554432, maxTokensPerFile: 5000000, maxFilesPerStore: 10000 },
   ingestion: { concurrency: 4, extractTimeoutMs: 60000, maxRetries: 3 },
+  parsing: {
+    ocr: { languages: ['eng'] },
+    // The vision transcriber's defaults (fileSearch/visionTranscriber.ts VISION_DEFAULTS; a test pins
+    // them equal). Vision is off for a new store unless default_mode says otherwise.
+    vision: { model: 'gemini-3.5-flash-lite', defaultMode: 'off', maxPagesPerFile: 50, concurrency: 2, requestTimeoutMs: 90000,
+              fileDeadlineMs: 240000, maxInputTokensPerFile: 150000, maxOutputTokensPerFile: 120000 },
+  },
   blobStorage: { backend: 'db', localPath: '/var/lib/sail-proxy/blobs',
                  s3: { bucket: '', prefix: 'sail-proxy/blobs', endpoint: '', region: '' } },
 };
@@ -1651,12 +1759,27 @@ interface FileSearchRawConfig {
   hybrid?: {
     rrf_k?: number;
     lexical_enabled?: boolean;
+    lexical_query?: 'any' | 'all';
     candidates?: number;
-    rerank?: { enabled?: 'auto' | boolean; model?: string };
+    rerank?: { enabled?: 'auto' | boolean; model?: string; input?: 'text' | 'context_and_text' };
   };
-  chunking?: { max_chunk_size_tokens?: number; chunk_overlap_tokens?: number };
+  ann?: { enabled?: unknown; exact_max_chunks?: unknown; min_fraction?: unknown };
+  chunking?: { strategy?: 'static' | 'structure'; max_chunk_size_tokens?: number; chunk_overlap_tokens?: number; contextual?: boolean };
+  contextual?: {
+    model?: string; max_document_tokens?: number; concurrency?: number; request_timeout_ms?: number; file_deadline_ms?: number;
+    max_input_tokens_per_file?: number;
+  };
+  parent_sections?: { max_tokens?: number; scope?: 'tool' | 'all' | 'off' };
   limits?: { max_file_bytes?: number; max_tokens_per_file?: number; max_files_per_store?: number };
   ingestion?: { concurrency?: number; extract_timeout_ms?: number; max_retries?: number };
+  parsing?: {
+    ocr?: { languages?: unknown };
+    vision?: {
+      model?: string; default_mode?: unknown; max_pages_per_file?: number; concurrency?: number;
+      request_timeout_ms?: number; file_deadline_ms?: number; max_input_tokens_per_file?: number;
+      max_output_tokens_per_file?: number;
+    };
+  };
   blob_storage?: {
     backend?: 'db' | 'local' | 's3';
     local_path?: string;
@@ -1696,15 +1819,27 @@ export const getFileSearchConfig = (): FileSearchConfig => {
       hybrid: {
         rrfK: f.hybrid?.rrf_k ?? d.hybrid.rrfK,
         lexicalEnabled: f.hybrid?.lexical_enabled ?? d.hybrid.lexicalEnabled,
+        lexicalQuery: f.hybrid?.lexical_query === 'all' ? 'all' : d.hybrid.lexicalQuery,
         candidates: f.hybrid?.candidates ?? d.hybrid.candidates,
         rerank: {
           enabled: f.hybrid?.rerank?.enabled ?? d.hybrid.rerank.enabled,
           model: f.hybrid?.rerank?.model ?? d.hybrid.rerank.model,
+          input: f.hybrid?.rerank?.input === 'text' ? 'text' : d.hybrid.rerank.input,
         },
       },
-      chunking: {
-        maxChunkSizeTokens: f.chunking?.max_chunk_size_tokens ?? d.chunking.maxChunkSizeTokens,
-        chunkOverlapTokens: f.chunking?.chunk_overlap_tokens ?? d.chunking.chunkOverlapTokens,
+      ann: annConfig(f.ann, d.ann),
+      chunking: chunkingConfig(f.chunking, d.chunking),
+      contextual: {
+        model: f.contextual?.model ?? d.contextual.model,
+        maxDocumentTokens: f.contextual?.max_document_tokens ?? d.contextual.maxDocumentTokens,
+        concurrency: f.contextual?.concurrency ?? d.contextual.concurrency,
+        requestTimeoutMs: f.contextual?.request_timeout_ms ?? d.contextual.requestTimeoutMs,
+        fileDeadlineMs: f.contextual?.file_deadline_ms ?? d.contextual.fileDeadlineMs,
+        maxInputTokensPerFile: f.contextual?.max_input_tokens_per_file ?? d.contextual.maxInputTokensPerFile,
+      },
+      parentSections: {
+        maxTokens: f.parent_sections?.max_tokens ?? d.parentSections.maxTokens,
+        scope: f.parent_sections?.scope ?? d.parentSections.scope,
       },
       limits: {
         maxFileBytes: f.limits?.max_file_bytes ?? d.limits.maxFileBytes,
@@ -1715,6 +1850,10 @@ export const getFileSearchConfig = (): FileSearchConfig => {
         concurrency: f.ingestion?.concurrency ?? d.ingestion.concurrency,
         extractTimeoutMs: f.ingestion?.extract_timeout_ms ?? d.ingestion.extractTimeoutMs,
         maxRetries: resolveMaxRetries(f.ingestion?.max_retries ?? d.ingestion.maxRetries),
+      },
+      parsing: {
+        ocr: { languages: ocrLanguagesConfig(f.parsing?.ocr?.languages, d.parsing.ocr.languages) },
+        vision: visionConfig(f.parsing?.vision, d.parsing.vision),
       },
       blobStorage: {
         backend: f.blob_storage?.backend ?? d.blobStorage.backend,
@@ -1732,6 +1871,53 @@ export const getFileSearchConfig = (): FileSearchConfig => {
     return FILE_SEARCH_DEFAULTS;
   }
 };
+
+/**
+ * A tesseract language code as the schema allows it: three lower-case letters with optional
+ * `_suffix` parts (eng, deu, chi_sim, deu_latf, jpn_vert). The codes become a tesseract argument
+ * (`-l eng+deu`), so anything else (paths, `+`, options) is refused here, not only by the form.
+ */
+export const OCR_LANGUAGE_CODE = /^[a-z]{3}(_[a-z]+)*$/;
+const OCR_LANGUAGE_CODE_MAX_LENGTH = 32;
+
+// The last ocr.languages warning logged: the config is read on every access, so the same
+// problem is reported once, not on every read (like retriesClampWarnedFor below).
+let ocrLanguagesWarnedFor: string | null = null;
+function warnOcrLanguagesOnce(message: string): void {
+  if (ocrLanguagesWarnedFor === message) return;
+  ocrLanguagesWarnedFor = message;
+  logger.warn('ConfigService', message);
+}
+
+/**
+ * `file_search.parsing.ocr.languages`: absent → the default; invalid entries are dropped with a
+ * warning (duplicates silently); a value that is not an array or keeps no valid code → the
+ * default, with a warning. Each distinct warning is logged once in a row.
+ */
+export function ocrLanguagesConfig(raw: unknown, fallback: string[]): string[] {
+  if (raw === undefined || raw === null) return fallback;
+  if (!Array.isArray(raw)) {
+    warnOcrLanguagesOnce(`file_search.parsing.ocr.languages is not a list; using ${fallback.join(', ')}`);
+    return fallback;
+  }
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string' && entry.length <= OCR_LANGUAGE_CODE_MAX_LENGTH && OCR_LANGUAGE_CODE.test(entry)) {
+      if (!valid.includes(entry)) valid.push(entry);
+    } else {
+      invalid.push(JSON.stringify(entry)?.slice(0, 40) ?? String(entry));
+    }
+  }
+  if (invalid.length > 0) {
+    warnOcrLanguagesOnce(`file_search.parsing.ocr.languages: ignoring invalid language codes ${invalid.join(', ')}`);
+  }
+  if (valid.length === 0) {
+    warnOcrLanguagesOnce(`file_search.parsing.ocr.languages has no valid language code; using ${fallback.join(', ')}`);
+    return fallback;
+  }
+  return valid;
+}
 
 const MIN_MAX_RETRIES = 1;
 
@@ -2156,6 +2342,27 @@ function deepMerge(target: any, source: any): any {
 }
 
 /**
+ * The SAP AI Core settings of a target. SAP_AI_DEPLOYMENT_ID names a deployment of the environment's
+ * tenant: under a connection's target it is ignored and the deployment is discovered.
+ */
+const sapAICoreConfigOf = (target: ReturnType<typeof currentSapTarget>) => {
+  const connection = target.source === 'connection';
+  return {
+    url: target.aiCoreUrl,
+    resourceGroup: target.resourceGroup,
+    deploymentId: connection ? undefined : process.env.SAP_AI_DEPLOYMENT_ID,
+    autoDiscoverDeployment: connection || process.env.SAP_AI_AUTO_DISCOVER_DEPLOYMENT?.toLowerCase() === 'true'
+  };
+};
+
+// One line per installed connection target, never per request.
+onSapTargetChange((t) => {
+  if (t.source === 'connection' && process.env.SAP_AI_DEPLOYMENT_ID) {
+    logger.info('ConfigService', 'SAP_AI_DEPLOYMENT_ID is ignored while an SAP AI Core connection is the SAP target; its deployment is discovered');
+  }
+});
+
+/**
  * Get SAP AI Core configuration
  * @returns SAP AI Core URL and resource group configuration
  */
@@ -2164,12 +2371,7 @@ export const getSAPAICoreConfig = () => {
     // During startup waiting, use environment variables only
     if (isWaitingForAdminEvents) {
       logger.debug('ConfigService', 'Using environment variables for SAP AI Core config during startup');
-      return {
-        url: process.env.SAP_AI_CORE_URL || getDefaultAICoreUrl(),
-        resourceGroup: process.env.SAP_AI_RESOURCE_GROUP || 'default',
-        deploymentId: process.env.SAP_AI_DEPLOYMENT_ID,
-        autoDiscoverDeployment: process.env.SAP_AI_AUTO_DISCOVER_DEPLOYMENT?.toLowerCase() === 'true'
-      };
+      return sapAICoreConfigOf(currentSapTarget());
     }
     
     // DEAD CODE REMOVED, not "fixed into legitimacy": this branch used to also
@@ -2180,20 +2382,10 @@ export const getSAPAICoreConfig = () => {
     // that read was always `undefined` and this branch always resolved to the
     // env/default fallback below — deleting it changes nothing observable.
     // See task-1-report.md.
-    return {
-      url: process.env.SAP_AI_CORE_URL || getDefaultAICoreUrl(),
-      resourceGroup: process.env.SAP_AI_RESOURCE_GROUP || 'default',
-      deploymentId: process.env.SAP_AI_DEPLOYMENT_ID,
-      autoDiscoverDeployment: process.env.SAP_AI_AUTO_DISCOVER_DEPLOYMENT?.toLowerCase() === 'true'
-    };
+    return sapAICoreConfigOf(currentSapTarget());
   } catch (error: any) {
     logger.error('ConfigService', `Error getting SAP AI Core config: ${error.message}`);
-    return {
-      url: process.env.SAP_AI_CORE_URL || getDefaultAICoreUrl(),
-      resourceGroup: process.env.SAP_AI_RESOURCE_GROUP || 'default',
-      deploymentId: process.env.SAP_AI_DEPLOYMENT_ID,
-      autoDiscoverDeployment: process.env.SAP_AI_AUTO_DISCOVER_DEPLOYMENT?.toLowerCase() === 'true'
-    };
+    return sapAICoreConfigOf(currentSapTarget());
   }
 };
 
@@ -2206,6 +2398,8 @@ interface DeploymentIdCache {
 
 let deploymentIdCache: DeploymentIdCache | null = null;
 const DEPLOYMENT_ID_CACHE_TTL_MS = 60000; // 1 minute cache for deployment ID resolution
+// A deployment id belongs to one tenant and resource group: a new SAP target drops it.
+onSapTargetChange(() => { deploymentIdCache = null; });
 
 /**
  * Get deployment ID with auto-discovery support and caching
@@ -2232,18 +2426,22 @@ export const getDeploymentId = async (): Promise<string | null> => {
       }
       
       logger.debug('ConfigService', 'Auto-discovery enabled, attempting to find orchestration deployment');
+      const target = currentSapTarget();
       
       try {
         // Import deployment discovery service dynamically to avoid circular dependency
         const deploymentService = await import('./deploymentDiscoveryService');
         const discoveredId = await deploymentService.getPreferredOrchestrationDeploymentId();
         
-        // Cache the result (including null results to prevent repeated failed attempts)
-        deploymentIdCache = {
-          deploymentId: discoveredId,
-          expiresAt: now + DEPLOYMENT_ID_CACHE_TTL_MS,
-          fromAutoDiscovery: true
-        };
+        // Cache the result (including null results to prevent repeated failed attempts),
+        // unless a new SAP target was installed while it was discovered
+        if (isLatestSapTarget(target)) {
+          deploymentIdCache = {
+            deploymentId: discoveredId,
+            expiresAt: now + DEPLOYMENT_ID_CACHE_TTL_MS,
+            fromAutoDiscovery: true
+          };
+        }
         
         if (discoveredId) {
           logger.info('ConfigService', `Auto-discovered deployment ID: ${discoveredId}`);
@@ -2255,11 +2453,13 @@ export const getDeploymentId = async (): Promise<string | null> => {
         logger.error('ConfigService', `Auto-discovery failed: ${error.message}`);
         
         // Cache the failure to prevent repeated attempts for a short time
-        deploymentIdCache = {
-          deploymentId: null,
-          expiresAt: now + (DEPLOYMENT_ID_CACHE_TTL_MS / 4), // Shorter cache for failures
-          fromAutoDiscovery: true
-        };
+        if (isLatestSapTarget(target)) {
+          deploymentIdCache = {
+            deploymentId: null,
+            expiresAt: now + (DEPLOYMENT_ID_CACHE_TTL_MS / 4), // Shorter cache for failures
+            fromAutoDiscovery: true
+          };
+        }
       }
     }
     
@@ -2317,15 +2517,6 @@ export const getAccessToken = async (): Promise<string> => {
 };
 
 /**
- * Get default SAP AI Core URL based on region
- * @returns Default AI Core URL
- */
-function getDefaultAICoreUrl(): string {
-  const aiRegion = process.env.SAP_AI_REGION || 'us-east-1';
-  return `https://api.ai.${aiRegion}.aws.ml.hana.ondemand.com`;
-}
-
-/**
  * Check if value is an object
  * @param item - The item to check
  * @returns Whether the item is an object
@@ -2335,13 +2526,13 @@ function isObject(item: any): boolean {
 }
 
 export default {
+  setConnectionsChangedHandler,
   getConfig,
   getConfigAsync,
   getConfigFileLegacyShapeError,
   updateConfig,
   patchConfig,
   getSubstitutedModel,
-  getOriginalModel,
   shouldEmulateStreaming,
   getAnthropicBedrockVersion,
   getExcludedBetaHeaders,
@@ -2350,7 +2541,7 @@ export default {
   getParamRenames,
   getSupportsResponsesApi,
   getSupportsPromptCaching,
-  isPseudonymizationForced,
+  isPseudonymizationForcedForFileSearch,
   getWebSearchMaxSearches,
   getHostedToolResultCacheTtlSeconds,
   getHostedToolResultCacheMaxEntries,

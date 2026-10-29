@@ -11,7 +11,7 @@
  * instructions the client itself sent - in the frame, or remembered from an earlier one. A session
  * whose instructions the gateway never saw gets no notice rather than lost instructions.
  */
-import { evaluate } from '../toolGovernance/evaluate';
+import { evaluateBlocks } from '../toolGovernance/evaluate';
 import type { EvaluationResult } from '../toolGovernance/evaluate';
 import { functionTool, UNKNOWN_SOURCE } from '../toolGovernance/identity';
 import type { ToolIdentity, ToolPolicyBlock } from '../toolGovernance/identity';
@@ -46,13 +46,13 @@ const forcedOf = (choice: any): ToolIdentity | null =>
   choice && typeof choice === 'object' && choice.type === 'function' && typeof choice.name === 'string' ? functionTool(choice.name) : null;
 const rejectedOf = (r: EvaluationResult): ToolIdentity[] => [...r.decisions].filter(([, d]) => d === 'rejected').map(([id]) => id);
 
-export function createRealtimeToolGate(user: ToolPolicyBlock | null, key: ToolPolicyBlock | null): RealtimeToolGate {
+export function createRealtimeToolGate(blocks: ToolPolicyBlock[]): RealtimeToolGate {
   let tools: any[] = [];                 // the session's tools as last forwarded upstream
   let instructions: string | null = null; // the client's own instructions, as last sent
   let declared: ToolIdentity[] = [];
   const sources = new Map<ToolIdentity, number>();   // identity → results seen; bounded by distinct tools
   const callNames = new Map<string, string>();         // call id → name, until its result arrives
-  let result = evaluate([], user, key, null, []);
+  let result = evaluateBlocks([], blocks, null, []);
 
   /** Each identity repeated by its count (the usage fold counts occurrences), at most MAX_SOURCES in all. */
   const expanded = (): ToolIdentity[] => {
@@ -62,7 +62,7 @@ export function createRealtimeToolGate(user: ToolPolicyBlock | null, key: ToolPo
     }
     return out;
   };
-  const judge = (list: any[], forced: ToolIdentity | null) => evaluate(idsOf(list), user, key, forced, [...sources.keys()]);
+  const judge = (list: any[], forced: ToolIdentity | null) => evaluateBlocks(idsOf(list), blocks, forced, [...sources.keys()]);
   const without = (list: any[], ids: ToolIdentity[]) => list.filter((t) => !(isFunctionTool(t) && ids.includes(functionTool(t.name))));
 
   function declaration(frame: any, container: 'session' | 'response'): GateOutcome | null {

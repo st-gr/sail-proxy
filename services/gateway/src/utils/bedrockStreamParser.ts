@@ -93,6 +93,8 @@ interface BedrockEvent {
   };
 }
 
+export type TerminalUsageMetrics = NonNullable<BedrockEvent['amazon-bedrock-invocationMetrics']>;
+
 interface TransformedEvent {
   eventName: string;
   data: any;
@@ -107,10 +109,19 @@ class BedrockStreamParser {
   private parser: any;
   private res?: Response;
   private outputFormat: OutputFormat;
+  private sseDetected = false;
+  private onTerminalUsage?: (metrics: TerminalUsageMetrics) => void;
 
-  constructor(originalModelId: string, _originalSubpath: string, outputFormat: OutputFormat = 'bedrock') {
+  /**
+   * @param onTerminalUsage - called once per stream with the raw
+   *   `amazon-bedrock-invocationMetrics` of the upstream `message_stop`, before
+   *   anything is stripped from it for the client.
+   */
+  constructor(originalModelId: string, _originalSubpath: string, outputFormat: OutputFormat = 'bedrock',
+              onTerminalUsage?: (metrics: TerminalUsageMetrics) => void) {
     this.originalModelId = originalModelId;
     this.outputFormat = outputFormat;
+    this.onTerminalUsage = onTerminalUsage;
     this.streamState = {
       messageId: null,
       emittedTextContentStartIndices: new Set(),
@@ -164,18 +175,18 @@ class BedrockStreamParser {
       // Log chunk content for debugging
       logger.debug('BedrockStreamParser', `Received chunk (${chunkStr.length} bytes): ${chunkStr.substring(0, 200)}${chunkStr.length > 200 ? '...' : ''}`);
       
-      // Check for empty chunks
-      if (!chunkStr.trim()) {
+      // Check for empty chunks (an SSE stream still needs them: one can carry the
+      // blank line that ends the previous event)
+      if (!chunkStr.trim() && !this.sseDetected) {
         logger.debug('BedrockStreamParser', 'Received empty chunk, skipping');
         return;
       }
       
-      // Check if this is an SSE data chunk
-      // TODO: this heuristic misroutes network chunks that split an SSE event mid-JSON
-      // (a fragment not starting with 'data:'/'event:' is treated as direct data and can
-      // emit corrupted events). parser.feed() below already reassembles across chunk
-      // boundaries — partial SSE fragments should be fed to it rather than handleData.
-      const isSseFormat = chunkStr.startsWith('data:') ||
+      // Check if this is an SSE data chunk. Once a stream has been seen as SSE, every
+      // later chunk goes to parser.feed(): network chunks can split an event mid-JSON,
+      // and only the parser reassembles the fragment with the rest of its event.
+      const isSseFormat = this.sseDetected ||
+                          chunkStr.startsWith('data:') ||
                           chunkStr.includes('\ndata:') ||
                           chunkStr.includes('event:') ||
                           chunkStr.startsWith(':');
@@ -229,6 +240,7 @@ class BedrockStreamParser {
         }
         return;
       }
+      this.sseDetected = true;
       
       // For AWS Bedrock single-quoted JSON in SSE data format, we need special handling
       if (chunkStr.includes("data: {'")) {
@@ -460,6 +472,14 @@ class BedrockStreamParser {
 
     if (event.type === 'message_stop') {
       const metrics = event['amazon-bedrock-invocationMetrics'];
+      if (metrics && !this.streamState.terminalMessageStopEmitted) {
+        try {
+          this.onTerminalUsage?.(metrics);
+        } catch (error: any) {
+          // Usage bookkeeping must never turn into a raw write to the client
+          logger.error('BedrockStreamParser', `Terminal usage callback failed: ${error}`);
+        }
+      }
       if (metrics) {
         this.streamState.finalInputTokens = metrics.inputTokenCount || 0;
         this.streamState.finalOutputTokens = metrics.outputTokenCount || 0;

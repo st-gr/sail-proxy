@@ -1,11 +1,13 @@
 import axios, { AxiosResponse } from 'axios';
+import { createParser, EventSourceMessage } from 'eventsource-parser';
 import { Request, Response } from 'express';
 import modelService from './modelService';
 import configService from './configService';
 import { executeAfterPlugins, executeStreamPlugins } from './pluginExecutor';
 import * as payloadLogger from '../utils/payloadLogger';
 import * as sseWriter from '../utils/sseWriter';
-import BedrockStreamParser, { OutputFormat } from '../utils/bedrockStreamParser';
+import BedrockStreamParser, { OutputFormat, TerminalUsageMetrics } from '../utils/bedrockStreamParser';
+import { parseConverseEventData } from '../utils/converseEventData';
 import { getDefaultLogger, createSafePreview, createHeadersPreview } from '@libs/logger';
 const logger = getDefaultLogger();
 import rateLimitManager from './rateLimitManager';
@@ -15,12 +17,17 @@ import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from 
 import * as betaFlagQuarantine from './betaFlagQuarantine';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
 import { secretLabel } from '../utils/secretLabel';
+import { httpStatusOr } from '../utils/streamStart';
+import { truncateUpstreamMessage } from '../utils/upstreamErrorEnvelope';
+import { anthropicErrorBody, sendAnthropicHttpError } from '../utils/anthropicErrors';
 import {
   installWebSearchStreamInterception,
   WebSearchStreamHandle,
   ContinuationUsage,
 } from '../plugins/webSearch/anthropicWebSearchStream';
 import { requestDeclaresWebSearchTool } from '../plugins/webSearch/webSearchTool';
+import { isDeployedModel } from '../utils/deployedModel';
+import { currentSapTarget } from '../sap/sapTarget';
 
 /**
  * `getDefaultLogger()` is component-first (`error(component, message)`); the
@@ -92,6 +99,7 @@ interface EmulatedSubpathOptions {
   isStreaming: boolean;
   hookConfig?: any;
   usageMetrics?: any; // Add usage metrics for tracking
+  outputFormat?: OutputFormat; // Output format: 'anthropic' for Anthropic API format, 'bedrock' for native Bedrock format
 }
 
 // Unused interface
@@ -214,8 +222,8 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
     }
     if (isInvokeSubpath && isNativeSubpath) {
       // Check if model explicitly disables prompt caching - if so, filter out cache_control
-      // parameters. Stripping is a request-mutating act reserved for known exceptions (e.g.
-      // claude-3-haiku) — identity inference must NEVER trigger it. Catalog drift can resolve
+      // parameters. Stripping is a request-mutating act reserved for known exceptions (a model
+      // whose override sets supports_prompt_caching: false) — identity inference must NEVER trigger it. Catalog drift can resolve
       // a real Anthropic deployment's provider as 'unknown' when its backing foundation-model
       // entry is missing from the live SAP catalog (modelService.ts's `provider || 'unknown'`
       // fallbacks); feeding that into resolvePromptCachingSupport's provider-based default
@@ -313,7 +321,8 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
         res,
         isStreaming: isStreamingSubpath,
         hookConfig,
-        usageMetrics: options.usageMetrics // Pass usage metrics for tracking
+        usageMetrics: options.usageMetrics, // Pass usage metrics for tracking
+        outputFormat: options.outputFormat
       });
     }
     
@@ -332,18 +341,6 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
   }
 }
 
-/**
- * Check if a model is a deployed model
- * @param modelDetails - Model details from modelService
- * @returns True if deployed model, false otherwise
- */
-function isDeployedModel(modelDetails: ModelDetails): boolean {
-  return !!(modelDetails && (
-    modelDetails.accessType === "deployment" ||
-    (modelDetails.deploymentUrl && modelDetails.deploymentUrl.length > 0) ||
-    (modelDetails.internal_id && modelDetails.internal_id.endsWith('--deployed'))
-  ));
-}
 
 /**
  * Determine if a subpath is natively supported by the model
@@ -413,7 +410,7 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
-          'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default'
+          'AI-Resource-Group': currentSapTarget().resourceGroup
         },
         timeout: timeout
       });
@@ -460,7 +457,7 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
  * Handle emulated subpath - transform between Anthropic and Bedrock formats
  */
 async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<any> {
-  const { modelDetails, modelId, originalModelId, subpath, requestBody, headers, debugRequestId, req, res, isStreaming, hookConfig } = options;
+  const { modelDetails, modelId, originalModelId, subpath, requestBody, headers, debugRequestId, req, res, isStreaming, hookConfig, outputFormat } = options;
   logger.info('AwsBedrockService', `Handling emulated subpath ${subpath}`);
   
   let transformedPayload: any;
@@ -509,7 +506,8 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
         subpath, // Add for rate limit tracking
         modelDetails, // Add missing required property
         hookConfig,
-        usageMetrics: options.usageMetrics // Pass usage metrics for tracking
+        usageMetrics: options.usageMetrics, // Pass usage metrics for tracking
+        outputFormat
       });
     } else {
       // Handle non-streaming emulated request
@@ -518,7 +516,7 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
-          'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default'
+          'AI-Resource-Group': currentSapTarget().resourceGroup
         },
         timeout: timeout
       });
@@ -979,6 +977,11 @@ function foldRawBedrockStreamUsage(
   return { inputTokens, outputTokens };
 }
 
+/** True when the client's response is already gone (closed or destroyed) but was never finished. */
+function responseAlreadyClosed(res: Response): boolean {
+  return !res.writableEnded && (res.destroyed || (res as any).closed === true);
+}
+
 // Additional interface definitions for streaming functions
 interface StreamingRequestOptions {
   targetUrl: string;
@@ -1000,6 +1003,31 @@ interface StreamingRequestOptions {
 interface EmulatedStreamingRequestOptions extends StreamingRequestOptions {
   originalSubpath: string;
   // originalModelId is inherited from StreamingRequestOptions
+}
+
+/**
+ * A stream failure in the client's protocol. The Anthropic route (outputFormat
+ * 'anthropic') gets Anthropic's shape: the HTTP status and JSON body while nothing was
+ * sent, else ONE `event: error` and the end of the stream — the bare `data: {"error":…}`
+ * frame sseWriter.writeError produces is not an event an Anthropic client parses. Every
+ * other format keeps writeError.
+ */
+function writeStreamError(res: Response, error: any, outputFormat?: OutputFormat): void {
+  if (outputFormat !== 'anthropic') {
+    sseWriter.writeError(res, error);
+    return;
+  }
+  if (res.writableEnded) return;
+  const failure = {
+    status: httpStatusOr(error?.status, error?.response?.status),
+    message: truncateUpstreamMessage(typeof error?.message === 'string' && error.message ? error.message : 'upstream stream failed'),
+  };
+  if (!res.headersSent) {
+    sendAnthropicHttpError(res, failure);
+    return;
+  }
+  sseWriter.writeEventStream(res, 'error', JSON.stringify(anthropicErrorBody(failure)));
+  res.end();
 }
 
 /**
@@ -1039,7 +1067,7 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
     const requestHeaders = {
       'Authorization': `Bearer ${authToken}`,
       'Content-Type': 'application/json',
-      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default'
+      'AI-Resource-Group': currentSapTarget().resourceGroup
     };
     
     // Debug logging for authentication issues
@@ -1112,6 +1140,10 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
      * finalize and `res.end()` while the last chunks were still being written.
      */
     let chunkWork: Promise<void> = Promise.resolve();
+    /** Set in stream-parser mode; 'end' flushes it after the last chunk. */
+    let streamParser: BedrockStreamParser | undefined;
+    /** Set in passthrough mode (usage only); 'end' flushes it after the last chunk. */
+    let passthroughUsage: ReturnType<typeof createParser> | undefined;
 
     // Only initiate ping for useStreamParser mode, not for direct passthrough
     if (useStreamParser) {
@@ -1128,10 +1160,13 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
         }
       }, 15000); // Send ping every 15 seconds
       
-      // Clear interval when connection ends
-      req.on('close', () => {
+      // Clear interval when the response closes (finished or abandoned). `res`, not `req`: on
+      // Node 20 the request emits 'close' as soon as its body is consumed, before this runs.
+      res.on('close', () => {
         clearInterval(pingInterval);
       });
+      // Registered after the upstream call: a response that already closed will not emit again.
+      if (responseAlreadyClosed(res)) clearInterval(pingInterval);
     } else {
       logger.info('AwsBedrockService', 'Skipping ping mechanism for direct passthrough mode');
     }
@@ -1139,7 +1174,41 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
     if (useStreamParser) {
       // Use stream parser for invoke-with-response-stream endpoints
       logger.info('AwsBedrockService', `Using stream parser for native request with outputFormat: ${outputFormat || 'bedrock'}`);
-      const streamParser = new BedrockStreamParser(modelId, 'invoke-with-response-stream', outputFormat || 'bedrock');
+      // Usage comes from the parser, which sees whole SSE events: the upstream
+      // `message_stop` carrying `amazon-bedrock-invocationMetrics` often shares a
+      // network chunk with `message_delta`, or is split across two chunks.
+      const onTerminalUsage = (metrics: TerminalUsageMetrics) => {
+        if (!options.usageMetrics) return;
+        logger.debug('AwsBedrockService', `Native streaming - extracted usage metrics: ${JSON.stringify(metrics)}`);
+        const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
+
+        // Determine provider based on request endpoint
+        let provider = 'aws-bedrock'; // Default provider
+
+        // Check if original request came through Anthropic endpoint
+        const requestPath = options.req.originalUrl || options.req.path || options.req.url || '';
+
+        if (requestPath.includes('/anthropic/')) {
+          provider = 'anthropic';
+        } else if (requestPath.includes('/openai/')) {
+          provider = 'openai';
+        }
+        // Otherwise keep default 'aws-bedrock'
+
+        // Only emit usage event once when final metrics are available.
+        // When web_search interception is active, the continuation this
+        // turn's message_stop is about to trigger has not run yet — its
+        // tokens are not in `options.usageMetrics` until `finalize()`
+        // resolves — so the emit is deferred to the 'end' handler below,
+        // after it has awaited that. Every other stream is unaffected.
+        if (!webSearchStream && !options.usageMetrics.eventEmitted) {
+          emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
+          options.usageMetrics.eventEmitted = true;
+        }
+        logger.info('AwsBedrockService', `Usage tracked for deployed model native streaming: ${inputTokens} input tokens, ${outputTokens} output tokens, provider: ${provider}`);
+      };
+      const parser = new BedrockStreamParser(modelId, 'invoke-with-response-stream', outputFormat || 'bedrock', onTerminalUsage);
+      streamParser = parser;
       
       response.data.on('data', (chunk: Buffer) => {
         chunkWork = chunkWork.then(async () => {
@@ -1172,57 +1241,8 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
               logger.warn('AwsBedrockService', `No hook config available for stream plugins`);
             }
             
-            // Extract usage data from chunk before processing (for usage tracking)
-            if (options.usageMetrics && chunkStr.includes('amazon-bedrock-invocationMetrics')) {
-              try {
-                // Extract the data content from the SSE format
-                const dataMatch = chunkStr.match(/data: (.*?)(?:\n\n|\n$|$)/s);
-                if (dataMatch && dataMatch[1]) {
-                  const jsonData = JSON.parse(dataMatch[1].trim());
-                  
-                  // Check for message_stop with amazon-bedrock-invocationMetrics
-                  if (jsonData.type === 'message_stop' && jsonData['amazon-bedrock-invocationMetrics']) {
-                    const metrics = jsonData['amazon-bedrock-invocationMetrics'];
-                    logger.debug('AwsBedrockService', `Native streaming - extracted usage metrics: ${JSON.stringify(metrics)}`);
-                    
-                    if (metrics) {
-                      const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
-
-                      // Determine provider based on request endpoint
-                      const originalModelId = options.originalModelId || options.modelId;
-                      let provider = 'aws-bedrock'; // Default provider
-                      
-                      // Check if original request came through Anthropic endpoint
-                      const requestPath = options.req.originalUrl || options.req.path || options.req.url || '';
-                      
-                      if (requestPath.includes('/anthropic/')) {
-                        provider = 'anthropic';
-                      } else if (requestPath.includes('/openai/')) {
-                        provider = 'openai';
-                      }
-                      // Otherwise keep default 'aws-bedrock'
-                      
-                      // Only emit usage event once when final metrics are available.
-                      // When web_search interception is active, the continuation this
-                      // turn's message_stop is about to trigger has not run yet — its
-                      // tokens are not in `options.usageMetrics` until `finalize()`
-                      // resolves — so the emit is deferred to the 'end' handler below,
-                      // after it has awaited that. Every other stream is unaffected.
-                      if (!webSearchStream && !options.usageMetrics.eventEmitted) {
-                        emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
-                        options.usageMetrics.eventEmitted = true;
-                      }
-                      logger.info('AwsBedrockService', `Usage tracked for deployed model native streaming: ${inputTokens} input tokens, ${outputTokens} output tokens, provider: ${provider}`);
-                    }
-                  }
-                }
-              } catch (parseError: any) {
-                logger.debug('AwsBedrockService', `Could not extract usage from chunk: ${parseError.message}`);
-              }
-            }
-            
             // Process the chunk
-            streamParser.processChunk(chunk, res);
+            parser.processChunk(chunk, res);
             hasReceivedData = true;  // Mark that we received data
             
           } catch (error: any) {
@@ -1234,7 +1254,32 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
     } else {
       // For other streaming endpoints, pipe directly
       logger.info('AwsBedrockService', 'Using direct passthrough for native streaming request');
-      response.data.on('data', async (chunk: Buffer) => {
+      // The bytes go through unparsed, but the usage is read off the same Converse events the
+      // emulated handler parses: `metadata.usage`, or a `message_stop` carrying
+      // `amazon-bedrock-invocationMetrics`. Usage can arrive in both, so only the first is folded;
+      // the 'end' handler emits the request's one usage event.
+      let passthroughUsageFolded = false;
+      passthroughUsage = createParser({
+        onEvent: (event: EventSourceMessage) => {
+          if (passthroughUsageFolded || !options.usageMetrics) return;
+          try {
+            const jsonData = parseConverseEventData(event.data.trim());
+            const raw = jsonData?.metadata?.usage
+              ?? (jsonData?.type === 'message_stop' ? jsonData['amazon-bedrock-invocationMetrics'] : undefined);
+            if (raw) {
+              foldRawBedrockStreamUsage(options.usageMetrics, raw);
+              passthroughUsageFolded = true;
+            }
+          } catch {
+            // Not a JSON event: nothing to bill from it.
+          }
+        },
+      });
+      // Queued on chunkWork like the parser branch, so 'end' waits for the last chunk (and its
+      // usage) instead of racing it.
+      response.data.on('data', (chunk: Buffer) => {
+        chunkWork = chunkWork.then(async () => {
+        passthroughUsage?.feed(chunk.toString());
         if (!res.writableEnded) {
           // Add minimal delay to prevent race condition (mimics logging overhead)
           await new Promise(resolve => setImmediate(resolve));
@@ -1250,12 +1295,18 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
           // Execute stream plugins
           let processedChunk: Buffer = chunk;
           if (hookConfig) {
-            processedChunk = await executeStreamPlugins(req, res, chunk, hookConfig);
+            try {
+              processedChunk = await executeStreamPlugins(req, res, chunk, hookConfig);
+            } catch (error: any) {
+              // A rejected chunkWork would stall every later chunk and the 'end' handler.
+              logger.error('AwsBedrockService', `Error in stream plugin execution: ${error.message}`);
+            }
           }
           
           hasReceivedData = true;
           res.write(processedChunk);
         }
+        });
       });
     }
 
@@ -1267,6 +1318,13 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
       // queue has drained.
       await chunkWork;
 
+      // Dispatch a final event that arrived without its terminating blank line
+      // (the parser holds it until one comes); its message_stop carries the usage.
+      if (streamParser && !res.writableEnded) {
+        streamParser.processChunk('\n\n', res);
+      }
+      passthroughUsage?.feed('\n\n');
+
       // Runs FIRST: it may still owe the client the search blocks, the model's
       // answer and the terminal frames, and the after-plugin block and res.end()
       // that follow both assume the client stream is complete.
@@ -1277,16 +1335,26 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
           logger.error('AwsBedrockService', `Error finalizing web_search stream: ${error.message}`);
         }
 
-        // The emit the 'data' handler skipped above, now that finalize() has
+        // The emit onTerminalUsage skipped above, now that finalize() has
         // folded in whatever continuation usage this module reported. Fires
         // whether finalize() succeeded, errored, or ran zero continuation
         // rounds — a request that already has first-turn usage in
         // `options.usageMetrics` must still end with exactly one event, never
-        // zero, even when the continuation itself failed.
+        // zero, even when the continuation itself failed. Same status decision as below: a
+        // stream with no data at all gets the 502 error frame, so it is billed as a 502.
         if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
-          emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
+          emitUsageEvent(options.req, options.usageMetrics, options.modelId, hasReceivedData ? 200 : 502);
           options.usageMetrics.eventEmitted = true;
         }
+      }
+
+      // A completed stream bills exactly one 200: passthrough mode emits here with the usage it
+      // read off the stream, and a parsed stream that never delivered its terminal usage still
+      // gets its event (with whatever was folded, possibly nothing). A stream that delivered no
+      // data at all is answered with an error frame below and billed as a 502.
+      if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+        emitUsageEvent(options.req, options.usageMetrics, options.modelId, hasReceivedData ? 200 : 502);
+        options.usageMetrics.eventEmitted = true;
       }
 
       // Log the complete streaming response if we have debug request ID
@@ -1318,61 +1386,11 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
         }
       }
       
-      // If we received no data, write a simple response to prevent empty response
+      // No data at all: tell the client the upstream failed. Never invent an assistant reply or
+      // token counts (this used to write a canned "I'm Claude…" answer and a fake message_stop).
       if (!hasReceivedData && !res.writableEnded) {
-        logger.warn('AwsBedrockService', 'No data received in native stream, sending fallback response');
-        
-        if (useStreamParser) {
-          // Create a message_start event
-          const messageId = `msg_bdrk_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-          sseWriter.writeEventStream(res, 'message_start', JSON.stringify({
-            type: 'message_start',
-            message: {
-              id: messageId,
-              type: 'message',
-              role: 'assistant',
-              model: modelId,
-              content: [],
-              stop_reason: null,
-              stop_sequence: null,
-              usage: { input_tokens: 0, output_tokens: 0 }
-            }
-          }));
-          
-          // Emit content block start
-          sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify({
-            type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'text', text: '' }
-          }));
-          
-          // Emit some text
-          sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-            type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'text_delta', text: "I'm Claude, an AI assistant by Anthropic. How can I help you today?" }
-          }));
-          
-          // End the content block
-          sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({
-            type: 'content_block_stop',
-            index: 0
-          }));
-          
-          // Emit message_stop
-          sseWriter.writeEventStream(res, 'message_stop', JSON.stringify({
-            type: 'message_stop',
-            'amazon-bedrock-invocationMetrics': { 
-              inputTokenCount: 10,
-              outputTokenCount: 15,
-              invocationLatency: 500,
-              firstByteLatency: 200
-            }
-          }));
-        } else {
-          // For direct passthrough, just send simple data
-          res.write('data: {"type": "text", "content": "I\'m an AI assistant. How can I help you today?"}\n\n');
-        }
+        logger.warn('AwsBedrockService', 'No data received in native stream, answering with an error');
+        writeStreamError(res, Object.assign(new Error('The upstream stream ended without any data'), { status: 502 }), outputFormat);
       }
       
       if (!res.writableEnded) {
@@ -1381,30 +1399,65 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
       logger.info('AwsBedrockService', 'Native streaming completed');
     });
 
+    // Set once the client hung up: the 499 below bills that, and an error the destroyed
+    // upstream raises afterwards is not a failure of this request.
+    let clientDisconnected = false;
+
     response.data.on('error', (error: any) => {
       logger.error('AwsBedrockService', 'Native streaming error:', error);
       if (!res.writableEnded) {
-        sseWriter.writeError(res, error);
+        writeStreamError(res, error, outputFormat);
+      }
+      // A failed upstream stream never reaches 'end': bill it once with its status (or 500)
+      // and the tokens folded so far, like the other controllers' failure paths.
+      if (!clientDisconnected) {
+        const statusCode = error?.status || error?.response?.status || 500;
+        chunkWork.then(() => {
+          if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+            emitUsageEvent(options.req, options.usageMetrics, options.modelId, statusCode);
+            options.usageMetrics.eventEmitted = true;
+          }
+        });
       }
     });
 
-    // Handle client disconnection
-    req.on('close', () => {
+    // Handle client disconnection. Only `res` 'close' with the response unfinished is a hang-up
+    // (the onClientClose pattern, controllers/googleWire.ts): on Node 20 `req` has already
+    // emitted 'close' once the body parser consumed it, so a req listener here never fires.
+    const onHangUp = () => {
+      const clientHungUp = !res.writableEnded;
+      if (!clientHungUp || clientDisconnected) return;
       logger.debug('AwsBedrockService', 'Client disconnected from native stream');
+      clientDisconnected = true;
       if (response.data.destroy) {
         response.data.destroy();
       }
-    });
+      // The destroyed upstream never reaches 'end' or its terminal usage: bill a client that
+      // hung up before the response finished as a 499 with the tokens folded so far, once.
+      if (clientHungUp) {
+        chunkWork.then(() => {
+          if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+            emitUsageEvent(options.req, options.usageMetrics, options.modelId, 499);
+            options.usageMetrics.eventEmitted = true;
+          }
+        });
+      }
+    };
+    res.on('close', onHangUp);
+    // Registered after the upstream call: a client that hung up while it was pending has already
+    // closed the response, which emits 'close' only once. Run the hang-up path now.
+    if (responseAlreadyClosed(res)) onHangUp();
   } catch (error: any) {
     logger.error('AwsBedrockService', 'Error in native streaming:', error, {
       code: error.code,
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
     });
 
+    let upstreamErrorBody: any;
     if (error.response) {
       // responseType:'stream' delivers the error body as a Readable — drain it so
       // SAP's actual error is loggable, persisted, and quarantine-matchable.
-      const upstreamErrorBody = await readUpstreamErrorBody(error.response);
+      upstreamErrorBody = await readUpstreamErrorBody(error.response);
       logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: upstreamErrorBody });
       if (debugRequestId) {
         payloadLogger.savePayload(debugRequestId, '03_native_streaming_error_from_sap', {
@@ -1433,7 +1486,13 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
     }
 
     if (!res.writableEnded) {
-      sseWriter.writeError(res, error);
+      // An Anthropic client reads the reason off the message ("prompt is too long: …"), so it
+      // gets the upstream body's message, not axios's "Request failed with status code 400".
+      const upstreamMessage = upstreamErrorBody?.error?.message || upstreamErrorBody?.message;
+      const errToSend = outputFormat === 'anthropic' && typeof upstreamMessage === 'string' && upstreamMessage
+        ? Object.assign(new Error(upstreamMessage), { status: error.response?.status })
+        : error;
+      writeStreamError(res, errToSend, outputFormat);
     }
   }
 }
@@ -1446,7 +1505,7 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
  * `amazon-bedrock-invocationMetrics` usage-fold sites (task-T6/T7).
  */
 export async function handleEmulatedStreamingRequest(options: EmulatedStreamingRequestOptions): Promise<void> {
-  const { targetUrl, requestBody, authToken, debugRequestId, req, res, originalSubpath, originalModelId, modelId, subpath, hookConfig } = options;
+  const { targetUrl, requestBody, authToken, debugRequestId, req, res, originalSubpath, originalModelId, modelId, subpath, hookConfig, outputFormat } = options;
   logger.info('AwsBedrockService', `Starting emulated streaming request for original subpath: ${originalSubpath}`);
   
   // Initialize response capture for payload logging
@@ -1468,7 +1527,7 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
     const requestHeaders = {
       'Authorization': `Bearer ${authToken}`,
       'Content-Type': 'application/json',
-      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
+      'AI-Resource-Group': currentSapTarget().resourceGroup,
     };
     
     // Debug logging for authentication issues
@@ -1495,8 +1554,223 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
     let hasEmittedMessageStart = false;
     let contentBlocks = new Map<number, { type: string; emitted: boolean }>(); // To track content blocks by index
     
+    /**
+     * Handle one whole SSE event from the Converse stream. Events come from
+     * `converseEvents` below, never straight from a network chunk: a chunk can
+     * carry several events (the final `messageStop` + `metadata` typically share
+     * one) or only part of one.
+     */
+    const handleConverseEvent = (dataContent: string): void => {
+      // Parsed, never evaluated: JSON, or single-quoted strings (see converseEventData)
+      try {
+        const jsonData = parseConverseEventData(dataContent);
+        
+        // Transform based on event type
+        if (jsonData.messageStart) {
+          if (!hasEmittedMessageStart) {
+            sseWriter.writeEventStream(res, 'message_start', JSON.stringify({
+              type: 'message_start',
+              message: {
+                id: messageId,
+                type: 'message',
+                role: jsonData.messageStart.role || 'assistant',
+                model: originalModelId,
+                content: [],
+                stop_reason: null,
+                stop_sequence: null,
+                usage: {input_tokens: 0, output_tokens: 0}
+              }
+            }));
+            hasEmittedMessageStart = true;
+          }
+        }
+        else if (jsonData.contentBlockStart) {
+          const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockStart.contentBlockIndex;
+          
+          // Determine the block type
+          const isToolUse = jsonData.contentBlockStart.start?.toolUse !== undefined;
+          let contentBlock = {
+            type: 'content_block_start',
+            index: blockIndex,
+            content_block: isToolUse 
+              ? {
+                  type: 'tool_use',
+                  id: `toolu_bdrk_${jsonData.contentBlockStart.start.toolUse.toolUseId.replace('tooluse_', '')}`,
+                  name: jsonData.contentBlockStart.start.toolUse.name,
+                  input: {}
+                }
+              : {
+                  type: 'text',
+                  text: ''
+                }
+          };
+          
+          contentBlocks.set(blockIndex, {
+            type: isToolUse ? 'tool_use' : 'text',
+            emitted: true
+          });
+          
+          sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify(contentBlock));
+        }
+        else if (jsonData.contentBlockDelta) {
+          const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockDelta.contentBlockIndex;
+          
+          // Auto-create content block if we didn't see a start event
+          if (!contentBlocks.has(blockIndex)) {
+            const isToolUse = jsonData.contentBlockDelta.delta?.toolUse !== undefined;
+            const contentBlockType = isToolUse ? 'tool_use' : 'text';
+            
+            // Emit an implicit content block start
+            const contentBlock = {
+              type: 'content_block_start',
+              index: blockIndex,
+              content_block: contentBlockType === 'tool_use' 
+                ? {
+                    type: 'tool_use',
+                    id: `toolu_bdrk_${Date.now().toString(36)}_auto`,
+                    name: 'auto_detected_tool',
+                    input: {}
+                  }
+                : {
+                    type: 'text',
+                    text: ''
+                  }
+            };
+            
+            contentBlocks.set(blockIndex, {
+              type: contentBlockType,
+              emitted: true
+            });
+            
+            sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify(contentBlock));
+          }
+          
+          const delta = jsonData.contentBlockDelta.delta;
+          
+          // Handle text deltas
+          if (delta.text !== undefined) {
+            sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: {
+                type: 'text_delta',
+                text: delta.text
+              }
+            }));
+          } 
+          // Handle tool use input deltas
+          else if (delta.toolUse?.input !== undefined) {
+            sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: delta.toolUse.input
+              }
+            }));
+          }
+          // Handle partial_json (might be present in some models)
+          else if (delta.partial_json) {
+            sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: delta.partial_json
+              }
+            }));
+          }
+        }
+        else if (jsonData.contentBlockStop) {
+          const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockStop.contentBlockIndex;
+          
+          sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({
+            type: 'content_block_stop',
+            index: blockIndex
+          }));
+        }
+        else if (jsonData.messageStop) {
+          sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
+            type: 'message_delta',
+            delta: {
+              stop_reason: jsonData.messageStop.stopReason,
+              stop_sequence: null
+            },
+            usage: {}
+          }));
+        }
+        else if (jsonData.metadata) {
+          logger.debug('AwsBedrockService', `Processing metadata block: ${JSON.stringify(jsonData.metadata)}`);
+          // Send usage information
+          if (jsonData.metadata.usage) {
+            sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
+              type: 'message_delta',
+              delta: {},
+              usage: {
+                output_tokens: jsonData.metadata.usage.outputTokens || 0
+              }
+            }));
+          }
+          
+          // Send final message_stop
+          sseWriter.writeEventStream(res, 'message_stop', JSON.stringify({
+            type: 'message_stop',
+            'amazon-bedrock-invocationMetrics': {
+              inputTokenCount: jsonData.metadata.usage?.inputTokens || 0,
+              outputTokenCount: jsonData.metadata.usage?.outputTokens || 0,
+              invocationLatency: jsonData.metadata.metrics?.latencyMs || 0,
+              firstByteLatency: jsonData.metadata.metrics?.firstByteLatency || 0
+            }
+          }));
+          
+          // Track usage for streaming completion (if usage metrics provided)
+          logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasUsageData=${!!jsonData.metadata.usage}`);
+          if (options.usageMetrics && jsonData.metadata.usage) {
+            // Fold and emit once: usage can reach this stream in both `metadata` and a
+            // `message_stop` carrying invocation metrics, and the fold is additive.
+            if (!options.usageMetrics.eventEmitted) {
+              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, jsonData.metadata.usage);
+              emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
+              options.usageMetrics.eventEmitted = true;
+              logger.info('AwsBedrockService', `Usage tracked for deployed model streaming: ${inputTokens} input tokens, ${outputTokens} output tokens`);
+            }
+          } else {
+            logger.warn('AwsBedrockService', `Usage tracking skipped - usageMetrics: ${!!options.usageMetrics}, metadataUsage: ${!!jsonData.metadata?.usage}`);
+          }
+        }
+        // NEW: Handle message_stop with amazon-bedrock-invocationMetrics (current format)
+        else if (jsonData.type === 'message_stop' && jsonData['amazon-bedrock-invocationMetrics']) {
+          logger.debug('AwsBedrockService', `Processing message_stop with invocation metrics: ${JSON.stringify(jsonData['amazon-bedrock-invocationMetrics'])}`);
+          
+          // Track usage for streaming completion (if usage metrics provided)
+          const metrics = jsonData['amazon-bedrock-invocationMetrics'];
+          logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasMetrics=${!!metrics}`);
+          if (options.usageMetrics && metrics) {
+            // Fold and emit once: usage can reach this stream in both `metadata` and a
+            // `message_stop` carrying invocation metrics, and the fold is additive.
+            if (!options.usageMetrics.eventEmitted) {
+              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
+              emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
+              options.usageMetrics.eventEmitted = true;
+              logger.info('AwsBedrockService', `Usage tracked for deployed model streaming: ${inputTokens} input tokens, ${outputTokens} output tokens`);
+            }
+          } else {
+            logger.warn('AwsBedrockService', `Usage tracking skipped - usageMetrics: ${!!options.usageMetrics}, invocationMetrics: ${!!metrics}`);
+          }
+        }
+      } catch (parseError: any) {
+        console.error(`[AwsBedrockService] Error parsing data chunk:`, parseError, dataContent);
+      }
+    };
+    const converseEvents = createParser({
+      onEvent: (event: EventSourceMessage) => handleConverseEvent(event.data.trim()),
+    });
+    /** Chunks are processed in order, and 'end' waits for the last one. */
+    let chunkWork: Promise<void> = Promise.resolve();
+
     // Process stream chunks
-    bedrockResponse.data.on('data', async (chunk: Buffer) => {
+    bedrockResponse.data.on('data', (chunk: Buffer) => {
+      chunkWork = chunkWork.then(async () => {
       if (res.writableEnded) return;
       
       try {
@@ -1514,227 +1788,48 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
           capturedResponseChunks.push(chunkStr);
         }
         
+        // Feed the parser; it calls handleConverseEvent once per complete event.
+        // A whitespace-only chunk is fed too: it can carry the blank line that
+        // ends the previous event.
+        converseEvents.feed(chunkStr);
         if (chunkStr.trim().length === 0) return;
-        
+
         hasReceivedData = true;
-        
-        // Extract the data content from the SSE format
-        const dataMatch = chunkStr.match(/data: (.*?)(?:\n\n|\n$|$)/s);
-        if (!dataMatch || !dataMatch[1]) return;
-        
-        const dataContent = dataMatch[1].trim();
-        
-        // Parse the JS object using Function instead of eval for slightly better security
-        try {
-          // Convert single-quoted JS object to actual JS object 
-          // This avoids the complexities of JSON parsing with single quotes
-          const jsonData = Function(`"use strict"; return (${dataContent})`)();
-          
-          // Transform based on event type
-          if (jsonData.messageStart) {
-            if (!hasEmittedMessageStart) {
-              sseWriter.writeEventStream(res, 'message_start', JSON.stringify({
-                type: 'message_start',
-                message: {
-                  id: messageId,
-                  type: 'message',
-                  role: jsonData.messageStart.role || 'assistant',
-                  model: originalModelId,
-                  content: [],
-                  stop_reason: null,
-                  stop_sequence: null,
-                  usage: {input_tokens: 0, output_tokens: 0}
-                }
-              }));
-              hasEmittedMessageStart = true;
-            }
-          }
-          else if (jsonData.contentBlockStart) {
-            const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockStart.contentBlockIndex;
-            
-            // Determine the block type
-            const isToolUse = jsonData.contentBlockStart.start?.toolUse !== undefined;
-            let contentBlock = {
-              type: 'content_block_start',
-              index: blockIndex,
-              content_block: isToolUse 
-                ? {
-                    type: 'tool_use',
-                    id: `toolu_bdrk_${jsonData.contentBlockStart.start.toolUse.toolUseId.replace('tooluse_', '')}`,
-                    name: jsonData.contentBlockStart.start.toolUse.name,
-                    input: {}
-                  }
-                : {
-                    type: 'text',
-                    text: ''
-                  }
-            };
-            
-            contentBlocks.set(blockIndex, {
-              type: isToolUse ? 'tool_use' : 'text',
-              emitted: true
-            });
-            
-            sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify(contentBlock));
-          }
-          else if (jsonData.contentBlockDelta) {
-            const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockDelta.contentBlockIndex;
-            
-            // Auto-create content block if we didn't see a start event
-            if (!contentBlocks.has(blockIndex)) {
-              const isToolUse = jsonData.contentBlockDelta.delta?.toolUse !== undefined;
-              const contentBlockType = isToolUse ? 'tool_use' : 'text';
-              
-              // Emit an implicit content block start
-              const contentBlock = {
-                type: 'content_block_start',
-                index: blockIndex,
-                content_block: contentBlockType === 'tool_use' 
-                  ? {
-                      type: 'tool_use',
-                      id: `toolu_bdrk_${Date.now().toString(36)}_auto`,
-                      name: 'auto_detected_tool',
-                      input: {}
-                    }
-                  : {
-                      type: 'text',
-                      text: ''
-                    }
-              };
-              
-              contentBlocks.set(blockIndex, {
-                type: contentBlockType,
-                emitted: true
-              });
-              
-              sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify(contentBlock));
-            }
-            
-            const delta = jsonData.contentBlockDelta.delta;
-            
-            // Handle text deltas
-            if (delta.text !== undefined) {
-              sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-                type: 'content_block_delta',
-                index: blockIndex,
-                delta: {
-                  type: 'text_delta',
-                  text: delta.text
-                }
-              }));
-            } 
-            // Handle tool use input deltas
-            else if (delta.toolUse?.input !== undefined) {
-              sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-                type: 'content_block_delta',
-                index: blockIndex,
-                delta: {
-                  type: 'input_json_delta',
-                  partial_json: delta.toolUse.input
-                }
-              }));
-            }
-            // Handle partial_json (might be present in some models)
-            else if (delta.partial_json) {
-              sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-                type: 'content_block_delta',
-                index: blockIndex,
-                delta: {
-                  type: 'input_json_delta',
-                  partial_json: delta.partial_json
-                }
-              }));
-            }
-          }
-          else if (jsonData.contentBlockStop) {
-            const blockIndex = jsonData.contentBlockIndex ?? jsonData.contentBlockStop.contentBlockIndex;
-            
-            sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({
-              type: 'content_block_stop',
-              index: blockIndex
-            }));
-          }
-          else if (jsonData.messageStop) {
-            sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
-              type: 'message_delta',
-              delta: {
-                stop_reason: jsonData.messageStop.stopReason,
-                stop_sequence: null
-              },
-              usage: {}
-            }));
-          }
-          else if (jsonData.metadata) {
-            logger.debug('AwsBedrockService', `Processing metadata block: ${JSON.stringify(jsonData.metadata)}`);
-            // Send usage information
-            if (jsonData.metadata.usage) {
-              sseWriter.writeEventStream(res, 'message_delta', JSON.stringify({
-                type: 'message_delta',
-                delta: {},
-                usage: {
-                  output_tokens: jsonData.metadata.usage.outputTokens || 0
-                }
-              }));
-            }
-            
-            // Send final message_stop
-            sseWriter.writeEventStream(res, 'message_stop', JSON.stringify({
-              type: 'message_stop',
-              'amazon-bedrock-invocationMetrics': {
-                inputTokenCount: jsonData.metadata.usage?.inputTokens || 0,
-                outputTokenCount: jsonData.metadata.usage?.outputTokens || 0,
-                invocationLatency: jsonData.metadata.metrics?.latencyMs || 0,
-                firstByteLatency: jsonData.metadata.metrics?.firstByteLatency || 0
-              }
-            }));
-            
-            // Track usage for streaming completion (if usage metrics provided)
-            logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasUsageData=${!!jsonData.metadata.usage}`);
-            if (options.usageMetrics && jsonData.metadata.usage) {
-              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, jsonData.metadata.usage);
-              // Only emit usage event once when final metrics are available
-              if (!options.usageMetrics.eventEmitted) {
-                emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
-                options.usageMetrics.eventEmitted = true;
-              }
-              logger.info('AwsBedrockService', `Usage tracked for deployed model streaming: ${inputTokens} input tokens, ${outputTokens} output tokens`);
-            } else {
-              logger.warn('AwsBedrockService', `Usage tracking skipped - usageMetrics: ${!!options.usageMetrics}, metadataUsage: ${!!jsonData.metadata?.usage}`);
-            }
-          }
-          // NEW: Handle message_stop with amazon-bedrock-invocationMetrics (current format)
-          else if (jsonData.type === 'message_stop' && jsonData['amazon-bedrock-invocationMetrics']) {
-            logger.debug('AwsBedrockService', `Processing message_stop with invocation metrics: ${JSON.stringify(jsonData['amazon-bedrock-invocationMetrics'])}`);
-            
-            // Track usage for streaming completion (if usage metrics provided)
-            const metrics = jsonData['amazon-bedrock-invocationMetrics'];
-            logger.debug('AwsBedrockService', `Checking usage tracking: hasUsageMetrics=${!!options.usageMetrics}, hasMetrics=${!!metrics}`);
-            if (options.usageMetrics && metrics) {
-              const { inputTokens, outputTokens } = foldRawBedrockStreamUsage(options.usageMetrics, metrics);
-              // Only emit usage event once when final metrics are available
-              if (!options.usageMetrics.eventEmitted) {
-                emitUsageEvent(options.req, options.usageMetrics, options.modelId, 200);
-                options.usageMetrics.eventEmitted = true;
-              }
-              logger.info('AwsBedrockService', `Usage tracked for deployed model streaming: ${inputTokens} input tokens, ${outputTokens} output tokens`);
-            } else {
-              logger.warn('AwsBedrockService', `Usage tracking skipped - usageMetrics: ${!!options.usageMetrics}, invocationMetrics: ${!!metrics}`);
-            }
-          }
-        } catch (parseError: any) {
-          console.error(`[AwsBedrockService] Error parsing data chunk:`, parseError, dataContent);
-        }
       } catch (error: any) {
         console.error(`[AwsBedrockService] Error processing stream chunk:`, error);
         if (!res.writableEnded) {
-          sseWriter.writeError(res, error);
+          writeStreamError(res, error, outputFormat);
+        }
+        // writeError ended the response: the stream is over for the client. Bill that failure
+        // once (not the 200 a later upstream 'end' would), and stop reading the upstream.
+        if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+          emitUsageEvent(options.req, options.usageMetrics, options.modelId, error?.status || 500);
+          options.usageMetrics.eventEmitted = true;
+        }
+        if (bedrockResponse.data.destroy) {
+          bedrockResponse.data.destroy();
         }
       }
+      });
     });
 
     // Handle stream end
     bedrockResponse.data.on('end', async () => {
       logger.debug('AwsBedrockService', `Stream ended, hasReceivedData: ${hasReceivedData}`);
+
+      // Wait for the queued chunks, then dispatch a final event that arrived
+      // without its terminating blank line.
+      await chunkWork;
+      if (!res.writableEnded) {
+        converseEvents.feed('\n\n');
+      }
+
+      // A completed stream bills exactly one 200, also when no usage event ever arrived; one that
+      // delivered no data at all is answered with an error frame below and billed as a 502.
+      if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+        emitUsageEvent(options.req, options.usageMetrics, options.modelId, hasReceivedData ? 200 : 502);
+        options.usageMetrics.eventEmitted = true;
+      }
       
       // Log the complete streaming response if we have debug request ID
       if (debugRequestId && capturedResponseChunks.length > 0) {
@@ -1758,52 +1853,11 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
         }
       }
       
-      // If we received no data, write a simple response to prevent empty response
+      // No data at all: tell the client the upstream failed. Never invent an assistant reply or
+      // token counts (this used to write a canned "I'm Claude…" answer and a fake message_stop).
       if (!hasReceivedData && !res.writableEnded) {
-        logger.warn('AwsBedrockService', 'No data received in stream, sending fallback response');
-        
-        // Create a message_start event
-        sseWriter.writeEventStream(res, 'message_start', JSON.stringify({
-          type: 'message_start',
-          message: {
-            id: messageId,
-            type: 'message',
-            role: 'assistant',
-            model: originalModelId,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 }
-          }
-        }));
-        
-        // Emit content block with fallback text
-        sseWriter.writeEventStream(res, 'content_block_start', JSON.stringify({
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '' }
-        }));
-        
-        sseWriter.writeEventStream(res, 'content_block_delta', JSON.stringify({
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'text_delta', text: "I'm Claude, an AI assistant by Anthropic. How can I help you today?" }
-        }));
-        
-        sseWriter.writeEventStream(res, 'content_block_stop', JSON.stringify({
-          type: 'content_block_stop',
-          index: 0
-        }));
-        
-        sseWriter.writeEventStream(res, 'message_stop', JSON.stringify({
-          type: 'message_stop',
-          'amazon-bedrock-invocationMetrics': { 
-            inputTokenCount: 10,
-            outputTokenCount: 15,
-            invocationLatency: 500,
-            firstByteLatency: 200
-          }
-        }));
+        logger.warn('AwsBedrockService', 'No data received in stream, answering with an error');
+        writeStreamError(res, Object.assign(new Error('The upstream stream ended without any data'), { status: 502 }), outputFormat);
       }
       
       if (!res.writableEnded) {
@@ -1813,20 +1867,53 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
     });
 
     // Handle stream errors
+    // Set once the client hung up: the 499 below bills that, and an error the destroyed
+    // upstream raises afterwards is not a failure of this request.
+    let clientDisconnected = false;
+
     bedrockResponse.data.on('error', (error: any) => {
       logger.error('AwsBedrockService', 'Emulated streaming error:', error);
       if (!res.writableEnded) {
-        sseWriter.writeError(res, error);
+        writeStreamError(res, error, outputFormat);
+      }
+      // A failed upstream stream never reaches 'end': bill it once with its status (or 500)
+      // and the tokens folded so far, like the other controllers' failure paths.
+      if (!clientDisconnected) {
+        const statusCode = error?.status || error?.response?.status || 500;
+        chunkWork.then(() => {
+          if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+            emitUsageEvent(options.req, options.usageMetrics, options.modelId, statusCode);
+            options.usageMetrics.eventEmitted = true;
+          }
+        });
       }
     });
 
-    // Handle client disconnection
-    req.on('close', () => {
+    // Handle client disconnection: `res` 'close' with the response unfinished, as in the native
+    // handler (a `req` listener never fires on Node 20).
+    const onHangUp = () => {
+      const clientHungUp = !res.writableEnded;
+      if (!clientHungUp || clientDisconnected) return;
       logger.debug('AwsBedrockService', `Client disconnected from emulated stream for ${originalModelId}`);
+      clientDisconnected = true;
       if (bedrockResponse.data.destroy) {
         bedrockResponse.data.destroy();
       }
-    });
+      // Same as the native handler: the destroyed upstream never reaches 'end' or its terminal
+      // usage, so a client hang-up is billed as a 499 with the tokens folded so far, once.
+      if (clientHungUp) {
+        chunkWork.then(() => {
+          if (options.usageMetrics && !options.usageMetrics.eventEmitted) {
+            emitUsageEvent(options.req, options.usageMetrics, options.modelId, 499);
+            options.usageMetrics.eventEmitted = true;
+          }
+        });
+      }
+    };
+    res.on('close', onHangUp);
+    // Registered after the upstream call: a client that hung up while it was pending has already
+    // closed the response, which emits 'close' only once. Run the hang-up path now.
+    if (responseAlreadyClosed(res)) onHangUp();
   } catch (error: any) {
     logger.error('AwsBedrockService', 'Error establishing emulated stream:', error, {
       code: error.code,
@@ -1872,7 +1959,7 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
       const status = error.response?.status || 500;
       const errToSend = new Error(message) as any;
       errToSend.status = status;
-      sseWriter.writeError(res, errToSend);
+      writeStreamError(res, errToSend, outputFormat);
     }
   }
 }

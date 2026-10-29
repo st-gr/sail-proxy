@@ -15,13 +15,15 @@ import axios, { AxiosResponse } from 'axios';
 import modelService from '../services/modelService';
 import configService from '../services/configService';
 import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExecutor';
+import { resolveExternalTarget, ExternalTarget } from '../upstreams/externalTarget';
+import { sendUpstreamError } from '../upstreams/upstreamCall';
 import * as payloadLogger from '../utils/payloadLogger';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { captureImageTokensAsync } from '../utils/imageTokenCapture';
 import tokenCountService from '../services/tokenCountService';
-import { foldInclusiveUsage, foldExclusiveUsage, readCacheWriteTokens } from '../utils/usageFolding';
+import { foldInclusiveUsage, foldOrchestrationUsageFor, readCacheWriteTokens } from '../utils/usageFolding';
 import { resolveResponsesEligibility, deployedSiblingName, resolveResponsesRoute } from '../utils/responsesEligibility';
 import { buildOrchestrationPayload, UnsupportedInputItemError } from '../responses/orchestrationBridge/requestTranslator';
 import { translateOrchestrationResponse } from '../responses/orchestrationBridge/responseTranslator';
@@ -33,7 +35,8 @@ import sapAIService from '../services/sapAIService';
 import * as crypto from 'crypto';
 import { stripUnsupportedParams, applyParamRenames } from '../utils/unsupportedParamFilter';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
-import { normalizeUpstreamError } from '../utils/upstreamErrorEnvelope';
+import { normalizeUpstreamError, sanitizeUpstreamErrorObject } from '../utils/upstreamErrorEnvelope';
+import { deferStreamStart, chunkError, failureFromChunk, isSubstantiveChunk } from '../utils/streamStart';
 import { awaitResponsesStreamIdle, abortResponsesStreamContinuation } from '../utils/responsesStreamIdle';
 // The single definition of the terminal Responses event types, shared with both res.write
 // interceptors. It lived here as a third private copy — and independently drifting copies
@@ -41,6 +44,8 @@ import { awaitResponsesStreamIdle, abortResponsesStreamContinuation } from '../u
 import { TERMINAL_RESPONSE_TYPES } from '../utils/sseFraming';
 import { enforceEntitlement } from '../utils/modelEntitlement';
 import { recordInvokedTools, recordNestedTools, gateContext, gateResponseBody, createCallGate, responsesAdapter } from '../toolGovernance';
+import { refuseIfForcedWithoutPlugin } from '../plugins/pseudonymization/forcedRun';
+import { currentSapTarget } from '../sap/sapTarget';
 
 function badRequest(res: Response, message: string, code = 'model_not_supported'): void {
   res.status(400).json({ error: { message, type: 'invalid_request_error', code } });
@@ -294,7 +299,8 @@ async function estimateAbortedUsage(
  * off each continuation round's response and folds it onto
  * `req.__responsesExtraUsage` via `noteExtraUsage` (`usageFolding.ts`), which
  * IS part of billing. So the whole picture, read across both call sites: this
- * function's own fold is exclusive-regime (SAP's raw counting), the
+ * function's own fold is in SAP's raw counting — exclusive for Claude and Amazon
+ * Nova, and per model family otherwise (`cacheRegimeFor`, usageFolding.ts) — the
  * accumulator normalizes inclusive per continuation round, and the
  * `response.usage` object handed back to the client is inclusive display —
  * three different regimes, on the same request, each correct for its own
@@ -327,23 +333,28 @@ async function estimateAbortedUsage(
  *   both copies — 0 -> 34181, ~2x the write cost — which is why the fix is
  *   de-duplication.
  *
- * So this folds with `foldExclusiveUsage`: `prompt_tokens` is full-rate input
- * as-is, and the two cache counters are separate line items ADDED alongside it,
- * with NO subtraction. Subtracting here on today's payload would compute
+ * All of the above was measured on anthropic--claude-4.8-opus, and for Claude
+ * this folds exclusively: `prompt_tokens` is full-rate input as-is, and the two
+ * cache counters are separate line items ADDED alongside it, with NO
+ * subtraction. Subtracting there on today's payload would compute
  * `max(0, 14 - 17692) = 0` and erase every full-rate token the turn actually
- * consumed. The regime is named at the call site, not inferred from the shape
- * of the object — see `usageFolding.ts` for why that distinction is load-bearing.
+ * consumed. Amazon Nova folds exclusively too (measured 2026-09-30). OpenAI-family
+ * and Gemini models count the cache INSIDE `prompt_tokens` (probe of 2026-09-30,
+ * gpt-4.1-nano, gpt-5-nano, gemini-2.5-flash-lite), and other families are
+ * assumed to, so the regime comes from the orchestration model name via
+ * `foldOrchestrationUsageFor` — never inferred from the shape of the object; see
+ * `usageFolding.ts` for why that distinction is load-bearing.
  */
-function recordOrchestrationUsage(usageMetrics: any, usage: any): void {
+function recordOrchestrationUsage(usageMetrics: any, usage: any, modelName: string): void {
   if (!usage) return;
   const details = usage.prompt_tokens_details || {};
-  const { cachedTokens } = mapCachedTokens(usage);   // cache READ, exclusive of prompt_tokens
-  foldExclusiveUsage(
+  const { cachedTokens } = mapCachedTokens(usage);   // cache READ
+  foldOrchestrationUsageFor(
+    modelName,
     usageMetrics,
     usage.prompt_tokens ?? 0,
     usage.completion_tokens ?? 0,
-    // Cache WRITE. Priced separately by admin's cost SQL, and — like the read
-    // count — reported by SAP alongside `prompt_tokens`, not inside it.
+    // Cache WRITE. Priced separately by admin's cost SQL.
     details.cache_creation_tokens ?? 0,
     cachedTokens,
   );
@@ -519,16 +530,18 @@ async function dispatchOrchestration(ctx: {
     // reusing the first turn's id would claim two upstream calls were one.
     translateContinuationResponse: (envelope: any) => translateOrchestrationResponse(envelope, {
       model: effectiveModel,
+      sapModel: modelName,
       responseId: `resp_${crypto.randomBytes(12).toString('hex')}`,
     }),
     createContinuationStreamTranslator: () => createOrchestrationBlockTranslator({
       model: effectiveModel,
+      sapModel: modelName,
       responseId: `resp_${crypto.randomBytes(12).toString('hex')}`,
     }),
   };
 
   if (isStreaming) {
-    const translator = createResponsesStreamTranslator({ model: effectiveModel, responseId });
+    const translator = createResponsesStreamTranslator({ model: effectiveModel, sapModel: modelName, responseId });
     let lastUsage: any = null;
     // Committed on the first block actually written, not before the upstream
     // call — see this function's docstring for why.
@@ -581,11 +594,70 @@ async function dispatchOrchestration(ctx: {
     // `res.write`: pseudonymization's SSE unmask interceptor, the namespace layer and the
     // hosted-tool interceptor all sit on it. So plugins do see this stream — they see it
     // once, already translated, which is the only shape they can act on correctly.
-    await sapAIService.streamChatCompletion(payload as any, (chunk: any) => {
-      const body = chunk?.final_result ?? chunk;
-      if (body?.usage) lastUsage = body.usage;
-      writeBlocks(translator.onChunk(chunk));
-    }, undefined, req as any, undefined);
+    // Nothing is written until the upstream delivers content or the start deadline passes
+    // (utils/streamStart.ts). SAP answers HTTP 200 and sends a rejection — "prompt is too
+    // long", measured 2026-10-13 — as an error chunk right after its templating chunk. Fed
+    // straight to the translator, that templating chunk committed `200` + response.created,
+    // and the rejection could only follow as response.failed inside a 200 stream. Held here
+    // instead, a failure that arrives first is thrown to handleResponses' catch below,
+    // which answers with the upstream status and the OpenAI error envelope, as the real
+    // Responses API rejects a request it never started. Held chunks are replayed through
+    // the translator, in order, once the stream starts, so the frames are the same.
+    const heldChunks: any[] = [];
+    let preStartFailure: any = null;
+    const stream = deferStreamStart({
+      onStart: () => {
+        const held = heldChunks.splice(0);
+        // The deadline passed with nothing at all from upstream: open the turn
+        // (response.created + response.in_progress) so the client sees it is alive.
+        if (held.length === 0) writeBlocks(translator.onChunk({}));
+        for (const chunk of held) writeBlocks(translator.onChunk(chunk));
+      },
+      isOpen: () => !res.writableEnded,
+    });
+
+    try {
+      await sapAIService.streamChatCompletion(payload as any, (chunk: any) => {
+        const body = chunk?.final_result ?? chunk;
+        if (body?.usage) lastUsage = body.usage;
+        if (!stream.started) {
+          if (preStartFailure) return;
+          if (chunkError(chunk)) {
+            preStartFailure = chunk;
+            stream.stop();
+            return;
+          }
+          if (!isSubstantiveChunk(chunk)) {
+            heldChunks.push(chunk);
+            return;
+          }
+          stream.start();
+        }
+        writeBlocks(translator.onChunk(chunk));
+      }, undefined, req as any, undefined);
+    } catch (error) {
+      // Thrown before the start (SAP refused the call outright): nothing was written, and
+      // the catch below answers with the status. After the start: a response.failed frame.
+      stream.stop();
+      throw error;
+    }
+    if (!preStartFailure && !res.writableEnded) {
+      // Flush what was held (an upstream that ended without content still gets its
+      // response.created ahead of the terminal frame).
+      stream.start();
+    }
+    stream.stop();
+
+    if (preStartFailure) {
+      const failure = failureFromChunk(preStartFailure, 502);
+      const raw = chunkError(preStartFailure);
+      const upstreamError: any = new Error(failure.message);
+      upstreamError.status = failure.status;
+      // Filtered here as well as in normalizeUpstreamError: the catch logs this body, and
+      // SAP's error carries the templated prompt in intermediate_results.
+      upstreamError.details = { error: raw && typeof raw === 'object' ? sanitizeUpstreamErrorObject(raw) : { message: failure.message } };
+      throw upstreamError;
+    }
 
     writeBlocks(translator.finish());
 
@@ -597,7 +669,7 @@ async function dispatchOrchestration(ctx: {
     // cut the splice off mid-write. This branch runs no after-plugin chain either, so the
     // idle hook is the only place the engine can be waited on. Absent an interceptor every
     // one of these returns immediately and the path behaves as it did before.
-    recordOrchestrationUsage(usageMetrics, lastUsage);
+    recordOrchestrationUsage(usageMetrics, lastUsage, modelName);
 
     await awaitResponsesStreamIdle(res, configService.getTimeout(true), () => {
       logger.warn('responsesController', `Hosted-tool continuation did not finish in time for ${effectiveModel}; closing the stream`);
@@ -638,9 +710,9 @@ async function dispatchOrchestration(ctx: {
   }
 
   const body = envelope?.final_result ?? envelope ?? {};
-  recordOrchestrationUsage(usageMetrics, body?.usage);
+  recordOrchestrationUsage(usageMetrics, body?.usage, modelName);
 
-  let finalBody: any = translateOrchestrationResponse(envelope, { model: effectiveModel, responseId });
+  let finalBody: any = translateOrchestrationResponse(envelope, { model: effectiveModel, sapModel: modelName, responseId });
   if (hookConfig) finalBody = await executeAfterPlugins(req, res, finalBody, hookConfig);
 
   const extra = (req as any).__responsesExtraUsage;
@@ -662,6 +734,7 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
   const isStreaming = (req.body || {}).stream === true;
   // Declared outside the try because the catch logs and bills against it.
   let effectiveModel: string = requestedModel;
+  let external: ExternalTarget | null = null;
 
   if (!requestedModel) {
     badRequest(res, 'Missing required parameter: model', 'invalid_request_error');
@@ -675,7 +748,12 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
 
     if (!enforceEntitlement(req, res, requestedModel)) return;
 
-    let modelDetails: any = await modelService.getModelDetails(requestedModel);
+    // A Connection model is forwarded natively to its connection, never to SAP (spec 2026-10-23 §5.3).
+    const resolution = await resolveExternalTarget(req, res, requestedModel, 'openai', 'openai');
+    if (resolution.kind === 'handled') return;
+    external = resolution.kind === 'external' ? resolution.target : null;
+
+    let modelDetails: any = external ? null : await modelService.getModelDetails(requestedModel);
 
     // This route is served only by a DIRECT deployment, and the gateway lists
     // every deployment twice: the foundation entry `X` (orchestration, no
@@ -694,7 +772,7 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // to the bridge. Confined to the Responses path — /chat/completions still
     // routes `X` through orchestration regardless, which is the whole point of
     // the two entries.
-    const sibling = modelDetails?.deploymentUrl ? null : deployedSiblingName(requestedModel);
+    const sibling = external || modelDetails?.deploymentUrl ? null : deployedSiblingName(requestedModel);
     if (sibling) {
       const siblingDetails: any = await modelService.getModelDetails(sibling);
       if (siblingDetails?.deploymentUrl) {
@@ -726,7 +804,7 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // exactly — a deployment that speaks the Responses API is forwarded to
     // unchanged. `orchestration` is the new branch: a catalogue model that
     // cannot serve natively now goes through the bridge instead of a 400.
-    const route = resolveResponsesRoute({
+    const route = external ? 'native' : resolveResponsesRoute({
       modelName: effectiveModel,
       provider,
       isDeployed,
@@ -746,7 +824,7 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // the native path and build the URL "undefined/responses". resolveResponsesRoute
     // sends that case to the bridge instead, so this guard now only fires if a
     // future change routes a deploymentless model natively.
-    if (route === 'native' && !modelDetails.deploymentUrl) {
+    if (!external && route === 'native' && !modelDetails.deploymentUrl) {
       logger.warn('responsesController', `Model ${requestedModel} is flagged for the Responses API but has no deployment URL`);
       badRequest(res,
         `Model ${requestedModel} has no deployment and cannot serve the Responses API. It requires a deployed GPT-5+ or o-series model, e.g. gpt-5.3-codex--deployed.`);
@@ -767,15 +845,11 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // a configuration activated before this route existed has no `responses` /
     // `responses-stream` keys under hooks.defaults.openai. Masking would then be
     // silently skipped on the one endpoint the operator locked with
-    // allow_user_bypass:false. Scoped to this route only: nothing else changes.
-    if (!hookConfig && configService.isPseudonymizationForced('openai')) {
-      const message = 'Pseudonymization is force-enabled for the openai endpoint but no plugin hook is configured for '
-        + '`responses` / `responses-stream`. Activate a configuration that includes these keys under '
-        + '`hooks.defaults.openai` before using this route.';
-      logger.error('responsesController', `${message} (model=${requestedModel}, subPath=${subPath})`);
-      res.status(503).json({ error: { message, type: 'api_error', code: 'pseudonymization_hook_missing' } });
-      return;
-    }
+    // allow_user_bypass:false. The same holds for a hook chain that resolves but would
+    // not run the plugin (no pseudonymizationPlugin entry, a match that does not fit).
+    if (refuseIfForcedWithoutPlugin(req, res, hookConfig, {
+      endpoint: 'openai', subPaths: ['responses', 'responses-stream'], servedModel: effectiveModel, component: 'responsesController',
+    })) return;
 
     if (hookConfig) {
       const pluginResult: any = await executeBeforePlugins(req, res, hookConfig);
@@ -789,26 +863,36 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
       return;
     }
 
-    const payload: any = { ...req.body };
-    if (modelDetails.model) payload.model = modelDetails.model;   // deployment rejects the --deployed alias
+    let payload: any;
+    let url: string;
+    let headers: Record<string, string>;
+    if (external) {
+      // Built from the post-plugin body. No unsupported-param stripping or renames: those are
+      // keyed on SAP providers, and the client already speaks this provider's own API.
+      const built = await external.adapter.buildRequest('responses', req.body, external.model.upstreamModel);
+      ({ url, headers, body: payload } = built);
+    } else {
+      payload = { ...req.body };
+      if (modelDetails.model) payload.model = modelDetails.model;   // deployment rejects the --deployed alias
 
-    const dropped = stripUnsupportedParams(payload, configService.getUnsupportedParams(provider, effectiveModel));
-    if (dropped.length > 0) {
-      logger.warn('responsesController', `Dropped unsupported parameter(s) for ${effectiveModel}: ${dropped.join(', ')}`);
+      const dropped = stripUnsupportedParams(payload, configService.getUnsupportedParams(provider, effectiveModel));
+      if (dropped.length > 0) {
+        logger.warn('responsesController', `Dropped unsupported parameter(s) for ${effectiveModel}: ${dropped.join(', ')}`);
+      }
+      applyParamRenames(payload, configService.getParamRenames(provider, effectiveModel));
+
+      url = `${modelDetails.deploymentUrl}/responses`;
+
+      const authToken = await (modelService as any).getAuthToken();
+      headers = {
+        Authorization: `Bearer ${authToken}`,
+        'AI-Resource-Group': currentSapTarget().resourceGroup,
+        'Content-Type': 'application/json',
+      };
     }
-    applyParamRenames(payload, configService.getParamRenames(provider, effectiveModel));
-
-    const url = `${modelDetails.deploymentUrl}/responses`;
     if (debugRequestId) {
       payloadLogger.savePayload(debugRequestId, '02_responses_request_to_deployment', { url, payload }, req);
     }
-
-    const authToken = await (modelService as any).getAuthToken();
-    const headers = {
-      Authorization: `Bearer ${authToken}`,
-      'AI-Resource-Group': process.env.SAP_AI_RESOURCE_GROUP || 'default',
-      'Content-Type': 'application/json',
-    };
 
     // The web-search plugin continues the turn with a second deployment call after it
     // runs a search; it needs exactly what we resolved here. `payload` is the OUTBOUND
@@ -858,6 +942,9 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
       gated = result.body;
     }
 
+    // A connection answers with its own model name (an Azure deployment); the client asked for the id.
+    if (external && gated && typeof gated === 'object') gated = { ...gated, model: requestedModel };
+
     let finalBody = gated;
     if (hookConfig) finalBody = await executeAfterPlugins(req, res, gated, hookConfig);
 
@@ -873,6 +960,12 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
 
     res.status(upstream.status).json(finalBody);
   } catch (error: any) {
+    // A connection's failure before any byte went out: its status, its error redacted of the
+    // credential (OpenAI and Azure echo a wrong key), in the OpenAI shape.
+    if (external && !res.headersSent) {
+      emitUsageEvent(req, usageMetrics, effectiveModel, await sendUpstreamError(req, res, error, external.adapter, 'openai'));
+      return;
+    }
     // Two upstream shapes reach here: axios errors from the native path carry
     // `.response.status`/`.response.data`; sapAIService's CustomError from the
     // orchestration path carries `.status`/`.details` and no `.response` at all.

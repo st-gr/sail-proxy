@@ -43,10 +43,10 @@ jest.mock('../../src/fileSearch/db', () => ({
 }));
 
 const embedMock = jest.fn<(...args: any[]) => Promise<any>>();
-jest.mock('../../src/fileSearch/embedder', () => ({
-  __esModule: true,
-  embed: (...a: any[]) => embedMock(...a),
-}));
+jest.mock('../../src/fileSearch/embedder', () => {
+  const actual: any = jest.requireActual('../../src/fileSearch/embedder');
+  return { ...actual, embed: (...a: any[]) => embedMock(...a) };
+});
 
 const rerankMock = jest.fn<(...args: any[]) => Promise<any>>();
 jest.mock('../../src/fileSearch/reranker', () => {
@@ -72,13 +72,18 @@ jest.mock('../../src/fileSearch/repository', () => {
 });
 
 import { searchVectorStores, SearchOptions } from '../../src/fileSearch/search';
+import { storeAccessPredicateSql } from '../../src/fileSearch/recallSql';
 import { searchVectorStore } from '../../src/controllers/vectorStoresController';
 import { RecallInputError, CandidateChunk, candidateId } from '../../src/fileSearch/repository';
+import { EmbeddingModelUnavailableError } from '../../src/fileSearch/embedder';
+import { StoreModelUnavailableError } from '../../src/fileSearch/search';
+import { RerankerUnavailableError } from '../../src/fileSearch/reranker';
 // Deliberately the REAL module, not jest.mock'ed: the "invisible when
 // disabled" tests below rely on record()'s own config-gated early return to
 // prove the pool genuinely goes untouched, not just that search.ts skipped
 // calling it.
 import * as teacherLogger from '../../src/fileSearch/teacherLogger';
+import usageEmitter from '../../src/services/usageEventEmitter';
 
 function candidate(i: number, overrides: Partial<CandidateChunk> = {}): CandidateChunk {
   return {
@@ -138,6 +143,9 @@ function mockTeacherLogging(overrides: Partial<{
   };
 }
 
+/** What `embed` is asked for when searching the default store. */
+const STORE_TARGET = { model: 'text-embedding-3-large', dimensions: 1536 };
+
 const base: SearchOptions = {
   storeIds: ['vs_owned'],
   query: 'capital of france',
@@ -152,12 +160,14 @@ beforeEach(() => {
     embeddingModel: 'text-embedding-3-large',
     embeddingDimensions: 1536,
     rewriteQuery: false,
-    hybrid: { candidates: 50, rrfK: 60, lexicalEnabled: true, rerank: { enabled: 'auto', model: 'cohere-reranker' } },
+    hybrid: { candidates: 50, rrfK: 60, lexicalEnabled: true, lexicalQuery: 'any', rerank: { enabled: 'auto', model: 'cohere-reranker' } },
   };
   // Off by default: most tests here are unrelated to teacher logging, and
   // this keeps them from incidentally exercising record()'s write path.
   mockTeacherLogging({ enabled: false });
-  poolQuery.mockImplementation(async () => ({ rows: [{ id: 'vs_owned', embedding_dim: 1536 }] }));
+  poolQuery.mockImplementation(async () => ({
+    rows: [{ id: 'vs_owned', embedding_dim: 1536, embedding_model: 'text-embedding-3-large' }],
+  }));
   // Backs record()'s `pool.connect()` with a client whose queries route
   // through the same poolQuery spy, so "no extra query" assertions catch a
   // logging INSERT exactly like they'd catch any other stray query.
@@ -190,12 +200,17 @@ describe('ownership', () => {
     expect(recallCandidatesMock).not.toHaveBeenCalled();
   });
 
-  it('scopes ownership in the SQL predicate (owner OR is_shared), not by post-filtering recall output', async () => {
+  it('scopes ownership in the SQL predicate (owner OR is_shared OR a team share), not by post-filtering recall output', async () => {
     await searchVectorStores(base);
     const [sql, params] = poolQuery.mock.calls[0];
-    expect(sql).toMatch(/owner_email = \$2/);
-    expect(sql).toMatch(/is_shared = true/);
-    expect(params).toEqual([['vs_owned'], 'owner@example.com']);
+    expect(sql).toContain(storeAccessPredicateSql('$3'));
+    expect(params).toEqual([['vs_owned'], 'owner@example.com', []]);
+  });
+
+  it('binds the caller\'s team ids to the store check and hands them to recall', async () => {
+    await searchVectorStores({ ...base, teamIds: ['team-1'] });
+    expect(poolQuery.mock.calls[0][1]).toEqual([['vs_owned'], 'owner@example.com', ['team-1']]);
+    expect(recallCandidatesMock.mock.calls[0][0]).toMatchObject({ ownerEmail: 'owner@example.com', teamIds: ['team-1'] });
   });
 
   it('dedupes storeIds before checking ownership and touching activity', async () => {
@@ -368,8 +383,8 @@ describe('rewrite_query', () => {
   it('rewrites the query before embedding and recall when enabled per-call', async () => {
     rewriteMock.mockResolvedValueOnce('rewritten query text');
     const result = await searchVectorStores({ ...base, rewriteQuery: true });
-    expect(rewriteMock).toHaveBeenCalledWith('capital of france');
-    expect(embedMock).toHaveBeenCalledWith(['rewritten query text'], 'query');
+    expect(rewriteMock).toHaveBeenCalledWith('capital of france', undefined);
+    expect(embedMock).toHaveBeenCalledWith(['rewritten query text'], 'query', STORE_TARGET);
     expect(recallCandidatesMock.mock.calls[0][0].queryText).toBe('rewritten query text');
     expect(result.searchQuery).toBe('rewritten query text');
   });
@@ -378,14 +393,20 @@ describe('rewrite_query', () => {
     mockConfig.rewriteQuery = true;
     const result = await searchVectorStores({ ...base, rewriteQuery: false });
     expect(rewriteMock).not.toHaveBeenCalled();
-    expect(embedMock).toHaveBeenCalledWith(['capital of france'], 'query');
+    expect(embedMock).toHaveBeenCalledWith(['capital of france'], 'query', STORE_TARGET);
     expect(result.searchQuery).toBe('capital of france');
   });
 
   it('falls back to the config default when no per-call override is given', async () => {
     mockConfig.rewriteQuery = true;
     await searchVectorStores(base);
-    expect(rewriteMock).toHaveBeenCalledWith('capital of france');
+    expect(rewriteMock).toHaveBeenCalledWith('capital of france', undefined);
+  });
+
+  it("hands the search's usage sink to the rewriter, so a rewrite is billed with the search", async () => {
+    const usage = jest.fn();
+    await searchVectorStores({ ...base, rewriteQuery: true, usage });
+    expect(rewriteMock).toHaveBeenCalledWith('capital of france', usage);
   });
 
   it('config default off + no override: never calls the rewriter', async () => {
@@ -406,7 +427,7 @@ describe('rewrite_query', () => {
     rewriteMock.mockRejectedValueOnce(new Error('contract violation: this should never happen'));
     const result = await searchVectorStores({ ...base, rewriteQuery: true });
     expect(result.searchQuery).toBe('capital of france');
-    expect(embedMock).toHaveBeenCalledWith(['capital of france'], 'query');
+    expect(embedMock).toHaveBeenCalledWith(['capital of france'], 'query', STORE_TARGET);
   });
 });
 
@@ -417,6 +438,95 @@ describe('error propagation', () => {
   it('propagates RecallInputError (malformed/oversized filter) as-is — a 400, never wrapped', async () => {
     recallCandidatesMock.mockRejectedValue(new RecallInputError('bad filter'));
     await expect(searchVectorStores(base)).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One model per store (plan Decisions 2, 7 and 13): the query is embedded with
+// each store's own model, stores are grouped by model with one vector arm per
+// group, and a store whose model is no longer served fails with a clear 409.
+// ---------------------------------------------------------------------------
+describe('one model per store', () => {
+  const stores = [
+    { id: 'vs_a', embedding_dim: 1536, embedding_model: 'model-a', status: 'completed' },
+    { id: 'vs_b', embedding_dim: 1536, embedding_model: 'model-b', status: 'completed' },
+    { id: 'vs_c', embedding_dim: 1536, embedding_model: 'model-a', status: 'completed' },
+  ];
+  const vectorFor: Record<string, number[]> = { 'model-a': [1, 0, 0], 'model-b': [0, 1, 0] };
+
+  beforeEach(() => {
+    poolQuery.mockImplementation(async () => ({ rows: stores }));
+    embedMock.mockImplementation(async (_texts: any, _kind: any, target: any) => (
+      { vectors: [vectorFor[target.model]], usage: { promptTokens: 1, totalTokens: 1 } }));
+  });
+
+  it('embeds the query with the store\'s own model, not the configured one', async () => {
+    poolQuery.mockImplementation(async () => ({ rows: [stores[1]] }));
+    await searchVectorStores({ ...base, storeIds: ['vs_b'] });
+    expect(mockConfig.embeddingModel).toBe('text-embedding-3-large');
+    expect(embedMock).toHaveBeenCalledTimes(1);
+    expect(embedMock).toHaveBeenCalledWith(['capital of france'], 'query', { model: 'model-b', dimensions: 1536 });
+    expect(recallCandidatesMock.mock.calls[0][0].vectorArms).toEqual([
+      { storeIds: ['vs_b'], queryEmbedding: [0, 1, 0], model: 'model-b' },
+    ]);
+  });
+
+  it('embeds once per model and gives recall one vector arm per model group', async () => {
+    await searchVectorStores({ ...base, storeIds: ['vs_a', 'vs_b', 'vs_c'] });
+
+    expect(embedMock).toHaveBeenCalledTimes(2);
+    const models = embedMock.mock.calls.map((c) => (c[2] as any).model).sort();
+    expect(models).toEqual(['model-a', 'model-b']);
+    for (const call of embedMock.mock.calls) {
+      expect(call[0]).toEqual(['capital of france']);
+      expect((call[2] as any).dimensions).toBe(1536);
+    }
+    const arg = recallCandidatesMock.mock.calls[0][0];
+    expect(arg.storeIds).toEqual(['vs_a', 'vs_b', 'vs_c']);
+    expect(arg.queryEmbedding).toBeUndefined();
+    expect(arg.vectorArms).toEqual([
+      { storeIds: ['vs_a', 'vs_c'], queryEmbedding: [1, 0, 0], model: 'model-a' },
+      { storeIds: ['vs_b'], queryEmbedding: [0, 1, 0], model: 'model-b' },
+    ]);
+  });
+
+  it('records the models actually used on the teacher log', async () => {
+    mockTeacherLogging({ enabled: true });
+    const spy = jest.spyOn(teacherLogger, 'record');
+    poolQuery.mockImplementation(async () => ({ rows: [stores[1]] }));
+    await searchVectorStores({ ...base, storeIds: ['vs_b'] });
+    expect(spy.mock.calls[0][0].embeddingModel).toBe('model-b');
+  });
+
+  it('fails with store_model_unavailable (409, naming the store and asking for a re-embed) when the store\'s model is not served', async () => {
+    embedMock.mockImplementation(async (_t: any, _k: any, target: any) => {
+      if (target.model === 'model-b') throw new EmbeddingModelUnavailableError('model-b');
+      return { vectors: [vectorFor[target.model]], usage: { promptTokens: 1, totalTokens: 1 } };
+    });
+
+    const error: any = await searchVectorStores({ ...base, storeIds: ['vs_a', 'vs_b'] }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(StoreModelUnavailableError);
+    expect(error).toMatchObject({ status: 409, code: 'store_model_unavailable', storeId: 'vs_b', storeIds: ['vs_b'] });
+    expect(error.message).toContain('vs_b');
+    expect(error.message).toContain('model-b');
+    expect(error.message).toMatch(/re-embed/i);
+    expect(error.message).not.toContain('vs_a');
+    expect(recallCandidatesMock).not.toHaveBeenCalled();
+    expect(touchStoreActivityMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves every other embedding failure as it was', async () => {
+    const upstream = Object.assign(new Error('Request failed with status code 500'), { response: { status: 500 } });
+    embedMock.mockRejectedValue(upstream);
+    await expect(searchVectorStores({ ...base, storeIds: ['vs_a'] })).rejects.toBe(upstream);
+  });
+
+  it('keeps the dimension check: a store on another dimension still 409s as a dimension mismatch before any embed', async () => {
+    poolQuery.mockImplementation(async () => ({ rows: [stores[0], { ...stores[1], embedding_dim: 3072 }] }));
+    const error: any = await searchVectorStores({ ...base, storeIds: ['vs_a', 'vs_b'] }).catch((e) => e);
+    expect(error.code).toBe('embedding_dimension_mismatch');
+    expect(embedMock).not.toHaveBeenCalled();
   });
 });
 
@@ -493,6 +603,21 @@ describe('teacher-label logging', () => {
     const spy = jest.spyOn(teacherLogger, 'record');
     await searchVectorStores(base);
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ teacher: null }));
+  });
+
+  it('passes the request\'s hybrid_search weights to the logger', async () => {
+    mockTeacherLogging({ enabled: true });
+    const spy = jest.spyOn(teacherLogger, 'record');
+    await searchVectorStores({ ...base, rankingOptions: { hybridWeights: { embedding: 1, text: 2 } } });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ hybridWeights: { embedding: 1, text: 2 } }));
+  });
+
+  it('passes the configured full-text query mode (hybrid.lexical_query) to the logger', async () => {
+    mockTeacherLogging({ enabled: true });
+    mockConfig.hybrid.lexicalQuery = 'all';
+    const spy = jest.spyOn(teacherLogger, 'record');
+    await searchVectorStores(base);
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ lexicalQuery: 'all' }));
   });
 
   it('passes the FULL candidate set to the logger, not the filtered results', async () => {
@@ -626,6 +751,108 @@ describe('teacher-label logging', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Usage recording (phase 4b): the `usage` sink sees every billed embedding
+// request and the rerank's search units, also when the search then fails.
+// ---------------------------------------------------------------------------
+describe('usage sink', () => {
+  /** An embed fake that reports one billed request through `onUsage`, as embedder.ts does. */
+  function embedReporting(promptTokens: number, elapsedMs = 4): (...a: any[]) => Promise<any> {
+    return async (_t: any, _k: any, target: any, options?: any) => {
+      options?.onUsage?.({ promptTokens, totalTokens: promptTokens, elapsedMs });
+      return { vectors: [[0.1, 0.2, 0.3]], usage: { promptTokens, totalTokens: promptTokens }, target };
+    };
+  }
+
+  it('records one query-embedding event per billed request, with the store\'s model', async () => {
+    embedMock.mockImplementation(embedReporting(7, 12));
+    mockRerankUnavailable();
+    const usage = jest.fn();
+    await searchVectorStores({ ...base, usage });
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(usage).toHaveBeenCalledWith({
+      endpoint: 'file_search/search', model: 'text-embedding-3-large', inputTokens: 7, unit: 'tokens', responseTime: 12,
+    });
+  });
+
+  it('records the rerank search units under file_search/rerank with the configured reranker model', async () => {
+    embedMock.mockImplementation(embedReporting(7));
+    mockRerankReturns({ hits: [{ index: 0, relevanceScore: 0.9 }], searchUnits: 2 });
+    const usage = jest.fn();
+    await searchVectorStores({ ...base, usage });
+    expect(usage).toHaveBeenCalledTimes(2);
+    expect(usage).toHaveBeenLastCalledWith({
+      endpoint: 'file_search/rerank', model: 'cohere-reranker', inputTokens: 2, unit: 'units', responseTime: expect.any(Number),
+    });
+  });
+
+  it.each([
+    ['no reranker answered', null],
+    ['no search units reported', { hits: [{ index: 0, relevanceScore: 0.9 }] }],
+    ['zero search units', { hits: [{ index: 0, relevanceScore: 0.9 }], searchUnits: 0 }],
+    ['non-finite search units', { hits: [{ index: 0, relevanceScore: 0.9 }], searchUnits: Number.NaN }],
+  ])('records no units event when %s', async (_label, rerankResult) => {
+    embedMock.mockImplementation(embedReporting(7));
+    rerankMock.mockResolvedValueOnce(rerankResult);
+    const usage = jest.fn();
+    await searchVectorStores({ ...base, usage });
+    expect(usage.mock.calls.map((c: any[]) => c[0].endpoint)).toEqual(['file_search/search']);
+  });
+
+  it('records no rerank event when recall found nothing to rerank', async () => {
+    embedMock.mockImplementation(embedReporting(7));
+    recallCandidatesMock.mockResolvedValue([]);
+    const usage = jest.fn();
+    await searchVectorStores({ ...base, usage });
+    expect(usage.mock.calls.map((c: any[]) => c[0].endpoint)).toEqual(['file_search/search']);
+  });
+
+  it('records a succeeded model group even when another group fails the search', async () => {
+    poolQuery.mockImplementation(async () => ({
+      rows: [
+        { id: 'vs_a', embedding_dim: 1536, embedding_model: 'model-a', status: 'completed' },
+        { id: 'vs_b', embedding_dim: 1536, embedding_model: 'model-b', status: 'completed' },
+      ],
+    }));
+    const reporting = embedReporting(5);
+    embedMock.mockImplementation(async (t: any, k: any, target: any, options?: any) => {
+      if (target.model === 'model-b') throw new EmbeddingModelUnavailableError('model-b');
+      return reporting(t, k, target, options);
+    });
+    const usage = jest.fn();
+    await expect(searchVectorStores({ ...base, storeIds: ['vs_a', 'vs_b'], usage }))
+      .rejects.toBeInstanceOf(StoreModelUnavailableError);
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(usage).toHaveBeenCalledWith(expect.objectContaining({ model: 'model-a', inputTokens: 5 }));
+  });
+
+  it('records the embedding when the search fails after it', async () => {
+    embedMock.mockImplementation(embedReporting(9));
+    recallCandidatesMock.mockRejectedValue(new RecallInputError('bad filter'));
+    const usage = jest.fn();
+    await expect(searchVectorStores({ ...base, usage })).rejects.toMatchObject({ status: 400 });
+    expect(usage).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'file_search/search', inputTokens: 9 }));
+  });
+
+  it('records the embedding and no units event when a required reranker is unavailable', async () => {
+    mockConfig.hybrid.rerank.enabled = true;
+    embedMock.mockImplementation(embedReporting(8));
+    rerankMock.mockRejectedValueOnce(new RerankerUnavailableError('No RUNNING SAP AI Core reranker deployment was found for file_search'));
+    const usage = jest.fn();
+    await expect(searchVectorStores({ ...base, usage })).rejects.toBeInstanceOf(RerankerUnavailableError);
+    expect(usage.mock.calls.map((c: any[]) => c[0])).toEqual([
+      expect.objectContaining({ endpoint: 'file_search/search', inputTokens: 8, unit: 'tokens' }),
+    ]);
+  });
+
+  it('a sink that throws on the rerank event never fails the search', async () => {
+    embedMock.mockImplementation(embedReporting(7));
+    mockRerankReturns({ hits: [{ index: 0, relevanceScore: 0.9 }], searchUnits: 1 });
+    const usage = jest.fn((u: any) => { if (u.endpoint === 'file_search/rerank') throw new Error('sink boom'); });
+    await expect(searchVectorStores({ ...base, usage })).resolves.toMatchObject({ mode: 'reranked' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The HTTP endpoint: OpenAI page shape, `mode` NEVER on the wire
 // ---------------------------------------------------------------------------
 describe('POST /vector_stores/{id}/search (controller)', () => {
@@ -667,6 +894,21 @@ describe('POST /vector_stores/{id}/search (controller)', () => {
     }
   });
 
+  it('adds pages as an extension only to a hit with pages; every other field as before', async () => {
+    recallCandidatesMock.mockResolvedValue([candidate(0, { pages: { first: 4, last: 5 } }), candidate(1)]);
+    mockRerankAvailable(2);
+    const res = makeRes();
+    await searchVectorStore(baseReq(), res, jest.fn() as any);
+    expect(res.statusCode).toBe(200);
+    const [paged, plain] = res.body.data;
+    expect(paged).toEqual({
+      file_id: expect.any(String), filename: expect.any(String), score: expect.any(Number),
+      attributes: expect.any(Object), content: expect.any(Array), pages: { first: 4, last: 5 },
+    });
+    expect(Object.keys(plain).sort()).toEqual(['attributes', 'content', 'file_id', 'filename', 'score']);
+    expect(paged.attributes).not.toHaveProperty('pages');
+  });
+
   it('400s when query is missing', async () => {
     const res = makeRes();
     await searchVectorStore(baseReq({ body: {} }), res, jest.fn() as any);
@@ -679,12 +921,65 @@ describe('POST /vector_stores/{id}/search (controller)', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  // OpenAI bounds the field to "between 1 and 50 inclusive" (openai-python
+  // types/vector_store_search_params.py) and the Responses file_search tool here 400s outside it
+  // (plugins/fileSearch/descriptor.ts prepare): the REST search answers the same 400, never a clamp.
+  it.each([0, 51, -1, 2.5, 999])('400s an out-of-range max_num_results (%p) as the Responses tool does', async (bad) => {
+    const res = makeRes();
+    await searchVectorStore(baseReq({ body: { query: 'x', max_num_results: bad } }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('invalid_max_num_results');
+    expect(res.body.error.message).toBe('max_num_results must be an integer between 1 and 50');
+    expect(recallCandidatesMock).not.toHaveBeenCalled();
+  });
+
+  it('treats max_num_results: null as absent, as the Responses tool does', async () => {
+    recallCandidatesMock.mockResolvedValue(makeCandidates(60));
+    mockRerankUnavailable();
+    const withNull = makeRes();
+    await searchVectorStore(baseReq({ body: { query: 'x', max_num_results: null } }), withNull, jest.fn() as any);
+    const absent = makeRes();
+    await searchVectorStore(baseReq({ body: { query: 'x' } }), absent, jest.fn() as any);
+    expect(withNull.statusCode).toBe(200);
+    expect(withNull.body.data.length).toBe(absent.body.data.length);
+  });
+
+  it.each([1, 50])('accepts max_num_results %p, the ends of the range', async (ok) => {
+    recallCandidatesMock.mockResolvedValue(makeCandidates(60));
+    mockRerankUnavailable();
+    const res = makeRes();
+    await searchVectorStore(baseReq({ body: { query: 'x', max_num_results: ok } }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.length).toBe(ok);
+  });
+
   it('400s when ranking_options.score_threshold is not a number', async () => {
     const res = makeRes();
     await searchVectorStore(
       baseReq({ body: { query: 'x', ranking_options: { score_threshold: 'high' } } }), res, jest.fn() as any,
     );
     expect(res.statusCode).toBe(400);
+  });
+
+  it('400s invalid_hybrid_search for a negative or all-zero weight', async () => {
+    for (const hybrid_search of [{ text_weight: -1 }, { embedding_weight: 0, text_weight: 0 }, 'x']) {
+      const res = makeRes();
+      await searchVectorStore(
+        baseReq({ body: { query: 'x', ranking_options: { hybrid_search } } }), res, jest.fn() as any,
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_hybrid_search');
+    }
+  });
+
+  it('passes hybrid_search weights through to the recall as hybridWeights', async () => {
+    mockRerankAvailable(3);
+    const res = makeRes();
+    await searchVectorStore(
+      baseReq({ body: { query: 'x', ranking_options: { hybrid_search: { text_weight: 2 } } } }), res, jest.fn() as any,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(recallCandidatesMock.mock.calls.at(-1)![0].hybridWeights).toEqual({ embedding: 1, text: 2 });
   });
 
   it('404s for a store the caller does not own — same error shape as every other store 404', async () => {
@@ -710,6 +1005,19 @@ describe('POST /vector_stores/{id}/search (controller)', () => {
     expect(res.body.error.code).toBe('vector_store_expired');
   });
 
+  it('409s with store_model_unavailable, naming the store, when the store\'s model is no longer served', async () => {
+    embedMock.mockRejectedValue(new EmbeddingModelUnavailableError('text-embedding-3-large'));
+    const res = makeRes();
+    const next = jest.fn();
+    await searchVectorStore(baseReq(), res, next as any);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('store_model_unavailable');
+    expect(res.body.error.type).toBe('invalid_request_error');
+    expect(res.body.error.message).toContain('vs_owned');
+    expect(res.body.error.message).toMatch(/re-embed/i);
+  });
+
   it('503s when file_search is unavailable', async () => {
     isFileSearchAvailableMock.mockReturnValueOnce(false);
     const res = makeRes();
@@ -721,5 +1029,264 @@ describe('POST /vector_stores/{id}/search (controller)', () => {
     const res = makeRes();
     await searchVectorStore(baseReq({ apiKeyInfo: undefined }), res, jest.fn() as any);
     expect(res.statusCode).toBe(401);
+  });
+
+  describe('usage recording', () => {
+    function reportingEmbed(): void {
+      embedMock.mockImplementation(async (_t: any, _k: any, _target: any, options?: any) => {
+        options?.onUsage?.({ promptTokens: 6, totalTokens: 6, elapsedMs: 2 });
+        return { vectors: [[0.1, 0.2, 0.3]], usage: { promptTokens: 6, totalTokens: 6 } };
+      });
+    }
+
+    it('bills an OpenAI-API search to the caller\'s own key, with ids derived from the request id', async () => {
+      const emit = jest.spyOn(usageEmitter, 'emit').mockResolvedValue(undefined);
+      reportingEmbed();
+      mockRerankReturns({ hits: [{ index: 0, relevanceScore: 0.9 }], searchUnits: 1 });
+      const res = makeRes();
+      await searchVectorStore(baseReq({
+        debugRequestId: 'req-abc',
+        unifiedAuth: { valid: true, authType: 'api_key', data: { id: 'user-key' } },
+      }), res, jest.fn() as any);
+      expect(res.statusCode).toBe(200);
+      const events = emit.mock.calls.map((c) => c[0]);
+      expect(events).toEqual([
+        expect.objectContaining({
+          requestId: 'req-abc-fs-embed-1', credentialId: 'user-key', authType: 'api_key',
+          endpoint: 'file_search/search', model: 'text-embedding-3-large', inputTokens: 6, unit: 'tokens',
+        }),
+        expect.objectContaining({
+          requestId: 'req-abc-fs-rerank', credentialId: 'user-key',
+          endpoint: 'file_search/rerank', model: 'cohere-reranker', inputTokens: 1, unit: 'units',
+        }),
+      ]);
+      for (const e of events) expect(e).not.toHaveProperty('onBehalfOf');
+      emit.mockRestore();
+    });
+
+    it('bills a cockpit Test retrieval to the service key on behalf of the acting user', async () => {
+      const emit = jest.spyOn(usageEmitter, 'emit').mockResolvedValue(undefined);
+      reportingEmbed();
+      mockRerankUnavailable();
+      const res = makeRes();
+      await searchVectorStore(baseReq({
+        debugRequestId: 'req-ckp',
+        apiKeyInfo: { active: true, email: 'reader@example.com', authSource: 'grounding' },
+        serviceAuth: { authType: 'service-key', serviceKey: { id: 'svc-key-id' } },
+        groundingActor: { email: 'reader@example.com', role: 'user' },
+      }), res, jest.fn() as any);
+      expect(res.statusCode).toBe(200);
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit.mock.calls[0][0]).toMatchObject({
+        requestId: 'req-ckp-fs-embed-1', credentialId: 'svc-key-id', authType: 'api_key', onBehalfOf: 'reader@example.com',
+        endpoint: 'file_search/search',
+      });
+      emit.mockRestore();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ranking_options.ranker 'none' — no rerank call, no rerank cost
+// ---------------------------------------------------------------------------
+describe('rerank: false (ranking_options.ranker "none")', () => {
+  it('never calls the reranker, keeps the RRF order and scores, and reports rrf_only', async () => {
+    const cands = makeCandidates(3);
+    recallCandidatesMock.mockResolvedValue(cands);
+    embedMock.mockImplementation(async (_t: any, _k: any, _target: any, options?: any) => {
+      options?.onUsage?.({ promptTokens: 3, totalTokens: 3, elapsedMs: 1 });
+      return { vectors: [[0.1, 0.2, 0.3]], usage: { promptTokens: 3, totalTokens: 3 } };
+    });
+    const usage = jest.fn();
+    const result = await searchVectorStores({ ...base, rankingOptions: { rerank: false }, usage });
+    expect(rerankMock).not.toHaveBeenCalled();
+    expect(result.mode).toBe('rrf_only');
+    expect(result.data.map((h) => h.fileId)).toEqual(['file-0', 'file-1', 'file-2']);
+    expect(result.data.map((h) => h.score)).toEqual(cands.map((c) => c.score));
+    expect(usage.mock.calls.map((c: any[]) => c[0].endpoint)).toEqual(['file_search/search']);
+  });
+
+  it('still applies score_threshold, against the RRF score', async () => {
+    recallCandidatesMock.mockResolvedValue([candidate(0, { score: 0.03 }), candidate(1, { score: 0.01 })]);
+    const result = await searchVectorStores({ ...base, rankingOptions: { rerank: false, scoreThreshold: 0.02 } });
+    expect(rerankMock).not.toHaveBeenCalled();
+    expect(result.data.map((h) => h.fileId)).toEqual(['file-0']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query as an array: each query embedded and recalled, the lists fused by RRF
+// ---------------------------------------------------------------------------
+describe('several queries (query as an array)', () => {
+  const q1 = 'capital of france';
+  const q2 = 'largest city in france';
+
+  beforeEach(() => {
+    embedMock.mockImplementation(async (texts: any) => ({
+      vectors: (texts as string[]).map((_t, i) => [i + 1, 0, 0]), usage: { promptTokens: 2, totalTokens: 2 },
+    }));
+    recallCandidatesMock.mockImplementation(async (opts: any) => (
+      opts.queryText === q1 ? [candidate(0), candidate(1)] : [candidate(1), candidate(2)]));
+  });
+
+  it('embeds every query in ONE request per model, and recalls once per query with its own text and vector', async () => {
+    mockRerankUnavailable();
+    await searchVectorStores({ ...base, query: [q1, q2] });
+    expect(embedMock).toHaveBeenCalledTimes(1);
+    expect(embedMock.mock.calls[0][0]).toEqual([q1, q2]);
+    expect(recallCandidatesMock).toHaveBeenCalledTimes(2);
+    const [first, second] = recallCandidatesMock.mock.calls.map((c) => c[0]);
+    expect(first.queryText).toBe(q1);
+    expect(first.vectorArms).toEqual([{ storeIds: ['vs_owned'], queryEmbedding: [1, 0, 0], model: 'text-embedding-3-large' }]);
+    expect(second.queryText).toBe(q2);
+    expect(second.vectorArms).toEqual([{ storeIds: ['vs_owned'], queryEmbedding: [2, 0, 0], model: 'text-embedding-3-large' }]);
+    expect(touchStoreActivityMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fuses the per-query lists by RRF (k = hybrid.rrfK): a chunk both queries found ranks first', async () => {
+    mockRerankUnavailable();
+    const result = await searchVectorStores({ ...base, query: [q1, q2] });
+    expect(result.mode).toBe('rrf_only');
+    expect(result.data.map((h) => h.fileId)).toEqual(['file-1', 'file-0', 'file-2']);
+    expect(result.data[0].score).toBeCloseTo(1 / 62 + 1 / 61, 12);
+    expect(result.data[1].score).toBeCloseTo(1 / 61, 12);
+  });
+
+  it('reranks the fused candidates ONCE, against all the queries', async () => {
+    mockRerankReturns([{ index: 2, relevanceScore: 0.9 }, { index: 0, relevanceScore: 0.5 }, { index: 1, relevanceScore: 0.1 }]);
+    const result = await searchVectorStores({ ...base, query: [q1, q2] });
+    expect(rerankMock).toHaveBeenCalledTimes(1);
+    expect(rerankMock.mock.calls[0][0]).toBe(`${q1}\n${q2}`);
+    expect(rerankMock.mock.calls[0][1]).toEqual(['chunk text 1', 'chunk text 0', 'chunk text 2']);
+    expect(result.data.map((h) => h.fileId)).toEqual(['file-2', 'file-1', 'file-0']);
+  });
+
+  it('caps the fused candidates at hybrid.candidates before the rerank', async () => {
+    mockConfig.hybrid.candidates = 2;
+    mockRerankUnavailable();
+    const result = await searchVectorStores({ ...base, query: [q1, q2] });
+    expect(result.data.map((h) => h.fileId)).toEqual(['file-1', 'file-0']);
+  });
+
+  it('reports every query searched, rewritten one by one when rewriting is on', async () => {
+    rewriteMock.mockImplementation(async (q: string) => `rewritten ${q}`);
+    mockRerankUnavailable();
+    const result = await searchVectorStores({ ...base, query: [q1, q2], rewriteQuery: true });
+    expect(rewriteMock).toHaveBeenCalledTimes(2);
+    expect(result.searchQueries).toEqual([`rewritten ${q1}`, `rewritten ${q2}`]);
+    expect(embedMock.mock.calls[0][0]).toEqual([`rewritten ${q1}`, `rewritten ${q2}`]);
+  });
+
+  it('a single string still searches exactly as before: one recall, searchQueries of one', async () => {
+    mockRerankUnavailable();
+    recallCandidatesMock.mockResolvedValue(makeCandidates(2));
+    const result = await searchVectorStores(base);
+    expect(recallCandidatesMock).toHaveBeenCalledTimes(1);
+    expect(result.searchQuery).toBe(q1);
+    expect(result.searchQueries).toEqual([q1]);
+    expect(result.data.map((h) => h.score)).toEqual(makeCandidates(2).map((c) => c.score));
+  });
+
+  it('writes no teacher-label row for several queries (one row describes one query), and still one for a single query', async () => {
+    mockTeacherLogging({ enabled: true });
+    const spy = jest.spyOn(teacherLogger, 'record');
+    mockRerankUnavailable();
+    await searchVectorStores({ ...base, query: [q1, q2] });
+    expect(spy).not.toHaveBeenCalled();
+    mockRerankUnavailable();
+    await searchVectorStores({ ...base, query: [q1] });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0].queryText).toBe(q1);
+  });
+
+  it('bounds the total length of the queries like a single query, before any database or network call', async () => {
+    await expect(searchVectorStores({ ...base, query: ['x'.repeat(5000), 'y'.repeat(5000)] }))
+      .rejects.toThrow(/at most 8192 characters/);
+    expect(poolQuery).not.toHaveBeenCalled();
+    expect(embedMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /vector_stores/{id}/search — query arrays and ranking_options.ranker (controller)', () => {
+  function makeRes(): any {
+    const res: any = { headersSent: false, statusCode: 200 };
+    res.status = (c: number) => { res.statusCode = c; return res; };
+    res.json = (b: any) => { res.body = b; return res; };
+    return res;
+  }
+  function req(body: Record<string, unknown>): any {
+    return { headers: {}, params: { id: 'vs_owned' }, query: {}, body, apiKeyInfo: { email: 'owner@example.com' } };
+  }
+
+  it('searches a query array and reports every query in search_query', async () => {
+    mockRerankUnavailable();
+    const res = makeRes();
+    await searchVectorStore(req({ query: ['capital of france', 'paris population'] }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.search_query).toEqual(['capital of france', 'paris population']);
+    expect(recallCandidatesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['a non-string element', ['ok', 7]],
+    ['an empty-string element', ['ok', '']],
+    ['more than 10 queries', Array.from({ length: 11 }, (_, i) => `q${i}`)],
+  ])('400s invalid_query for %s, before any search', async (_label, query) => {
+    const res = makeRes();
+    await searchVectorStore(req({ query }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('invalid_query');
+    expect(recallCandidatesMock).not.toHaveBeenCalled();
+  });
+
+  it('400s query_too_long when the queries together exceed the bound', async () => {
+    const res = makeRes();
+    await searchVectorStore(req({ query: ['x'.repeat(4097), 'y'.repeat(4096)] }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('query_too_long');
+  });
+
+  it('ranker "none" skips the rerank: no call and no rerank usage', async () => {
+    const res = makeRes();
+    await searchVectorStore(req({ query: 'x', ranking_options: { ranker: 'none' } }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(200);
+    expect(rerankMock).not.toHaveBeenCalled();
+    expect(recallCandidatesMock.mock.calls[0][0].hybridWeights).toBeUndefined();
+  });
+
+  it.each(['auto', 'default-2024-11-15', 'default_2024_08_21', null])('ranker %p reranks as without it', async (ranker) => {
+    mockRerankAvailable(3);
+    const res = makeRes();
+    await searchVectorStore(req({ query: 'x', ranking_options: { ranker } }), res, jest.fn() as any);
+    expect(res.statusCode).toBe(200);
+    expect(rerankMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['an unknown name', 'fastest'], ['a non-string', 1], ['an empty string', '']])(
+    '400s invalid_ranker for %s', async (_label, ranker) => {
+      const res = makeRes();
+      await searchVectorStore(req({ query: 'x', ranking_options: { ranker } }), res, jest.fn() as any);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_ranker');
+      expect(rerankMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts the guide\'s rrf_* weight spellings, and 400s both spellings of one weight', async () => {
+    mockRerankAvailable(3);
+    const ok = makeRes();
+    await searchVectorStore(
+      req({ query: 'x', ranking_options: { hybrid_search: { rrf_embedding_weight: 0.6, rrf_text_weight: 0.4 } } }), ok, jest.fn() as any,
+    );
+    expect(ok.statusCode).toBe(200);
+    expect(recallCandidatesMock.mock.calls.at(-1)![0].hybridWeights).toEqual({ embedding: 0.6, text: 0.4 });
+
+    const both = makeRes();
+    await searchVectorStore(
+      req({ query: 'x', ranking_options: { hybrid_search: { text_weight: 1, rrf_text_weight: 1 } } }), both, jest.fn() as any,
+    );
+    expect(both.statusCode).toBe(400);
+    expect(both.body.error.code).toBe('invalid_hybrid_search');
   });
 });

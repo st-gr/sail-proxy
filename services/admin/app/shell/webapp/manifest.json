@@ -5,7 +5,7 @@
 		"type": "application",
 		"i18n": {
 			"bundleUrl": "i18n/i18n.properties",
-			"supportedLocales": ["", "en"],
+			"supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
 			"fallbackLocale": "en"
 		},
 		"title": "SAP AI Core - LLM Gateway Administration",
@@ -74,7 +74,7 @@
 				"type": "sap.ui.model.resource.ResourceModel",
 				"settings": {
 					"bundleName": "admin.shell.i18n.i18n",
-					"supportedLocales": ["", "en"],
+					"supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"],
 					"fallbackLocale": "en",
 					"async": true
 				}

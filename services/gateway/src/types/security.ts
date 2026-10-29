@@ -172,7 +172,7 @@ export interface FailedAuthEventData extends SecurityEventContext {
 
 export interface QuotaExceededEventData extends SecurityEventContext {
   ownerEmail?: string;
-  scope: 'user' | 'key';
+  scope: 'user' | 'key' | 'team';
   dimension: 'requests' | 'tokens' | 'spend';
   window: 'minute' | 'hour' | 'day' | 'week' | 'month';
   limit: number;

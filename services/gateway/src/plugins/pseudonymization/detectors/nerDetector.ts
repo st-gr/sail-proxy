@@ -188,10 +188,22 @@ function emitNameRun(
   }
 }
 
+/** Thrown in strict mode when the NER tier cannot run; carries no request text. */
+export class NerDetectionError extends Error {
+  constructor(reason: 'unavailable' | 'failed') {
+    super(reason === 'unavailable' ? 'NER model could not be loaded' : 'NER detection failed');
+    this.name = 'NerDetectionError';
+  }
+}
+
 /**
- * Run NER detection on the given text
+ * Run NER detection on the given text.
+ *
+ * `strict` (set when pseudonymization is forced): a model that cannot be loaded or a detection
+ * error throws NerDetectionError instead of skipping the tier, so person names are never sent
+ * unmasked on a request masking is enforced for. Without it the tier is skipped as before.
  */
-export function detectNerEntities(text: string, enabledEntities: EntityConfig[]): EntityMatch[] {
+export function detectNerEntities(text: string, enabledEntities: EntityConfig[], strict = false): EntityMatch[] {
   const enabledTypes = new Set(enabledEntities.filter(e => e.enabled !== false).map(e => e.type));
 
   // Check if any NER-detectable types are enabled
@@ -200,7 +212,10 @@ export function detectNerEntities(text: string, enabledEntities: EntityConfig[])
   if (!anyEnabled) return [];
 
   const engine = getNlp();
-  if (!engine) return [];
+  if (!engine) {
+    if (strict) throw new NerDetectionError('unavailable');
+    return [];
+  }
 
   const matches: EntityMatch[] = [];
 
@@ -278,6 +293,7 @@ export function detectNerEntities(text: string, enabledEntities: EntityConfig[])
       emitNameRun(currentName, text, matches, detectedNames);
     }
   } catch (error: any) {
+    if (strict) throw new NerDetectionError('failed');
     console.error(`[pseudonymization] NER detection error: ${error.message}`);
   }
 

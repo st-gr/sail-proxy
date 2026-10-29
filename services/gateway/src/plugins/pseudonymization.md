@@ -49,9 +49,9 @@ Client Response (original PII restored, + diagnostic info)
 ```
 
 Unmasking happens on **every** response path:
-- **Non-streaming (after handler):** unmask the full body, including tool-call inputs.
+- **Non-streaming (after handler):** unmask the full body, including tool-call inputs. Tool-call arguments that arrive as JSON text (OpenAI `function.arguments`, Responses `function_call.arguments`) are masked on the parsed value (string leaves, then re-serialized) and restored string literal by string literal in the text (keys included; numbers and formatting untouched), with the restored value JSON-escaped so a value containing `"` or `\` stays valid JSON; streamed argument deltas restore the value JSON-escaped too, and hosted-tool continuations re-mask arguments on the decoded literals.
 - **Streaming wire interceptor (`res.write`):** unmask assistant text (`text_delta`) *and* tool input (`input_json_delta`) as SSE events are written; required for pipelines (e.g. AWS Bedrock native streaming) where the after handler does not fire per chunk.
-- **Non-streaming cache hits (`res.json`):** the response cache serves some hits via `res.json` with `{ stop: true }`, bypassing both `res.write` and the after handler — so the interceptor also patches `res.json` to unmask those bodies.
+- **Non-streaming cache hits (`res.json`):** the response cache serves some hits via `res.json` with `{ stop: true }`, bypassing both `res.write` and the after handler — so the interceptor also patches `res.json` to unmask those bodies. The body is restored on a parsed copy (never on its serialized bytes, never in place); an error is logged, without content, when placeholders of the request survive.
 
 A **leak audit** logs any placeholder that still reaches the client: an error if it was in the map (a genuine unmask miss) or a warning if it was unresolvable residue.
 

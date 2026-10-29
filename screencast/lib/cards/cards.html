@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>card</title>
+<link rel="stylesheet" href="cards.css">
+</head>
+<body>
+<div id="card" class="card"></div>
+<script>
+  // window.__render(model) builds the card from the model lib/cards.mjs made; animations start when the
+  // recorder adds the "play" class, so the first recorded frame is the first frame of the animation.
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  window.__render = (m) => {
+    const card = document.getElementById('card'); card.className = 'card ' + m.kind; card.textContent = '';
+    if (m.kind === 'intro') {
+      const col = el('div', 'col'); col.append(el('div', 'kick', m.kicker), el('h1', 'title', m.title), el('p', 'sub', m.subtitle)); card.append(col);
+      const logo = el('img', 'logo'); logo.src = m.logo; logo.alt = ''; card.append(logo);
+      const foot = el('div', 'foot'); foot.append(el('span', '', m.site), el('span', '', m.version)); card.append(foot);
+    } else if (m.kind === 'section') {
+      card.append(el('div', 'num', String(m.n).padStart(2, '0')));
+      const tt = el('div', 'tt'); tt.append(el('h1', 'title', m.sectionTitle), el('p', 'sub', m.outcome)); card.append(tt);
+      const dots = el('div', 'dots'); for (let i = 1; i <= m.total; i++) dots.append(el('i', i <= m.n ? 'on' : '')); card.append(dots);
+    } else {
+      const col = el('div', 'col'); col.append(el('h1', 'title', 'Learn more'));
+      for (const [k, v] of m.lines) { const ln = el('div', 'ln'); ln.append(el('b', '', k), document.createTextNode(' ' + v)); col.append(ln); }
+      col.append(el('p', 'fine', m.fine)); card.append(col);
+      const logo = el('img', 'logo'); logo.src = m.logo; logo.alt = ''; card.append(logo);
+    }
+    card.append(el('div', 'bar'));
+    document.fonts.ready.then(() => { document.title = 'rendered'; });
+  };
+</script>
+</body>
+</html>

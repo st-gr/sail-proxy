@@ -1,3 +1,12 @@
+import {
+  ENGLISH_SCHEMA_TEXTS,
+  SchemaTexts,
+  childTextPath,
+  entryTextPath,
+  itemsTextPath,
+  textPathOfPointer
+} from './schemaTexts';
+
 /**
  * Resolves a JSON pointer to a plugin name, or `undefined` if no plugin owns it. Typically
  * `pluginFor` from `./formPlugins`, but required as an explicit argument (see `buildDescriptors`)
@@ -243,6 +252,17 @@ export interface JsonSchemaNode {
   [key: string]: unknown;
 }
 
+/** How `buildDescriptors` translates the field texts - see `./schemaTexts`. */
+export interface BuildTextOptions {
+  /** Where labels and descriptions are looked up. Omitted -> the schema's English. */
+  texts?: SchemaTexts;
+  /**
+   * The text path of `schema` itself. Omitted -> read off `pointer`, which is right wherever every
+   * segment of it is a declared property; a map entry's caller passes its `_entry` path instead.
+   */
+  textPath?: string;
+}
+
 /**
  * Walks `schema` (an object schema) alongside `data`, emitting a descriptor for each of the
  * schema's declared properties. `pointer` is the JSON-pointer address of `data` within the
@@ -252,12 +272,16 @@ export interface JsonSchemaNode {
  * must explicitly decide how plugin pointers resolve (typically by passing `pluginFor` from
  * `./formPlugins`). Omitting it is a programmer error and throws immediately rather than
  * silently rendering every field - including an unregistered credential slot - as plain text.
+ *
+ * `textOptions` translates the field texts (labels, titles, descriptions) - see `./schemaTexts`.
+ * Omitted, every text is the schema's own English, exactly as before.
  */
 export function buildDescriptors(
   schema: object,
   data: unknown,
   pointer: string,
-  resolvePlugin: PluginResolver
+  resolvePlugin: PluginResolver,
+  textOptions: BuildTextOptions = {}
 ): Descriptor[] {
   if (typeof resolvePlugin !== 'function') {
     throw new Error(
@@ -269,6 +293,8 @@ export function buildDescriptors(
 
   const rootSchema = schema as JsonSchemaNode;
   const resolved = composeAllOf(resolveRef(rootSchema, rootSchema), rootSchema);
+  const texts = textOptions.texts ?? ENGLISH_SCHEMA_TEXTS;
+  const path = textOptions.textPath ?? textPathOfPointer(pointer);
 
   if (resolved && resolved.type === 'object') {
     // A section the document does not carry renders as one absent marker, not as its whole field
@@ -276,12 +302,12 @@ export function buildDescriptors(
     // calls once per section, so it is where a whole absent section is decided.
     const mapEntries = mapEntriesOf(resolved, rootSchema);
     if (data === undefined && namesAContainer(pointer, mapEntries)) {
-      return [absentSection(resolved, pointer, labelFor(lastSegment(pointer)), mapEntries)];
+      return [absentSection(resolved, pointer, texts.label(path, (typeof resolved.title === 'string' && resolved.title) || labelFor(lastSegment(pointer))), mapEntries, texts, path)];
     }
-    return buildChildren(resolved, data, pointer, rootSchema, resolvePlugin);
+    return buildChildren(resolved, data, pointer, rootSchema, resolvePlugin, texts, path);
   }
 
-  return [buildNode(resolved ?? rootSchema, data, pointer, rootSchema, humanize(lastSegment(pointer)), resolvePlugin)];
+  return [buildNode(resolved ?? rootSchema, data, pointer, rootSchema, humanize(lastSegment(pointer)), resolvePlugin, texts, path)];
 }
 
 /**
@@ -649,7 +675,9 @@ function absentSection(
   schema: JsonSchemaNode,
   pointer: string,
   label: string,
-  mapEntries: MapEntries | undefined
+  mapEntries: MapEntries | undefined,
+  texts: SchemaTexts,
+  path: string | undefined
 ): Descriptor {
   return withDescription({
     kind: 'section',
@@ -658,7 +686,7 @@ function absentSection(
     absent: true,
     ...(mapEntries ? { mapEntries } : {}),
     children: []
-  }, schema);
+  }, schema, texts, path);
 }
 
 /**
@@ -694,7 +722,9 @@ function buildChildren(
   pointer: string,
   rootSchema: JsonSchemaNode,
   resolvePlugin: PluginResolver,
-  unknownReason: (key: string) => string = key => `No schema defines property "${key}".`
+  texts: SchemaTexts,
+  path: string | undefined,
+  unknownReason: (key: string) => string = key => texts.message('formReasonUnknownProperty', [key])
 ): Descriptor[] {
   const properties = schema.properties ?? {};
   const dataObj =
@@ -713,8 +743,9 @@ function buildChildren(
   for (const key of declaredKeys) {
     const childSchema = properties[key];
     const childPointer = `${pointer}/${escapeSegment(key)}`;
-    const label = (childSchema && typeof childSchema.title === 'string' && childSchema.title) || labelFor(key);
-    const descriptor = buildNode(childSchema, dataObj[key], childPointer, rootSchema, label, resolvePlugin);
+    const childPath = childTextPath(path, key);
+    const label = texts.label(childPath, (childSchema && typeof childSchema.title === 'string' && childSchema.title) || labelFor(key));
+    const descriptor = buildNode(childSchema, dataObj[key], childPointer, rootSchema, label, resolvePlugin, texts, childPath);
     byKey.set(key, required.indexOf(key) === -1 ? descriptor : markRequired(descriptor));
   }
 
@@ -744,7 +775,9 @@ function buildChildren(
       }
       patternMatched.add(key);
       const childPointer = `${pointer}/${escapeSegment(key)}`;
-      byKey.set(key, buildNode(entry.subschema, dataObj[key], childPointer, rootSchema, labelFor(key), resolvePlugin));
+      // The label is the entry's own key - document data, not a schema text - so only the entry's
+      // description and what is inside it are looked up, at the map's `_entry` path.
+      byKey.set(key, buildNode(entry.subschema, dataObj[key], childPointer, rootSchema, labelFor(key), resolvePlugin, texts, entryTextPath(path)));
     }
   }
 
@@ -773,7 +806,7 @@ function buildChildren(
     byKey.set(
       key,
       additionalSchema
-        ? buildNode(additionalSchema, dataObj[key], childPointer, rootSchema, labelFor(key), resolvePlugin)
+        ? buildNode(additionalSchema, dataObj[key], childPointer, rootSchema, labelFor(key), resolvePlugin, texts, entryTextPath(path))
         // A data key nothing at all declares must still surface - as `raw`, not silently dropped -
         // or an administrator editing through the form cannot see it exists at all.
         : rawDescriptor(childPointer, labelFor(key), dataObj[key], unknownReason(key))
@@ -872,7 +905,9 @@ function buildNode(
   pointer: string,
   rootSchema: JsonSchemaNode,
   label: string,
-  resolvePlugin: PluginResolver
+  resolvePlugin: PluginResolver,
+  texts: SchemaTexts,
+  path: string | undefined
 ): Descriptor {
   // Rule 1: a registered plugin owns this pointer. The value is deliberately never read here,
   // so a credential slot's value can never end up in a descriptor.
@@ -884,7 +919,7 @@ function buildNode(
   const schema = composeAllOf(resolveRef(rawSchema, rootSchema), rootSchema);
 
   if (!schema || typeof schema !== 'object') {
-    return rawDescriptor(pointer, label, data, 'No schema is defined for this node.');
+    return rawDescriptor(pointer, label, data, texts.message('formReasonNoSchema'));
   }
 
   const declaredType = schema.type;
@@ -897,7 +932,7 @@ function buildNode(
   // value is the literal text "null"; that is what filled the screen before.
   if (data !== undefined && declaredType !== undefined && !typeMatches(declaredType, data)) {
     const expected = Array.isArray(declaredType) ? declaredType.join(' | ') : declaredType;
-    return rawDescriptor(pointer, label, data, `Expected type "${expected}", got "${actualType(data)}".`);
+    return rawDescriptor(pointer, label, data, texts.message('formReasonType', [expected, actualType(data)]));
   }
 
   const schemaType = narrowType(declaredType, data);
@@ -934,7 +969,7 @@ function buildNode(
     if (members.some(member => typeof member !== 'string')) {
       descriptor.optionValues = members;
     }
-    return withDescription(descriptor, schema);
+    return withDescription(descriptor, schema, texts, path);
   }
   if (schemaType === 'array' && schema.items && Array.isArray(schema.items.enum)) {
     return withDescription({
@@ -943,7 +978,7 @@ function buildNode(
       label,
       values: Array.isArray(data) ? (data as string[]) : [],
       options: schema.items.enum as string[]
-    }, schema);
+    }, schema, texts, path);
   }
   // A plain string array with no `enum` (org_suffixes, location_gazetteer,
   // excluded_beta_headers, ...) is free text rather than a fixed choice, so `options` is left
@@ -955,12 +990,12 @@ function buildNode(
       pointer,
       label,
       values: Array.isArray(data) ? (data as string[]) : []
-    }, schema);
+    }, schema, texts, path);
   }
 
   // Rule 4: plain scalars.
   if (schemaType === 'boolean') {
-    return withDescription({ kind: 'switch', pointer, label, value: data === true }, schema);
+    return withDescription({ kind: 'switch', pointer, label, value: data === true }, schema, texts, path);
   }
   if (schemaType === 'integer' || schemaType === 'number') {
     // `integer` is the type as the schema DECLARED it, not as the datum happens to look: a float
@@ -977,7 +1012,7 @@ function buildNode(
     if (typeof schema.multipleOf === 'number') descriptor.multipleOf = schema.multipleOf;
     if (typeof schema.minimum === 'number') descriptor.minimum = schema.minimum;
     if (typeof schema.maximum === 'number') descriptor.maximum = schema.maximum;
-    return withDescription(descriptor, schema);
+    return withDescription(descriptor, schema, texts, path);
   }
   if (schemaType === 'string') {
     // A control's value is a string, so a nullable field the document has empty renders as "";
@@ -992,22 +1027,22 @@ function buildNode(
     if (typeof schema.pattern === 'string') descriptor.pattern = schema.pattern;
     if (typeof schema.minLength === 'number') descriptor.minLength = schema.minLength;
     if (typeof schema.maxLength === 'number') descriptor.maxLength = schema.maxLength;
-    return withDescription(descriptor, schema);
+    return withDescription(descriptor, schema, texts, path);
   }
 
   // Rule 5: object -> section; array of objects -> table.
   if (schemaType === 'object') {
     const mapEntries = mapEntriesOf(schema, rootSchema);
     if (data === undefined && namesAContainer(pointer, mapEntries)) {
-      return absentSection(schema, pointer, label, mapEntries);
+      return absentSection(schema, pointer, label, mapEntries, texts, path);
     }
     return withDescription({
       kind: 'section',
       pointer,
       label,
       ...(mapEntries ? { mapEntries } : {}),
-      children: buildChildren(schema, data, pointer, rootSchema, resolvePlugin)
-    }, schema);
+      children: buildChildren(schema, data, pointer, rootSchema, resolvePlugin, texts, path)
+    }, schema, texts, path);
   }
   if (schemaType === 'array') {
     const itemSchema = resolveRef(schema.items ?? {}, rootSchema);
@@ -1027,6 +1062,7 @@ function buildNode(
       // schema shapes are scalar - see `itemFitsATableRow`.
       const discrimination = discriminationOf(itemSchema);
       if (discrimination || !itemFitsATableRow(itemSchema, pointer, rootSchema, resolvePlugin)) {
+        const itemsPath = itemsTextPath(path);
         const items = Array.isArray(data) ? (data as unknown[]) : [];
         return withDescription({
           kind: 'section',
@@ -1040,9 +1076,9 @@ function buildNode(
           // sink dialog stays the special case rather than the only case.
           arrayItems: { discriminated: discrimination !== undefined, skeleton: skeletonOf(itemSchema, rootSchema) },
           children: items.map((item, index) =>
-            buildItemSection(itemSchema, item, `${pointer}/${index}`, index, rootSchema, discrimination, resolvePlugin)
+            buildItemSection(itemSchema, item, `${pointer}/${index}`, index, rootSchema, discrimination, resolvePlugin, texts, itemsPath)
           )
-        }, schema);
+        }, schema, texts, path);
       }
 
       const columns = Object.keys(itemSchema.properties ?? {});
@@ -1053,16 +1089,18 @@ function buildNode(
           const cellPointer = `${pointer}/${index}/${escapeSegment(column)}`;
           const cellValue =
             rowData !== null && typeof rowData === 'object' ? (rowData as Record<string, unknown>)[column] : undefined;
-          return buildNode(columnSchema, cellValue, cellPointer, rootSchema, labelFor(column), resolvePlugin);
+          // A cell's label is not shown (the column header is the JSON property name - see
+          // `descriptorControls.buildTable`), so only its description, the cell's tooltip, is looked up.
+          return buildNode(columnSchema, cellValue, cellPointer, rootSchema, labelFor(column), resolvePlugin, texts, childTextPath(itemsTextPath(path), column));
         })
       );
-      return withDescription({ kind: 'table', pointer, label, columns, rows }, schema);
+      return withDescription({ kind: 'table', pointer, label, columns, rows }, schema, texts, path);
     }
-    return rawDescriptor(pointer, label, data, 'Array item schema is not an object; no table representation.');
+    return rawDescriptor(pointer, label, data, texts.message('formReasonArrayItems'));
   }
 
   // Rule 6: anything else degrades visibly rather than being dropped.
-  return rawDescriptor(pointer, label, data, `Unsupported schema shape (type: "${String(schemaType)}").`);
+  return rawDescriptor(pointer, label, data, texts.message('formReasonUnsupported', [String(schemaType)]));
 }
 
 function rawDescriptor(pointer: string, label: string, data: unknown, reason: string): Descriptor {
@@ -1080,12 +1118,17 @@ type DescribableDescriptor = Exclude<Descriptor, { kind: 'raw' } | { kind: 'plug
  * descriptor a caller spreads never gains a key it did not have (the same rule the required
  * marker follows).
  */
-function withDescription(descriptor: DescribableDescriptor, schema: JsonSchemaNode): Descriptor {
+function withDescription(
+  descriptor: DescribableDescriptor,
+  schema: JsonSchemaNode,
+  texts: SchemaTexts,
+  path: string | undefined
+): Descriptor {
   const description = schema.description;
   if (typeof description !== 'string' || description.length === 0) {
     return descriptor;
   }
-  return { ...descriptor, description };
+  return { ...descriptor, description: texts.description(path, description) };
 }
 
 /**
@@ -1224,7 +1267,9 @@ function itemFitsATableRow(
       `${pointer}/0/${escapeSegment(column)}`,
       rootSchema,
       labelFor(column),
-      resolvePlugin
+      resolvePlugin,
+      ENGLISH_SCHEMA_TEXTS,
+      undefined
     );
     return TABLE_CELL_KINDS.indexOf(probe.kind) !== -1;
   });
@@ -1260,10 +1305,12 @@ function buildItemSection(
   index: number,
   rootSchema: JsonSchemaNode,
   discrimination: Discrimination | undefined,
-  resolvePlugin: PluginResolver
+  resolvePlugin: PluginResolver,
+  texts: SchemaTexts,
+  itemsPath: string | undefined
 ): Descriptor {
   if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-    return rawDescriptor(pointer, `#${index}`, item, `Expected type "object", got "${actualType(item)}".`);
+    return rawDescriptor(pointer, `#${index}`, item, texts.message('formReasonType', ['object', actualType(item)]));
   }
 
   const element = item as Record<string, unknown>;
@@ -1307,9 +1354,11 @@ function buildItemSection(
     pointer,
     rootSchema,
     resolvePlugin,
+    texts,
+    itemsPath,
     field => discrimination && Object.prototype.hasOwnProperty.call(declared, field)
-      ? `Property "${field}" does not belong to ${discrimination.key} "${String(variant)}".`
-      : `No schema defines property "${field}".`
+      ? texts.message('formReasonOtherVariant', [field, discrimination.key, String(variant)])
+      : texts.message('formReasonUnknownProperty', [field])
   );
 
   // `name` stays in the schema handed to buildChildren - dropping it there would make the
@@ -1354,8 +1403,8 @@ function buildItemSection(
  * `["string", "number", "boolean"]` matched none of them and fell through to `raw`, so the whole
  * property rendered as a JSON blob however well the schema described it. `hooks.definitions`'
  * `equals` is the node that needs this - the value a rule compares against is a string for a
- * `header` rule and whatever the request body carries for a `json-path` one (`payload:maxTokens512`
- * compares against the number 512), so no single type is honest for it.
+ * `header` rule and whatever the request body carries for a `json-path` one (a rule on
+ * `$.max_tokens` compares against the number 512), so no single type is honest for it.
  *
  * Narrowing is by the data's own type, so 512 gets a number field and "cli" a text field. The data
  * has already been checked against the whole union by Rule 2 above, so a member always matches when

@@ -3,10 +3,13 @@
 <head>
 	<meta charset="utf-8">
 	<title>Model Library - UI journeys</title>
+	<!-- Themes come from the shell: every app has its own dev server, which would compile and keep its
+	     own copy of every library theme (some 200 MB per app; the CI admin ran out of heap). -->
 	<script id="sap-ui-bootstrap"
 		src="../../resources/sap-ui-core.js"
 		data-sap-ui-resourceroots='{"admin.modellibrary": "../../"}'
 		data-sap-ui-theme="sap_horizon"
+		data-sap-ui-theme-roots='{"sap_horizon": "/shell/resources/"}'
 		data-sap-ui-language="en"
 		data-sap-ui-compatVersion="edge"
 		data-sap-ui-async="true">

@@ -38,7 +38,7 @@ import { StreamUnmaskBuffer } from '../src/plugins/pseudonymization/streamBuffer
 import { detectRegexEntities } from '../src/plugins/pseudonymization/detectors/regexDetectors';
 import { detectDictionaryEntities } from '../src/plugins/pseudonymization/detectors/dictionaryDetector';
 import { detectCustomEntities } from '../src/plugins/pseudonymization/detectors/customDetector';
-import { MaskingConfig, EntityConfig } from '../src/plugins/pseudonymization/types';
+import { MaskingConfig, EntityConfig, EntityMatch } from '../src/plugins/pseudonymization/types';
 import { applyEntityToggles, buildKnownEntityTypes } from '../src/plugins/pseudonymization/entityToggles';
 
 // Import the plugin handlers
@@ -74,6 +74,37 @@ describe('Pseudonymization Plugin', () => {
       expect(matches).toHaveLength(1);
       expect(matches[0].original).toBe('john.smith@example.com');
       expect(matches[0].type).toBe('profile-email');
+    });
+
+    it('detects emails in linear time on a long class-char run (C4)', () => {
+      // A run of local-part-class characters with no email in it. The old unanchored
+      // pattern retried from every offset inside the run (O(n^2)); the anchored one scans
+      // it once. 200,000 chars, not the original 1 MB: the fix commit measured the old
+      // quadratic pattern at ~4s per 80KB, so a regression back to it would take on the
+      // order of 25s here - long enough to fail the assertion (or the suite's own test
+      // timeout) instead of the synchronous, un-preemptible multi-minute-plus hang a 1 MB
+      // input risked blocking a whole CI worker with. The linear pattern runs in low
+      // single-digit milliseconds at this size, so 200ms leaves ample margin either way.
+      const longRun = 'a'.repeat(200_000);
+      const start = Date.now();
+      const matches = detectRegexEntities(longRun, [{ type: 'profile-email' }]);
+      const elapsed = Date.now() - start;
+      expect(matches).toEqual([]);
+      expect(elapsed).toBeLessThan(200);
+    });
+
+    it('matches emails identically to the pre-fix pattern on edge fixtures (C4 equivalence)', () => {
+      const cases: Array<[string, string[]]> = [
+        ['Contact john.smith@example.com for details', ['john.smith@example.com']],
+        ['a@b@c.com', ['b@c.com']],
+        ['foo!bar@x.co.uk', ['bar@x.co.uk']],
+        ['--x@y.io', ['--x@y.io']],
+        ['Reach me at a@b.com or c@d.org', ['a@b.com', 'c@d.org']],
+      ];
+      for (const [text, expected] of cases) {
+        const matches = detectRegexEntities(text, [{ type: 'profile-email' }]);
+        expect(matches.map(m => m.original)).toEqual(expected);
+      }
     });
 
     it('should detect US SSN with validation', () => {
@@ -318,6 +349,49 @@ describe('Pseudonymization Plugin', () => {
       expect(matches[0].original).toBe('PTS-20240015');
       expect(matches[0].placeholder).toBe('MASKED_PERMIT');
     });
+
+    it('terminates on a zero-length-capable pattern and records no empty matches', () => {
+      // Regression for the hang: entity.flags='i' used to be passed straight to RegExp
+      // with no 'g', so exec() never advanced lastIndex and the same zero-length match
+      // at index 0 was pushed forever. Separately (fail-open fix), a zero-length match
+      // is never recorded at all - it masks nothing and only exists to advance past -
+      // so 'baab' against 'a*' now yields just the one real, non-empty match.
+      const matches = detectCustomEntities('baab', [{ pattern: 'a*', placeholder: 'X', flags: 'i' }]);
+      expect(matches.map(m => m.original)).toEqual(['aa']);
+    });
+
+    it('masks every occurrence beyond the old 10,000-match cap instead of silently passing the rest through (fail-open fix)', () => {
+      // The removed cap broke out of the loop after 10,000 matches and logged a
+      // console.error, leaving everything after that point unmasked in the output. A
+      // custom pattern matching a distinct literal in a text with more occurrences than
+      // the old cap must now come back fully matched, with no gap.
+      const occurrences = 10_005;
+      const text = 'x'.repeat(occurrences);
+      const matches = detectCustomEntities(text, [{ pattern: 'x', placeholder: 'MASKED_X' }]);
+
+      expect(matches).toHaveLength(occurrences);
+      expect(matches[matches.length - 1].start).toBe(occurrences - 1);
+      expect(matches[matches.length - 1].end).toBe(occurrences);
+    });
+
+    it('drops a sticky "y" flag so a non-anchored match is still found (C3)', () => {
+      // Before the fix, flags='y' (no 'g') made exec() sticky-only: it tried the match
+      // ONLY at index 0, silently missing "foo" further into the text. The fix always
+      // searches globally, so the non-anchored match is no longer lost.
+      const matches = detectCustomEntities('x foo', [{ pattern: 'foo', placeholder: 'X', flags: 'y' }]);
+      expect(matches).toHaveLength(1);
+      expect(matches[0].original).toBe('foo');
+    });
+
+    it('rejects a caller flag outside [gimsuy] without throwing or hanging (C3)', () => {
+      expect(() => detectCustomEntities('foo bar foo', [{ pattern: 'foo', placeholder: 'X', flags: 'd' }])).not.toThrow();
+      expect(detectCustomEntities('foo bar foo', [{ pattern: 'foo', placeholder: 'X', flags: 'd' }])).toEqual([]);
+    });
+
+    it('rejects an invalid pattern without throwing (C3)', () => {
+      expect(() => detectCustomEntities('text', [{ pattern: '(unbalanced', placeholder: 'X' }])).not.toThrow();
+      expect(detectCustomEntities('text', [{ pattern: '(unbalanced', placeholder: 'X' }])).toEqual([]);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -506,6 +580,48 @@ describe('Pseudonymization Plugin', () => {
       const p = map.forward.get('John Smith');
       expect(p).toMatch(/^MASKED_PERSON_\d{8}$/);
       expect(masked).toBe(`${p} went home. Later, ${p} returned.`);
+    });
+
+    it('gives distinct fabricated_data values to distinct originals sharing a one-value category, and round-trips both (C5)', () => {
+      // profile-nationality's fabricated value is a single constant ('[NATIONALITY]'),
+      // so a second distinct nationality used to collide and overwrite the reverse
+      // entry for the first — unmasking then turned BOTH back into the same original.
+      const config: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-nationality', replacement_strategy: 'fabricated_data' }],
+      };
+      const text = 'Anna is German, Luc is French';
+      const matches = detectDictionaryEntities(text, [{ type: 'profile-nationality' }]);
+      expect(matches).toHaveLength(2);
+
+      const map = new ReplacementMap('pseudonymization');
+      const masked = replaceEntities(text, matches, map, config);
+
+      expect(map.reverse.size).toBe(2);
+      expect(unmaskText(masked, map)).toBe(text);
+    });
+
+    it('round-trips 11 distinct locations even though the fake-city pool only has 10 entries (C5)', () => {
+      const config: MaskingConfig = {
+        method: 'pseudonymization',
+        entities: [{ type: 'profile-location', replacement_strategy: 'fabricated_data' }],
+      };
+      const originals = Array.from({ length: 11 }, (_, i) => `Loc-${String(i).padStart(2, '0')}`);
+      const text = originals.join(', ');
+      const matches: EntityMatch[] = originals.map(city => ({
+        original: city,
+        type: 'profile-location',
+        start: text.indexOf(city),
+        end: text.indexOf(city) + city.length,
+        priority: 3,
+        confidence: 1,
+      }));
+
+      const map = new ReplacementMap('pseudonymization');
+      const masked = replaceEntities(text, matches, map, config);
+
+      expect(map.reverse.size).toBe(11);
+      expect(unmaskText(masked, map)).toBe(text);
     });
   });
 
@@ -759,6 +875,56 @@ describe('Pseudonymization Plugin', () => {
       expect(req.body.messages[0].content).not.toContain('John Smith');
       expect((req as any).__pseudonymization).toBeDefined();
       expect(req.body.masking).toBeUndefined(); // removed before forwarding
+    });
+
+    it('does not throw when a custom_entities entry is null (C3 request-boundary check)', async () => {
+      // Before the boundary check: `entity.flags` on a null entry throws inside
+      // customDetector's own try, and the catch's `entity.pattern` throws AGAIN (past
+      // the catch), propagating out of detectCustomEntities. beforeHandler's OWN outer
+      // catch stops that from 500ing the request, but only after aborting the masking
+      // pass already in progress — so pseudonymization silently no-ops for the whole
+      // request instead of just skipping the one bad entry (see the next test).
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'Hello world' }],
+          masking: {
+            method: 'pseudonymization',
+            entities: [{ type: 'profile-person' }],
+            custom_entities: [null],
+          },
+        },
+      };
+
+      await expect(beforeHandler({ req, res: {}, utils: { logger: mockLogger } })).resolves.toEqual({ stop: false });
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropping invalid custom_entities[0]'));
+    });
+
+    it('drops an oversized/non-object custom_entities entry and caps the entry count, while keeping a valid one working (C3 request-boundary check)', async () => {
+      const filler = Array.from({ length: 60 }, () => ({ pattern: 'unused-filler-pattern', placeholder: 'FILLER' }));
+      const req: any = {
+        body: {
+          messages: [{ role: 'user', content: 'Permit PTS-20240015 was filed' }],
+          masking: {
+            method: 'pseudonymization',
+            entities: [{ type: 'profile-person' }],
+            custom_entities: [
+              null,
+              { pattern: 'x'.repeat(501), placeholder: 'TOO_LONG' },
+              { pattern: '\\bPTS-\\d+\\b', placeholder: 'MASKED_PERMIT' },
+              ...filler,
+            ],
+          },
+        },
+      };
+
+      const result = await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+
+      expect(result.stop).toBe(false);
+      // The valid entry (within the first 50 raw entries) still masks.
+      expect(req.body.messages[0].content).toContain('MASKED_PERMIT');
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropping invalid custom_entities[0]'));
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropping invalid custom_entities[1]'));
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('only the first 50 are considered'));
     });
 
     it('should unmask response in after handler', async () => {

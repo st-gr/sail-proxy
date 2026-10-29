@@ -13,11 +13,11 @@
   },
   "devDependencies": {
     "@lobehub/icons-static-svg": "1.95.0",
-    "@ui5/cli": "^4.0.16",
+    "@ui5/cli": "^4.0.69",
     "simple-icons": "16.30.0",
     "ts-node": "^10.9.1",
-    "ui5-tooling-modules": "^3.27.3",
-    "ui5-tooling-transpile": "^3.8.0"
+    "ui5-tooling-modules": "^3.38.3",
+    "ui5-tooling-transpile": "^3.13.1"
   },
   "dependencies": {
     "@types/node": "^20.0.0"

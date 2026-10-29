@@ -10,8 +10,12 @@ services:
   ldap-server:
     build: ./configs/providers/ldap/ldap-server
     ports:
-      - "389:389"
-      - "636:636"
+      # Loopback only (A5): this override is rendered straight into
+      # docker-compose.override.yml by setup-docker.js; the directory holds
+      # the demo credentials nginx/dex authenticate against, so it must not
+      # be reachable from the network any more than admin/valkey/postgres are.
+      - "127.0.0.1:389:389"
+      - "127.0.0.1:636:636"
     environment:
       # LDAP configuration
       - LDAP_LOG_LEVEL=256
@@ -39,7 +43,8 @@ services:
   ldap-admin:
     image: osixia/phpldapadmin:0.9.0
     ports:
-      - "6443:443"
+      # Loopback only (A5): a management UI over the same directory, same reasoning as ldap-server above.
+      - "127.0.0.1:6443:443"
     environment:
       - PHPLDAPADMIN_LDAP_HOSTS=ldap-server
       - PHPLDAPADMIN_HTTPS=false

@@ -1,0 +1,5 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+	<!-- One line under the Pool section that tells the pool (one budget the whole team shares) from
+	     the member profile (a limit for each person). The Field Help of both profile fields has the rules. -->
+	<Text text="{i18n>poolExplanation}" class="sapUiSmallMarginBottom"/>
+</core:FragmentDefinition>

@@ -22,3 +22,9 @@ export interface ParsedConfig {
   GATEWAY_STANDALONE: string;
   OLLAMA_AUTOSTART: string;
 }
+
+export interface SapTenantIdentity {
+  zone: string;
+  zoneId: string | null;
+  region: string;
+}

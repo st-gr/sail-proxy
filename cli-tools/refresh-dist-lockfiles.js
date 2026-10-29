@@ -133,7 +133,6 @@ function regenDocker() {
     assertPatched(lock, 'docker', {
       qs: '6.16.0',
       'form-data': '4.0.6',
-      'http-proxy-middleware': '3.0.7',
       axios: '1.18.0',
       'body-parser': '1.20.8',
       express: '4.22.0',
@@ -187,7 +186,7 @@ function regenNpmDist() {
     assertPatched(lock, 'npm-dist', {
       'form-data': '4.0.6',
       axios: '1.18.0',
-      'follow-redirects': '1.16.0',
+      'follow-redirects': '1.16.1',
       'js-yaml': '4.3.2',
       minimatch: '10.2.3',
       'brace-expansion': '1.1.18',

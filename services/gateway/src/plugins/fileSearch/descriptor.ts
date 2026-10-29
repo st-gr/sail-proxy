@@ -69,8 +69,11 @@ import {
 } from '../../fileSearch/repository';
 import {
   searchVectorStores, SearchHit, SearchStoreNotFoundError, SearchQueryTooLongError,
+  StoreModelUnavailableError, SEARCH_RANKERS,
 } from '../../fileSearch/search';
 import { RerankerUnavailableError } from '../../fileSearch/reranker';
+import { formatPages, PageSpan } from '../../fileSearch/pages';
+import { HybridWeights, parseHybridSearch } from '../../fileSearch/rrf';
 import { unmaskText } from '../pseudonymization/unmasker';
 import { maskThroughRequestMap } from './chunkMasking';
 import configService, { MIN_RESULTS_DEFAULT, MAX_RESULTS_DEFAULT } from '../../services/configService';
@@ -98,6 +101,8 @@ interface FileSearchResult {
   score: number;
   attributes: Record<string, unknown>;
   text: string;
+  /** An extension, present only for a file with pages: the pages `text` spans. */
+  pages?: PageSpan;
 }
 
 /**
@@ -173,13 +178,21 @@ function parseQueryFromArguments(rawArguments: unknown): string {
  *
  * Returns undefined rather than `{ scoreThreshold: undefined }` when no usable threshold
  * was given (including `ranking_options: { ranker: 'auto' }`), so the un-thresholded case
- * is one value and not two.
+ * is one value and not two. `ranker: 'none'` (validated by prepare) becomes `rerank: false`:
+ * no rerank call, as on the vector store search route.
  */
-function toSearchRankingOptions(raw: any): { scoreThreshold?: number } | undefined {
+function toSearchRankingOptions(
+  raw: any,
+): { scoreThreshold?: number; hybridWeights?: HybridWeights; rerank?: false } | undefined {
   const threshold = raw?.score_threshold;
-  return typeof threshold === 'number' && Number.isFinite(threshold)
-    ? { scoreThreshold: threshold }
-    : undefined;
+  // An invalid `hybrid_search` is dropped (unweighted fusion), the same way an invalid
+  // score_threshold is dropped here rather than failing the turn.
+  const hybrid = parseHybridSearch(raw?.hybrid_search);
+  const out: { scoreThreshold?: number; hybridWeights?: HybridWeights; rerank?: false } = {};
+  if (typeof threshold === 'number' && Number.isFinite(threshold)) out.scoreThreshold = threshold;
+  if (hybrid.ok && hybrid.weights) out.hybridWeights = hybrid.weights;
+  if (raw?.ranker === 'none') out.rerank = false;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** A hit's chunk text. `SearchHit.content` is a parts array, always text parts today. */
@@ -204,6 +217,7 @@ function toWireResults(hits: SearchHit[], renderText: (text: string) => string):
     score: hit.score,
     attributes: hit.attributes,
     text: renderText(textOf(hit)),
+    ...(hit.pages ? { pages: hit.pages } : {}),
   }));
 }
 
@@ -232,6 +246,7 @@ function queriesOf(r: ToolExecResult): string[] {
 function errorCodeFor(error: any): string {
   if (error instanceof SearchStoreNotFoundError) return 'store_not_found';
   if (error instanceof SearchQueryTooLongError) return 'query_too_long';
+  if (error instanceof StoreModelUnavailableError) return error.code;
   return 'file_search_unavailable';
 }
 
@@ -255,6 +270,11 @@ function errorCodeFor(error: any): string {
  * are caller-supplied but are treated as loggable throughout this feature by deliberate
  * decision, as identifiers rather than content.
  *
+ * `StoreModelUnavailableError` (search.ts) added deliberately: one `new`-site, which
+ * interpolates the affected store ids and the store's `embedding_model` — a model name
+ * read from `vector_stores`, written there from the deployment's configuration at store
+ * creation, never from the caller.
+ *
  * `RerankerUnavailableError` (reranker.ts) added deliberately, not by omission: it has
  * exactly one `new`-site, its message is the fixed string 'No RUNNING SAP AI Core reranker
  * deployment was found for file_search', and that site interpolates nothing — not the
@@ -266,6 +286,7 @@ function errorCodeFor(error: any): string {
 const LOGGABLE_MESSAGE_CLASSES: ReadonlyArray<new (...args: any[]) => Error> = [
   SearchQueryTooLongError, SearchStoreNotFoundError, RecallInputError,
   StoreExpiredError, StoreDimensionMismatchError, ToolRequestError, RerankerUnavailableError,
+  StoreModelUnavailableError,
 ];
 
 /**
@@ -302,8 +323,9 @@ function failedSearch(
  *
  * DELIBERATELY UNCAPPED, and the bound is already elsewhere: `maxNumResults` is enforced
  * at 1..`MAX_RESULTS_DEFAULT` (50) by `prepare()` and clamped again by `searchVectorStores`,
- * and each passage is one chunk, itself bounded by the ingest chunker. So this is at worst
- * 50 chunks — the same 50 the client would have received under
+ * and each passage is one chunk, itself bounded by the ingest chunker, or one parent section,
+ * bounded by `file_search.parent_sections.max_tokens`. So this is at worst
+ * 50 passages — the same 50 the client would have received under
  * `include: ["file_search_call.results"]` anyway, of documents it already owns. Truncating
  * here would only hide passages the model was told about from the one path where the client
  * never gets the model's summary. `webSearch`'s `buildSearchMessageItem`, the equivalent
@@ -323,7 +345,8 @@ function formatResultsText(r: ToolExecResult): string {
     return `No passages in your documents matched the search${asked}.`;
   }
   const passages = hits.map((hit, i) =>
-    `${i + 1}. ${hit.filename} (score ${hit.score.toFixed(3)})\n${textOf(hit)}`).join('\n\n');
+    `${i + 1}. ${hit.filename}${hit.pages ? `, p. ${formatPages(hit.pages)}` : ''} (score ${hit.score.toFixed(3)})\n${textOf(hit)}`)
+    .join('\n\n');
   return `Found ${hits.length} passage(s) in your documents${asked}:\n\n${passages}`;
 }
 
@@ -389,9 +412,9 @@ export const fileSearchDescriptor: HostedToolDescriptor = {
     // checked while the caller can still be told.
     // An unknown id and a store owned by someone else produce the SAME 400
     // deliberately: a distinct status would turn the response into an oracle for which
-    // store ids exist. See repository.ts's own note on that, and searchVectorStores'
+    // store ids exist. See storeAccess.ts's NOT AN EXISTENCE ORACLE note, and searchVectorStores'
     // matching "404, never 403" choice.
-    await assertStoresAccessible(ids, ctx.ownerEmail);
+    await assertStoresAccessible(ids, ctx.ownerEmail, ctx.teamIds);
 
     const toolCfg = configService.getFileSearchToolConfig();
     const requested = hosted.max_num_results;
@@ -400,6 +423,13 @@ export const fileSearchDescriptor: HostedToolDescriptor = {
             || requested < MIN_RESULTS_DEFAULT || requested > MAX_RESULTS_DEFAULT)) {
       throw new ToolRequestError(
         `file_search max_num_results must be an integer between ${MIN_RESULTS_DEFAULT} and ${MAX_RESULTS_DEFAULT}.`);
+    }
+
+    // OpenAI's ranker values; `none` skips the rerank (as on POST /vector_stores/{id}/search). An
+    // unknown one is refused here, while the caller can still be told, rather than ignored.
+    const ranker = hosted?.ranking_options?.ranker;
+    if (ranker !== undefined && ranker !== null && !(typeof ranker === 'string' && SEARCH_RANKERS.includes(ranker))) {
+      throw new ToolRequestError(`file_search ranking_options.ranker must be one of: ${SEARCH_RANKERS.join(', ')}.`);
     }
 
     // Store ids are not user content and are safe to log; the QUERY is user content and
@@ -481,6 +511,7 @@ export const fileSearchDescriptor: HostedToolDescriptor = {
       const response = await searchVectorStores({
         storeIds: prepared.storeIds,
         ownerEmail,
+        teamIds: ctx.teamIds,
         query: searchQuery,
         // The caller configured the search once, in the hosted tool entry; the model does
         // not get to restate it per call. `rewriteQuery: false` is explicit rather than
@@ -490,6 +521,13 @@ export const fileSearchDescriptor: HostedToolDescriptor = {
         maxNumResults: prepared.maxNumResults,
         filters: prepared.filters,
         rankingOptions: toSearchRankingOptions(prepared.rankingOptions),
+        // The caller's key pays for the query embeddings and rerank units; the engine bound
+        // the ids to this call.
+        usage: ctx.recordUsage,
+        // Structured hits come back as their parent sections (parent_sections.scope 'tool',
+        // the default). Both renderings below are built from these hits, so what the model
+        // reads, what the client sees and what citations anchor on are the same text.
+        surface: 'tool',
       });
 
       const hits = response.data || [];
@@ -521,7 +559,7 @@ export const fileSearchDescriptor: HostedToolDescriptor = {
       // — SearchQueryTooLongError reports a length, SearchStoreNotFoundError a store id,
       // RecallInputError a field name, StoreExpiredError / StoreDimensionMismatchError a
       // store id and a dimension — and omitted the one class nobody here wrote: `pg`'s
-      // DatabaseError, which `recallCandidates` rethrows (repository.ts) and which lands
+      // DatabaseError, which `recallCandidates` rethrows (fileSearch/recall.ts) and which lands
       // in this very catch. Its messages quote the input that offended Postgres:
       //   [22P02] invalid input syntax for type numeric: "Jane Doe, MRN 4471"
       // reproduced live from an ordinal filter given a non-numeric `value`. `body.filters`

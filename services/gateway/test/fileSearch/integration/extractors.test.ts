@@ -1,4 +1,4 @@
-// Opt-in integration coverage against the real pandoc / pdftotext binaries.
+// Opt-in integration coverage against the real pandoc / pdftotext / tesseract binaries.
 // Skipped by default so CI stays hermetic on machines that don't have these
 // tools installed; the unit suite (test/fileSearch/extractors.test.ts and
 // test/fileSearch/runners.test.ts) already covers dispatch, encoding, and
@@ -7,6 +7,8 @@
 
 import { execFileSync } from 'child_process';
 import { extractText } from '../../../src/fileSearch/extractors/registry';
+import { detectOcr } from '../../../src/fileSearch/extractors/ocrAvailability';
+import { runExtractorBuffer } from '../../../src/fileSearch/extractors/runners';
 
 const RUN_BINARY_TESTS = process.env.FILE_SEARCH_TEST_BINARIES === '1';
 const d = RUN_BINARY_TESTS ? describe : describe.skip;
@@ -33,12 +35,15 @@ function tinyPdfBuffer(text: string): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
-// Generate a tiny .docx by round-tripping through pandoc itself (markdown ->
-// docx). This is the real pandoc binary under test, just used here as a
-// fixture generator rather than the thing under test.
-function tinyDocxBuffer(text: string): Buffer {
-  return execFileSync('pandoc', ['-f', 'markdown', '-t', 'docx'], { input: `# ${text}\n` });
+// Generate a tiny document by round-tripping through pandoc itself (markdown ->
+// docx/odt/epub). This is the real pandoc binary under test, just used here as a
+// fixture generator rather than the thing under test. Through the runner, never
+// execFileSync with `input`: on macOS a synchronous child fed on stdin can wait
+// for its input forever, and a synchronous call blocks jest's own test timeout.
+function pandocFixture(text: string, to: string): Promise<Buffer> {
+  return runExtractorBuffer('pandoc', ['-f', 'markdown', '-t', to], Buffer.from(`# ${text}\n`, 'utf8'), { timeoutMs: 30_000 });
 }
+const tinyDocxBuffer = (text: string): Promise<Buffer> => pandocFixture(text, 'docx');
 
 d('extractors against real binaries (requires FILE_SEARCH_TEST_BINARIES=1)', () => {
   it('extracts text from a generated PDF via pdftotext', async () => {
@@ -48,14 +53,14 @@ d('extractors against real binaries (requires FILE_SEARCH_TEST_BINARIES=1)', () 
   });
 
   it('extracts text from a generated DOCX via pandoc', async () => {
-    const docx = tinyDocxBuffer('Hello Docx');
+    const docx = await tinyDocxBuffer('Hello Docx');
     const out = await extractText('doc.docx', docx, { timeoutMs: 10000 });
     expect(out).toContain('Hello Docx');
   });
 
   it('extracts text from ODT and EPUB via pandoc', async () => {
-    const odt = execFileSync('pandoc', ['-f', 'markdown', '-t', 'odt'], { input: '# Hello Odt\n' });
-    const epub = execFileSync('pandoc', ['-f', 'markdown', '-t', 'epub'], { input: '# Hello Epub\n' });
+    const odt = await pandocFixture('Hello Odt', 'odt');
+    const epub = await pandocFixture('Hello Epub', 'epub');
     expect(await extractText('doc.odt', odt, { timeoutMs: 10000 })).toContain('Hello Odt');
     expect(await extractText('doc.epub', epub, { timeoutMs: 10000 })).toContain('Hello Epub');
   });
@@ -76,8 +81,28 @@ d('extractors against real binaries (requires FILE_SEARCH_TEST_BINARIES=1)', () 
     // pandoc reader flag (derived from the extension) and the raw bytes on
     // stdin are. A semicolon-laden basename must extract normally, not error
     // out or have any side effect.
-    const docx = tinyDocxBuffer('Injection Check');
+    const docx = await tinyDocxBuffer('Injection Check');
     const out = await extractText('a"; touch /tmp/file-search-pwned; echo ".docx', docx, { timeoutMs: 10000 });
     expect(out).toContain('Injection Check');
+  });
+});
+
+d('tesseract for OCR (requires FILE_SEARCH_TEST_BINARIES=1)', () => {
+  it('is installed as tesseract 4 or newer', () => {
+    // tesseract 4 printed --version to stderr, 5 prints to stdout; read both.
+    const out = execFileSync('tesseract', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
+    const major = Number(/tesseract v?(\d+)\./i.exec(out)?.[1]);
+    expect(major).toBeGreaterThanOrEqual(4);
+  });
+
+  it('has the eng language data, so the gateway switches OCR on with the default languages', async () => {
+    const status = await detectOcr({}, ['eng']);
+    expect(status.installed).toContain('eng');
+    expect(status.enabled).toBe(true);
+    expect(status.languages).toEqual(['eng']);
+  });
+
+  it('stays off with FILE_SEARCH_OCR=off although tesseract is installed (npm standalone CLI)', async () => {
+    expect((await detectOcr({ FILE_SEARCH_OCR: 'off' }, ['eng'])).enabled).toBe(false);
   });
 });

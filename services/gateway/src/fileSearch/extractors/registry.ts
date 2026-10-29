@@ -8,6 +8,12 @@
 import { getFileSearchConfig } from '../../services/configService';
 import { getDefaultLogger } from '@libs/logger';
 import { runExtractor } from './runners';
+import { ocrPdfPages, type PdfOcrOptions } from './pdfOcr';
+import { transcribePdfPages, type PdfVisionOptions } from '../visionTranscriber';
+import { htmlToStructuredText, tidyPandocMarkdown } from './htmlText';
+import { OfficeFormat, readOfficeOffThread } from './ooxml/ooxmlThread';
+import { isLegacyDocEnabled, readLegacyDoc } from './legacyDoc';
+import type { StructuredFormat } from '../structureScanner';
 
 const logger = getDefaultLogger();
 
@@ -57,9 +63,26 @@ export class UnsupportedFileTypeError extends Error {
   }
 }
 
+/** A .doc where this gateway does not read them: FILE_SEARCH_DOC=off (always in the npm standalone
+ *  CLI) or no antiword on PATH (legacyDoc.ts). Permanent, and an UnsupportedFileTypeError, so a
+ *  re-extract queues the file again once .doc is read here (reextract.ts). */
+export class LegacyDocUnsupportedError extends UnsupportedFileTypeError {
+  constructor() {
+    super('doc');
+    this.message = 'legacy .doc files are not supported on this deployment';
+  }
+}
+
 export interface ExtractOptions {
   /** Overrides FileSearchConfig.ingestion.extractTimeoutMs for this call. */
   timeoutMs?: number;
+  /** PDF only: OCR of pages without a text layer — the ingestion's memo, the blob's sha256 and
+   *  the deadline the OCR budget is taken from (pdfOcr.ts). */
+  ocr?: PdfOcrOptions;
+  /** PDF only: vision transcription of the pages the store's mode selects (visionTranscriber.ts);
+   *  absent or mode 'off' = none. It runs before OCR, so a page without a text layer it did not
+   *  transcribe still goes to OCR. */
+  vision?: PdfVisionOptions;
 }
 
 // Source-code, config, and plain-markup formats: the raw bytes (once decoded
@@ -92,9 +115,15 @@ const PANDOC_READERS: ReadonlyMap<string, string> = new Map([
 
 const PDFTOTEXT_EXTENSIONS = new Set(['pdf']);
 
-// .pptx and .doc are deliberate, documented gaps: pandoc cannot read either
-// format, so routing them to the pandoc runner would fail anyway, just with
-// a worse error. Reject them explicitly and by name instead.
+// PowerPoint and Excel: read by the built-in reader (ooxml/) in its worker
+// thread, the same in every deployment, no external tool. Both return Markdown,
+// used as is by the static strategy and read as Markdown by the structure
+// strategy. A broken, hostile or over-limit file is a DocumentReadError (permanent).
+const OOXML_FORMATS: ReadonlySet<string> = new Set<OfficeFormat>(['pptx', 'xlsx']);
+
+// Legacy Word (.doc, Word 97–2003): pandoc cannot read it; antiword does, where it is installed
+// and not switched off (legacyDoc.ts). `.ppt` and `.xls` stay refused.
+const LEGACY_DOC_EXTENSION = 'doc';
 
 /**
  * Normalise a raw extension or filename fragment for lookup: lowercase, no
@@ -130,9 +159,61 @@ function extensionOfFilename(filename: string): string {
   return normalizeExtension(trimmed);
 }
 
+// Formats whose extracted text ends every page (slide) with one form feed, so
+// their chunks carry page numbers (pages.ts). Every other format's chunks have
+// none, whatever form feeds a file of it may hold.
+const PAGED_EXTENSIONS = new Set(['pdf', 'pptx']);
+
+/** Whether `filename`'s extracted text marks its pages with form feeds (both extractText and extractStructuredText). */
+export function isPagedFile(filename: string): boolean {
+  return PAGED_EXTENSIONS.has(extensionOfFilename(filename));
+}
+
+/** Whether `filename` is read as a PDF (pdftotext; the only format vision transcribes). */
+export function isPdfFile(filename: string): boolean {
+  return PDFTOTEXT_EXTENSIONS.has(extensionOfFilename(filename));
+}
+
+/**
+ * The version of what this build's extractors make of a file, stamped on every file it reads
+ * (vector_store_files.extraction_version; NULL = read before the stamp existed, version 0). Raise it
+ * when a format is read better, and name the format in READ_BETTER_SINCE: the files of that format
+ * read with an older version are then what a re-extract (reextract.ts) reads again.
+ */
+export const EXTRACTION_VERSION = 1;
+
+/** Per version, the formats it reads better than the version before. 1 (W3): PDF — OCR of pages
+ *  without text, page numbers, vision. PowerPoint and Excel were refused before, so no completed
+ *  file of theirs was read with an older version (their failed files are retried instead). */
+const READ_BETTER_SINCE: ReadonlyArray<readonly [number, (filename: string) => boolean]> = [
+  [1, isPdfFile],
+];
+
+/** Whether a completed file read with `version` (null = 0) would be read better now. */
+export function readBetterNow(filename: string, version: number | null): boolean {
+  const from = typeof version === 'number' && Number.isInteger(version) ? version : 0;
+  return READ_BETTER_SINCE.some(([since, format]) => since > from && since <= EXTRACTION_VERSION && format(filename));
+}
+
+/**
+ * Whether a re-extract reads a completed file again: its format is read better since its version
+ * (readBetterNow), or its read left pages without text because OCR could not run there
+ * (`ocrPending`) and OCR runs on this gateway now (`ocrEnabled`, ocrAvailability.ts isOcrEnabled).
+ */
+export function readAgain(filename: string, version: number | null, ocrPending: boolean | null, ocrEnabled: boolean): boolean {
+  return readBetterNow(filename, version) || (ocrPending === true && ocrEnabled);
+}
+
+/** Whether a file named `filename` is of a format this build reads (a name without an extension is not). */
+export function isSupportedFilename(filename: string): boolean {
+  const ext = extensionOfFilename(filename);
+  return ext !== '' && isSupportedExtension(ext);
+}
+
 export function isSupportedExtension(ext: string): boolean {
   const norm = normalizeExtension(ext);
-  return DIRECT_EXTENSIONS.has(norm) || PANDOC_READERS.has(norm) || PDFTOTEXT_EXTENSIONS.has(norm);
+  return DIRECT_EXTENSIONS.has(norm) || PANDOC_READERS.has(norm) || PDFTOTEXT_EXTENSIONS.has(norm) || OOXML_FORMATS.has(norm)
+    || (norm === LEGACY_DOC_EXTENSION && isLegacyDocEnabled());
 }
 
 const UTF16LE_BOM = Buffer.from([0xff, 0xfe]);
@@ -167,13 +248,34 @@ function decodeDirectText(bytes: Buffer): string {
   }
 }
 
+async function readDoc(filename: string, bytes: Buffer, timeoutMs: number): Promise<string> {
+  if (!isLegacyDocEnabled()) throw new LegacyDocUnsupportedError();
+  try {
+    return await readLegacyDoc(bytes, { timeoutMs });
+  } catch (error: any) {
+    logger.error('FileSearchExtractor', `antiword extraction failed for .doc file "${filename}"`, error);
+    throw error;
+  }
+}
+
+async function readOoxml(format: OfficeFormat, filename: string, bytes: Buffer, timeoutMs: number): Promise<string> {
+  try {
+    return await readOfficeOffThread(format, bytes, { timeoutMs });
+  } catch (error: any) {
+    logger.error('FileSearchExtractor', `.${format} extraction failed for file "${filename}"`, error);
+    throw error;
+  }
+}
+
 /**
  * Extract plain text from an uploaded file's bytes. Dispatches by the
- * filename's extension into one of three runners: a direct in-process
+ * filename's extension into one of five runners: a direct in-process
  * decode for source/plain-text formats, pandoc (via stdin, no temp file) for
- * container document formats, and pdftotext (also via stdin — poppler
+ * container document formats, pdftotext (also via stdin — poppler
  * accepts "-" as a stdin/stdout placeholder, so no temp file is needed here
- * either) for PDF.
+ * either) for PDF, the built-in reader (ooxml/, in a worker thread, no temp
+ * file) for PowerPoint and Excel, and antiword (a private temp file: it seeks
+ * in its input) for legacy Word .doc where it is available (legacyDoc.ts).
  *
  * @throws UnsupportedFileTypeError if the extension isn't in the allowlist.
  */
@@ -196,15 +298,91 @@ export async function extractText(filename: string, bytes: Buffer, opts: Extract
   }
 
   if (PDFTOTEXT_EXTENSIONS.has(ext)) {
+    let text: string;
     try {
       // "-" for both input and output tells pdftotext to read/write via
       // stdin/stdout instead of a filesystem path.
-      return await runExtractor('pdftotext', ['-', '-'], bytes, { timeoutMs });
+      text = await runExtractor('pdftotext', ['-', '-'], bytes, { timeoutMs });
     } catch (error: any) {
       logger.error('FileSearchExtractor', `pdftotext extraction failed for file "${filename}"`, error);
       throw error;
     }
+    // Opt-in per store: pages the vision model transcribes, in place (never throws; off = no call).
+    const vision = opts.vision ? await transcribePdfPages(text, bytes, opts.vision) : { text, transcribed: [] };
+    // Pages without a text layer (scans) read by OCR, in place — except those vision wrote; a PDF
+    // with text on every page is returned as pdftotext gave it. Never throws.
+    return ocrPdfPages(vision.text, bytes, { ...opts.ocr, keepPages: vision.transcribed });
   }
+
+  if (OOXML_FORMATS.has(ext)) return readOoxml(ext as OfficeFormat, filename, bytes, timeoutMs);
+
+  if (ext === LEGACY_DOC_EXTENSION) return readDoc(filename, bytes, timeoutMs);
+
+  throw new UnsupportedFileTypeError(ext);
+}
+
+export interface StructuredExtraction {
+  text: string;
+  /** How the `structure` chunker reads `text` (chunkStructured's `format`). */
+  format: StructuredFormat;
+}
+
+/**
+ * Extraction for the `structure` chunking strategy; `static` keeps using
+ * extractText, whose output is unchanged. Differences, all to keep structure:
+ * - .md: the text as is (same as extractText), read as Markdown;
+ * - docx/odt/epub/rst: pandoc writes GitHub-flavoured Markdown
+ *   (`-t gfm --wrap=none`: `#` headings, pipe tables, fenced code, no
+ *   re-wrapped lines) instead of plain text, minus its empty anchors and
+ *   wrapper <div> lines; tables pandoc cannot draw as pipe tables stay HTML;
+ * - .html: tags stripped, headings and <pre> kept as Markdown (htmlText.ts)
+ *   instead of the raw markup;
+ * - .pdf: the same pdftotext output (with OCR text on pages without a text
+ *   layer), read as pages (form feeds) and paragraphs — it carries no heading
+ *   markers;
+ * - .pptx/.xlsx: the built-in reader's Markdown (the same text as extractText),
+ *   read as Markdown: a section per slide (its notes a sub-section) or sheet;
+ * - .doc: antiword's text (the same as extractText), read as blank-line blocks;
+ * - every other direct format (txt, code, json, …): the text as is, read as
+ *   blank-line blocks with no headings.
+ *
+ * @throws UnsupportedFileTypeError if the extension isn't in the allowlist.
+ */
+export async function extractStructuredText(
+  filename: string,
+  bytes: Buffer,
+  opts: ExtractOptions = {}
+): Promise<StructuredExtraction> {
+  const ext = extensionOfFilename(filename);
+  const timeoutMs = opts.timeoutMs ?? getFileSearchConfig().ingestion.extractTimeoutMs;
+
+  if (DIRECT_EXTENSIONS.has(ext)) {
+    const text = decodeDirectText(bytes);
+    if (ext === 'md') return { text, format: 'markdown' };
+    if (ext === 'html') return { text: htmlToStructuredText(text), format: 'markdown' };
+    return { text, format: 'plain' };
+  }
+
+  const pandocReader = PANDOC_READERS.get(ext);
+  if (pandocReader !== undefined) {
+    try {
+      const text = await runExtractor('pandoc', ['-f', pandocReader, '-t', 'gfm', '--wrap=none'], bytes, { timeoutMs });
+      return { text: tidyPandocMarkdown(text), format: 'markdown' };
+    } catch (error: any) {
+      logger.error('FileSearchExtractor', `pandoc extraction failed for .${ext} file "${filename}"`, error);
+      throw error;
+    }
+  }
+
+  if (PDFTOTEXT_EXTENSIONS.has(ext)) {
+    return { text: await extractText(filename, bytes, opts), format: 'pdf' };
+  }
+
+  if (OOXML_FORMATS.has(ext)) {
+    return { text: await readOoxml(ext as OfficeFormat, filename, bytes, timeoutMs), format: 'markdown' };
+  }
+
+  if (ext === LEGACY_DOC_EXTENSION) return { text: await readDoc(filename, bytes, timeoutMs), format: 'plain' };
 
   throw new UnsupportedFileTypeError(ext);
 }

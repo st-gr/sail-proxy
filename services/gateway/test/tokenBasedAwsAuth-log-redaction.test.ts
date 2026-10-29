@@ -85,6 +85,8 @@ describe('tokenBasedAwsAuth never logs the raw AWS access key ID', () => {
     loggerCalls.warn.mockClear();
     loggerCalls.info.mockClear();
     mockValidateAwsCredential.mockReset();
+    // Keep x-amz-date (20240101T000000Z) inside the 15-minute window.
+    jest.spyOn(Date, 'now').mockReturnValue(Date.UTC(2024, 0, 1));
   });
 
   it('never leaks the access key ID across the processing + auth-failed path', async () => {

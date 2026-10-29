@@ -6,7 +6,7 @@
  */
 
 const axios = require('axios');
-const { getOllamaServiceUrl } = require('@libs/test-utils');
+const { getOllamaServiceUrl, liveModels } = require('@libs/test-utils');
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || getOllamaServiceUrl();
 
@@ -34,12 +34,12 @@ describe('Ollama Edge Cases', () => {
     },
     {
       name: 'Array instead of string',
-      body: { model: ['gpt-4'] },
+      body: { model: ['non-existent-model-in-array'] },
       expectError: true
     },
     {
       name: 'Object instead of string',
-      body: { model: { name: 'gpt-4' } },
+      body: { model: { name: 'non-existent-model-in-object' } },
       expectError: true
     },
     {
@@ -49,7 +49,7 @@ describe('Ollama Edge Cases', () => {
     },
     {
       name: 'Valid model name',
-      body: { model: 'gpt-4.1-nano-mini' },
+      body: { model: liveModels.cheapChat },
       expectError: false
     },
     {

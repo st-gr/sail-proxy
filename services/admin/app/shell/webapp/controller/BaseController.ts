@@ -1,4 +1,5 @@
 import Controller from "sap/ui/core/mvc/Controller";
+import View from "sap/ui/core/mvc/View";
 import UIComponent from "sap/ui/core/UIComponent";
 import AppComponent from "admin/shell/Component";
 import Model from "sap/ui/model/Model";
@@ -6,6 +7,7 @@ import ResourceModel from "sap/ui/model/resource/ResourceModel";
 import ResourceBundle from "sap/base/i18n/ResourceBundle";
 import Router from "sap/ui/core/routing/Router";
 import History from "sap/ui/core/routing/History";
+import formatMessage from "sap/base/strings/formatMessage";
 
 /**
  * @namespace admin.shell.controller
@@ -37,12 +39,39 @@ export default abstract class BaseController extends Controller {
 	}
 
 	/**
+	 * Resolves an i18n key against the component's resource bundle, filling `{0}`, `{1}` …
+	 * placeholders from `args`. Synchronous: the bundle is already loaded by the time a user
+	 * action or a data callback produces a message.
+	 * @param sKey The i18n key
+	 * @param [aArgs] Placeholder values
+	 * @returns The translated text, or the key itself when the bundle has no entry
+	 */
+	public text(sKey: string, aArgs?: unknown[]): string {
+		const oModel = this.getOwnerComponent()?.getModel("i18n") as ResourceModel | undefined;
+		const sPattern = (oModel?.getProperty(sKey) as string | null | undefined) ?? sKey;
+		return aArgs ? formatMessage(sPattern, aArgs) : sPattern;
+	}
+
+	/**
+	 * The controller's view. UI5 connects a controller to its view before onInit, so every lifecycle
+	 * hook and event handler has one; a call without it is a programming error and says so.
+	 * @returns The view of this controller
+	 */
+	protected view(): View {
+		const oView = this.getView();
+		if (!oView) {
+			throw new Error(`${this.getMetadata().getName()}: the controller is not connected to a view`);
+		}
+		return oView;
+	}
+
+	/**
 	 * Convenience method for getting the view model by name in every controller of the application.
 	 * @param [sName] The model name
-	 * @returns The model instance
+	 * @returns The model instance, undefined when the view has no model of that name
 	 */
-	public getModel(sName?: string): Model {
-		return this.getView().getModel(sName);
+	public getModel(sName?: string): Model | undefined {
+		return this.view().getModel(sName);
 	}
 
 	/**
@@ -52,7 +81,7 @@ export default abstract class BaseController extends Controller {
 	 * @returns The current base controller instance
 	 */
 	public setModel(oModel: Model, sName?: string): BaseController {
-		this.getView().setModel(oModel, sName);
+		this.view().setModel(oModel, sName);
 		return this;
 	}
 

@@ -18,6 +18,7 @@ import { clientContext } from '../utils/clientIp';
 import { isAdminRole } from '../services/modelEntitlementService';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
 import { applyQueryOptions } from './odataInMemory';
+import { republishAllTeams } from '../services/teamQuotaService';
 import { policyBlockFor } from '../services/toolPolicyService';
 
 const cds = require('@sap/cds');
@@ -336,7 +337,7 @@ export function registerUserHandlers(service: any): void {
     const scope = emails.length > 0 ? emails : undefined;
     try {
       const r = await counters.rebuild(cds, { emails: scope });
-      if (scope) await quota.publishMany(cds, scope); else await quota.republishAll();
+      if (scope) await quota.publishMany(cds, scope); else { await quota.republishAll(); await republishAllTeams(); }
       await recordAuditEvent({ actorId: actor(req), actorType: 'admin_user', action: 'user.rebuild_usage_counters', resourceType: 'User', resourceId: scope ? scope.join(',') : '*', outcome: 'success', severity: 'medium', ...clientContext(req), details: JSON.stringify({ users: r.users, buckets: r.buckets, durationMs: r.durationMs }) });
       return scope
         ? scope.map((email) => ({ email, ok: true, buckets: r.bucketsByUser[email] ?? 0, message: 'rebuilt' }))
@@ -370,16 +371,17 @@ export function registerUserHandlers(service: any): void {
     // configuration - the platform-wide defaults and a shared profile's figures - and cds does not
     // prune keys the return type does not model (Object.assign onto the OData result), so they are
     // stripped here: the caller gets their own effective limits and their profile's NAME, no more.
-    const { profileLimits, platformLimits, ...mine } = await quota.status(cds, actor(req));
+    const { profileLimits, platformLimits, teamLimits, ...mine } = await quota.status(cds, actor(req));
     const block = await policyBlockFor(cds.db, actor(req));
     return { ...mine, toolPolicy: { name: block.policyName, mode: block.mode } };
   });
   // The home tiles: an administrator sees every user's month, everyone else their own.
   service.on('myUsageSummary', async (req: any) => usageSummary(cds, { email: actor(req), isAdmin: isAdminRole(roles(req)) }));
-  // The models whose usage is counted in cells (SAP-RPT): names models, not usage, so every
-  // signed-in caller (admin or not) may read it - drives the Unit column in Usage Analytics.
+  // The models whose usage is counted in cells (SAP-RPT) or units (rerank), not tokens: names
+  // models, not usage, so every signed-in caller (admin or not) may read it - drives the Unit
+  // column in Usage Analytics.
   service.on('usageUnits', async () => {
-    const rows = await cds.run(cds.ql.SELECT.distinct.from('sap.llm.gateway.admin.ApiKeyUsage').columns('model', 'unit').where({ unit: 'cells' }));
+    const rows = await cds.run(cds.ql.SELECT.distinct.from('sap.llm.gateway.admin.ApiKeyUsage').columns('model', 'unit').where({ unit: { in: ['cells', 'units'] } }));
     return rows.map((r: any) => ({ model: r.model, unit: r.unit }));
   });
 
@@ -446,7 +448,7 @@ export function registerUserHandlers(service: any): void {
       if (!row?.ID) continue;
       const email = ownerOf.get(row.ID);
       const s = email ? statuses.get(email) : undefined;
-      row.ownerRequestsPerMinuteText = s ? effectiveLimitText('requestsPerMinute', s) : 'unlimited';
+      row.ownerRequestsPerMinuteText = s ? effectiveLimitText('requestsPerMinute', { ...s, teamByField: s.teamLimits?.teamByField }) : 'unlimited';
     }
   });
 }

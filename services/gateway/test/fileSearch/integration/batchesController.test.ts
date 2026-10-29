@@ -264,6 +264,41 @@ d('vector-store file-batch endpoints against a real Postgres database (requires 
       expect(res.body.created_at).toBeGreaterThan(1_600_000_000);
     });
 
+    it('records the acting cockpit user and the service key on the batch\'s job', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const res = makeRes();
+      await ctrl.createVectorStoreFileBatch(baseReq(OWNER, {
+        params: { id: store.id },
+        body: { file_ids: [fileA] },
+        groundingActor: { email: 'acting-admin@example.test', role: 'admin' },
+        serviceAuth: { authType: 'service-key', serviceKey: { id: 'svc-key-7' } },
+      }), res, throwOnError);
+      expect(res.statusCode).toBe(200);
+      const { rows } = await pool.query(
+        'SELECT owner_email, started_by, credential_id, auth_type FROM fs_jobs WHERE batch_id = $1', [res.body.id],
+      );
+      expect(rows).toEqual([{
+        owner_email: OWNER, started_by: 'acting-admin@example.test', credential_id: 'svc-key-7', auth_type: 'api_key',
+      }]);
+    });
+
+    it('records the API key\'s id and the owner on the job of a batch created by an API client', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const res = makeRes();
+      await ctrl.createVectorStoreFileBatch(baseReq(OWNER, {
+        params: { id: store.id },
+        body: { file_ids: [fileA] },
+        apiKeyInfo: { email: OWNER, keyId: 'key-42' },
+      }), res, throwOnError);
+      expect(res.statusCode).toBe(200);
+      const { rows } = await pool.query(
+        'SELECT started_by, credential_id, auth_type FROM fs_jobs WHERE batch_id = $1', [res.body.id],
+      );
+      expect(rows).toEqual([{ started_by: OWNER, credential_id: 'key-42', auth_type: 'api_key' }]);
+    });
+
     it('stamps every member file with the batch id and leaves them in_progress for the worker', async () => {
       const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
       const fileA = await seedFile(OWNER, 'a.txt');
@@ -344,6 +379,217 @@ d('vector-store file-batch endpoints against a real Postgres database (requires 
       const files = await pool.query('SELECT file_id FROM vector_store_files');
       expect(batches.rows).toHaveLength(0);
       expect(files.rows).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST — `files: [{ file_id, attributes?, chunking_strategy? }]`, OpenAI's
+  // alternative to `file_ids` with per-file values (exclusive with file_ids).
+  // -------------------------------------------------------------------------
+  describe('createVectorStoreFileBatch — files[] with per-file attributes and chunking', () => {
+    const STATIC = { type: 'static', static: { max_chunk_size_tokens: 200, chunk_overlap_tokens: 0 } };
+
+    async function memberRows(storeId: string): Promise<Array<{ file_id: string; attributes: any; chunking_strategy: any; batch_id: string }>> {
+      const { rows } = await pool.query(
+        'SELECT file_id, attributes, chunking_strategy, batch_id FROM vector_store_files WHERE store_id = $1', [storeId],
+      );
+      return rows;
+    }
+
+    it('attaches every listed file with ITS OWN attributes and chunking strategy, in one batch', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const fileB = await seedFile(OWNER, 'b.txt');
+
+      const res = await createBatchViaHttp(store.id, {
+        files: [
+          { file_id: fileA, attributes: { lang: 'en', year: 2026 }, chunking_strategy: STATIC },
+          { file_id: fileB },
+        ],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.object).toBe('vector_store.file_batch');
+      expect(res.body.file_counts).toMatchObject({ in_progress: 2, total: 2 });
+
+      const rows = await memberRows(store.id);
+      const a = rows.find((r) => r.file_id === fileA)!;
+      const b = rows.find((r) => r.file_id === fileB)!;
+      expect(rows.every((r) => r.batch_id === res.body.id)).toBe(true);
+      expect(a.attributes).toEqual({ lang: 'en', year: 2026 });
+      // An entry without values is stored as a file_ids member without them is.
+      expect(b.attributes).toEqual({});
+      expect(b.chunking_strategy).toBeNull();
+
+      // The per-file chunking strategy is stored exactly as a single-file attach of it stores it.
+      const single = await repo.createStore({ ownerEmail: OWNER, name: 'single' });
+      const fileC = await seedFile(OWNER, 'c.txt');
+      const attach = makeRes();
+      await ctrl.createVectorStoreFile(
+        baseReq(OWNER, { params: { id: single.id }, body: { file_id: fileC, chunking_strategy: STATIC } }), attach, throwOnError,
+      );
+      expect(attach.statusCode).toBe(200);
+      const { rows: singleRows } = await pool.query(
+        'SELECT chunking_strategy FROM vector_store_files WHERE store_id = $1', [single.id],
+      );
+      expect(a.chunking_strategy).toEqual(singleRows[0].chunking_strategy);
+    });
+
+    it('ignores the top-level attributes and chunking_strategy when files is given (OpenAI: "will be ignored")', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+
+      const res = await createBatchViaHttp(store.id, {
+        files: [{ file_id: fileA }],
+        attributes: { global: true },
+        chunking_strategy: STATIC,
+      });
+      expect(res.statusCode).toBe(200);
+      const [row] = await memberRows(store.id);
+      expect(row.attributes).toEqual({});
+      expect(row.chunking_strategy).toBeNull();
+    });
+
+    it('rejects file_ids and files together with 400, creating nothing', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const res = await createBatchViaHttp(store.id, { file_ids: [fileA], files: [{ file_id: fileA }] });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_files');
+      expect((await pool.query('SELECT 1 FROM vector_store_batches')).rowCount).toBe(0);
+    });
+
+    it.each([
+      ['an empty array', []],
+      ['a non-array', { file_id: 'file-x' }],
+      ['an entry that is not an object', ['file-x']],
+      ['an entry without file_id', [{ attributes: { a: 1 } }]],
+      ['an entry with an empty file_id', [{ file_id: '' }]],
+    ])('rejects %s with 400 invalid_files', async (_label, files) => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const res = await createBatchViaHttp(store.id, { files });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.type).toBe('invalid_request_error');
+      expect(res.body.error.code).toBe('invalid_files');
+    });
+
+    it('rejects the same file_id listed twice with 400 (its values would be ambiguous)', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const res = await createBatchViaHttp(store.id, { files: [{ file_id: fileA }, { file_id: fileA, attributes: { x: 1 } }] });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_files');
+    });
+
+    it('validates per-file attributes exactly as the single-file attach does (400 invalid_attributes), creating nothing', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const fileB = await seedFile(OWNER, 'b.txt');
+      const tooMany = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, i]));
+
+      const res = await createBatchViaHttp(store.id, { files: [{ file_id: fileA }, { file_id: fileB, attributes: tooMany }] });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_attributes');
+      expect(res.body.error.message).toMatch(/^files\[1\]/);
+
+      const single = makeRes();
+      await ctrl.createVectorStoreFile(
+        baseReq(OWNER, { params: { id: store.id }, body: { file_id: fileB, attributes: tooMany } }), single, throwOnError,
+      );
+      expect(single.statusCode).toBe(400);
+      expect(single.body.error.code).toBe(res.body.error.code);
+      expect(res.body.error.message).toBe(`files[1]: ${single.body.error.message}`);
+      expect((await pool.query('SELECT 1 FROM vector_store_batches')).rowCount).toBe(0);
+      expect((await pool.query('SELECT 1 FROM vector_store_files')).rowCount).toBe(0);
+    });
+
+    it('validates a per-file chunking_strategy exactly as the single-file attach does, naming the entry', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const fileA = await seedFile(OWNER, 'a.txt');
+      const bad = { type: 'static', static: { max_chunk_size_tokens: 50, chunk_overlap_tokens: 0 } };
+
+      const res = await createBatchViaHttp(store.id, { files: [{ file_id: fileA, chunking_strategy: bad }] });
+      const single = makeRes();
+      await ctrl.createVectorStoreFile(
+        baseReq(OWNER, { params: { id: store.id }, body: { file_id: fileA, chunking_strategy: bad } }), single, throwOnError,
+      );
+      expect(single.statusCode).toBe(400);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe(single.body.error.code);
+      expect(res.body.error.message).toBe(single.body.error.message);
+      expect(res.body.error.param).toBe(`files[0].${single.body.error.param}`);
+      expect((await pool.query('SELECT 1 FROM vector_store_batches')).rowCount).toBe(0);
+    });
+
+    it('rejects an unowned file in files[] with the same 400 file_not_found as file_ids', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const foreign = await seedFile('someone-else@example.com', 'x.txt');
+      const viaFiles = await createBatchViaHttp(store.id, { files: [{ file_id: foreign }] });
+      const viaIds = await createBatchViaHttp(store.id, { file_ids: [foreign] });
+      expect(viaFiles.statusCode).toBe(400);
+      expect(viaFiles.body).toEqual(viaIds.body);
+    });
+
+    it('applies the same per-request cap as file_ids', async () => {
+      mockConfig = baseConfig(2);
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const res = await createBatchViaHttp(store.id, { files: [{ file_id: 'file-a' }, { file_id: 'file-b' }, { file_id: 'file-c' }] });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_files');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST — OpenAI's per-request cap: 2000 file ids (store create keeps 500)
+  // -------------------------------------------------------------------------
+  describe('createVectorStoreFileBatch — 2000 files per batch, as OpenAI', () => {
+    /** `count` owned files sharing one blob, inserted in one statement. */
+    async function seedManyFiles(count: number): Promise<string[]> {
+      const content = Buffer.from('one shared blob for many files');
+      const sha = sha256Of(content);
+      await retainBlob(sha, content, 'text/plain');
+      const ids = Array.from({ length: count }, () => newFileId());
+      await pool.query(
+        `INSERT INTO fs_files (id, owner_email, filename, purpose, sha256, size_bytes, created_at)
+         SELECT id, $2, 'f.txt', 'assistants', $3, $4, now() FROM unnest($1::text[]) AS id`,
+        [ids, OWNER, sha, content.length],
+      );
+      return ids;
+    }
+
+    it('attaches a batch of 2000 file_ids (OpenAI\'s maxItems), beyond the 500 a store create takes', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const ids = await seedManyFiles(2000);
+      const res = await createBatchViaHttp(store.id, { file_ids: ids });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.file_counts.total).toBe(2000);
+    }, 120_000);
+
+    it('rejects 2001 file_ids with 400 naming the cap of 2000, creating nothing', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const ids = Array.from({ length: 2001 }, (_, i) => `file-${i}`);
+      const res = await createBatchViaHttp(store.id, { file_ids: ids });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.message).toBe('file_ids must contain at most 2000 entries for this store');
+      const { rows } = await pool.query('SELECT count(*)::int AS n FROM vector_store_batches');
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('rejects 2001 files[] entries with 400 naming the cap of 2000', async () => {
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const files = Array.from({ length: 2001 }, (_, i) => ({ file_id: `file-${i}` }));
+      const res = await createBatchViaHttp(store.id, { files });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('invalid_files');
+      expect(res.body.error.message).toBe('files must contain at most 2000 entries for this store');
+    });
+
+    it('still names the store\'s own limit when maxFilesPerStore is below 2000', async () => {
+      mockConfig = baseConfig(1500);
+      const store = await repo.createStore({ ownerEmail: OWNER, name: 's' });
+      const ids = Array.from({ length: 1501 }, (_, i) => `file-${i}`);
+      const res = await createBatchViaHttp(store.id, { file_ids: ids });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.message).toBe('file_ids must contain at most 1500 entries for this store');
     });
   });
 

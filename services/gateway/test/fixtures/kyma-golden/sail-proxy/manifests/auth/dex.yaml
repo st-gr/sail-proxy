@@ -1,0 +1,117 @@
+# Dex Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: sail-proxy
+  labels:
+    app: dex
+spec:
+  type: ClusterIP
+  selector:
+    app: dex
+  ports:
+  - name: http
+    port: 5556
+    targetPort: 5556
+---
+# Dex Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: sail-proxy
+  labels:
+    app: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dex
+  template:
+    metadata:
+      labels:
+        app: dex
+      annotations:
+        # Disable Istio injection for Dex - causes communication issues with nginx
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: dex
+        image: ghcr.io/dexidp/dex:v2.37.0
+        args:
+        - dex
+        - serve
+        - /etc/dex/config.yaml
+        ports:
+        - containerPort: 5556
+        volumeMounts:
+        - name: dex-config
+          mountPath: /etc/dex
+          readOnly: true
+        - name: dex-storage
+          mountPath: /var/dex
+        # Mount SAML certificate for Okta provider
+        - name: dex-saml-cert
+          mountPath: /etc/dex/certs
+          readOnly: true
+        startupProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /dex/healthz
+            port: 5556
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        env:
+        - name: KUBERNETES_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # __DEX_K8S_HOST_OVERRIDE_START__
+        # Gardener's apiserver-proxy answers "421 Misdirected Request" to dex's
+        # kubernetes-storage client, which formats the in-cluster API URL with
+        # IPv6-style brackets ("https://[host]:443", present through at least
+        # dex v2.41) — the bracketed HTTP/2 :authority fails the proxy's SNI
+        # routing check when KUBERNETES_SERVICE_HOST is the webhook-injected
+        # DNS name. Pinning the kubernetes.default ClusterIP takes the
+        # interception path that tolerates the bracketed authority.
+        # Substituted by setup-kyma.js (stripped if the IP cannot be resolved).
+        - name: KUBERNETES_SERVICE_HOST
+          value: "10.0.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        # __DEX_K8S_HOST_OVERRIDE_END__
+      volumes:
+      - name: dex-config
+        configMap:
+          name: dex-config
+      - name: dex-storage
+        emptyDir: {}
+      # SAML certificate volume for Okta provider
+      - name: dex-saml-cert
+        configMap:
+          name: dex-saml-cert
+          optional: true
+      serviceAccount: dex

@@ -1,6 +1,6 @@
 {
   "name": "admin",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP",
   "private": true,
   "main": "dist/index.js",
@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.js\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../tool-policies-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../..",
+    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.{js,json}\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && node ../../cli-tools/copy-api-docs.js dist/api-docs ../../openapi/gateway.yaml ../../openapi/admin-odata.json ../../openapi/admin-rest.yaml ../../openapi/ollama.yaml && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../tool-policies-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../teams-app && pnpm run build && cd ../connections-app && pnpm run build && cd ../grounding-app && pnpm run build && cd ../..",
     "start": "node server.js",
     "start:cds": "cds-serve",
     "start:docker": "DEPLOY_TARGET=docker node server.js",
@@ -19,6 +19,7 @@
     "dev:ts:mock": "cross-env NODE_ENV=development DEBUG=sql nodemon --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
     "dev:ts:jwt": "cross-env NODE_ENV=production nodemon --ignore test/ --exec ts-node -r tsconfig-paths/register src/index.ts",
     "pretest": "pnpm --filter @sap-llm-gateway/test-utils build",
+    "openapi": "node scripts/generate-openapi.js",
     "test": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js",
     "pretest:unit": "pnpm --filter @sap-llm-gateway/test-utils build",
     "test:unit": "cross-env cds.requires.db.kind=sqlite cds.requires.db.impl=@cap-js/sqlite jest --config=jest.config.js --testPathPattern=\"test/unit\"",
@@ -55,7 +56,6 @@
     "@cap-js/postgres": "^1.14.1",
     "@cap-js/sqlite": "^2.0.2",
     "@sap/cds": "^8",
-    "@sap/cds-dk": "^8",
     "@sap/cds-hana": "^2",
     "@sap/xssec": "^4.8.0",
     "ajv": "^8.17.1",
@@ -77,8 +77,11 @@
     "@babel/preset-env": "^7.28.3",
     "@babel/preset-typescript": "^7.27.1",
     "@cap-js/cds-types": "^0.6.0",
+    "@cap-js/openapi": "1.2.3",
     "@sap-llm-gateway/test-utils": "workspace:*",
-    "@sap/ux-ui5-tooling": "^1.18.7",
+    "@sap/cds-dk": "^8",
+    "@sap/ux-ui5-tooling": "^1.32.0",
+    "@sapui5/types": "1.136.22",
     "@types/bcrypt": "^5.0.2",
     "@types/express": "^4.17.21",
     "@types/express-session": "^1.18.2",
@@ -90,19 +93,20 @@
     "@typescript-eslint/eslint-plugin": "^8.44.1",
     "@typescript-eslint/parser": "^8.44.1",
     "axios": "^1.18.0",
-    "cds-plugin-ui5": "^0.13.4",
+    "cds-plugin-ui5": "^0.17.4",
     "cpy-cli": "^5.0.0",
     "cross-env": "^7.0.3",
     "jest": "^29.5.0",
     "nodemon": "^3.1.10",
     "rimraf": "^5.0.1",
     "supertest": "^7.1.4",
+    "swagger-ui-dist": "5.33.1",
     "ts-jest": "^29.1.0",
     "ts-node": "^10.9.1",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.8.3",
-    "ui5-tooling-modules": "^3.30.8",
-    "ui5-tooling-transpile": "^3.9.0"
+    "ui5-tooling-modules": "^3.38.3",
+    "ui5-tooling-transpile": "^3.13.1"
   },
   "cds": {
     "requires": {
@@ -255,61 +259,79 @@
           "path": "app/shell",
           "configFile": "ui5.yaml",
           "mountPath": "/shell",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "api-keys-app": {
           "path": "app/api-keys-app",
           "configFile": "ui5.yaml",
           "mountPath": "/api-keys",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "aws-credentials-app": {
           "path": "app/aws-credentials-app",
           "configFile": "ui5.yaml",
           "mountPath": "/aws-credentials",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "usage-analytics-app": {
           "path": "app/usage-analytics-app",
           "configFile": "ui5.yaml",
           "mountPath": "/usage-analytics",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "security-notifications-app": {
           "path": "app/security-notifications-app",
           "configFile": "ui5.yaml",
           "mountPath": "/security-notifications",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "tool-policies-app": {
           "path": "app/tool-policies-app",
           "configFile": "ui5.yaml",
           "mountPath": "/tool-policies",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "config-app": {
           "path": "app/config-app",
           "configFile": "ui5.yaml",
           "mountPath": "/config",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "sap-rates-app": {
           "path": "app/sap-rates-app",
           "configFile": "ui5.yaml",
           "mountPath": "/sap-rates",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "model-library-app": {
           "path": "app/model-library-app",
           "configFile": "ui5.yaml",
           "mountPath": "/model-library",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
         },
         "users-app": {
           "path": "app/users-app",
           "configFile": "ui5.yaml",
           "mountPath": "/users",
-          "versionOverride": "1.136.0"
+          "versionOverride": "1.136.22"
+        },
+        "teams-app": {
+          "path": "app/teams-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/teams",
+          "versionOverride": "1.136.22"
+        },
+        "connections-app": {
+          "path": "app/connections-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/connections",
+          "versionOverride": "1.136.22"
+        },
+        "grounding-app": {
+          "path": "app/grounding-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/grounding",
+          "versionOverride": "1.136.22"
         }
       }
     }
@@ -323,6 +345,9 @@
     "app/tool-policies-app",
     "app/config-app",
     "app/sap-rates-app",
-    "app/users-app"
+    "app/users-app",
+    "app/teams-app",
+    "app/connections-app",
+    "app/grounding-app"
   ]
 }

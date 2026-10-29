@@ -9,10 +9,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import modelCostService from './modelCostService';
-import { computeSapNative, isProductive } from './sapCapacityService';
-import { touch as touchUser } from './usersService';
+import { priceExternalEvent } from './externalUsagePricing';
+import { computeSapNative } from './sapCapacityService';
+import { billingForTenants, unknownTenants, upsertTenant } from './sapTenants';
+import { backfillEnvironmentTenantOnce, environmentTenant } from '../db/data/sap-tenant-backfill';
+import { touch as touchUser, isServiceKeyEmail } from './usersService';
 import { publishMany } from './userQuotaService';
-import { foldIncrements, applyIncrements, OWNER_EMAIL_FALLBACKS } from './usageCounters';
+import { foldIncrements, applyIncrements, foldTeamIncrements, applyTeamIncrements, OWNER_EMAIL_FALLBACKS } from './usageCounters';
+import { primaryTeamIdsFor, getTeamsByIds } from './teamLookups';
+import { publishTeams } from './teamQuotaService';
 import { recordToolUsage, ToolEntryLike, UNKNOWN_TOOL_OWNER } from './toolUsageService';
 
 const logger = getDefaultLogger();
@@ -48,6 +53,63 @@ function hashUsageSignature(e: UsageEvent): string {
   return createHash('sha256').update(computeUsageSignature(e)).digest('hex');
 }
 
+/** Same shape check as the gateway's acting-user header (gateway middlewares/actingEmailPattern.ts);
+ *  test/unit/acting-email-pattern-parity.test.ts fails when the two drift. */
+export const EMAIL_PATTERN = /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/;
+const MAX_EMAIL_LENGTH = 255;
+
+/**
+ * The e-mail a usage row is booked to: the acting user a platform service key worked for
+ * (`onBehalfOf`, Grounding cockpit), else the key owner. `onBehalfOf` is honoured only when the
+ * key is a service key and the value is a well-formed e-mail, so a user's own key can never move
+ * its usage onto someone else.
+ */
+export function rowOwnerEmail(event: Pick<UsageEvent, 'onBehalfOf'>, keyEmail: string | undefined): string | undefined {
+  const actor = event.onBehalfOf;
+  if (keyEmail && isServiceKeyEmail(keyEmail) && typeof actor === 'string'
+    && actor.length <= MAX_EMAIL_LENGTH && EMAIL_PATTERN.test(actor)) return actor;
+  return keyEmail;
+}
+
+/**
+ * The team a row is booked to (spec §6): the gateway's teamId (what was enforced), else the
+ * credential's own team, else the owner's primary. A service key books to the ACTING user's primary
+ * team, never to the service key's. Unknown owners get no team.
+ */
+export function rowTeamId(event: Pick<UsageEvent, 'teamId' | 'onBehalfOf'>, credential: { email?: string; team_ID?: string | null } | undefined, ownerEmail: string | undefined, primaryByEmail: Map<string, string>): string | null {
+  if (credential?.email && isServiceKeyEmail(credential.email)) return (ownerEmail && primaryByEmail.get(ownerEmail)) || null;
+  return event.teamId || credential?.team_ID || (ownerEmail && primaryByEmail.get(ownerEmail)) || null;
+}
+
+/** Unpriced file_search usage (embeddings, rerank) costs nothing; every other endpoint keeps the fallback price. */
+export const isFileSearchEndpoint = (endpoint?: string): boolean => typeof endpoint === 'string' && endpoint.startsWith('file_search/');
+
+/**
+ * A Connection model's usage (spec 2026-10-23 §6.1): the gateway marks it origin external. It is
+ * recorded with its connection and upstream model and no SAP cost: the SAP pricing would read the
+ * connection's list-price row as a GenAI rate and write it into the SAP-labelled columns. Its own
+ * price goes into listCost/listCostCurrency/pricingMissing (externalUsagePricing.ts). `connection` is the connection name, the id's suffix.
+ */
+export function externalOf(event: UsageEvent): { connection: string; upstreamModel: string | null } | null {
+  if (event.origin !== 'external') return null;
+  const cut = event.model.lastIndexOf('--');
+  return { connection: cut === -1 ? '' : event.model.slice(cut + 2), upstreamModel: event.upstreamModel ?? null };
+}
+
+const COST_COLUMNS = ['inputCost', 'outputCost', 'cacheCreationInputCost', 'cacheReadInputCost', 'totalCost', 'imageOutputCost',
+  'audioInputCost', 'audioOutputCost', 'genAiTokens', 'capacityUnits', 'sapCost', 'sapCostCurrency'];
+
+/** The row with every cost column it has set to null. */
+function unpriced<T extends Record<string, any>>(row: T): T {
+  for (const column of COST_COLUMNS) if (column in row) (row as any)[column] = null;
+  return row;
+}
+
+const NO_COSTS = { inputCost: 0, outputCost: 0, totalCost: 0, cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0 };
+
+/** The units a row counts: table cells and rerank search units are kept, everything else is model tokens. */
+const unitOf = (event: UsageEvent): 'tokens' | 'cells' | 'units' => (event.unit === 'cells' || event.unit === 'units' ? event.unit : 'tokens');
+
 export interface UsageEvent {
   requestId: string;
   timestamp: number;
@@ -59,15 +121,79 @@ export interface UsageEvent {
   outputTokens: number;
   cacheCreationInputTokens?: number; // Separate tracking for cache creation tokens
   cacheReadInputTokens?: number; // Separate tracking for cache read tokens
+  imageInputTokens?: number;
+  imageOutputTokens?: number; // subset of outputTokens, priced separately
+  audioInputTokens?: number; // subset of inputTokens, priced separately
+  audioOutputTokens?: number; // subset of outputTokens, priced separately
   responseTime: number;
   statusCode: number;
   endpoint?: string; // Add endpoint information for better granularity
+  /** The cockpit user a platform service key acted for (Grounding); honoured only for service keys. */
+  onBehalfOf?: string;
+  /** The team the gateway enforced the request under; absent from older gateways or without a team. */
+  teamId?: string;
+  /** What inputTokens/outputTokens count: model tokens (default), table cells or rerank search units. */
+  unit?: 'tokens' | 'cells' | 'units';
+  /** The caller's User-Agent (tool governance). */
+  userAgent?: string;
   // True when inputTokens/outputTokens were derived locally (e.g. tokenizing a
   // mid-stream abort's already-streamed text) rather than read off a
   // provider-reported usage object. Absent/false means provider-reported.
   usageEstimated?: boolean;
   /** Tools the request declared and the response invoked, with policy decisions (tool governance); absent when none. */
   tools?: ToolEntryLike[];
+  /** A Connection model's usage: the connection id, the provider's model name, and origin external (spec 2026-10-23 §5.5). */
+  connectionId?: string;
+  upstreamModel?: string;
+  origin?: 'external';
+  /** The SAP AI Core tenant (auth-URL zone) that served the request; null for Connection traffic and older gateways. */
+  sapTenant?: string | null;
+  /** Where the serving target came from: the environment key or an SAP AI Core connection. */
+  sapTenantSource?: 'environment' | 'connection' | null;
+}
+
+/** The gateway's tenant for an environment without a usable AUTH_URL (services/gateway/src/sap/sapTarget.ts). */
+const UNKNOWN_TENANT = 'unknown';
+
+/** The SAP tenants that served a batch; Connection events have none. */
+const sapZonesOf = (events: UsageEvent[]): string[] => [...new Set(events
+  .filter((e) => !externalOf(e))
+  .map((e) => e.sapTenant)
+  .filter((z): z is string => typeof z === 'string' && z !== ''))];
+
+/**
+ * A tenant without a row gets one, without billing settings (the installation default prices it): a
+ * connection's tenant normally has its row from the moment its key was stored, the environment
+ * key's appears here. Never fails the batch.
+ */
+async function recordNewTenants(db: any, events: UsageEvent[]): Promise<void> {
+  try {
+    const env = environmentTenant();
+    for (const zone of await unknownTenants(db, sapZonesOf(events).filter((z) => z !== UNKNOWN_TENANT))) {
+      await upsertTenant({ zone, zoneId: null, region: env?.zone === zone ? env.region : UNKNOWN_TENANT }, {});
+      logger.info('UsageEventProcessor', `SAP tenant ${zone} recorded at first sight`);
+    }
+  } catch (error) {
+    logger.warn('UsageEventProcessor', `SAP tenants not recorded: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * The first usage event served by the environment key names the environment tenant: the SAP rows
+ * recorded before rows carried a tenant take it, once ever (sap-tenant-backfill.ts) - the admin's
+ * own environment seldom holds the AUTH_URL the boot-time backfill needs. Never fails the batch.
+ */
+async function backfillFromEnvironmentEvent(db: any, events: UsageEvent[]): Promise<void> {
+  const first = events
+    .filter((e) => e.sapTenantSource === 'environment' && typeof e.sapTenant === 'string' && e.sapTenant && e.sapTenant !== UNKNOWN_TENANT && !externalOf(e))
+    .sort((a, b) => a.timestamp - b.timestamp)[0];
+  if (!first) return;
+  try {
+    const updated = await backfillEnvironmentTenantOnce(db, first.sapTenant as string, new Date(first.timestamp * 1000));
+    if (updated !== null) logger.info('UsageEventProcessor', `SAP tenant backfill gave ${updated} older usage rows the environment tenant ${first.sapTenant}`);
+  } catch (error) {
+    logger.warn('UsageEventProcessor', `SAP tenant backfill not run: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 interface UsageProcessorConfig {
@@ -182,8 +308,13 @@ class UsageEventProcessor {
    * Queue usage event for batch processing
    */
   private queueEvent(event: UsageEvent): void {
-    // Check for duplicate requests
-    if (this.processedRequestIds.has(event.requestId)) {
+    // Check for duplicate requests. A missing or 'unknown' requestId (e.g. AWS
+    // Bedrock events, historically always 'unknown' when the gateway's payload
+    // logging was off) is never treated as a dedup key here — doing so would
+    // silently drop every later such event once one had been marked processed.
+    // The DB-level usageSignature unique index still guards against genuine
+    // duplicate inserts for these events.
+    if (event.requestId && event.requestId !== 'unknown' && this.processedRequestIds.has(event.requestId)) {
       logger.debug('UsageEventProcessor', `Skipping duplicate usage event with requestId: ${event.requestId}`);
       return;
     }
@@ -218,26 +349,34 @@ class UsageEventProcessor {
       return;
     }
 
-    // Check if model data is available before processing
+    // Without SAP model data only external (Connection) events can be persisted: they need none.
+    // The SAP events stay in the buffer, in order.
+    let batch = [...this.batchBuffer];
+    let held: UsageEvent[] = [];
     if (!modelCostService.hasValidModelData()) {
-      logger.debug('UsageEventProcessor', `Skipping batch processing - model data not yet available (${this.batchBuffer.length} events queued)`);
-      return;
+      batch = this.batchBuffer.filter(event => externalOf(event));
+      held = this.batchBuffer.filter(event => !externalOf(event));
+      if (batch.length === 0) {
+        logger.debug('UsageEventProcessor', `Skipping batch processing - model data not yet available (${this.batchBuffer.length} events queued)`);
+        return;
+      }
     }
     
-    logger.info('UsageEventProcessor', `Starting batch processing of ${this.batchBuffer.length} usage events`);
+    logger.info('UsageEventProcessor', `Starting batch processing of ${batch.length} usage events`);
 
     this.isProcessing = true;
-    const batch = [...this.batchBuffer];
-    this.batchBuffer = [];
+    this.batchBuffer = held;
 
     try {
       logger.debug('UsageEventProcessor', `Processing batch of ${batch.length} usage events`);
       
       await this.persistUsageEvents(batch);
       
-      // Mark all request IDs as processed
+      // Mark all request IDs as processed (see queueEvent: never a missing/'unknown' id)
       batch.forEach(event => {
-        this.processedRequestIds.add(event.requestId);
+        if (event.requestId && event.requestId !== 'unknown') {
+          this.processedRequestIds.add(event.requestId);
+        }
       });
       
       // Limit memory usage by removing oldest entries
@@ -294,21 +433,25 @@ class UsageEventProcessor {
     });
 
     try {
+      await recordNewTenants(db, dedupedEvents);
+      await backfillFromEnvironmentEvent(db, dedupedEvents);
+
       // Group events by auth type for efficient processing
       const apiKeyEvents = dedupedEvents.filter(e => e.authType === 'api_key');
       const awsCredentialEvents = dedupedEvents.filter(e => e.authType === 'aws_credential');
 
       // Process API key usage events
-      const apiKeyEmails = apiKeyEvents.length > 0 ? await this.persistApiKeyUsage(db, apiKeyEvents) : [];
+      const apiKey = apiKeyEvents.length > 0 ? await this.persistApiKeyUsage(db, apiKeyEvents) : { emails: [], teamIds: [] };
 
       // Process AWS credential usage events
-      const awsCredentialEmails = awsCredentialEvents.length > 0 ? await this.persistAwsCredentialUsage(db, awsCredentialEvents) : [];
+      const aws = awsCredentialEvents.length > 0 ? await this.persistAwsCredentialUsage(db, awsCredentialEvents) : { emails: [], teamIds: [] };
 
       // Refresh the Users row (task 7 publishes the quota document from the same set) for every
       // distinct owner e-mail this batch touched.
-      const emails = new Set([...apiKeyEmails, ...awsCredentialEmails]);
+      const emails = new Set([...apiKey.emails, ...aws.emails]);
       for (const email of emails) await touchUser(db, email);
       await publishMany(db, emails);
+      await publishTeams(db, new Set([...apiKey.teamIds, ...aws.teamIds]));
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -321,36 +464,44 @@ class UsageEventProcessor {
    * Persist API key usage events. Returns the distinct owner e-mails resolved from the batch
    * (skipping the 'unknown@example.com' fallback), for the caller to touch afterwards.
    */
-  private async persistApiKeyUsage(db: any, events: UsageEvent[]): Promise<string[]> {
+  private async persistApiKeyUsage(db: any, events: UsageEvent[]): Promise<{ emails: string[]; teamIds: string[] }> {
     // All events are valid - provider will be resolved from model data
     const validEvents = events;
 
     if (validEvents.length === 0) {
       logger.warn('UsageEventProcessor', 'No valid API key usage events to persist after filtering');
-      return [];
+      return { emails: [], teamIds: [] };
     }
 
     // Fetch API key details for email and name preservation
     const keyIds = [...new Set(validEvents.map(event => event.credentialId))];
     const keyDetails = await db.run(
       SELECT.from('sap.llm.gateway.admin.ApiKeys')
-        .columns('ID', 'email', 'name')
+        .columns('ID', 'email', 'name', 'team_ID')
         .where({ ID: { in: keyIds } })
     );
     
     const keyDetailsMap = new Map(keyDetails.map((key: any) => [key.ID, key]));
 
-    // Read the productive flag once per batch, not per row.
-    const productive = isProductive();
+    const ownerOf = (e: UsageEvent) => rowOwnerEmail(e, (keyDetailsMap.get(e.credentialId) as any)?.email);
+    const primaryByEmail = await primaryTeamIdsFor(db, validEvents.map(ownerOf).filter((x): x is string => !!x));
+    const teamOf = (e: UsageEvent) => rowTeamId(e, keyDetailsMap.get(e.credentialId) as any, ownerOf(e), primaryByEmail);
+    const teamNames = await getTeamsByIds(db, validEvents.map(teamOf).filter((x): x is string => !!x));
+
+    // Read the tenants' billing terms once per batch, not per row.
+    const billing = await billingForTenants(db, sapZonesOf(validEvents));
 
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const keyDetail = keyDetailsMap.get(event.credentialId) as any;
-      
-      const imageOutputTokens = (event as any).imageOutputTokens || 0;
-      const audioInputTokens = (event as any).audioInputTokens || 0;
-      const audioOutputTokens = (event as any).audioOutputTokens || 0;
+      const fileSearch = isFileSearchEndpoint(event.endpoint);
+
+      const imageOutputTokens = event.imageOutputTokens || 0;
+      const audioInputTokens = event.audioInputTokens || 0;
+      const audioOutputTokens = event.audioOutputTokens || 0;
+      const external = externalOf(event);
+      const listPriced = external ? await priceExternalEvent(db, event) : null;
       // Calculate costs using model cost service with separate cache token handling
-      const costs = this.config.enableCostCalculation ?
+      const costs = external ? { ...NO_COSTS, provider: event.provider } : this.config.enableCostCalculation ?
         await modelCostService.calculateCosts(
           event.model,
           event.inputTokens,
@@ -360,15 +511,16 @@ class UsageEventProcessor {
           event.cacheReadInputTokens,
           imageOutputTokens,
           audioInputTokens,
-          audioOutputTokens
+          audioOutputTokens,
+          { zeroWhenUnpriced: fileSearch }
         ) :
         { inputCost: 0, outputCost: 0, totalCost: 0, provider: modelCostService.getModelProvider(event.model), cacheCreationInputCost: 0, cacheReadInputCost: 0, imageOutputCost: 0, audioInputCost: 0, audioOutputCost: 0 };
 
       // Resolve provider from model data instead of using event.provider (which is now 'unknown')
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
 
-      const imageInputTokens = (event as any).imageInputTokens || 0;
-      const sap = await computeSapNative({
+      const imageInputTokens = event.imageInputTokens || 0;
+      const sap = external ? null : await computeSapNative({
         model: event.model,
         provider: resolvedProvider,
         inputTokens: event.inputTokens,
@@ -380,21 +532,23 @@ class UsageEventProcessor {
         audioInputTokens,
         audioOutputTokens,
         at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
-        productive
+        ...billing(event.sapTenant)
       });
-      if (!sap) {
+      if (!sap && !external) {
         logger.info('UsageEventProcessor', 'No ModelCosts rate for model — SAP-native fields left null', { model: event.model });
       }
 
-      return {
+      const row = {
         ID: uuidv4(),
         apiKey_ID: event.credentialId,
         endpoint: event.endpoint || `/${resolvedProvider.toLowerCase()}/api/v1/chat/completions`, // Use resolved provider
         method: 'POST',
         statusCode: event.statusCode,
         responseTime: event.responseTime,
-        email: keyDetail?.email || 'unknown@example.com', // Preserve email
+        email: rowOwnerEmail(event, keyDetail?.email) || 'unknown@example.com', // the acting user (service key + onBehalfOf) or the key owner
         keyName: keyDetail?.name || 'Unknown Key', // Preserve key name
+        team_ID: teamOf(event),
+        teamName: null as string | null,
         provider: resolvedProvider,
         model: event.model,
         inputTokens: event.inputTokens,
@@ -411,7 +565,7 @@ class UsageEventProcessor {
         validFrom: new Date(event.timestamp * 1000),
         validTo: new Date('9999-12-31T23:59:59.999Z'),
         usageEstimated: event.usageEstimated ?? null,
-        unit: (event as any).unit === 'cells' ? 'cells' : 'tokens',
+        unit: unitOf(event),
         imageInputTokens,
         imageOutputTokens,
         imageOutputCost: costs.imageOutputCost || 0,
@@ -421,11 +575,18 @@ class UsageEventProcessor {
         audioOutputCost: costs.audioOutputCost || 0,
         genAiTokens: sap?.genAiTokens ?? null,
         capacityUnits: sap?.capacityUnits ?? null,
-        sapCost: sap?.sapCost ?? null,
+        // An unpriced file_search event costs zero on the SAP side too (it is not "unknown").
+        sapCost: sap?.sapCost ?? (fileSearch ? 0 : null),
         sapCostCurrency: sap?.sapCostCurrency ?? null,
-        usageSignature: hashUsageSignature(event)
+        usageSignature: hashUsageSignature(event),
+        origin: external ? 'external' : 'sap',
+        connection: external?.connection ?? null,
+        upstreamModel: external?.upstreamModel ?? null,
+        sapTenant: external ? null : event.sapTenant || null
       };
+      return external ? { ...unpriced(row), ...listPriced } : row;
     }));
+    for (const r of usageRecords) r.teamName = r.team_ID ? teamNames.get(r.team_ID)?.name ?? null : null;
 
     // Rows, usageCount and the usage buckets land together or not at all (spec §3.2): one
     // transaction per table batch. The cost lookups above stay outside it — the single SQLite
@@ -436,6 +597,7 @@ class UsageEventProcessor {
       const flags = await this.insertIgnoringDuplicateSignature(tx, 'sap_llm_gateway_admin_ApiKeyUsage', usageRecords);
       await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_ApiKeys', validEvents.filter((_, i) => flags[i]));
       await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]), (r) => r.email));
+      await applyTeamIncrements(tx, foldTeamIncrements(usageRecords.filter((_, i) => flags[i]), (r) => r.team_ID));
       const emailByRequest = new Map(usageRecords.map((r) => [r.requestId, r.email]));
       await recordToolUsage(tx, validEvents.filter((_, i) => flags[i]), (e) => emailByRequest.get(e.requestId ?? '') ?? UNKNOWN_TOOL_OWNER);
       return flags;
@@ -444,38 +606,48 @@ class UsageEventProcessor {
 
     logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} API key usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
 
-    return [...new Set(
-      Array.from(keyDetailsMap.values())
-        .map((key: any) => key?.email)
-        .filter((email: any) => email && !OWNER_EMAIL_FALLBACKS.has(email))
-    )] as string[];
+    // From the inserted rows, not the key list: a service-key row is booked to its acting user,
+    // whose Users row and quota document must follow; the service key itself has neither.
+    return {
+      emails: [...new Set(
+        usageRecords.filter((_, i) => inserted[i])
+          .map((r) => r.email)
+          .filter((email) => email && !OWNER_EMAIL_FALLBACKS.has(email) && !isServiceKeyEmail(email))
+      )],
+      teamIds: [...new Set(usageRecords.filter((_, i) => inserted[i]).map((r) => r.team_ID).filter(Boolean) as string[])]
+    };
   }
 
   /**
    * Persist AWS credential usage events. Returns the distinct owner e-mails resolved from the
    * batch (skipping the 'unknown-user' fallback), for the caller to touch afterwards.
    */
-  private async persistAwsCredentialUsage(db: any, events: UsageEvent[]): Promise<string[]> {
+  private async persistAwsCredentialUsage(db: any, events: UsageEvent[]): Promise<{ emails: string[]; teamIds: string[] }> {
     // All events are valid - provider will be resolved from model data
     const validEvents = events;
 
     if (validEvents.length === 0) {
       logger.warn('UsageEventProcessor', 'No valid AWS credential usage events to persist after filtering');
-      return [];
+      return { emails: [], teamIds: [] };
     }
 
     // Fetch AWS credential details for email and name preservation
     const credentialIds = [...new Set(validEvents.map(event => event.credentialId))];
     const credentialDetails = await db.run(
       SELECT.from('sap.llm.gateway.admin.AwsCredentials')
-        .columns('ID', 'userId', 'email', 'name')
+        .columns('ID', 'userId', 'email', 'name', 'team_ID')
         .where({ ID: { in: credentialIds } })
     );
     
     const credentialDetailsMap = new Map(credentialDetails.map((cred: any) => [cred.ID, cred]));
 
-    // Read the productive flag once per batch, not per row.
-    const productive = isProductive();
+    const ownerOf = (e: UsageEvent) => (credentialDetailsMap.get(e.credentialId) as any)?.email as string | undefined;
+    const primaryByEmail = await primaryTeamIdsFor(db, validEvents.map(ownerOf).filter((x): x is string => !!x));
+    const teamOf = (e: UsageEvent) => rowTeamId(e, credentialDetailsMap.get(e.credentialId) as any, ownerOf(e), primaryByEmail);
+    const teamNames = await getTeamsByIds(db, validEvents.map(teamOf).filter((x): x is string => !!x));
+
+    // Read the tenants' billing terms once per batch, not per row.
+    const billing = await billingForTenants(db, sapZonesOf(validEvents));
 
     const usageRecords = await Promise.all(validEvents.map(async event => {
       const credentialDetail = credentialDetailsMap.get(event.credentialId) as any;
@@ -483,8 +655,10 @@ class UsageEventProcessor {
       const imageOutputTokens = (event as any).imageOutputTokens || 0;
       const audioInputTokens = (event as any).audioInputTokens || 0;
       const audioOutputTokens = (event as any).audioOutputTokens || 0;
+      const external = externalOf(event);
+      const listPriced = external ? await priceExternalEvent(db, event) : null;
       // Calculate costs using model cost service with separate cache token handling
-      const costs = this.config.enableCostCalculation ?
+      const costs = external ? { ...NO_COSTS, provider: event.provider } : this.config.enableCostCalculation ?
         await modelCostService.calculateCosts(
           event.model,
           event.inputTokens,
@@ -502,7 +676,7 @@ class UsageEventProcessor {
       const resolvedProvider = costs.provider || modelCostService.getModelProvider(event.model);
 
       const imageInputTokens = (event as any).imageInputTokens || 0;
-      const sap = await computeSapNative({
+      const sap = external ? null : await computeSapNative({
         model: event.model,
         provider: resolvedProvider,
         inputTokens: event.inputTokens,
@@ -514,13 +688,13 @@ class UsageEventProcessor {
         audioInputTokens,
         audioOutputTokens,
         at: event.timestamp ? new Date(event.timestamp * 1000) : new Date(),
-        productive
+        ...billing(event.sapTenant)
       });
-      if (!sap) {
+      if (!sap && !external) {
         logger.info('UsageEventProcessor', 'No ModelCosts rate for model — SAP-native fields left null', { model: event.model });
       }
 
-      return {
+      const row = {
         ID: uuidv4(),
         credential_ID: event.credentialId,
         requestId: event.requestId,
@@ -532,6 +706,8 @@ class UsageEventProcessor {
         responseTime: event.responseTime,
         userId: credentialDetail?.userId || credentialDetail?.email || 'unknown-user', // Preserve userId (which contains the user email) for aggregation
         credentialName: credentialDetail?.name || 'Unknown Credential', // Preserve credential name
+        team_ID: teamOf(event),
+        teamName: null as string | null,
         modelId: event.model,
         provider: resolvedProvider,
         inputTokens: event.inputTokens,
@@ -558,9 +734,15 @@ class UsageEventProcessor {
         capacityUnits: sap?.capacityUnits ?? null,
         sapCost: sap?.sapCost ?? null,
         sapCostCurrency: sap?.sapCostCurrency ?? null,
-        usageSignature: hashUsageSignature(event)
+        usageSignature: hashUsageSignature(event),
+        origin: external ? 'external' : 'sap',
+        connection: external?.connection ?? null,
+        upstreamModel: external?.upstreamModel ?? null,
+        sapTenant: external ? null : event.sapTenant || null
       };
+      return external ? { ...unpriced(row), ...listPriced } : row;
     }));
+    for (const r of usageRecords) r.teamName = r.team_ID ? teamNames.get(r.team_ID)?.name ?? null : null;
 
     // db.tx(fn) would open a root transaction and deadlock the single connection from inside a
     // request; db.run(fn) joins the ambient one or opens its own.
@@ -569,6 +751,7 @@ class UsageEventProcessor {
       await this.bumpUsageCount(tx, 'sap_llm_gateway_admin_AwsCredentials', validEvents.filter((_, i) => flags[i]));
       await applyIncrements(tx, foldIncrements(usageRecords.filter((_, i) => flags[i]),
         (r) => (credentialDetailsMap.get(r.credential_ID) as any)?.email ?? null));
+      await applyTeamIncrements(tx, foldTeamIncrements(usageRecords.filter((_, i) => flags[i]), (r) => r.team_ID));
       // The tool rows must carry the same owner the quota buckets above just folded by - not
       // usageRecords[i].userId, a documented legacy field distinct from email (AwsCredentials).
       const emailByRequest = new Map(usageRecords.map((r) => [r.requestId, (credentialDetailsMap.get(r.credential_ID) as any)?.email]));
@@ -579,11 +762,14 @@ class UsageEventProcessor {
 
     logger.debug('UsageEventProcessor', `Persisted ${insertedEvents.length} AWS credential usage records (filtered from ${events.length} events, ${usageRecords.length - insertedEvents.length} duplicate signature(s) skipped)`);
 
-    return [...new Set(
-      Array.from(credentialDetailsMap.values())
-        .map((cred: any) => cred?.email)
-        .filter((email: any) => email && !OWNER_EMAIL_FALLBACKS.has(email))
-    )] as string[];
+    return {
+      emails: [...new Set(
+        Array.from(credentialDetailsMap.values())
+          .map((cred: any) => cred?.email)
+          .filter((email: any) => email && !OWNER_EMAIL_FALLBACKS.has(email))
+      )] as string[],
+      teamIds: [...new Set(usageRecords.filter((_, i) => inserted[i]).map((r) => r.team_ID).filter(Boolean) as string[])]
+    };
   }
 
   /** Adds each credential's landed-row count to its usageCount, in one statement. `db` may be a transaction. */
@@ -667,14 +853,20 @@ class UsageEventProcessor {
     if (events.length === 0) return;
 
     // Check if model data is available before processing
+    // Without SAP model data only external (Connection) events are persisted; the others wait in the buffer.
     if (!modelCostService.hasValidModelData()) {
-      logger.info('UsageEventProcessor', `Skipping memory queue processing - model data not yet available (${events.length} events provided)`);
-      return;
+      const sapEvents = events.filter(event => !externalOf(event));
+      events = events.filter(event => externalOf(event));
+      if (sapEvents.length > 0) {
+        logger.info('UsageEventProcessor', `Model data not yet available - ${sapEvents.length} SAP events queued, ${events.length} external events processed`);
+        this.batchBuffer.push(...sapEvents);
+      }
+      if (events.length === 0) return;
     }
 
-    // Filter out already processed events
+    // Filter out already processed events (see queueEvent: never a missing/'unknown' id)
     const newEvents = events.filter(event => {
-      if (this.processedRequestIds.has(event.requestId)) {
+      if (event.requestId && event.requestId !== 'unknown' && this.processedRequestIds.has(event.requestId)) {
         logger.debug('UsageEventProcessor', `Skipping duplicate event with requestId: ${event.requestId}`);
         return false;
       }
@@ -704,9 +896,11 @@ class UsageEventProcessor {
     
     await this.persistUsageEvents(newEvents);
     
-    // Mark processed events
+    // Mark processed events (see queueEvent: never a missing/'unknown' id)
     newEvents.forEach(event => {
-      this.processedRequestIds.add(event.requestId);
+      if (event.requestId && event.requestId !== 'unknown') {
+        this.processedRequestIds.add(event.requestId);
+      }
     });
     
     // Limit memory usage

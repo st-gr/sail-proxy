@@ -9,6 +9,12 @@ import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
 /**
+ * The one owner identity a standalone gateway's local API keys carry (the local key store keeps
+ * no e-mail): every key of a standalone gateway shares it, and with it its files and vector stores.
+ */
+export const STANDALONE_OWNER_EMAIL = 'local@fallback.com';
+
+/**
  * Determines if the gateway should run in standalone mode
  * 
  * Standalone mode is enabled when any of these conditions are true:

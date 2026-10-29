@@ -88,9 +88,17 @@ function resolveOverlaps(matches: EntityMatch[]): EntityMatch[] {
 }
 
 /**
+ * Set on a copy of the masking config by the pseudonymization plugin when masking is forced:
+ * a detector tier that cannot run then throws instead of being skipped. A symbol, so no request
+ * body can set it, and it never travels with the config the plugin stores on the request.
+ */
+export const STRICT_DETECTORS: unique symbol = Symbol('strictDetectors');
+export type DetectionConfig = MaskingConfig & { [STRICT_DETECTORS]?: boolean };
+
+/**
  * Main detection pipeline: run all detectors, filter, and resolve overlaps
  */
-export function detectEntities(text: string, config: MaskingConfig): EntityMatch[] {
+export function detectEntities(text: string, config: DetectionConfig): EntityMatch[] {
   const allMatches: EntityMatch[] = [];
 
   // Tier 0: Custom regex (highest priority)
@@ -109,7 +117,7 @@ export function detectEntities(text: string, config: MaskingConfig): EntityMatch
   allMatches.push(...detectSpeakerLabels(text, config.entities));
 
   // Tier 2: NER
-  allMatches.push(...detectNerEntities(text, config.entities));
+  allMatches.push(...detectNerEntities(text, config.entities, config[STRICT_DETECTORS] === true));
 
   // Tier 3: Dictionary. Gets the matches found so far: the categories whose terms are
   // ordinary English words only mask in the neighbourhood of a person, and a person

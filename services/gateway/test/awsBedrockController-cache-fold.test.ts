@@ -41,7 +41,7 @@ jest.mock('../src/config/unifiedAuthConfig', () => ({
 jest.mock('../src/services/modelService', () => ({
   __esModule: true,
   default: {
-    getModelDetails: jest.fn(async () => ({ id: 'test-model', executableId: 'aws-bedrock' })),
+    getModelDetails: jest.fn(async () => ({ id: 'test-model', executableId: 'aws-bedrock', accessType: 'deployment' })),
   },
 }));
 

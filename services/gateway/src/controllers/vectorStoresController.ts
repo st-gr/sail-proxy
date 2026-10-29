@@ -7,7 +7,7 @@
  * resource, ownership scoped INSIDE each query rather than filtered
  * afterwards, and cursor pagination via `parsePageParams`/`buildPage`.
  *
- * Three properties specific to this controller (see `fileSearch/repository.ts`
+ * Three properties specific to this controller (see `fileSearch/storeValidation.ts`
  * for the mechanics):
  *  - a store's pinned `embedding_dim` is checked against the live
  *    configuration before any operation that would create new vectors for
@@ -25,12 +25,16 @@
  *    is not a delete), so it can be re-attached, or was already attached to
  *    another store, without ever having lost its bytes. The only path that
  *    removes an `fs_files` row and decrements a blob's ref_count is
- *    `filesController.deleteFile` (`DELETE /files/{id}`), which itself
- *    refuses (409) while the file is still attached anywhere.
+ *    `filesController.deleteFile` (`DELETE /files/{id}`), which detaches the
+ *    file from every store of its owner and deletes it in one transaction
+ *    (409 only while a store of another owner still references it).
  */
 import { Request, Response, NextFunction } from 'express';
 import { Pool } from 'pg';
 import { getPool, isFileSearchAvailable } from '../fileSearch/db';
+import { notExpiredSql, attachedFileNotExpiredSql } from '../fileSearch/fileRows';
+import { unavailableBody } from '../fileSearch/unavailable';
+import { FileSearchBusyError } from '../fileSearch/dbBusy';
 import { getFileSearchConfig } from '../services/configService';
 import { parsePageParams, buildPage } from '../fileSearch/pagination';
 import {
@@ -48,9 +52,11 @@ import {
   RecallInputError,
   VectorStoreRow,
   VectorStoreFileRow,
+  AttachStamp,
   FileCounts,
   FileStatus,
   VALID_FILE_STATUSES,
+  ACTIVE_GENERATION_PREDICATE_SQL,
 } from '../fileSearch/repository';
 import {
   createBatch,
@@ -60,10 +66,22 @@ import {
   listBatchFiles,
   BatchRow,
   BatchStatus,
+  CreateBatchJobOptions,
+  BatchFile,
 } from '../fileSearch/batches';
-import { searchVectorStores, SearchStoreNotFoundError, SearchQueryTooLongError } from '../fileSearch/search';
+import {
+  searchVectorStores, SearchStoreNotFoundError, SearchQueryTooLongError, StoreModelUnavailableError, SEARCH_RANKERS,
+  MIN_MAX_NUM_RESULTS, MAX_MAX_NUM_RESULTS,
+} from '../fileSearch/search';
 import { RerankerUnavailableError } from '../fileSearch/reranker';
+import { HybridWeights, parseHybridSearch } from '../fileSearch/rrf';
+import { fileSearchCallerOf, searchUsageSink } from '../fileSearch/usage';
+import { callerTeamIds } from '../utils/userBlock';
 import { getDefaultLogger } from '@libs/logger';
+import {
+  ChunkingStrategyError, fileChunkingStrategyObject, parseFileChunkingStrategy, resolveChunking, validateChunkingSetting,
+} from '../fileSearch/chunkingSetting';
+import { visionModeOf, visionSwitchedOff, warnVisionUnmasked } from '../fileSearch/visionTranscriber';
 
 const logger = getDefaultLogger();
 
@@ -77,13 +95,7 @@ interface AuthenticatedRequest extends Request {
 // ---------------------------------------------------------------------------
 
 function sendUnavailable(res: Response): void {
-  res.status(503).json({
-    error: {
-      message: 'file_search is unavailable: no vector database is configured for this deployment.',
-      type: 'file_search_unavailable',
-      code: 'file_search_unavailable',
-    },
-  });
+  res.status(503).json(unavailableBody());
 }
 
 /**
@@ -91,13 +103,21 @@ function sendUnavailable(res: Response): void {
  * already match this envelope; this helper just puts them on the wire the same way
  * `sendUnavailable` above and `filesController.ts`'s `sendIfUnsupportedBlobBackend` do,
  * carrying the error's own message (a fixed, non-caller-interpolated string — see
- * reranker.ts) instead of `sendUnavailable`'s generic "no vector database configured"
- * text, since this is a different, more specific unavailability.
+ * reranker.ts) instead of `sendUnavailable`'s reason (unavailable.ts), since this is a
+ * different, more specific unavailability.
  */
 function sendRerankerUnavailable(res: Response, message: string): void {
   res.status(503).json({
     error: { message, type: 'file_search_unavailable', code: 'file_search_unavailable' },
   });
+}
+
+/** No database connection in time (`FileSearchBusyError`): a retryable 503 in the file_search
+ *  envelope. Returns whether it answered. */
+function sendIfBusy(res: Response, error: unknown): boolean {
+  if (!(error instanceof FileSearchBusyError)) return false;
+  res.status(503).json({ error: { message: error.message, type: 'file_search_unavailable', code: error.code } });
+  return true;
 }
 
 function sendUnauthorized(res: Response): void {
@@ -113,7 +133,7 @@ function sendUnauthorized(res: Response): void {
 /** Deliberately identical whether a store id doesn't exist at all or exists
  *  but is owned by someone else — callers must not be able to distinguish
  *  the two cases from status, body, or shape. */
-function sendStoreNotFound(res: Response, id: string): void {
+export function sendStoreNotFound(res: Response, id: string): void {
   res.status(404).json({
     error: { message: `No such vector store: ${id}`, type: 'invalid_request_error', code: 'vector_store_not_found' },
   });
@@ -139,7 +159,7 @@ function sendStoreFileNotFound(res: Response, fileId: string): void {
  * belonging to ANOTHER store, and a batch in a store the caller does not own
  * must all produce this exact response. A 403 (or any other body) for the
  * second two would turn `GET .../file_batches/{id}` into an existence oracle
- * for `vsfb_` ids — see `assertStoresAccessible` in repository.ts and the
+ * for `vsfb_` ids — see `assertStoresAccessible` in fileSearch/storeAccess.ts and the
  * TENANT BOUNDARY note at the top of `fileSearch/batches.ts`, whose
  * `store_id`-scoped queries are the other half of this property.
  *
@@ -173,13 +193,13 @@ function sendInvalidRequest(res: Response, message: string, code: string): void 
  * Deadlocks between `deleteStoreFile`/`deleteStoreCascade` and a concurrent
  * ingestion write (`ingestWorker.ts`'s `commitChunks`) are expected to be
  * rare in production now that both sides lock `vector_stores` before
- * `vector_store_files` (see repository.ts's `deleteStoreFile` doc comment),
+ * `vector_store_files` (see fileSearch/storeFiles.ts's `deleteStoreFile` doc comment),
  * but Postgres's deadlock detector is a last-resort safety net, not a
  * guarantee of zero races — one of the two competing transactions can still
  * be chosen as the victim under genuine concurrency, and that must surface
  * as something the client can sensibly retry, not a 500.
  */
-function handleDeadlock(error: any, res: Response): boolean {
+export function handleDeadlock(error: any, res: Response): boolean {
   if (error?.code !== '40P01') return false;
   res.status(409).json({
     error: {
@@ -217,12 +237,17 @@ class BadRequestError extends Error {
  *  helpers throw to their HTTP status; anything else falls through to
  *  `next(error)` (-> 500), matching filesController's error handling shape. */
 function handleKnownError(err: unknown, res: Response, next: NextFunction): void {
+  if (sendIfBusy(res, err)) return;
   if (err instanceof StoreDimensionMismatchError) {
     sendDimensionConflict(res, err.message);
     return;
   }
   if (err instanceof StoreExpiredError) {
     sendStoreExpired(res, err.message);
+    return;
+  }
+  if (err instanceof StoreModelUnavailableError) {
+    res.status(err.status).json({ error: { message: err.message, type: 'invalid_request_error', code: err.code } });
     return;
   }
   if (err instanceof AttributeValidationError) {
@@ -245,6 +270,10 @@ function handleKnownError(err: unknown, res: Response, next: NextFunction): void
     sendInvalidRequest(res, err.message, err.code);
     return;
   }
+  if (err instanceof ChunkingStrategyError) {
+    res.status(400).json({ error: { message: err.message, type: 'invalid_request_error', param: err.param, code: err.code } });
+    return;
+  }
   next(err as Error);
 }
 
@@ -260,7 +289,11 @@ function getOwnerEmail(req: AuthenticatedRequest): string | null {
 // ---------------------------------------------------------------------------
 
 const MAX_NAME_LENGTH = 256;
-const MAX_FILE_IDS_PER_CREATE = 500; // hard ceiling; also bounded by limits.maxFilesPerStore below
+// OpenAI's per-request caps (spec maxItems): a store create takes at most 500 file_ids, a file
+// batch at most 2000 file_ids or files (openai-node vector-stores/file-batches.ts). Both are also
+// bounded by limits.maxFilesPerStore below.
+const MAX_FILE_IDS_PER_CREATE = 500;
+const MAX_FILE_IDS_PER_BATCH = 2000;
 // `VALID_FILE_STATUSES`/`FileStatus` also live in `../fileSearch/repository`
 // (imported above) — the batch count path needs the same list, and the keys of
 // `FileCounts` are defined by it.
@@ -275,7 +308,7 @@ function parseOptionalName(input: unknown): string | null {
   // straight into the INSERT/UPDATE (createStore/modifyVectorStore below).
   // Postgres's text encoding cannot represent a raw NUL byte and would
   // otherwise 500 with a raw driver message -- same class of bug, and the
-  // same fix, as repository.ts's queryText guard and filterCompiler.ts's
+  // same fix, as fileSearch/recallInput.ts's queryText guard and filterCompiler.ts's
   // filter-key/value guards.
   //
   // metadata/attributes need the identical check and now get it, in
@@ -323,12 +356,55 @@ function parseFileIds(input: unknown, maxAllowed: number): string[] {
   return Array.from(new Set(input as string[]));
 }
 
+/** OpenAI's `chunking_strategy` (store create, attach, file batch): `auto`, `static` in OpenAI's
+ *  ranges, or absent. Anything else is a 400 here (ChunkingStrategyError), never stored. */
 function parseChunkingStrategy(input: unknown): Record<string, unknown> | null {
-  if (input === undefined || input === null) return null;
-  if (typeof input !== 'object' || Array.isArray(input)) {
-    throw new BadRequestError('chunking_strategy must be an object');
+  return parseFileChunkingStrategy(input);
+}
+
+/**
+ * The file batch's `files: [{ file_id, attributes?, chunking_strategy? }]` (OpenAI's alternative to
+ * `file_ids`, for per-file values). Each entry's attributes and chunking strategy get exactly the
+ * single-file attach's validation and error codes; the message (attributes) or `param` (chunking)
+ * is prefixed with the entry, `files[i]`. A file listed twice is a 400 rather than deduped as in
+ * `file_ids`: its two sets of values would be ambiguous. The same per-request cap as `file_ids`.
+ */
+function parseBatchFiles(input: unknown, maxAllowed: number): BatchFile[] {
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new BadRequestError('files must be a non-empty array of objects with a file_id', 'invalid_files');
   }
-  return input as Record<string, unknown>;
+  if (input.length > maxAllowed) {
+    throw new BadRequestError(`files must contain at most ${maxAllowed} entries for this store`, 'invalid_files');
+  }
+  const seen = new Set<string>();
+  return input.map((entry, i) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new BadRequestError(`files[${i}] must be an object with a file_id`, 'invalid_files');
+    }
+    const { file_id: fileId, attributes, chunking_strategy: chunking } = entry as Record<string, unknown>;
+    if (typeof fileId !== 'string' || fileId.length === 0) {
+      throw new BadRequestError(`files[${i}].file_id is required and must be a non-empty string`, 'invalid_files');
+    }
+    if (seen.has(fileId)) {
+      throw new BadRequestError(`files lists ${fileId} more than once`, 'invalid_files');
+    }
+    seen.add(fileId);
+    let validAttributes: Record<string, unknown> | null;
+    let chunkingStrategy: Record<string, unknown> | null;
+    try {
+      validAttributes = validateAttributes(attributes);
+    } catch (error) {
+      if (error instanceof AttributeValidationError) throw new AttributeValidationError(`files[${i}]: ${error.message}`);
+      throw error;
+    }
+    try {
+      chunkingStrategy = parseChunkingStrategy(chunking);
+    } catch (error) {
+      if (error instanceof ChunkingStrategyError) throw new ChunkingStrategyError(error.message, `files[${i}].${error.param}`, error.code);
+      throw error;
+    }
+    return { fileId, attributes: validAttributes, chunkingStrategy };
+  });
 }
 
 function parseFilterStatus(input: unknown): FileStatus | null {
@@ -341,34 +417,54 @@ function parseFilterStatus(input: unknown): FileStatus | null {
 }
 
 interface ParsedSearchBody {
-  query: string;
+  query: string | string[];
   maxNumResults?: number;
   filters?: unknown;
-  rankingOptions?: { scoreThreshold?: number };
+  rankingOptions?: { scoreThreshold?: number; hybridWeights?: HybridWeights; rerank?: false };
   rewriteQuery?: boolean;
 }
 
-function parseSearchBody(body: Record<string, unknown>): ParsedSearchBody {
-  if (typeof body.query !== 'string' || body.query.length === 0) {
-    throw new BadRequestError('query is required and must be a non-empty string', 'invalid_query');
+/** The most queries one search takes as an array (OpenAI documents no bound); each one is a recall
+ *  of its own, and together they share the single query's length bound (search.ts). */
+const MAX_SEARCH_QUERIES = 10;
+
+function parseSearchQuery(input: unknown): string | string[] {
+  if (typeof input === 'string' && input.length > 0) return input;
+  if (Array.isArray(input) && input.length > 0 && input.length <= MAX_SEARCH_QUERIES
+    && input.every((q) => typeof q === 'string' && q.length > 0)) {
+    return input as string[];
   }
+  throw new BadRequestError(
+    `query is required and must be a non-empty string or an array of 1 to ${MAX_SEARCH_QUERIES} non-empty strings`,
+    'invalid_query',
+  );
+}
+
+function parseSearchBody(body: Record<string, unknown>): ParsedSearchBody {
+  const query = parseSearchQuery(body.query);
 
   let maxNumResults: number | undefined;
-  if (body.max_num_results !== undefined) {
+  // null counts as absent, as on the Responses file_search tool.
+  if (body.max_num_results !== undefined && body.max_num_results !== null) {
     if (typeof body.max_num_results !== 'number' || !Number.isFinite(body.max_num_results)) {
       throw new BadRequestError('max_num_results must be a number', 'invalid_max_num_results');
+    }
+    // OpenAI's range, refused outside it rather than clamped — as the Responses file_search tool
+    // refuses it (plugins/fileSearch/descriptor.ts prepare): one behaviour on both search paths.
+    if (!Number.isInteger(body.max_num_results)
+      || body.max_num_results < MIN_MAX_NUM_RESULTS || body.max_num_results > MAX_MAX_NUM_RESULTS) {
+      throw new BadRequestError(
+        `max_num_results must be an integer between ${MIN_MAX_NUM_RESULTS} and ${MAX_MAX_NUM_RESULTS}`,
+        'invalid_max_num_results',
+      );
     }
     maxNumResults = body.max_num_results;
   }
 
-  // `ranking_options.ranker` is intentionally NOT parsed/surfaced: this
-  // deployment's design maps every documented OpenAI ranker value onto the
-  // same single reranker (see reranker.ts), so there is nothing for a
-  // parsed value to select between — it was parsed here but never read by
-  // search.ts, which silently accepted (and discarded) any string,
-  // including unknown/misspelled ranker names, with no feedback to the
-  // caller.
-  let rankingOptions: { scoreThreshold?: number } | undefined;
+  // `ranking_options.ranker` (SEARCH_RANKERS): `none` skips the rerank (no call, no rerank cost),
+  // the others rerank as an absent (or null) ranker does; any other value is a 400 rather than
+  // silently ignored.
+  let rankingOptions: { scoreThreshold?: number; hybridWeights?: HybridWeights; rerank?: false } | undefined;
   if (body.ranking_options !== undefined) {
     const raw = body.ranking_options;
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -379,8 +475,18 @@ function parseSearchBody(body: Record<string, unknown>): ParsedSearchBody {
       && (typeof rawObj.score_threshold !== 'number' || !Number.isFinite(rawObj.score_threshold))) {
       throw new BadRequestError('ranking_options.score_threshold must be a number', 'invalid_score_threshold');
     }
+    if (rawObj.ranker !== undefined && rawObj.ranker !== null
+      && (typeof rawObj.ranker !== 'string' || !SEARCH_RANKERS.includes(rawObj.ranker))) {
+      throw new BadRequestError(`ranking_options.ranker must be one of: ${SEARCH_RANKERS.join(', ')}`, 'invalid_ranker');
+    }
+    const hybrid = parseHybridSearch(rawObj.hybrid_search);
+    if (!hybrid.ok) {
+      throw new BadRequestError(hybrid.message, 'invalid_hybrid_search');
+    }
     rankingOptions = {
       scoreThreshold: typeof rawObj.score_threshold === 'number' ? rawObj.score_threshold : undefined,
+      ...(hybrid.weights ? { hybridWeights: hybrid.weights } : {}),
+      ...(rawObj.ranker === 'none' ? { rerank: false as const } : {}),
     };
   }
 
@@ -392,7 +498,7 @@ function parseSearchBody(body: Record<string, unknown>): ParsedSearchBody {
     rewriteQuery = body.rewrite_query;
   }
 
-  return { query: body.query, maxNumResults, filters: body.filters, rankingOptions, rewriteQuery };
+  return { query, maxNumResults, filters: body.filters, rankingOptions, rewriteQuery };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,12 +516,12 @@ function toUnixSeconds(value: Date | string | null): number | null {
 // definition in the data layer beats two structurally identical ones that
 // agree today.
 
-interface StoreUsage {
+export interface StoreUsage {
   counts: FileCounts;
   usageBytes: number;
 }
 
-function emptyUsage(): StoreUsage {
+export function emptyUsage(): StoreUsage {
   return { counts: { in_progress: 0, completed: 0, failed: 0, cancelled: 0, total: 0 }, usageBytes: 0 };
 }
 
@@ -441,7 +547,8 @@ function emptyUsage(): StoreUsage {
 async function findUnownedFileId(pool: Pool, fileIds: string[], ownerEmail: string): Promise<string | null> {
   if (fileIds.length === 0) return null;
   const owned = await pool.query<{ id: string }>(
-    'SELECT id FROM fs_files WHERE id = ANY($1) AND owner_email = $2', [fileIds, ownerEmail],
+    // An expired file (not yet swept) is gone: not found, like a missing one.
+    `SELECT id FROM fs_files WHERE id = ANY($1) AND owner_email = $2 AND ${notExpiredSql()}`, [fileIds, ownerEmail],
   );
   if (owned.rows.length === fileIds.length) return null;
   const ownedIds = new Set(owned.rows.map((r) => r.id));
@@ -451,7 +558,7 @@ async function findUnownedFileId(pool: Pool, fileIds: string[], ownerEmail: stri
 /** One grouped query for however many store ids are on the current page —
  *  not one query per store — so listing N stores costs a constant two
  *  round trips, not N+1. */
-async function computeUsageForStores(pool: Pool, storeIds: string[]): Promise<Map<string, StoreUsage>> {
+export async function computeUsageForStores(pool: Pool, storeIds: string[]): Promise<Map<string, StoreUsage>> {
   const result = new Map<string, StoreUsage>();
   if (storeIds.length === 0) return result;
   const { rows } = await pool.query<{ store_id: string; status: string; count: string; bytes: string }>(
@@ -496,7 +603,7 @@ function deriveStoreStatus(row: VectorStoreRow, counts: FileCounts): string {
   return counts.in_progress > 0 ? 'in_progress' : 'completed';
 }
 
-function toStoreObject(row: VectorStoreRow, usage: StoreUsage): Record<string, unknown> {
+export function toStoreObject(row: VectorStoreRow, usage: StoreUsage): Record<string, unknown> {
   return {
     id: row.id,
     object: 'vector_store',
@@ -512,7 +619,28 @@ function toStoreObject(row: VectorStoreRow, usage: StoreUsage): Record<string, u
   };
 }
 
-function toStoreFileObject(row: VectorStoreFileRow): Record<string, unknown> {
+/**
+ * `storeChunking` is the store's `vector_stores.chunking` (NULL = static 800/400). The file's
+ * `chunking_strategy` is its EFFECTIVE strategy (chunkingSetting.ts `resolveChunking`): the
+ * resolved static parameters, as OpenAI reports them, or `{type: 'other'}` for `structure`.
+ * A store setting that does not validate (only a hand-edited row can) is logged and reported
+ * as `other` — OpenAI's slot for a strategy it cannot describe, never a request-only type.
+ */
+function fileChunkingStrategy(row: VectorStoreFileRow, storeChunking: unknown): Record<string, unknown> {
+  try {
+    return fileChunkingStrategyObject(resolveChunking({ file: row.chunking_strategy, store: storeChunking ?? null }));
+  } catch (error) {
+    if (!(error instanceof ChunkingStrategyError)) throw error;
+    logger.warn('VectorStoresController', `Vector store ${row.store_id} has an invalid chunking setting: ${error.message}`);
+    return { type: 'other' };
+  }
+}
+
+/**
+ * `contextStop`: a cockpit (grounding) call — the object also carries `context_stopped`, the file's
+ * context stop (fileSearch/contextStop.ts; null when none), which OpenAI's object has no slot for.
+ */
+function toStoreFileObject(row: VectorStoreFileRow, storeChunking: unknown, contextStop = false): Record<string, unknown> {
   return {
     id: row.file_id,
     object: 'vector_store.file',
@@ -521,8 +649,9 @@ function toStoreFileObject(row: VectorStoreFileRow): Record<string, unknown> {
     vector_store_id: row.store_id,
     status: row.status,
     last_error: row.last_error ?? null,
-    chunking_strategy: row.chunking_strategy ?? { type: 'auto' },
+    chunking_strategy: fileChunkingStrategy(row, storeChunking),
     attributes: row.attributes ?? {},
+    ...(contextStop ? { context_stopped: row.context_stopped ?? null } : {}),
   };
 }
 
@@ -554,7 +683,9 @@ function toStoreFileObject(row: VectorStoreFileRow): Record<string, unknown> {
  * `id` is projected from `file_id` only to satisfy `buildPage`'s `{id: string}`
  * constraint; the emitted object's own `id` comes from `toStoreFileObject`.
  */
-function sendStoreFilePage(res: Response, rows: VectorStoreFileRow[], limit: number, usingBefore: boolean): void {
+function sendStoreFilePage(
+  res: Response, rows: VectorStoreFileRow[], limit: number, usingBefore: boolean, storeChunking: unknown, contextStop: boolean,
+): void {
   const page = buildPage(rows.map((row) => ({ ...row, id: row.file_id })), limit);
   if (usingBefore) {
     page.data.reverse();
@@ -562,7 +693,7 @@ function sendStoreFilePage(res: Response, rows: VectorStoreFileRow[], limit: num
   }
   res.status(200).json({
     object: 'list',
-    data: page.data.map((row) => toStoreFileObject(row)),
+    data: page.data.map((row) => toStoreFileObject(row, storeChunking, contextStop)),
     has_more: page.has_more,
     first_id: page.first_id,
     last_id: page.last_id,
@@ -602,6 +733,9 @@ function toBatchObject(
 // Store handlers
 // ---------------------------------------------------------------------------
 
+/** `res.locals` key under which the grounding create hands the body's `chunking` to createVectorStore. */
+export const GROUNDING_STORE_CHUNKING = 'groundingStoreChunking';
+
 export const createVectorStore = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   if (!isFileSearchAvailable()) { sendUnavailable(res); return; }
   const ownerEmail = getOwnerEmail(req);
@@ -615,6 +749,17 @@ export const createVectorStore = async (req: AuthenticatedRequest, res: Response
     const maxFilesPerStore = getFileSearchConfig().limits.maxFilesPerStore;
     const fileIds = parseFileIds(body.file_ids, Math.min(MAX_FILE_IDS_PER_CREATE, maxFilesPerStore));
     const chunkingStrategy = parseChunkingStrategy(body.chunking_strategy);
+    // The store's own chunking setting: only the grounding create passes one (GROUNDING_STORE_CHUNKING,
+    // from its `chunking` field); the OpenAI routes never do, and a store then gets the installation default.
+    const rawChunking = res.locals?.[GROUNDING_STORE_CHUNKING];
+    const chunking = rawChunking === undefined || rawChunking === null ? undefined : validateChunkingSetting(rawChunking);
+    // A vision mode where vision is switched off (FILE_SEARCH_VISION=off; the npm standalone CLI)
+    // would never run: refused rather than stored.
+    if (chunking && visionModeOf(chunking) !== 'off' && visionSwitchedOff()) {
+      throw new ChunkingStrategyError(
+        "Invalid 'chunking.vision': vision transcription is switched off on this gateway.", 'chunking.vision', 'invalid_value',
+      );
+    }
 
     const pool = getPool()!;
     if (fileIds.length > 0) {
@@ -639,6 +784,7 @@ export const createVectorStore = async (req: AuthenticatedRequest, res: Response
       metadata,
       expiresAfter,
       initialStatus: fileIds.length > 0 ? 'in_progress' : 'completed',
+      ...(chunking ? { chunking } : {}),
     });
 
     if (fileIds.length > 0) {
@@ -649,9 +795,11 @@ export const createVectorStore = async (req: AuthenticatedRequest, res: Response
       // them silently skipping the check.
       await assertStoreDimension(store);
     }
+    // Page images are never masked: say so where pseudonymization applies to file_search content.
+    warnVisionUnmasked(visionModeOf(store.chunking), { storeId: store.id });
     for (const fileId of fileIds) {
       // eslint-disable-next-line no-await-in-loop
-      await attachFile(store.id, fileId, {}, chunkingStrategy);
+      await attachFile(store.id, fileId, {}, chunkingStrategy, null, attachStamp(req, ownerEmail, store.owner_email));
       // eslint-disable-next-line no-await-in-loop
       await enqueueIngestion(store.id, fileId);
     }
@@ -725,6 +873,7 @@ export const listVectorStores = async (req: AuthenticatedRequest, res: Response,
       last_id: page.last_id,
     });
   } catch (error) {
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -743,6 +892,7 @@ export const retrieveVectorStore = async (req: AuthenticatedRequest, res: Respon
     const usage = (await computeUsageForStores(pool, [rows[0].id])).get(rows[0].id) ?? emptyUsage();
     res.status(200).json(toStoreObject(rows[0], usage));
   } catch (error) {
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -777,8 +927,8 @@ export const modifyVectorStore = async (req: AuthenticatedRequest, res: Response
       // fixed deadline from whenever modify happened to run, not a sliding
       // one — which is what let expires_after:{anchor:'last_active_at'}
       // silently behave as a fixed deadline from creation (attach/detach
-      // never recomputed it either; see repository.ts's
-      // RECOMPUTE_EXPIRES_AT_SQL and touchStoreActivity for the other sites
+      // never recomputed it either; see fileSearch/stores.ts's
+      // RECOMPUTE_EXPIRES_AT_SQL and storeAccess.ts's touchStoreActivity for the other sites
       // that keep it sliding as last_active_at itself changes).
       if (expiresAfter) {
         params.push(expiresAfter.days);
@@ -825,6 +975,7 @@ export const deleteVectorStore = async (req: AuthenticatedRequest, res: Response
     res.status(200).json({ id: req.params.id, object: 'vector_store.deleted', deleted: true });
   } catch (error: any) {
     if (handleDeadlock(error, res)) return;
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -855,14 +1006,14 @@ export const createVectorStoreFile = async (req: AuthenticatedRequest, res: Resp
     if (storeRows.rows.length === 0) { sendStoreNotFound(res, req.params.id); return; }
     const store = storeRows.rows[0];
 
-    // An expired store is terminal for use (see repository.ts's
+    // An expired store is terminal for use (see fileSearch/storeValidation.ts's
     // StoreExpiredError/assertStoreNotExpired doc comments) — checked before
     // assertStoreDimension since it's the more fundamental of the two.
     assertStoreNotExpired(store);
     await assertStoreDimension(store);
 
     const fileRows = await pool.query<{ id: string }>(
-      'SELECT id FROM fs_files WHERE id = $1 AND owner_email = $2', [fileId, ownerEmail],
+      `SELECT id FROM fs_files WHERE id = $1 AND owner_email = $2 AND ${notExpiredSql()}`, [fileId, ownerEmail],
     );
     if (fileRows.rows.length === 0) {
       sendInvalidRequest(res, `No such file: ${fileId}`, 'file_not_found');
@@ -882,7 +1033,7 @@ export const createVectorStoreFile = async (req: AuthenticatedRequest, res: Resp
 
     let vsf: VectorStoreFileRow;
     try {
-      vsf = await attachFile(store.id, fileId, attributes, chunkingStrategy);
+      vsf = await attachFile(store.id, fileId, attributes, chunkingStrategy, null, attachStamp(req, ownerEmail, store.owner_email));
     } catch (attachError: any) {
       if (attachError?.code === '23505') { // unique_violation on (store_id, file_id)
         res.status(409).json({
@@ -917,7 +1068,7 @@ export const createVectorStoreFile = async (req: AuthenticatedRequest, res: Resp
     }
     await enqueueIngestion(store.id, fileId);
 
-    res.status(200).json(toStoreFileObject(vsf));
+    res.status(200).json(toStoreFileObject(vsf, store.chunking));
   } catch (error) {
     handleKnownError(error, res, next);
   }
@@ -959,8 +1110,8 @@ export const listVectorStoreFiles = async (req: AuthenticatedRequest, res: Respo
     const filterStatus = parseFilterStatus((req.query as Record<string, unknown>).filter);
     const pool = getPool()!;
 
-    const storeRows = await pool.query<{ id: string }>(
-      'SELECT id FROM vector_stores WHERE id = $1 AND owner_email = $2', [req.params.id, ownerEmail],
+    const storeRows = await pool.query<{ id: string; chunking: unknown }>(
+      'SELECT id, chunking FROM vector_stores WHERE id = $1 AND owner_email = $2', [req.params.id, ownerEmail],
     );
     if (storeRows.rows.length === 0) { sendStoreNotFound(res, req.params.id); return; }
 
@@ -975,7 +1126,7 @@ export const listVectorStoreFiles = async (req: AuthenticatedRequest, res: Respo
     // order; `sendStoreFilePage` flips it. `listBatchFiles` derives the same
     // condition from the same inputs — see its `usingBefore`. Identical to the
     // batch-scoped handler's call, which is the point.
-    sendStoreFilePage(res, rows, limit, !!before && !after);
+    sendStoreFilePage(res, rows, limit, !!before && !after, storeRows.rows[0].chunking, !!(req as any).groundingActor);
   } catch (error) {
     handleKnownError(error, res, next);
   }
@@ -988,15 +1139,18 @@ export const retrieveVectorStoreFile = async (req: AuthenticatedRequest, res: Re
 
   try {
     const pool = getPool()!;
-    const { rows } = await pool.query<VectorStoreFileRow>(
-      `SELECT vsf.* FROM vector_store_files vsf
+    const { rows } = await pool.query<VectorStoreFileRow & { store_chunking: unknown }>(
+      `SELECT vsf.*, vs.chunking AS store_chunking FROM vector_store_files vsf
        JOIN vector_stores vs ON vs.id = vsf.store_id
-       WHERE vsf.store_id = $1 AND vsf.file_id = $2 AND vs.owner_email = $3`,
+       WHERE vsf.store_id = $1 AND vsf.file_id = $2 AND vs.owner_email = $3
+         AND ${attachedFileNotExpiredSql('vsf.file_id')}`,
       [req.params.id, req.params.file_id, ownerEmail],
     );
     if (rows.length === 0) { sendStoreFileNotFound(res, req.params.file_id); return; }
-    res.status(200).json(toStoreFileObject(rows[0]));
+    const { store_chunking: storeChunking, ...row } = rows[0];
+    res.status(200).json(toStoreFileObject(row, storeChunking));
   } catch (error) {
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -1014,15 +1168,16 @@ export const modifyVectorStoreFile = async (req: AuthenticatedRequest, res: Resp
     const attributes = validateAttributes(body.attributes);
 
     const pool = getPool()!;
-    const { rows } = await pool.query<VectorStoreFileRow>(
+    const { rows } = await pool.query<VectorStoreFileRow & { store_chunking: unknown }>(
       `UPDATE vector_store_files vsf SET attributes = $1
        FROM vector_stores vs
        WHERE vs.id = vsf.store_id AND vsf.store_id = $2 AND vsf.file_id = $3 AND vs.owner_email = $4
-       RETURNING vsf.*`,
+       RETURNING vsf.*, vs.chunking AS store_chunking`,
       [JSON.stringify(attributes), req.params.id, req.params.file_id, ownerEmail],
     );
     if (rows.length === 0) { sendStoreFileNotFound(res, req.params.file_id); return; }
-    res.status(200).json(toStoreFileObject(rows[0]));
+    const { store_chunking: storeChunking, ...row } = rows[0];
+    res.status(200).json(toStoreFileObject(row, storeChunking));
   } catch (error) {
     handleKnownError(error, res, next);
   }
@@ -1039,6 +1194,7 @@ export const deleteVectorStoreFile = async (req: AuthenticatedRequest, res: Resp
     res.status(200).json({ id: req.params.file_id, object: 'vector_store.file.deleted', deleted: true });
   } catch (error: any) {
     if (handleDeadlock(error, res)) return;
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -1052,10 +1208,12 @@ export const downloadVectorStoreFileContent = async (
 
   try {
     const pool = getPool()!;
+    // An expired file's text is gone with it, although its chunks stay until the expiry sweep.
     const attachedRows = await pool.query<{ file_id: string }>(
       `SELECT vsf.file_id FROM vector_store_files vsf
        JOIN vector_stores vs ON vs.id = vsf.store_id
-       WHERE vsf.store_id = $1 AND vsf.file_id = $2 AND vs.owner_email = $3`,
+       WHERE vsf.store_id = $1 AND vsf.file_id = $2 AND vs.owner_email = $3
+         AND ${attachedFileNotExpiredSql('vsf.file_id')}`,
       [req.params.id, req.params.file_id, ownerEmail],
     );
     if (attachedRows.rows.length === 0) { sendStoreFileNotFound(res, req.params.file_id); return; }
@@ -1063,11 +1221,14 @@ export const downloadVectorStoreFileContent = async (
     // Extracted text reassembled from chunks in `ord` order — deliberately
     // NOT the original bytes (that's GET /files/{id}/content). Ownership is
     // re-checked here too (not just above) because this is its own query
-    // site — see repository.ts's header note on why every site scopes itself.
+    // site — see fileSearch/recall.ts's header note on why every site scopes itself.
+    // Only the active generation: during a re-embed the next one holds the
+    // same texts again.
     const { rows: chunkRows } = await pool.query<{ text: string }>(
       `SELECT c.text FROM vector_store_chunks c
        JOIN vector_stores vs ON vs.id = c.store_id
        WHERE c.store_id = $1 AND c.file_id = $2 AND vs.owner_email = $3
+         AND ${ACTIVE_GENERATION_PREDICATE_SQL}
        ORDER BY c.ord ASC`,
       [req.params.id, req.params.file_id, ownerEmail],
     );
@@ -1078,6 +1239,7 @@ export const downloadVectorStoreFileContent = async (
       has_more: false,
     });
   } catch (error) {
+    if (sendIfBusy(res, error)) return;
     next(error);
   }
 };
@@ -1092,6 +1254,39 @@ export const downloadVectorStoreFileContent = async (
 // — `vector_stores.owner_email`, which batches.ts deliberately knows nothing
 // about — plus request validation and the OpenAI response shape.
 // ---------------------------------------------------------------------------
+
+/**
+ * Who started a batch's job, with which credential. On a grounding call the
+ * acting cockpit user is `groundingActor` and the credential is the admin
+ * service key; an API client's own key id is on `apiKeyInfo`. Null when the
+ * auth path recorded no key id. Re-embed jobs are stamped the same way
+ * (groundingReembedController, plan Decision 14).
+ */
+export function batchJobIdentity(req: AuthenticatedRequest, ownerEmail: string): CreateBatchJobOptions {
+  const anyReq = req as any;
+  return {
+    startedBy: anyReq.groundingActor?.email ?? ownerEmail,
+    credentialId: anyReq.serviceAuth?.serviceKey?.id ?? req.apiKeyInfo?.keyId ?? null,
+    authType: 'api_key',
+  };
+}
+
+/**
+ * Who pays for the ingestion of the files an attach adds: the batch job's
+ * credential and, on a grounding call only, the store's owner as the user the
+ * admin service key acts for. Ingestion is the owner's usage even when an
+ * admin attaches; the job still records the admin as its starter. Stamped on
+ * each `vector_store_files` row, where the ingest worker reads it
+ * (fileSearch/usage.ts).
+ */
+export function attachStamp(req: AuthenticatedRequest, ownerEmail: string, storeOwnerEmail: string): AttachStamp {
+  const { credentialId, authType } = batchJobIdentity(req, ownerEmail);
+  return {
+    credentialId,
+    authType,
+    onBehalfOf: (req as any).groundingActor ? storeOwnerEmail : null,
+  };
+}
 
 /**
  * `POST /vector_stores/{id}/file_batches`.
@@ -1129,12 +1324,31 @@ export const createVectorStoreFileBatch = async (
     // the length check below covers "absent", "null" and "[]" identically —
     // all three are the same client mistake, and OpenAI requires file_ids on
     // this endpoint (unlike POST /vector_stores, where it is optional).
-    const fileIds = parseFileIds(body.file_ids, Math.min(MAX_FILE_IDS_PER_CREATE, maxFilesPerStore));
-    if (fileIds.length === 0) {
-      throw new BadRequestError('file_ids is required and must contain at least one file id', 'invalid_file_ids');
+    //
+    // `files` (per-file values) is OpenAI's alternative to `file_ids`, exclusive with it; with
+    // `files` the top-level attributes and chunking_strategy are ignored, as OpenAI documents.
+    const perRequestCap = Math.min(MAX_FILE_IDS_PER_BATCH, maxFilesPerStore);
+    const filesGiven = body.files !== undefined && body.files !== null;
+    if (filesGiven && body.file_ids !== undefined && body.file_ids !== null) {
+      throw new BadRequestError('file_ids and files are mutually exclusive; give one of them', 'invalid_files');
     }
-    const attributes = validateAttributes(body.attributes);
-    const chunkingStrategy = parseChunkingStrategy(body.chunking_strategy);
+    let members: Array<string | BatchFile>;
+    let fileIds: string[];
+    let attributes: Record<string, unknown> | null = null;
+    let chunkingStrategy: Record<string, unknown> | null = null;
+    if (filesGiven) {
+      const files = parseBatchFiles(body.files, perRequestCap);
+      members = files;
+      fileIds = files.map((f) => f.fileId);
+    } else {
+      fileIds = parseFileIds(body.file_ids, perRequestCap);
+      if (fileIds.length === 0) {
+        throw new BadRequestError('file_ids is required and must contain at least one file id', 'invalid_file_ids');
+      }
+      members = fileIds;
+      attributes = validateAttributes(body.attributes);
+      chunkingStrategy = parseChunkingStrategy(body.chunking_strategy);
+    }
 
     const pool = getPool()!;
     const storeRows = await pool.query<VectorStoreRow>(
@@ -1189,7 +1403,11 @@ export const createVectorStoreFileBatch = async (
 
     let batch: BatchRow;
     try {
-      batch = await createBatch(store.id, fileIds, attributes, chunkingStrategy);
+      const jobOptions: CreateBatchJobOptions = {
+        ...batchJobIdentity(req, ownerEmail),
+        onBehalfOf: attachStamp(req, ownerEmail, store.owner_email).onBehalfOf,
+      };
+      batch = await createBatch(store.id, members, attributes, chunkingStrategy, jobOptions);
     } catch (batchError: any) {
       // Everything below is a lost race against a concurrent write, not bad
       // input — the pre-checks above already ran to completion. `createBatch`
@@ -1398,8 +1616,8 @@ export const listVectorStoreFileBatchFiles = async (
     const filterStatus = parseFilterStatus((req.query as Record<string, unknown>).filter);
     const pool = getPool()!;
 
-    const storeRows = await pool.query<{ id: string }>(
-      'SELECT id FROM vector_stores WHERE id = $1 AND owner_email = $2', [req.params.id, ownerEmail],
+    const storeRows = await pool.query<{ id: string; chunking: unknown }>(
+      'SELECT id, chunking FROM vector_stores WHERE id = $1 AND owner_email = $2', [req.params.id, ownerEmail],
     );
     if (storeRows.rows.length === 0) { sendStoreNotFound(res, req.params.id); return; }
 
@@ -1414,7 +1632,7 @@ export const listVectorStoreFileBatchFiles = async (
     // A backwards page (`before` with no `after`) came back in reverse display
     // order; `sendStoreFilePage` flips it. `listBatchFiles` derives the same
     // condition from the same inputs — see its `usingBefore`.
-    sendStoreFilePage(res, rows, limit, !!before && !after);
+    sendStoreFilePage(res, rows, limit, !!before && !after, storeRows.rows[0].chunking, !!(req as any).groundingActor);
   } catch (error) {
     handleKnownError(error, res, next);
   }
@@ -1444,10 +1662,14 @@ export const searchVectorStore = async (req: AuthenticatedRequest, res: Response
       storeIds: [req.params.id],
       query: parsed.query,
       ownerEmail,
+      teamIds: callerTeamIds(req),
       maxNumResults: parsed.maxNumResults,
       filters: parsed.filters,
       rankingOptions: parsed.rankingOptions,
       rewriteQuery: parsed.rewriteQuery,
+      // The caller pays for its search, also a cockpit user searching a store shared with
+      // them (billed to the service key on their behalf).
+      usage: searchUsageSink(fileSearchCallerOf(req), (req as any).debugRequestId),
     });
 
     res.status(200).json({
@@ -1458,15 +1680,17 @@ export const searchVectorStore = async (req: AuthenticatedRequest, res: Response
       // `search_query[0]` — the documented way to read it — got the first
       // CHARACTER of the query rather than the query.
       //
-      // It is an array because a single request can expand into several
-      // searches; we run exactly one, so this is always length 1.
-      search_query: [result.searchQuery],
+      // It is an array because a request can carry several queries (`query` as an array): every
+      // query searched, after an optional rewrite; one entry for a single query.
+      search_query: result.searchQueries,
       data: result.data.map((hit) => ({
         file_id: hit.fileId,
         filename: hit.filename,
         score: hit.score,
         attributes: hit.attributes,
         content: hit.content,
+        // An extension, present only for a file with pages: the pages the content spans.
+        ...(hit.pages ? { pages: hit.pages } : {}),
       })),
       has_more: result.hasMore,
       next_page: result.nextPage,

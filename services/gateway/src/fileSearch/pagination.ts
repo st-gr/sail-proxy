@@ -17,21 +17,31 @@ export interface PageParams {
   before: string | null;
 }
 
-const DEFAULT_LIMIT = 20;
+export interface PageLimits {
+  defaultLimit: number;
+  maxLimit: number;
+}
+
 const MIN_LIMIT = 1;
-const MAX_LIMIT = 100;
+/** OpenAI's vector-store lists: default 20, at most 100. */
+const DEFAULT_PAGE_LIMITS: PageLimits = { defaultLimit: 20, maxLimit: 100 };
+
+/** OpenAI's `GET /files`: "Limit can range between 1 and 10,000, and the default is 10,000"
+ *  (openai-python types/file_list_params.py). A file row is a few hundred bytes on the wire. */
+export const FILES_PAGE_LIMITS: Readonly<PageLimits> = Object.freeze({ defaultLimit: 10000, maxLimit: 10000 });
 
 /**
  * Parses `limit`/`order`/`after`/`before` off an Express `req.query`-shaped
  * object. Never throws: malformed input degrades to the documented default
- * rather than a 500, matching OpenAI's own list-endpoint behavior.
+ * rather than a 500, matching OpenAI's own list-endpoint behavior. `limits`
+ * are the list's default and maximum page size (the vector-store lists' unless given).
  */
-export function parsePageParams(query: Record<string, unknown>): PageParams {
+export function parsePageParams(query: Record<string, unknown>, limits: PageLimits = DEFAULT_PAGE_LIMITS): PageParams {
   const rawLimit = firstValue(query?.limit);
   const parsed = typeof rawLimit === 'string' || typeof rawLimit === 'number' ? Number(rawLimit) : NaN;
   const limit = Number.isFinite(parsed)
-    ? Math.min(MAX_LIMIT, Math.max(MIN_LIMIT, Math.trunc(parsed)))
-    : DEFAULT_LIMIT;
+    ? Math.min(limits.maxLimit, Math.max(MIN_LIMIT, Math.trunc(parsed)))
+    : limits.defaultLimit;
 
   const rawOrder = firstValue(query?.order);
   const order: PageOrder = rawOrder === 'asc' ? 'asc' : 'desc';

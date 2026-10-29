@@ -3,6 +3,8 @@ packages:
   - "services/*/app/*"
   - "libs/*"
   - "npm-dist/*"
+  - "docs"
+  - "screencast"
 
 # Use node-linker for better compatibility with Node.js modules
 node-linker: isolated

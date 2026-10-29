@@ -154,6 +154,18 @@ entity ApiKeyUsage : cuid, temporal {
   capacityUnits       : Decimal(14,6);      // genAiTokens * cuFactor
   sapCost             : Decimal(12,6);      // capacityUnits * pricePerCu, in sapCostCurrency
   sapCostCurrency     : String(3);          // ISO-4217 of the price row used (e.g. 'USD','EUR')
+  // A Connection model's usage (spec 2026-10-23 §6.1): origin 'external', the connection's name and the
+  // provider's model name. The SAP cost columns above stay null; the row is priced from the admin-maintained
+  // list price in force at the request: listCost in listCostCurrency, or pricingMissing when none was set.
+  origin              : String(10) default 'sap';
+  connection          : String(31);
+  upstreamModel       : String(64);
+  listCost            : Decimal(12,6);
+  listCostCurrency    : String(3);
+  pricingMissing      : Boolean;
+  // The SAP AI Core tenant (identity zone, SapTenants.zone) that served the request (spec 2026-10-25 §6);
+  // null for Connection rows. Rows older than the column get the environment tenant once (sap-tenant-backfill.ts).
+  sapTenant           : String(100);
 
   // Client information
   userAgent           : String(500);
@@ -235,6 +247,9 @@ view ActiveApiKeys as select from ApiKeys where isActive = true and deletedAt is
 
 view ApiKeyUsageStats as select from ApiKeyUsage {
   key apiKey,
+  // One row per key AND SAP tenant (the zone; '' for Connection and pre-feature rows) so an invoice is
+  // compared with one subaccount: the Usage app filters on it and folds the rows of a key when it asks for all.
+  key coalesce(sapTenant, '') as sapTenant : String(100),
   count(*) as totalRequests : Integer,
   coalesce(sum(inputTokens), 0) as totalInputTokens : Integer,
   coalesce(sum(outputTokens), 0) as totalOutputTokens : Integer,
@@ -261,7 +276,7 @@ view ApiKeyUsageStats as select from ApiKeyUsage {
   coalesce(sum(capacityUnits), 0) as totalCapacityUnits : Decimal(16,6)
 }
 where provider is not null
-group by apiKey;
+group by apiKey, coalesce(sapTenant, '');
 
 /**
  * SAP-native sapCost, summed per apiKey AND per sapCostCurrency, so a USD total and a EUR total
@@ -270,20 +285,21 @@ group by apiKey;
  * This is a companion view rather than an extra column on ApiKeyUsageStats above: sapCost is the
  * one SAP-native aggregate that is NOT currency-neutral, so summing it correctly requires
  * grouping by sapCostCurrency too. Folding that into ApiKeyUsageStats's `group by apiKey` would
- * change that view's grain from "one row per apiKey" to "one row per apiKey per currency" -
+ * change that view's grain from "one row per apiKey and SAP tenant" to "one row per key, tenant and currency" -
  * splitting every dollar-estimate aggregate on it (totalRequests, totalCost, avgResponseTime,
  * ...) by currency as a side effect, which distorts the existing rollup for any apiKey that has
  * both legacy rows (sapCostCurrency is null, pre-dating this feature) and SAP-priced rows. Kept
- * separate, ApiKeyUsageStats keeps its original one-row-per-apiKey grain and callers that want
+ * separate, ApiKeyUsageStats keeps one row per apiKey and SAP tenant and callers that want
  * the per-currency sapCost breakdown query this view instead.
  */
 view ApiKeyUsageSapCostStats as select from ApiKeyUsage {
   key apiKey,
   key sapCostCurrency,
+  key coalesce(sapTenant, '') as sapTenant : String(100),
   coalesce(sum(sapCost), 0) as totalSapCost : Decimal(14,6)
 }
 where provider is not null
-group by apiKey, sapCostCurrency;
+group by apiKey, sapCostCurrency, coalesce(sapTenant, '');
 
 view ApiKeySecuritySummary as select from ApiKeySecurityEvents {
   key apiKey,
@@ -321,6 +337,8 @@ entity ModelCosts : cuid, managed {
   version       : String(50);              // Model version/name
   complexCost   : LargeString;             // JSON cost structure for tiered pricing (null for simple cost models)
   source        : String(8) default 'sap';      // sap | manual — manual rows are never closed by the gateway refresh
+  pricingKind   : String(12) default 'sap_genai'; // sap_genai (SAP GenAI-token rates) | list_price (a Connection model's price, true currency)
+  currency      : String(3);               // list_price rows only: the currency the price is in; null for SAP rows
 
   // Audit fields provided by managed aspect
 };
@@ -351,6 +369,18 @@ entity SapCapacityUnitPrice : cuid, managed {
   region        : String(50);
   sku           : String(20);
 };
+
+/**
+ * The capacity-unit prices the setup scripts last turned into SapCapacityUnitPrice rows, per usage
+ * type. Boot compares the configured prices with this to add a new rate only when they changed;
+ * rates edited later in the SAP Rates app are never touched. Not exposed by any service.
+ */
+@cds.persistence.table
+entity SetupPriceApplied : managed {
+  key usageType : String(20);
+  currency      : String(3) not null;
+  pricePerCu    : Decimal(10,6) not null;
+}
 
 // Fixed-values code lists backing the Usage Type / Service Plan dropdowns on the
 // SapCapacityUnitPrice object page. Fiori Elements V4 renders a dropdown only from a

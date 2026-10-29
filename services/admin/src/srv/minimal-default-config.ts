@@ -14,15 +14,12 @@ export const MINIMAL_DEFAULT_CONFIG = {
   api_config: {
     providers: {
       openai: {
-        substitute_models: [
-          { from: "GPT-4", to: "o1" },
-          { from: "GPT-3.5", to: "GPT-4" }
-        ],
+        substitute_models: [],
         emulate_streaming_for_models: []
       },
       anthropic: {
         substitute_models: [
-          { from: "claude-3-5-haiku-20241022", to: "anthropic--claude-3-haiku" },
+          { from: "claude-3-5-haiku-20241022", to: "anthropic--claude-4.5-haiku" },
           { from: "claude-3-7-sonnet-20250219", to: "anthropic--claude-3.7-sonnet" }
         ],
         emulate_streaming_for_models: ["anthropic--claude-3.7-sonnet"]

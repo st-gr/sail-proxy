@@ -8,6 +8,7 @@ describe('Configuration Service - JSON Schema Validation', () => {
     // Create a mock CDS service object
     const mockCdsService = {
       on: jest.fn(),
+      before: jest.fn(),
       after: jest.fn()
     };
     

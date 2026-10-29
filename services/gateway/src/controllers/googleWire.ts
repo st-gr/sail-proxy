@@ -14,7 +14,7 @@
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 import { executeAfterPlugins } from '../services/pluginExecutor';
-import { foldExclusiveUsage, foldInclusiveUsage } from '../utils/usageFolding';
+import { foldInclusiveUsage, foldOrchestrationUsageFor } from '../utils/usageFolding';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
 import { parseFrame, sseBlock } from '../utils/sseFraming';
 import { geminiError, usageFromGemini } from '../services/googleGeminiService';
@@ -117,13 +117,15 @@ export async function pluginFrame(req: Request, res: Response, hookConfig: any, 
 /**
  * SAP orchestration `usage` → the usage metrics.
  *
- * EXCLUSIVE: `prompt_tokens` is full-rate input as-is and BOTH cache counters are
- * separate line items ADDED alongside it, with no subtraction — the regime measured
- * for this payload shape and recorded at length on `recordOrchestrationUsage` in
- * responsesController.ts, which this mirrors field for field. `foldExclusiveUsage`
- * is the marker that says so; going through it rather than calling
- * `updateTokenCounts` directly is what keeps the two orchestration folds from
- * drifting apart.
+ * The regime follows the model behind orchestration (`foldOrchestrationUsageFor`):
+ * for Claude and Amazon Nova it is EXCLUSIVE — `prompt_tokens` is full-rate input
+ * as-is and BOTH cache counters are separate line items ADDED alongside it, with no
+ * subtraction, as measured and recorded at length on `recordOrchestrationUsage` in
+ * responsesController.ts, which this mirrors field for field. OpenAI-family and
+ * Gemini models count the cache INSIDE `prompt_tokens` (probe of 2026-09-30) and
+ * other families are assumed to, so the cache is subtracted there. Going through that one helper
+ * rather than calling `updateTokenCounts` directly is what keeps the orchestration
+ * folds from drifting apart.
  *
  * Spec section 5.8 writes the call as `updateTokenCounts(metrics, input, output, 0,
  * cacheRead)`. That literal 0 was a defect, not a ruling: SAP reports
@@ -131,14 +133,14 @@ export async function pluginFrame(req: Request, res: Response, hookConfig: any, 
  * SQL prices cache-write as its own line item, so passing 0 under-billed every
  * cached bridge turn.
  */
-export function foldOrchestrationUsage(metrics: any, usage: any): void {
+export function foldOrchestrationUsage(metrics: any, usage: any, modelName: string): void {
   if (!usage) return;
-  foldExclusiveUsage(
+  foldOrchestrationUsageFor(
+    modelName,
     metrics,
     usage.prompt_tokens ?? 0,
     usage.completion_tokens ?? 0,
-    // Cache WRITE. Priced separately by admin's cost SQL and — like the read count —
-    // reported by SAP ALONGSIDE `prompt_tokens`, never inside it.
+    // Cache WRITE. Priced separately by admin's cost SQL.
     usage.prompt_tokens_details?.cache_creation_tokens ?? 0,
     mapCachedTokens(usage).cachedTokens,
   );
@@ -147,7 +149,7 @@ export function foldOrchestrationUsage(metrics: any, usage: any): void {
 /**
  * A native Gemini `usageMetadata` → the usage metrics.
  *
- * INCLUSIVE, and the opposite of `foldOrchestrationUsage` above. Google's API
+ * INCLUSIVE, unlike a Claude turn through `foldOrchestrationUsage` above. Google's API
  * reference is explicit about `promptTokenCount`: "Number of tokens in the prompt.
  * When `cachedContent` is set, this is still the total effective prompt size meaning
  * this includes the number of tokens in the cached content."

@@ -42,7 +42,7 @@ describe('validateConfiguration rejects duplicate SIEM sink names', () => {
   let configService: any;
 
   beforeEach(() => {
-    configService = configurationServiceFactory({ on: jest.fn(), after: jest.fn() });
+    configService = configurationServiceFactory({ on: jest.fn(), before: jest.fn(), after: jest.fn() });
   });
 
   async function validate(config: unknown) {

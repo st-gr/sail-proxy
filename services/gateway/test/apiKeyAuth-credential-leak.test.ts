@@ -18,7 +18,7 @@ jest.mock('../src/services/securityEventEmitter', () => ({
 const mockValidateApiKey: any = jest.fn();
 jest.mock('../src/services/apiKeyService', () => ({
   __esModule: true,
-  default: { validateApiKey: (...args: any[]) => mockValidateApiKey(...args), listApiKeys: jest.fn() },
+  default: { validateApiKey: (...args: any[]) => mockValidateApiKey(...args), listApiKeys: jest.fn(), findInactiveApiKeyId: async () => null },
 }));
 
 import apiKeyAuth from '../src/middlewares/apiKeyAuth';

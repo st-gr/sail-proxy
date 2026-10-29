@@ -1,8 +1,8 @@
 /**
  * Quota enforcement (spec §2), after validation on every LLM-serving route. Order: deactivated
- * user → 401; requests per minute (user and key scope, two-bucket sliding window, exact in Valkey)
- * and per-key hour/day buckets → 429; spend/tokens admission from the user's state document
- * (Task 9) → 429. The gateway never calls the admin here. Valkey unreachable: the same algorithm
+ * user → 401; requests per minute (user, then team, then key scope, two-bucket sliding window,
+ * exact in Valkey) and per-key hour/day buckets → 429; spend/tokens admission from the user's
+ * state document, then the team's pool document (quota:team:<id>) → 429. The gateway never calls the admin here. Valkey unreachable: the same algorithm
  * on per-pod memory buckets plus one quota_unenforced event per five minutes. Standalone mode:
  * per-key RPM in memory only (RATE_LIMIT_RPM, default 100), no user scope.
  */
@@ -11,11 +11,12 @@ import { createHash } from 'crypto';
 import { getDefaultLogger } from '@libs/logger';
 import securityEventEmitter from '../services/securityEventEmitter';
 import { getClientIp } from '../utils/clientIp';
+import { redactUrl } from '../utils/redactUrl';
 import { getTrustForwardedFor } from '../services/configService';
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
-import { userFromRequest, UserBlock } from '../utils/userBlock';
+import { userFromRequest, teamFromRequest, UserBlock, TeamBlock } from '../utils/userBlock';
 import { RateLimitStore, MemoryRateLimitStore, ValkeyRateLimitStore } from '../services/rateLimitStore';
-import { QuotaStateReader, QuotaStateDocument, WindowName } from '../services/quotaStateReader';
+import { QuotaStateReader, AdmissionDocument, WindowName } from '../services/quotaStateReader';
 
 const logger = getDefaultLogger();
 const DEFAULT_STANDALONE_RPM = 100;
@@ -27,10 +28,11 @@ export interface Caller {
   email: string | null;
   keyLimits: { minute: number | null; hour: number | null; day: number | null };
   user: UserBlock | null;
+  team: TeamBlock | null;
 }
 export interface Exceeded {
   type: 'rate_limit_exceeded' | 'quota_exceeded';
-  scope: 'user' | 'key'; dimension: 'requests' | 'tokens' | 'spend';
+  scope: 'user' | 'key' | 'team'; team?: string; dimension: 'requests' | 'tokens' | 'spend';
   window: 'minute' | 'hour' | 'day' | 'week' | 'month';
   limit: number; used: number; resetsAt: number;   // epoch ms
 }
@@ -57,7 +59,7 @@ export function callerFromRequest(req: any): Caller | null {
       authType: req.unifiedAuth.authType, credentialId: u.keyId || u.credentialId || u.id || 'unknown',
       email: u.email || u.userId || null,
       keyLimits: { minute: num(rl.requestsPerMinute), hour: num(rl.requestsPerHour), day: num(rl.requestsPerDay) },
-      user: userFromRequest(req)
+      user: userFromRequest(req), team: teamFromRequest(req)
     };
   }
   if (req.isAwsAuthenticated && req.awsAuth) {
@@ -65,11 +67,11 @@ export function callerFromRequest(req: any): Caller | null {
     return { authType: 'aws_credential', credentialId: req.awsAuth.credentialId || req.awsAuth.accessKeyId || 'unknown',
       email: req.awsAuth.userId || null,
       keyLimits: { minute: num(rl.requestsPerMinute), hour: num(rl.requestsPerHour), day: num(rl.requestsPerDay) },
-      user: userFromRequest(req) };
+      user: userFromRequest(req), team: teamFromRequest(req) };
   }
   if (req.apiKey?.key) {   // local validation (standalone / fallback): the row id when known, else a hash — never the secret
     return { authType: 'api_key', credentialId: req.apiKey.id || `sha256:${sha(req.apiKey.key).slice(0, 16)}`,
-      email: req.apiKey.email || null, keyLimits: { minute: standaloneRpm(), hour: null, day: null }, user: null };
+      email: req.apiKey.email || null, keyLimits: { minute: standaloneRpm(), hour: null, day: null }, user: null, team: null };
   }
   return null;
 }
@@ -85,12 +87,73 @@ async function fixed(store: RateLimitStore, key: string, ttl: number, resetsAt: 
   return { used: await store.incr(key, ttl), resetsAt };
 }
 
+/** Whose quota an event names: the caller, or the payer a cockpit grounding call is checked for. */
+type QuotaSubject = Pick<Caller, 'credentialId' | 'authType' | 'email'>;
+
+/** quota_exceeded at most once a minute per user/dimension/window; quota_unenforced once per five minutes. */
+function createQuotaEvents(clock: () => number) {
+  const lastExceeded = new Map<string, number>();
+  let lastUnenforced = 0;
+  return {
+    exceeded(req: any, subject: QuotaSubject, x: Exceeded): void {
+      const now = clock();
+      const throttleKey = `${subject.email || subject.credentialId}|${x.dimension}|${x.window}`;
+      if ((lastExceeded.get(throttleKey) ?? 0) > now - 60_000) return;
+      lastExceeded.set(throttleKey, now);
+      Promise.resolve(securityEventEmitter.emitQuotaExceeded({
+        credentialId: subject.credentialId, authType: subject.authType, ownerEmail: subject.email ?? undefined,
+        clientIP: getClientIp(req, getTrustForwardedFor()), userAgent: req.get?.('user-agent'),
+        endpoint: redactUrl(req.originalUrl), method: req.method, requestId: req.id, statusCode: 429,
+        scope: x.scope, dimension: x.dimension, window: x.window, limit: x.limit, used: x.used
+      })).catch((e) => logger.warn('QuotaEnforcement', `quota_exceeded event failed: ${e instanceof Error ? e.message : String(e)}`));
+    },
+    unenforced(req: any, reason: string): void {
+      const now = clock();
+      if (lastUnenforced > now - UNENFORCED_EVERY_MS) return;
+      lastUnenforced = now;
+      Promise.resolve(securityEventEmitter.emitQuotaUnenforced({ reason, clientIP: getClientIp(req, getTrustForwardedFor()), endpoint: redactUrl(req.originalUrl), requestId: req.id }))
+        .catch((e) => logger.warn('QuotaEnforcement', `quota_unenforced event failed: ${e instanceof Error ? e.message : String(e)}`));
+    }
+  };
+}
+
+const DAY = 86_400_000;
+function windowStartsUtc(now: number): Record<WindowName, number> {
+  const d = new Date(now);
+  const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  return { day, week: day - ((new Date(day).getUTCDay() + 6) % 7) * DAY, month: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) };
+}
+function windowEndsUtc(now: number): Record<WindowName, number> {
+  const s = windowStartsUtc(now);
+  const d = new Date(now);
+  return { day: s.day + DAY, week: s.week + 7 * DAY, month: Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) };
+}
+
+/** Spend/tokens per window against the document (its limits are fresher than the wire block's). */
+function checkAdmission(doc: AdmissionDocument, wireLimits: Partial<UserBlock['limits']>, now: number, scope: 'user' | 'team' = 'user', team?: string): Exceeded | null {
+  const starts = windowStartsUtc(now);
+  const ends = windowEndsUtc(now);
+  const limits: any = { ...wireLimits, ...(doc.limits || {}) };
+  for (const w of ['day', 'week', 'month'] as WindowName[]) {
+    const W = w[0].toUpperCase() + w.slice(1);
+    // A document from before this window began describes the previous window: nothing used yet.
+    const fresh = Date.parse(doc.windowStart?.[w] ?? '') >= starts[w];
+    const used = fresh ? doc.used?.[w] : undefined;
+    const tokensLimit = num(limits[`tokensPer${W}`]);
+    if (tokensLimit !== null && (used?.tokens ?? 0) >= tokensLimit)
+      return { type: 'quota_exceeded', scope, ...(team ? { team } : {}), dimension: 'tokens', window: w, limit: tokensLimit, used: used?.tokens ?? 0, resetsAt: ends[w] };
+    const spendLimit = num(limits[`spendPer${W}`]);
+    if (spendLimit !== null && (used?.sapCost ?? 0) >= spendLimit)
+      return { type: 'quota_exceeded', scope, ...(team ? { team } : {}), dimension: 'spend', window: w, limit: spendLimit, used: used?.sapCost ?? 0, resetsAt: ends[w] };
+  }
+  return null;
+}
+
 export function createQuotaEnforcement(deps: QuotaDeps) {
   const clock = deps.clock ?? Date.now;
   const standalone = deps.standalone ?? isStandaloneMode;
   const memory = new MemoryRateLimitStore(clock);
-  const lastExceeded = new Map<string, number>();
-  let lastUnenforced = 0;
+  const events = createQuotaEvents(clock);
   // deps.store() is resolved once and then reused for the life of this middleware, not
   // re-invoked per request: the memory store's counters live in the object itself, so a
   // factory that mints a fresh instance on every call (as tests do) would never accumulate.
@@ -107,26 +170,6 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
   // first returns non-null.
   let cachedReader: QuotaStateReader | null = null;
 
-  const emitExceeded = (req: any, caller: Caller, x: Exceeded) => {
-    const now = clock();
-    const throttleKey = `${caller.email || caller.credentialId}|${x.dimension}|${x.window}`;
-    if ((lastExceeded.get(throttleKey) ?? 0) > now - 60_000) return;
-    lastExceeded.set(throttleKey, now);
-    Promise.resolve(securityEventEmitter.emitQuotaExceeded({
-      credentialId: caller.credentialId, authType: caller.authType, ownerEmail: caller.email ?? undefined,
-      clientIP: getClientIp(req, getTrustForwardedFor()), userAgent: req.get?.('user-agent'),
-      endpoint: req.originalUrl, method: req.method, requestId: req.id, statusCode: 429,
-      scope: x.scope, dimension: x.dimension, window: x.window, limit: x.limit, used: x.used
-    })).catch((e) => logger.warn('QuotaEnforcement', `quota_exceeded event failed: ${e instanceof Error ? e.message : String(e)}`));
-  };
-  const emitUnenforced = (req: any, reason: string) => {
-    const now = clock();
-    if (lastUnenforced > now - UNENFORCED_EVERY_MS) return;
-    lastUnenforced = now;
-    Promise.resolve(securityEventEmitter.emitQuotaUnenforced({ reason, clientIP: getClientIp(req, getTrustForwardedFor()), endpoint: req.originalUrl, requestId: req.id }))
-      .catch((e) => logger.warn('QuotaEnforcement', `quota_unenforced event failed: ${e instanceof Error ? e.message : String(e)}`));
-  };
-
   const headers = (res: Response, limit: number, used: number, resetsAt: number) => {
     res.set({
       'X-RateLimit-Limit': String(limit),
@@ -137,7 +180,7 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
   const reject = (res: Response, x: Exceeded) => {
     headers(res, x.limit, x.used, x.resetsAt);
     res.set({ 'Retry-After': String(Math.max(1, Math.ceil((x.resetsAt - clock()) / 1000))) });
-    res.status(429).json({ error: { type: x.type, scope: x.scope, dimension: x.dimension, window: x.window,
+    res.status(429).json({ error: { type: x.type, scope: x.scope, ...(x.team ? { team: x.team } : {}), dimension: x.dimension, window: x.window,
       limit: x.limit, used: Math.round(x.used * 1000) / 1000, resets_at: new Date(x.resetsAt).toISOString() } });
   };
 
@@ -149,7 +192,7 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
    * ever having been served.
    */
   async function checkRequests(store: RateLimitStore, caller: Caller, now: number): Promise<{ exceeded: Exceeded | null; tightest: { limit: number; used: number; resetsAt: number } | null }> {
-    const checks: Array<{ scope: 'user' | 'key'; window: 'minute' | 'hour' | 'day'; limit: number; run: () => Promise<{ used: number; resetsAt: number }> }> = [];
+    const checks: Array<{ scope: 'user' | 'key' | 'team'; window: 'minute' | 'hour' | 'day'; limit: number; run: () => Promise<{ used: number; resetsAt: number }> }> = [];
     const userLimit = num(caller.user?.limits?.requestsPerMinute);
     // The bucket that identifies the PERSON, not the credential: an AWS credential's
     // unifiedAuth/awsAuth carries only a userId (no email), so a caller's API-key traffic and
@@ -157,6 +200,8 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
     // — caller.email (the credential's own identity, possibly a userId) is only a fallback.
     const userKeyEmail = caller.user?.email || caller.email;
     if (userKeyEmail && userLimit !== null) checks.push({ scope: 'user', window: 'minute', limit: userLimit, run: () => sliding(store, `rl:user:${sha(userKeyEmail)}`, now) });
+    const teamLimit = num(caller.team?.limits?.requestsPerMinute);
+    if (caller.team && teamLimit !== null) checks.push({ scope: 'team', window: 'minute', limit: teamLimit, run: () => sliding(store, `rl:team:${caller.team!.teamId}`, now) });
     if (caller.keyLimits.minute !== null) checks.push({ scope: 'key', window: 'minute', limit: caller.keyLimits.minute, run: () => sliding(store, `rl:key:${caller.credentialId}`, now) });
     if (caller.keyLimits.hour !== null) {
       const hour = Math.floor(now / 3_600_000);
@@ -170,42 +215,10 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
     let tightest: { limit: number; used: number; resetsAt: number } | null = null;
     for (const c of checks) {
       const { used, resetsAt } = await c.run();
-      if (used > c.limit) { exceeded = { type: 'rate_limit_exceeded', scope: c.scope, dimension: 'requests', window: c.window, limit: c.limit, used, resetsAt }; break; }
+      if (used > c.limit) { exceeded = { type: 'rate_limit_exceeded', scope: c.scope, ...(c.scope === 'team' ? { team: caller.team!.teamName } : {}), dimension: 'requests', window: c.window, limit: c.limit, used, resetsAt }; break; }
       if (!tightest || c.limit - used < tightest.limit - tightest.used) tightest = { limit: c.limit, used, resetsAt };
     }
     return { exceeded, tightest };
-  }
-
-  const DAY = 86_400_000;
-  function windowStartsUtc(now: number): Record<WindowName, number> {
-    const d = new Date(now);
-    const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    return { day, week: day - ((new Date(day).getUTCDay() + 6) % 7) * DAY, month: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) };
-  }
-  function windowEndsUtc(now: number): Record<WindowName, number> {
-    const s = windowStartsUtc(now);
-    const d = new Date(now);
-    return { day: s.day + DAY, week: s.week + 7 * DAY, month: Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) };
-  }
-
-  /** Spend/tokens per window against the document (its limits are fresher than the wire block's). */
-  function checkAdmission(doc: QuotaStateDocument, user: UserBlock, now: number): Exceeded | null {
-    const starts = windowStartsUtc(now);
-    const ends = windowEndsUtc(now);
-    const limits: any = { ...user.limits, ...(doc.limits || {}) };
-    for (const w of ['day', 'week', 'month'] as WindowName[]) {
-      const W = w[0].toUpperCase() + w.slice(1);
-      // A document from before this window began describes the previous window: nothing used yet.
-      const fresh = Date.parse(doc.windowStart?.[w] ?? '') >= starts[w];
-      const used = fresh ? doc.used?.[w] : undefined;
-      const tokensLimit = num(limits[`tokensPer${W}`]);
-      if (tokensLimit !== null && (used?.tokens ?? 0) >= tokensLimit)
-        return { type: 'quota_exceeded', scope: 'user', dimension: 'tokens', window: w, limit: tokensLimit, used: used?.tokens ?? 0, resetsAt: ends[w] };
-      const spendLimit = num(limits[`spendPer${W}`]);
-      if (spendLimit !== null && (used?.sapCost ?? 0) >= spendLimit)
-        return { type: 'quota_exceeded', scope: 'user', dimension: 'spend', window: w, limit: spendLimit, used: used?.sapCost ?? 0, resetsAt: ends[w] };
-    }
-    return null;
   }
 
   return async function quotaEnforcement(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -227,10 +240,10 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
         result = await checkRequests(shared ?? memory, caller, now);
       } catch (error) {
         // Valkey unreachable: same algorithm on this pod's buckets, and say so once per five minutes.
-        emitUnenforced(req, `rate-limit store unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        events.unenforced(req, `rate-limit store unavailable: ${error instanceof Error ? error.message : String(error)}`);
         result = await checkRequests(memory, caller, now);
       }
-      if (result.exceeded) { emitExceeded(req, caller, result.exceeded); reject(res, result.exceeded); return; }
+      if (result.exceeded) { events.exceeded(req, caller, result.exceeded); reject(res, result.exceeded); return; }
       // Spend and tokens: only a caller with a user block on the wire can have user-level quotas.
       // The admission guard and the state lookup must agree on which e-mail to use — the guard
       // used to check caller.email while the lookup below resolved caller.user.email first,
@@ -241,10 +254,19 @@ export function createQuotaEnforcement(deps: QuotaDeps) {
         const reader = cachedReader ?? (cachedReader = deps.stateReader?.() ?? null);
         const doc = reader ? await reader.get(userKeyEmail) : undefined;
         if (doc === undefined) {
-          emitUnenforced(req, 'quota state unavailable');
+          events.unenforced(req, 'quota state unavailable');
         } else if (doc) {
-          const exceeded = checkAdmission(doc, caller.user, now);
-          if (exceeded) { emitExceeded(req, caller, exceeded); reject(res, exceeded); return; }
+          const exceeded = checkAdmission(doc, caller.user.limits, now);
+          if (exceeded) { events.exceeded(req, caller, exceeded); reject(res, exceeded); return; }
+        }
+      }
+      if (caller.team && !isStandalone) {
+        const reader = cachedReader ?? (cachedReader = deps.stateReader?.() ?? null);
+        const teamDoc = reader ? await reader.getTeam(caller.team.teamId) : undefined;
+        if (teamDoc === undefined) events.unenforced(req, 'team quota state unavailable');
+        else if (teamDoc) {
+          const exceeded = checkAdmission(teamDoc, caller.team.limits, now, 'team', caller.team.teamName);
+          if (exceeded) { events.exceeded(req, caller, exceeded); reject(res, exceeded); return; }
         }
       }
       if (result.tightest) headers(res, result.tightest.limit, result.tightest.used, result.tightest.resetsAt);
@@ -262,6 +284,47 @@ export function configureQuotaEnforcement(opts: { valkeyClient?: any }): void {
   sharedStore = opts.valkeyClient ? new ValkeyRateLimitStore(opts.valkeyClient) : null;
   sharedReader = new QuotaStateReader(opts.valkeyClient);
 }
+
+export interface OwnerAdmissionDeps {
+  /** Must return the same reader on every call: its ten-second cache is what keeps this one GET per user. */
+  stateReader: () => QuotaStateReader | null;
+  clock?: () => number;
+  standalone?: () => boolean;
+}
+
+/**
+ * The spend/token admission above (checkAdmission), keyed on an e-mail instead of a credential:
+ * for a call made FOR a user who sent no credential of their own — the cockpit's grounding routes,
+ * checked against whoever pays: the store owner for store work, the searcher for a search
+ * (middlewares/groundingQuota.ts). Only the
+ * document decides (it carries the effective limits); no requests-per-minute check (no RPM on
+ * cockpit calls). Fails open like the model routes: unreadable state → null plus one
+ * quota_unenforced event; standalone → null. Returns what was exceeded, or null to admit.
+ */
+export function createOwnerAdmission(deps: OwnerAdmissionDeps) {
+  const clock = deps.clock ?? Date.now;
+  const standalone = deps.standalone ?? isStandaloneMode;
+  const events = createQuotaEvents(clock);
+  return async function admitOwner(req: any, email: string): Promise<Exceeded | null> {
+    if (standalone()) return null;
+    const reader = deps.stateReader();
+    const doc = reader ? await reader.get(email) : undefined;
+    if (doc === undefined) { events.unenforced(req, 'quota state unavailable'); return null; }
+    if (!doc) return null;
+    const exceeded = checkAdmission(doc, {}, clock());
+    let result = exceeded;
+    if (!result && doc.primaryTeamId) {
+      const teamDoc = await reader!.getTeam(doc.primaryTeamId);
+      if (teamDoc === undefined) events.unenforced(req, 'team quota state unavailable');
+      else if (teamDoc) result = checkAdmission(teamDoc, {}, clock(), 'team', teamDoc.teamName);
+    }
+    if (result) events.exceeded(req, { credentialId: req.serviceAuth?.serviceKey?.id || 'grounding', authType: 'api_key', email }, result);
+    return result;
+  };
+}
+/** The process-wide owner admission, on the reader configureQuotaEnforcement sets. */
+export const admitOwner = createOwnerAdmission({ stateReader: () => sharedReader });
+
 const quotaEnforcement = createQuotaEnforcement({
   store: () => (sharedStore && sharedStore.ready() ? sharedStore : null),
   stateReader: () => sharedReader

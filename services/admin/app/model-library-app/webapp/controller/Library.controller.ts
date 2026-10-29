@@ -20,13 +20,17 @@ import Text from "sap/m/Text";
 import Label from "sap/m/Label";
 import Avatar from "sap/m/Avatar";
 import Fragment from "sap/ui/core/Fragment";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
+import formatMessage from "sap/base/strings/formatMessage";
 import {
   buildFilterExpression, emptyFilters, activeTokens, resetFilterKey, resetFilterGroup,
   Capability, LibraryFilterState, FilterGroup
 } from "../model/libraryFilters";
-import { collectBenchmarkKeys, leaderboardRows, chartPoints, BENCHMARK_LABELS, benchmarkTooltip, ChartPoint } from "../model/benchmarks";
+import { collectBenchmarkKeys, leaderboardRows, chartPoints, benchmarkLabel, benchmarkTooltip, ChartPoint } from "../model/benchmarks";
 import { ownCatalogsFilter, catalogPickSearch, catalogPickCancel } from "../model/catalogPicker";
 import { colorForIndex } from "../model/chartLayout";
+import { localeDecimal } from "../model/costDisplay";
+import Localization from "sap/base/i18n/Localization";
 import formatter from "../model/formatter";
 import * as session from "../model/session";
 
@@ -42,6 +46,12 @@ export default class LibraryController extends Controller {
 
   private vm(): JSONModel { return this.getOwnerComponent()!.getModel("viewModel") as JSONModel; }
   private odata(): ODataModel { return this.getOwnerComponent()!.getModel() as ODataModel; }
+  /** Resolves an i18n key, filling {0}, {1} … from args. */
+  private text(key: string, args?: unknown[]): string {
+    const model = this.getOwnerComponent()?.getModel("i18n") as ResourceModel | undefined;
+    const pattern = (model?.getProperty(key) as string | null | undefined) ?? key;
+    return args ? formatMessage(pattern, args) : pattern;
+  }
 
   public onInit(): void {
     this.vm().setProperty("/library/filters", emptyFilters());
@@ -53,7 +63,10 @@ export default class LibraryController extends Controller {
     this.loadDeployedBaseModels();
     // The grid's items binding does not exist yet in onInit: the view gets its models only when the
     // router places it into the App, which is done by the time the route's patternMatched fires.
-    (this.getOwnerComponent() as UIComponent).getRouter().getRoute("library")!.attachPatternMatched(() => {
+    (this.getOwnerComponent() as UIComponent).getRouter().getRoute("library")!.attachPatternMatched(async () => {
+      // activeTokens() labels the "View settings" tokens through the bundle, so wait for it before
+      // the first applyFilters paints them.
+      await Promise.resolve((this.getView()!.getModel("i18n") as ResourceModel).getResourceBundle()).catch(() => undefined);
       this.refreshEntitlement();
       this.applyFilters();
     });
@@ -100,7 +113,7 @@ export default class LibraryController extends Controller {
   public applyFilters(): void {
     const state: LibraryFilterState = this.vm().getProperty("/library/filters");
     const expr = buildFilterExpression(state);
-    this.vm().setProperty("/library/activeTokens", activeTokens(state));
+    this.vm().setProperty("/library/activeTokens", activeTokens(state, (key) => this.text(key)));
 
     const search = (this.vm().getProperty("/library/search") as string || "").trim();
     const binding = this.gridBinding();
@@ -214,7 +227,7 @@ export default class LibraryController extends Controller {
     binding.invoke()
       .then(() => {
         const r = binding.getBoundContext().getObject() as any;
-        MessageToast.show(`Refreshed: ${r.models} models, ${r.deployments} deployments, ${r.absent} absent`);
+        MessageToast.show(this.text("refreshedSummary", [r.models, r.deployments, r.absent]));
         this.gridBinding().refresh();
         this.loadProviders();
         this.loadDeployedBaseModels();
@@ -257,7 +270,7 @@ export default class LibraryController extends Controller {
       const chart = this.vm().getProperty("/library/chart");
       const x = keys.includes(chart.x) ? chart.x : (keys[0] || "");
       const y = keys.includes(chart.y) && chart.y !== x ? chart.y : (keys.find((k) => k !== x) || "");
-      this.vm().setProperty("/library/chart/keys", keys.map((k) => ({ key: k, label: BENCHMARK_LABELS[k] || k })));
+      this.vm().setProperty("/library/chart/keys", keys.map((k) => ({ key: k, label: benchmarkLabel(k, (key) => this.text(key)) })));
       this.vm().setProperty("/library/chart/x", x);
       this.vm().setProperty("/library/chart/y", y);
       // C2: each point carries its legend/bubble colour (colorForIndex(i), same array order as
@@ -275,7 +288,7 @@ export default class LibraryController extends Controller {
     const table = this.byId("leaderboard") as any;
     table.destroyColumns();
     table.addColumn(new Column({
-      label: new Label({ text: "Model" }), width: "22rem", sortProperty: "displayName",
+      label: new Label({ text: this.text("model") }), width: "22rem", sortProperty: "displayName",
       template: new HBox({ alignItems: "Center", items: [
         // The model prefix belongs in a separate "model" field, never embedded in "path" — an
         // earlier batch hit this exact bug (see Library.controller.ts's providerBox row / A11).
@@ -286,7 +299,7 @@ export default class LibraryController extends Controller {
         }).addStyleClass("sapUiTinyMarginEnd"),
         new VBox({ items: [
           new Text({ text: "{viewModel>displayName}" }).addStyleClass("mlCardName"),
-          new Text({ text: { path: "latestVersion", model: "viewModel", formatter: formatter.version } }).addStyleClass("mlCardId")
+          new Text({ text: { parts: [{ path: "latestVersion", model: "viewModel" }, { path: "versionValue", model: "i18n" }], formatter: formatter.version } }).addStyleClass("mlCardId")
         ] })
       ] })
     }));
@@ -294,17 +307,20 @@ export default class LibraryController extends Controller {
       // H: the hint tells the reader to hover a metric name for more information, so the tooltip
       // is the label plus its plain-language sentence (source, scale, direction) — repeating the
       // label alone told them nothing they could not already read in the header.
-      label: new Label({ text: BENCHMARK_LABELS[k] || k, tooltip: benchmarkTooltip(k), wrapping: true }),
+      label: new Label({ text: benchmarkLabel(k, (key) => this.text(key)), tooltip: benchmarkTooltip(k, (key) => this.text(key)), wrapping: true }),
       sortProperty: `scores/${k}`, hAlign: "End",
-      template: new Text({ text: `{viewModel>scores/${k}}` })
+      template: new Text({ text: { path: `scores/${k}`, model: "viewModel", formatter: (v: number | null | undefined) => localeDecimal(v, Localization.getLanguageTag().toString()) } })
     })));
   }
 
   /** The BubbleChart control is bound to /library/chart/points and re-renders on the property change. */
   private renderChart(): void {
     const st = this.vm().getProperty("/library/chart");
-    this.vm().setProperty("/library/chart/xLabel", BENCHMARK_LABELS[st.x] || st.x);
-    this.vm().setProperty("/library/chart/yLabel", BENCHMARK_LABELS[st.y] || st.y);
+    const xLabel = benchmarkLabel(st.x, (key) => this.text(key));
+    const yLabel = benchmarkLabel(st.y, (key) => this.text(key));
+    this.vm().setProperty("/library/chart/xLabel", xLabel);
+    this.vm().setProperty("/library/chart/yLabel", yLabel);
+    this.vm().setProperty("/library/chart/axesLabel", this.text("chartAxesLabel", [xLabel, yLabel]));
   }
 
   public onChartBubblePress(e: UI5Event<{ point: ChartPoint }>): void {
@@ -354,7 +370,7 @@ export default class LibraryController extends Controller {
     b.setParameter("modelIds", [...this.selected]);
     b.invoke().then(() => {
       const r = b.getBoundContext().getObject() as any;
-      MessageToast.show(`${r.added} model(s) added`);
+      MessageToast.show(this.text("modelsAdded", [r.added]));
       this.selected.clear();
       this.vm().setProperty("/library/selectedCount", 0);
     }).catch((err: any) => MessageBox.error(err?.message || String(err)));

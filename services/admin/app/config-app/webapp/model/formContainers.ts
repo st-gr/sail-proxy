@@ -31,6 +31,7 @@ import {
     labelFor,
     mapEntriesOf
 } from './schemaForm';
+import { ENGLISH_SCHEMA_TEXTS, MapEntryTexts } from './schemaTexts';
 
 /** The per-provider map: `/api_config/providers/<route segment>`. */
 export const PROVIDERS_POINTER = '/api_config/providers';
@@ -105,8 +106,16 @@ export const MAP_SUMMARY_MAX_LENGTH = 60;
  * block's own name is what to say). Unknown - a schema composed through `allOf` that this caller
  * has not flattened - counts, which is the answer that says more.
  */
-export function mapEntrySummary(value: unknown, valueSchema?: JsonSchemaNode): string {
-    return truncateSummary(summaryOf(value, valueSchema));
+/** The two words a boolean is summarised with, in the user's language (the caller passes the bundle's). */
+export interface OnOffWords {
+    on: string;
+    off: string;
+}
+
+const ON_OFF_DEFAULT: OnOffWords = { on: 'on', off: 'off' };
+
+export function mapEntrySummary(value: unknown, valueSchema?: JsonSchemaNode, onOff: OnOffWords = ON_OFF_DEFAULT): string {
+    return truncateSummary(summaryOf(value, valueSchema, onOff));
 }
 
 /**
@@ -708,13 +717,22 @@ export function mapSectionEntries(options: {
  * step of the map path a test cannot otherwise reach: that file imports `sap/*`. The test helper
  * that mirrors the tab shell's traversal calls this same function, so the descriptor a test reasons
  * about is the descriptor the form renders, not a second construction of one.
+ *
+ * `entryTexts` translates the entry's field texts: `path` is the entry's own text path - the
+ * declared key's path for a key the map's schema names, the map's `_entry` path for any other (see
+ * `schemaTexts.mapEntryTexts`). Omitted, every text is the schema's English. An undeclared key's
+ * label is the key itself, document data, and is never looked up.
  */
 export function mapEntryDescriptor(
     entry: MapSectionEntry,
     rootSchema: JsonSchemaNode,
-    resolvePlugin: PluginResolver
+    resolvePlugin: PluginResolver,
+    onOff: OnOffWords = ON_OFF_DEFAULT,
+    entryTexts?: MapEntryTexts
 ): Descriptor {
-    const descriptors = buildDescriptors(entry.schema as object, entry.data, entry.pointer, resolvePlugin);
+    const texts = entryTexts?.texts ?? ENGLISH_SCHEMA_TEXTS;
+    const path = entryTexts?.path;
+    const descriptors = buildDescriptors(entry.schema as object, entry.data, entry.pointer, resolvePlugin, { texts, textPath: path });
     if (descriptors.length === 1 && descriptors[0].pointer === entry.pointer) {
         return descriptors[0];
     }
@@ -725,13 +743,13 @@ export function mapEntryDescriptor(
     // both in hand - a descriptor carries neither, and re-deriving them from a pointer is what this
     // module exists to avoid. Left off entirely when the entry has nothing to say, so the header
     // renders as a plain title rather than a title and an empty status.
-    const summary = mapEntrySummary(entry.data, entry.schema);
+    const summary = mapEntrySummary(entry.data, entry.schema, onOff);
     return {
         kind: 'section',
         pointer: entry.pointer,
-        label: labelFor(entry.key),
+        label: entryTexts?.declared ? texts.label(path, labelFor(entry.key)) : labelFor(entry.key),
         ...(marker ? { mapEntries: marker } : {}),
-        ...(typeof description === 'string' && description.length > 0 ? { description } : {}),
+        ...(typeof description === 'string' && description.length > 0 ? { description: texts.description(path, description) } : {}),
         ...(summary.length > 0 ? { summary } : {}),
         children: descriptors
     };
@@ -929,12 +947,12 @@ const SECRET_KEY = /(secret|token|password|passphrase|credential|api[_-]?key|pri
 const SECRET_VALUE = /^(sk-|gh[pousr]_|github_pat_|AKIA|xox[baprs]-|eyJ)|^[A-Za-z0-9+/_-]{32,}={0,2}$/;
 
 /** See `mapEntrySummary`. The truncation is applied once, to the finished line. */
-function summaryOf(value: unknown, schema: JsonSchemaNode | undefined): string {
+function summaryOf(value: unknown, schema: JsonSchemaNode | undefined, onOff: OnOffWords): string {
     if (value === undefined || value === null) {
         return '';
     }
     if (typeof value === 'boolean') {
-        return value ? 'on' : 'off';
+        return value ? onOff.on : onOff.off;
     }
     if (typeof value === 'number') {
         return String(value);
@@ -950,18 +968,18 @@ function summaryOf(value: unknown, schema: JsonSchemaNode | undefined): string {
     const properties = (schema?.properties ?? {}) as Record<string, JsonSchemaNode>;
     const entries = value as Record<string, unknown>;
     return Object.keys(entries)
-        .map(key => summaryPart(key, entries[key], properties[key]))
+        .map(key => summaryPart(key, entries[key], properties[key], onOff))
         .filter(part => part.length > 0)
         .join(', ');
 }
 
 /** One `key: value` pair of an object entry, said in as few words as it can be. */
-function summaryPart(key: string, value: unknown, schema: JsonSchemaNode | undefined): string {
+function summaryPart(key: string, value: unknown, schema: JsonSchemaNode | undefined, onOff: OnOffWords): string {
     if (value === undefined || value === null || SECRET_KEY.test(key)) {
         return '';
     }
     if (typeof value === 'boolean') {
-        return `${key} ${value ? 'on' : 'off'}`;
+        return `${key} ${value ? onOff.on : onOff.off}`;
     }
     if (typeof value === 'number') {
         return `${key} ${value}`;

@@ -35,6 +35,7 @@ jest.mock('../../src/services/configService', () => ({
     getSAPAICoreConfig: () => ({ url: 'https://sap.example', resourceGroup: 'default' }),
     getAccessToken: async () => 'test-token',
     getFileSearchConfig: () => mockFileSearchConfig,
+    getSupportsPromptCaching: () => undefined,
   },
 }));
 
@@ -49,9 +50,9 @@ import { rewriteSearchQuery } from '../../src/fileSearch/queryRewriter';
 const DEPLOYMENT_ID = 'd-test-deployment';
 const QUERY = 'what did the EMEA report say about Q3 revenue';
 
-function mockCompletionResponse(content: string): void {
+function mockCompletionResponse(content: string, usage?: any): void {
   mockPost.mockResolvedValueOnce({
-    data: { final_result: { choices: [{ message: { content } }] } },
+    data: { final_result: { choices: [{ message: { content } }], ...(usage ? { usage } : {}) } },
   });
 }
 
@@ -85,6 +86,69 @@ describe('successful rewrite', () => {
     const payload = mockPost.mock.calls[0][1];
     expect(payload.config.modules.prompt_templating.model.name).not.toBe('gpt-35-turbo-16k');
     expect(payload.config.modules.prompt_templating.model.name).toBe('gpt-5-mini');
+  });
+
+  it('sends no temperature to a model that refuses it (gpt-5 family), not even 0', async () => {
+    mockCompletionResponse('rewritten');
+    await rewriteSearchQuery(QUERY);
+    const params = mockPost.mock.calls[0][1].config.modules.prompt_templating.model.params;
+    expect(params).not.toHaveProperty('temperature');
+  });
+
+  it('still sends temperature 0 to a model that accepts it', async () => {
+    mockFileSearchConfig = { rewriteQueryModel: 'gpt-4.1-mini' };
+    mockCompletionResponse('rewritten');
+    await rewriteSearchQuery(QUERY);
+    const params = mockPost.mock.calls[0][1].config.modules.prompt_templating.model.params;
+    expect(params).toEqual({ temperature: 0 });
+  });
+
+  it('keeps the query out of the template SAP parses for placeholders: it travels in messages_history', async () => {
+    mockCompletionResponse('rewritten');
+    await rewriteSearchQuery('find {{?secret}} docs');
+    const payload = mockPost.mock.calls[0][1];
+    const template = payload.config.modules.prompt_templating.prompt.template;
+    expect(template).toHaveLength(1);
+    expect(template[0].role).toBe('system');
+    expect(JSON.stringify(template)).not.toContain('{{?secret}}');
+    expect(payload.messages_history).toEqual([{ role: 'user', content: [{ type: 'text', text: 'find {{?secret}} docs' }] }]);
+  });
+
+  it('reports the tokens it spent as one file_search/rewrite record', async () => {
+    mockCompletionResponse('rewritten', { prompt_tokens: 80, completion_tokens: 12 });
+    const usage = jest.fn();
+    await rewriteSearchQuery(QUERY, usage);
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(usage.mock.calls[0][0]).toMatchObject({
+      endpoint: 'file_search/rewrite', model: 'gpt-5-mini', unit: 'tokens',
+      inputTokens: 80, outputTokens: 12, cacheWriteTokens: 0, cacheReadTokens: 0,
+    });
+  });
+
+  it('reports the tokens of an empty reply too (they were spent), and still falls back', async () => {
+    mockCompletionResponse('  ', { prompt_tokens: 80, completion_tokens: 0 });
+    const usage = jest.fn();
+    await expect(rewriteSearchQuery(QUERY, usage)).resolves.toBe(QUERY);
+    expect(usage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a truncated rewrite falls back to the original query and still reports its tokens', async () => {
+    mockPost.mockResolvedValueOnce({ data: { final_result: {
+      choices: [{ message: { content: 'EMEA rep' }, finish_reason: 'length' }], usage: { prompt_tokens: 80, completion_tokens: 50 },
+    } } });
+    const usage = jest.fn();
+    await expect(rewriteSearchQuery(QUERY, usage)).resolves.toBe(QUERY);
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockLogger.warn.mock.calls)).toContain('reason=truncated');
+  });
+
+  it('reports nothing for a failed request, and a throwing sink never breaks the rewrite', async () => {
+    const usage = jest.fn();
+    mockPost.mockRejectedValueOnce(new Error('boom'));
+    await rewriteSearchQuery(QUERY, usage);
+    expect(usage).not.toHaveBeenCalled();
+    mockCompletionResponse('rewritten', { prompt_tokens: 1, completion_tokens: 1 });
+    await expect(rewriteSearchQuery(QUERY, () => { throw new Error('sink down'); })).resolves.toBe('rewritten');
   });
 
   it('hits the orchestration /v2/completion path for the discovered deployment', async () => {
@@ -141,15 +205,30 @@ describe('degrades to the original query on every failure path (never throws)', 
     await expect(rewriteSearchQuery(QUERY)).resolves.toBe(QUERY);
   });
 
-  it('logs the failure at debug only, never info/warn/error, and never logs the query text', async () => {
+  it('logs a failed request as a warn with a reason code, never info/error, and never logs the query text', async () => {
     mockPost.mockRejectedValueOnce(new Error('boom'));
     await rewriteSearchQuery(QUERY);
     expect(mockLogger.info).not.toHaveBeenCalled();
-    expect(mockLogger.warn).not.toHaveBeenCalled();
     expect(mockLogger.error).not.toHaveBeenCalled();
-    expect(mockLogger.debug).toHaveBeenCalled();
-    for (const call of mockLogger.debug.mock.calls) {
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockLogger.warn.mock.calls[0])).toContain('reason=request_failed');
+    for (const call of [...mockLogger.warn.mock.calls, ...mockLogger.debug.mock.calls]) {
       expect(JSON.stringify(call)).not.toContain(QUERY);
     }
+  });
+
+  it('logs an empty response as a warn with its own reason code', async () => {
+    mockCompletionResponse('  ');
+    await rewriteSearchQuery(QUERY);
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockLogger.warn.mock.calls[0])).toContain('reason=empty_response');
+    expect(JSON.stringify(mockLogger.warn.mock.calls[0])).not.toContain(QUERY);
+  });
+
+  it('logs a missing deployment at debug with its reason code', async () => {
+    getDeploymentIdMock.mockResolvedValue(null);
+    await rewriteSearchQuery(QUERY);
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockLogger.debug.mock.calls)).toContain('reason=no_deployment');
   });
 });

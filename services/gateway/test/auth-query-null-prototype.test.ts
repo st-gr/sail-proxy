@@ -21,7 +21,7 @@ jest.mock('../src/services/securityEventEmitter', () => ({
 const mockValidateApiKey: any = jest.fn();
 jest.mock('../src/services/apiKeyService', () => ({
   __esModule: true,
-  default: { validateApiKey: (...args: any[]) => mockValidateApiKey(...args), listApiKeys: jest.fn() },
+  default: { validateApiKey: (...args: any[]) => mockValidateApiKey(...args), listApiKeys: jest.fn(), findInactiveApiKeyId: async () => null },
 }));
 
 const unifiedValidate: any = jest.fn();
@@ -33,6 +33,7 @@ jest.mock('../src/services/unifiedApiKeyValidationService', () => ({
 jest.mock('../src/config/unifiedAuthConfig', () => ({
   __esModule: true,
   getCachedUnifiedAuthConfig: () => ({ enabled: true, fallbackToLocal: true, adminServiceUrl: 'http://admin.invalid', timeout: 1000 }),
+  isStandaloneMode: () => true,
 }));
 
 jest.mock('../src/services/configService', () => ({

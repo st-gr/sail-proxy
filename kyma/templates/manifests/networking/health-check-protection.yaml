@@ -3,10 +3,11 @@
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: health-check-external-deny
+  name: __ISTIO_SYSTEM_PREFIX__health-check-external-deny
   namespace: istio-system
   labels:
     app: sail-proxy
+    __ISTIO_SYSTEM_NAMESPACE_LABEL__
 spec:
   selector:
     matchLabels:
@@ -26,14 +27,14 @@ spec:
         ports: ["443"]
     when:
     - key: source.namespace
-      notValues: ["kube-system", "istio-system", "kyma-system", "sail-proxy"]
+      notValues: ["kube-system", "istio-system", "kyma-system", "__NAMESPACE__"]
 ---
 # Alternative: Allow health checks only from specific sources</# This policy ensures internal traffic can still access health endpoints
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: health-check-allow-internal
-  namespace: sail-proxy
+  namespace: __NAMESPACE__
   labels:
     app: sail-proxy
 spec:
@@ -54,7 +55,7 @@ spec:
   # Allow health checks from within the same namespace (pod-to-pod)
   - from:
     - source:
-        namespaces: ["sail-proxy"]
+        namespaces: ["__NAMESPACE__"]
     to:
     - operation:
         paths: 

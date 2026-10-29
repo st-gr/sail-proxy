@@ -3,7 +3,7 @@
 
 // Runs the OPA5 UI journeys per role × app with ui5-test-runner against ADMIN_SERVICE_URL.
 // ci/ci-pipeline.js (Phase 6.6) points it at the admin started in Phase 5; standalone use
-// needs a throwaway admin (recipe below and in docs/developer/chapter-9-testing-strategy.md).
+// needs a throwaway admin (recipe below and in docs/developer/testing-strategy.md).
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -19,13 +19,16 @@ const TEST_PAGE = '/test/integration/opaTests.qunit.html';
 // minTests = the journeys the page must actually run; a page that silently ran fewer
 // (a journey dropped from opaTests.qunit.js, a bootstrap that never started) is a failure.
 const APPS = [
-  { name: 'shell', mount: '/shell', minTests: 4 },
-  { name: 'api-keys-app', mount: '/api-keys', minTests: 6 },
+  { name: 'shell', mount: '/shell', minTests: 6 },
+  { name: 'api-keys-app', mount: '/api-keys', minTests: 7 },
   { name: 'aws-credentials-app', mount: '/aws-credentials', minTests: 5 },
   { name: 'model-library-app', mount: '/model-library', minTests: 7 },
   { name: 'security-notifications-app', mount: '/security-notifications', minTests: 3 },
   { name: 'users-app', mount: '/users', minTests: 6, roles: ['admin'] },  // admin-only app (plan B ruling 1)
-  { name: 'tool-policies-app', mount: '/tool-policies', minTests: 4, roles: ['admin'] }   // admin-only app (plan B ruling 1)
+  { name: 'teams-app', mount: '/teams', minTests: 5, roles: ['admin', 'user'] },
+  { name: 'connections-app', mount: '/connections', minTests: 5, roles: ['admin'] },   // admin-only app
+  { name: 'tool-policies-app', mount: '/tool-policies', minTests: 4, roles: ['admin'] },   // admin-only app (plan B ruling 1)
+  { name: 'grounding-app', mount: '/grounding', minTests: 12 }   // needs the Phase 5 gateway and its file_search database
 ];
 
 // UI_JOURNEYS_APPS=<name>[,<name>…] restricts a run to those apps. seed.js honours the same
@@ -56,14 +59,14 @@ function encodeExpectations(role) {
   const seeded = path.join(ROOT, REPORT_ROOT, 'fixtures.json');
   if (fs.existsSync(seeded)) {
     const seededFixtures = JSON.parse(fs.readFileSync(seeded, 'utf8'));
-    for (const block of ['library', 'quota', 'securityEvent']) if (seededFixtures[block]) expect.fixtures[block] = seededFixtures[block];
+    for (const block of ['library', 'quota', 'securityEvent', 'grounding', 'team', 'connection', 'sapConnection']) if (seededFixtures[block]) expect.fixtures[block] = seededFixtures[block];
   }
   return Buffer.from(JSON.stringify(expect), 'utf8').toString('base64url');
 }
 
-function seed(adminUrl) {
+function seed(adminUrl, app) {
   const result = spawnSync(process.execPath, [path.join(__dirname, 'seed.js')], {
-    cwd: ROOT, stdio: 'inherit', env: { ...process.env, ADMIN_SERVICE_URL: adminUrl }
+    cwd: ROOT, stdio: 'inherit', env: { ...process.env, ADMIN_SERVICE_URL: adminUrl, UI_JOURNEYS_SEED_APP: app.name }
   });
   if (result.status !== 0) throw new Error('seed.js failed (see the output above)');
 }
@@ -123,7 +126,7 @@ function main() {
       if (app.roles && !app.roles.includes(role)) continue;
       console.log(`\n[ui-journeys] ${app.name} as ${role}`);
       try {
-        seed(adminUrl); // fresh fixtures for every role × app run
+        seed(adminUrl, app); // fresh fixtures for every role × app run
       } catch (error) {
         // a failed seed means the admin is unusable: record it, stop, and still print the summary
         results.push({ role, app: app.name, ok: false, detail: `seed failed: ${error.message}` });

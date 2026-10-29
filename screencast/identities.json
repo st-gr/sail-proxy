@@ -1,0 +1,8 @@
+{
+  "admin": { "name": "Mara Lindqvist", "email": "mara.lindqvist@example.com", "role": "admin" },
+  "users": [
+    { "name": "Tomás Oyelaran", "email": "tomas.oyelaran@example.com", "role": "user" },
+    { "name": "Priya Natarajan", "email": "priya.natarajan@example.com", "role": "user" },
+    { "name": "Jonas Ekberg", "email": "jonas.ekberg@example.com", "role": "user" }
+  ]
+}

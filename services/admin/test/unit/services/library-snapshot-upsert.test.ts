@@ -54,13 +54,29 @@ describe('upsertLibrarySnapshot', () => {
   it('does nothing on an empty payload (a failed pull must not mark everything absent)', async () => {
     const result = await modelCostService.upsertLibrarySnapshot([], NOW);
     expect(result).toEqual({ upserted: 0, absent: 0, deployments: 0 });
-    expect(mockRun).not.toHaveBeenCalled();
+    // only the read of published Connection models; nothing is written
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(upsertCalls.filter(c => c[0] === 'entries')).toEqual([]);
+    expect(updateCalls).toEqual([]);
   });
 
   it('does nothing on an all-malformed non-empty payload (no usable id in any entry)', async () => {
     const result = await modelCostService.upsertLibrarySnapshot([{ foo: 1 }, { id: 42 }] as any, NOW);
     expect(result).toEqual({ upserted: 0, absent: 0, deployments: 0 });
-    expect(mockRun).not.toHaveBeenCalled();
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(upsertCalls.filter(c => c[0] === 'entries')).toEqual([]);
+    expect(updateCalls).toEqual([]);
+  });
+
+  // A gateway whose SAP list failed serves its Connection models alone (spec 2026-10-23 §4.3). Such a
+  // list says nothing about SAP models: sweeping on it would mark every SAP row absent.
+  it('a payload of connection models only is upserted without the absent sweep', async () => {
+    mockRun.mockResolvedValue(1);
+    const external = { id: 'gpt-4o-mini--oa', accessType: 'external', providerType: 'openai', upstreamModel: 'gpt-4o-mini', capabilities: ['chat'], versions: [] };
+    const result = await modelCostService.upsertLibrarySnapshot([external] as any, NOW);
+    expect(result.upserted).toBe(1);
+    expect(upsertCalls.filter(c => c[0] === 'entries').flatMap(c => c[1]).map((e: any) => e.modelId)).toEqual(['gpt-4o-mini--oa']);
+    expect(updateCalls.find(c => c[0] === 'set')).toBeUndefined();
   });
 
   it('marks rows absent whose lastSeenAt predates this run OR was never stamped (IS NULL)', async () => {

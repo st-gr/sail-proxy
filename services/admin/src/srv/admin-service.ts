@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { getDefaultLogger } from '@libs/logger';
+import { activeSapRegion } from '../services/activeSapRegion';
 import { usageEventProcessor } from '../services/usageEventProcessor';
 import { cacheInvalidationService } from '../services/cacheInvalidationService';
 import { lifecycleChangeViolation, defaultExpiresAt, rotationPolicy, creationExpiresAt, expiresAtInPast, normalizeLifecycle } from '../services/credentialLifecycle';
@@ -13,11 +14,18 @@ import SecurityEventService from '../services/securityEventService';
 import { recordAuditEvent } from '../services/auditEventService';
 import securityEventSubscriber from '../services/securityEventSubscriber';
 import { clientContext } from '../utils/clientIp';
+import { encryptSecret, decryptSecret } from '../utils/awsSecretCrypto';
+import { addThroughput, tokensPerSecond } from '../utils/throughput';
+import { weightedAverage } from '../utils/averages';
+import { modelAccessType } from '../utils/modelAccessType';
 import { costRecalculationService } from '../services/costRecalculationService';
 import { reconcile } from '../services/reconciliationService';
 import { seedSapCapacityUnitPrice } from '../db/data/sap-capacity-unit-price-seed';
+import { applySetupPriceRates } from '../db/data/setup-price-rates';
 import { backfillNeverExpires } from '../db/data/never-expires-backfill';
+import { backfillEnvironmentTenantOnce, environmentTenant, ensureSapTenantIndexes } from '../db/data/sap-tenant-backfill';
 import { ensureToolUsageIndexes } from '../db/data/tool-usage-indexes';
+import { ensureTeamIndexes } from '../db/data/team-usage-indexes';
 import { healSqliteSchema, healableSqliteFile } from '../db/data/sqlite-schema-heal';
 import { backfillNotificationContext } from '../db/data/security-notification-context-backfill';
 import { securityNotificationConfig } from '../config/security-notifications';
@@ -28,11 +36,16 @@ import { registerLibraryHandlers, initializeModelLibrary } from './admin-service
 import { registerToolPolicyHandlers } from './admin-service-tool-policies';
 import { registerUserHandlers } from './admin-service-users';
 import { registerQuotaProfileHandlers } from './admin-service-quota-profiles';
-import { touch as touchUser, backfillUsers, migrateCatalogAssignments } from '../services/usersService';
+import { registerConnectionHandlers } from './admin-service-connections';
+import { registerTeamHandlers, bindCreatedCredential } from './admin-service-teams';
+import { registerCredentialTeamHandlers } from './admin-service-credential-teams';
+import { adminTeamIdsOf, isTeamAdmin } from '../services/teamLookups';
+import { touch as touchUser, backfillUsers, migrateCatalogAssignments, isServiceKeyEmail } from '../services/usersService';
 import { isDeactivated } from '../services/userLifecycleService';
 import { quotaStateStore } from '../services/quotaStateStore';
 import { republishAll, startRolloverTimer } from '../services/userQuotaService';
-import { rebuildIfEmpty } from '../services/usageCounters';
+import { rebuildIfEmpty, rebuildTeamsIfEmpty } from '../services/usageCounters';
+import { startTeamRolloverTimer, republishAllTeams } from '../services/teamQuotaService';
 import { processOrderByForCompatibility } from '../config/database-compatibility';
 import { startDispatcher } from '../siem/dispatcher';
 import { resolveSiemDispatch } from '../siem/siemConfigResolver';
@@ -44,8 +57,11 @@ import {
 import type { CredentialMetadata } from '../siem/credentialStore';
 import { findOrphanedCredentials, deleteOrphanedCredentials } from '../siem/credentialSweep';
 import type { OrphanedCredential } from '../siem/credentialSweep';
+import { COCKPIT_LANGUAGES } from './cockpit-languages';
+import { COCKPIT_THEMES } from './cockpit-themes';
 const configurationService = require('./config-service');
 const configRestApi = require('./config-rest-api');
+const groundingRestApi = require('./grounding-rest-api');
 
 // Initialize logger
 const logger = getDefaultLogger();
@@ -63,6 +79,7 @@ interface AdminRequest {
     description?: string;
     expiresAt?: Date;
     neverExpires?: boolean;
+    teamId?: string | null;
     accessKeyId?: string;
     signature?: string;
     stringToSign?: string;
@@ -106,6 +123,10 @@ interface AdminRequest {
     invoiceCapacityUnits?: number | string;
     invoiceCacheReadInputTokens?: number | string;
     invoiceCacheWriteInputTokens?: number | string;
+    // SAP tenant (zone) filter of reconcileInvoice and getUsageStatistics
+    tenant?: string | null;
+    // Connection name filter of getUsageStatistics
+    connection?: string | null;
   };
   user?: { id: string };
   error: (code: number, message: string) => void;
@@ -229,6 +250,11 @@ class AdminService {
     registerUserHandlers(service);
     // Quota profiles and their assignment (srv/admin-service-quota-profiles.ts)
     registerQuotaProfileHandlers(service);
+    // Connections: external provider accounts (srv/admin-service-connections.ts)
+    registerConnectionHandlers(service);
+    // Teams: draft editing, pool virtuals, row filter, delete guard (srv/admin-service-teams.ts)
+    registerTeamHandlers(service);
+    registerCredentialTeamHandlers(service);
 
     // Initialize services
     this.initializeUsageProcessor();
@@ -238,6 +264,7 @@ class AdminService {
     this.initializeCostRecalculation();
     this.initializeSapCapacityUnitPrice();
     this.initializeNeverExpiresBackfill();
+    this.initializeSapTenantBackfill();
     this.initializeToolUsageIndexes();
     this.initializeNotificationContextBackfill();
     this.initializeSiemDispatcher();
@@ -399,7 +426,7 @@ class AdminService {
   // ========================================
 
   async createApiKey(req: AdminRequest): Promise<ApiKeyResponse> {
-    const { name, email, permissions = [], rateLimits = {} } = req.data;
+    const { name, email, permissions = [], rateLimits = {}, teamId } = req.data;
     
     // User-scoped authorization: Users can only create API keys for themselves, admins for anyone
     const userEmail = this.getUserEmail(req);
@@ -426,6 +453,7 @@ class AdminService {
       endpoint: 'createApiKey'
     });
 
+    if (this.rejectIfServiceKeyEmail(req, email)) return {} as ApiKeyResponse;
     if (await this.rejectIfDeactivated(req, email)) return {} as ApiKeyResponse;
 
     try {
@@ -477,6 +505,7 @@ class AdminService {
 
       await cds.run(INSERT);
       await touchUser(cds, email!);
+      if (!(await bindCreatedCredential(req, { apiKeyId: keyId }, teamId))) return {} as ApiKeyResponse;
 
       // Insert rate limits
       if (Object.keys(defaultRateLimits).length > 0) {
@@ -1316,6 +1345,8 @@ class AdminService {
       return;
     }
 
+    if ('email' in req.data && this.rejectIfServiceKeyEmail(req, req.data.email)) return;
+
     const lifecycleViolation = lifecycleChangeViolation({ isAdmin, data: req.data, stored });
     if (lifecycleViolation) {
       logger.warn('AdminService', `Lifecycle change refused for API key ${ID}: ${lifecycleViolation} (user: ${userEmail})`);
@@ -1508,6 +1539,8 @@ class AdminService {
     
     const isAdmin = req.user?.is ? req.user.is('admin') : false;
     const userEmail = this.getUserEmail(req);
+
+    if ('email' in req.data && this.rejectIfServiceKeyEmail(req, req.data.email)) return;
 
     // Role-based field guard: non-admins cannot change email
     if (!isAdmin && 'email' in req.data) {
@@ -1711,6 +1744,7 @@ class AdminService {
       endpoint: 'createAwsCredentials'
     });
 
+    if (this.rejectIfServiceKeyEmail(req, email)) return {} as AwsCredentialsResponse;
     if (await this.rejectIfDeactivated(req, email)) return {} as AwsCredentialsResponse;
 
     // Generate AWS-style credentials using same format as gateway service
@@ -1722,8 +1756,12 @@ class AdminService {
     const credentialId = crypto.randomUUID(); // Use crypto.randomUUID() for consistency
     
     // Encrypt the secret access key for storage (can be decrypted for SigV4 validation)
-    const encryptedSecret = this.encryptSecret(secretAccessKey);
+    const encryptedSecret = encryptSecret(secretAccessKey);
     
+    // The region of the active SAP AI Core target, stamped once; stored credentials keep theirs
+    const sapAiRegion = await activeSapRegion();
+    const awsRegion = this.getAwsRegionFromSapAi(sapAiRegion);
+
     // Insert credential record
     const INSERT = cds.ql.INSERT.into('sap.llm.gateway.admin.AwsCredentials').entries({
       ID: credentialId,
@@ -1738,13 +1776,14 @@ class AdminService {
       isActive: true,
       expiresAt: storedExpiresAt,
       neverExpires: lifecycle.neverExpires,
-      region: this.getAwsRegionFromSapAi(process.env.SAP_AI_REGION || 'us-east-1'),
-      sapAiRegion: process.env.SAP_AI_REGION || 'us-east-1',
+      region: awsRegion,
+      sapAiRegion,
       usageCount: 0
     });
     
     await cds.run(INSERT);
     await touchUser(cds, email!);
+    if (!(await bindCreatedCredential(req, { awsCredentialId: credentialId }, req.data.teamId))) return {} as AwsCredentialsResponse;
 
     // Insert permissions
     for (const permission of permissions as any[]) {
@@ -1779,9 +1818,6 @@ class AdminService {
       await cds.run(INSERT_PERMISSION);
     }
 
-    // Calculate AWS region from SAP AI region (same logic as gateway service)
-    const awsRegion = this.getAwsRegionFromSapAi(process.env.SAP_AI_REGION || 'us-east-1');
-
     await this.recordAwsCredentialAudit(req, userEmail, 'aws_credential.create', credentialId, 'success', `AWS credentials created for ${email || userId} by ${userEmail}`);
 
     return {
@@ -1789,7 +1825,7 @@ class AdminService {
       accessKeyId,
       secretAccessKey, // Only returned once!
       region: awsRegion,
-      sapAiRegion: process.env.SAP_AI_REGION || 'us-east-1',
+      sapAiRegion,
       expiresAt
     };
   }
@@ -2040,7 +2076,7 @@ class AdminService {
     const secretHash = crypto.createHmac('sha256', salt).update(newSecretAccessKey).digest('hex');
     
     // Encrypt the new secret for storage
-    const encryptedSecretAccessKey = this.encryptSecret(newSecretAccessKey);
+    const encryptedSecretAccessKey = encryptSecret(newSecretAccessKey);
     
     // Update existing record
     const UPDATE = cds.ql.UPDATE('sap.llm.gateway.admin.AwsCredentials')
@@ -2225,60 +2261,6 @@ class AdminService {
     } catch (error) {
       logger.error('admin-service', 'Error looking up AWS credential', error as Error);
       return { found: false };
-    }
-  }
-
-  /**
-   * Encryption key for AWS secrets (in production, use proper key management like AWS KMS)
-   */
-  private getEncryptionKey(): string {
-    // In production, use environment variable or key management service
-    return process.env.AWS_SECRET_ENCRYPTION_KEY || 'default-dev-key-not-for-production-use-12345';
-  }
-
-  /**
-   * Encrypt secret access key for database storage
-   */
-  private encryptSecret(secret: string): string {
-    try {
-      const key = crypto.scryptSync(this.getEncryptionKey(), 'salt', 32);
-      const iv = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-      let encrypted = cipher.update(secret, 'utf8', 'hex');
-      encrypted += cipher.final('hex');
-      return iv.toString('hex') + ':' + encrypted;
-    } catch (error) {
-      logger.error('admin-service', 'Error encrypting secret', error as Error);
-      throw new Error('Failed to encrypt secret');
-    }
-  }
-
-  /**
-   * Decrypt secret access key from database storage
-   */
-  private decryptSecret(encryptedSecret: string): string | null {
-    try {
-      const parts = encryptedSecret.split(':');
-      if (parts.length === 2) {
-        // New format: iv:encrypted
-        const iv = Buffer.from(parts[0], 'hex');
-        const encryptedData = parts[1];
-        const key = crypto.scryptSync(this.getEncryptionKey(), 'salt', 32);
-        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-        let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-      } else {
-        // Handle legacy encryption format
-        const key = this.getEncryptionKey();
-        const decipher = crypto.createDecipher('aes-256-cbc', key);
-        let decrypted = decipher.update(encryptedSecret, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-      }
-    } catch (error) {
-      logger.error('admin-service', 'Error decrypting secret', error as Error);
-      return null;
     }
   }
 
@@ -2641,15 +2623,36 @@ class AdminService {
     awsCredentialUsage: any[];
     providerUsage: any[];
     emailUsage: any[];
+    teamUsage: any[];
     endpointUsage: any[];
     modelUsage: any[];
+    connectionUsage: any[];
+    connectionNames: string[];
   }> {
-    const { startDate, endDate, granularity } = req.data;
+    const { startDate, endDate, granularity, teamId } = req.data;
+    // A SAP tenant (zone): only its rows; the Connection (external) rows stay whole. Null = every row.
+    const tenant: string | null = typeof req.data.tenant === 'string' && req.data.tenant ? req.data.tenant : null;
+    // A Connection (ProviderConnections name): only that connection's external rows; SAP rows stay. Null = all.
+    const connection: string | null = typeof req.data.connection === 'string' && req.data.connection ? req.data.connection : null;
+    const inTenant = (query: any, column = 'sapTenant', originColumn = 'origin', connectionColumn = 'connection'): any => {
+      let scoped = tenant ? query.and(`(${column} =`, tenant, `or ${originColumn} = 'external')`) : query;
+      if (connection) scoped = scoped.and(`(${originColumn} is null or ${originColumn} <> 'external' or ${connectionColumn} =`, connection, ')');
+      return scoped;
+    };
+    const awsTenant = (column = 'sapTenant'): Record<string, string> => (tenant ? { [column]: tenant } : {});
     
     // User-scoped authorization: Users can only see their own usage statistics
     const userEmail = this.getUserEmail(req);
     const userRoles = this.getUserRoles(req);
     const isAdmin = this.isAdmin(userRoles);
+    const scopeTeamId: string | null = typeof teamId === 'string' && teamId ? teamId : null;
+    if (scopeTeamId && !isAdmin && !(await isTeamAdmin(cds, userEmail, scopeTeamId))) {
+      (req as any).reject({ status: 403, code: 'TEAM_FORBIDDEN', message: 'TEAM_FORBIDDEN' });
+      return undefined as any;
+    }
+    /** The row filter for one breakdown: a team scope shows that team's rows; else a non-admin sees their own. */
+    const scoped = (clause: any, ownerField: string, teamField: string): any =>
+      scopeTeamId ? { ...clause, [teamField]: scopeTeamId } : isAdmin ? clause : { ...clause, [ownerField]: userEmail };
     
     logger.info('AdminService', `[RBAC] Usage statistics request by ${userEmail}`, {
       userEmail,
@@ -2689,24 +2692,21 @@ class AdminService {
         validFrom: { between: adjustedStartDate, and: adjustedEndDate }
       };
 
-      // Add user-scoped filtering for API key usage (non-admins can only see their own data)
+      // Add user-scoped filtering for API key usage (non-admins can only see their own data).
+      // The row e-mail, not the key owner's, as in the e-mail table below: usage through the admin
+      // service key on a user's behalf (the grounding cockpit) carries that user's e-mail.
       let apiKeyWhereClause = { ...whereClause, provider: { '!=': null } };
+      apiKeyWhereClause = scoped(apiKeyWhereClause, 'email', 'team_ID');
       if (!isAdmin) {
-        // Join with ApiKeys table to filter by user email
-        apiKeyWhereClause = { 
-          ...apiKeyWhereClause, 
-          'apiKey.email': userEmail 
-        };
-        
         logger.debug('AdminService', `[RBAC] Filtering API key usage for user: ${userEmail}`, {
           whereClause: apiKeyWhereClause
         });
       }
 
       // Query API key usage statistics
-      const apiKeyUsage = await cds.run(
-        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
-          .where(apiKeyWhereClause)
+      const apiKeyUsageRows = await cds.run(
+        inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where(apiKeyWhereClause))
           .columns([
             'apiKey_ID as keyId',
             'max(keyName) as keyName',
@@ -2722,20 +2722,49 @@ class AdminService {
             'COALESCE(sum(cacheReadInputCost), 0) as totalCacheReadInputCost',
             'COALESCE(sum(totalCost), 0) as totalCost',
             'COALESCE(avg(responseTime), 0) as avgResponseTime',
-            'max(validFrom) as lastActivity'
+            'max(validFrom) as lastActivity',
+            'max(apiKey.email) as keyOwnerEmail'
           ])
           .groupBy('apiKey_ID')
       );
+      // isServiceKey: the admin service key's row (cockpit usage on behalf of users), which the
+      // Usage app labels; the owner e-mail itself stays server-side.
+      const apiKeyUsage = apiKeyUsageRows.map(({ keyOwnerEmail, ...usage }: any) => ({
+        ...usage,
+        isServiceKey: isServiceKeyEmail(keyOwnerEmail)
+      }));
+
+      // Connection (external provider) spend, apart from SAP cost: the same row filter, grouped by
+      // connection, provider and list-price currency (the unpriced requests have currency null).
+      const connectionUsage = (await cds.run(
+        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where({ ...apiKeyWhereClause, origin: 'external', ...(connection ? { connection } : {}) })
+          .columns([
+            'connection',
+            'provider',
+            'listCostCurrency as currency',
+            'count(*) as totalRequests',
+            'COALESCE(sum(totalTokens), 0) as totalTokens',
+            'COALESCE(sum(listCost), 0) as totalListCost',
+            'count(case when pricingMissing = true then 1 end) as unpricedRequests'
+          ])
+          .groupBy('connection', 'provider', 'listCostCurrency')
+      )).map((r: any) => ({ ...r, currency: r.currency ?? null, totalListCost: Number(r.totalListCost) }));
+
+      // The connections that have external usage in the period (the Connection Select's entries), not narrowed by `connection`.
+      const connectionNames: string[] = (await cds.run(
+        SELECT.distinct.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where({ ...apiKeyWhereClause, origin: 'external', connection: { '!=': null } })
+          .columns(['connection'])
+          .orderBy('connection')
+      )).map((r: any) => r.connection);
 
       // Add user-scoped filtering for AWS credential usage
-      let awsWhereClause = { ...whereClause };
+      let awsWhereClause = { ...whereClause, ...awsTenant('usage.sapTenant') };
+      // Filter on the AwsCredentials row the query already joins: the 'credential.userId' path
+      // expression beside the explicit leftJoin rendered a FROM without the usage table (500).
+      awsWhereClause = scoped(awsWhereClause, 'cred.userId', 'usage.team_ID');
       if (!isAdmin) {
-        // Join with AwsCredentials table to filter by user ID
-        awsWhereClause = { 
-          ...awsWhereClause, 
-          'credential.userId': userEmail 
-        };
-        
         logger.debug('AdminService', `[RBAC] Filtering AWS credential usage for user: ${userEmail}`, {
           whereClause: awsWhereClause
         });
@@ -2770,8 +2799,8 @@ class AdminService {
 
       // Query provider usage statistics from API key usage (with user filtering)
       const apiKeyProviderUsage = await cds.run(
-        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
-          .where(apiKeyWhereClause) // Use the same filtered clause
+        inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where(apiKeyWhereClause)) // Use the same filtered clause
           .columns([
             'provider',
             'count(*) as totalRequests',
@@ -2786,10 +2815,14 @@ class AdminService {
           .groupBy('provider')
       );
 
-      // Query provider usage statistics from AWS credential usage
+      // Query provider usage statistics from AWS credential usage (with user filtering: a
+      // non-admin sees their own credentials, as in the per-credential table). This query has no
+      // explicit join, so the association path is safe here.
+      let awsProviderWhereClause: any = { ...whereClause, ...awsTenant(), provider: { '!=': null } }; // Filter out null providers
+      awsProviderWhereClause = scoped(awsProviderWhereClause, 'credential.userId', 'team_ID');
       const awsProviderUsage = await cds.run(
         SELECT.from('sap.llm.gateway.admin.AwsCredentialUsage')
-          .where({ ...whereClause, provider: { '!=': null } }) // Filter out null providers
+          .where(awsProviderWhereClause)
           .columns([
             'provider',
             'count(*) as totalRequests',
@@ -2826,13 +2859,13 @@ class AdminService {
       awsProviderUsage.forEach((record: any) => {
         if (providerUsageMap.has(record.provider)) {
           const existing = providerUsageMap.get(record.provider);
+          existing.avgResponseTime = weightedAverage(existing.avgResponseTime, existing.totalRequests, record.avgResponseTime, record.totalRequests);
           existing.totalRequests += record.totalRequests;
           existing.totalInputTokens += record.totalInputTokens;
           existing.totalOutputTokens += record.totalOutputTokens;
           existing.totalCacheCreationInputTokens += record.totalCacheCreationInputTokens;
           existing.totalCacheReadInputTokens += record.totalCacheReadInputTokens;
           existing.totalTokens += record.totalTokens;
-          existing.avgResponseTime = (existing.avgResponseTime + record.avgResponseTime) / 2; // Simple average
           existing.errorCount += record.errorCount;
         } else {
           providerUsageMap.set(record.provider, {
@@ -2854,13 +2887,11 @@ class AdminService {
       // Query email-based usage statistics (preserves data even after API key deletion)
       // Combine both API key and AWS credential usage by email (with user filtering)
       let emailWhereClause = { ...whereClause, provider: { '!=': null }, email: { '!=': null } };
-      if (!isAdmin) {
-        emailWhereClause = { ...emailWhereClause, email: userEmail };
-      }
+      emailWhereClause = scoped(emailWhereClause, 'email', 'team_ID');
 
       const apiKeyEmailUsage = await cds.run(
-        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
-          .where(emailWhereClause)
+        inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where(emailWhereClause))
           .columns([
             'email',
             'count(*) as totalRequests',
@@ -2882,10 +2913,8 @@ class AdminService {
       );
 
       // Query AWS credential usage statistics by userId (which contains email addresses, with user filtering)
-      let awsEmailWhereClause = { ...whereClause, provider: { '!=': null }, userId: { '!=': null } };
-      if (!isAdmin) {
-        awsEmailWhereClause = { ...awsEmailWhereClause, userId: userEmail };
-      }
+      let awsEmailWhereClause = { ...whereClause, ...awsTenant(), provider: { '!=': null }, userId: { '!=': null } };
+      awsEmailWhereClause = scoped(awsEmailWhereClause, 'userId', 'team_ID');
 
       const awsCredentialEmailUsage = await cds.run(
         SELECT.from('sap.llm.gateway.admin.AwsCredentialUsage')
@@ -2918,6 +2947,7 @@ class AdminService {
         const email = usage.email;
         if (emailUsageMap.has(email)) {
           const existing = emailUsageMap.get(email);
+          existing.avgResponseTime = weightedAverage(existing.avgResponseTime, existing.totalRequests, usage.avgResponseTime, usage.totalRequests);
           existing.totalRequests += usage.totalRequests;
           existing.totalInputTokens += usage.totalInputTokens;
           existing.totalOutputTokens += usage.totalOutputTokens;
@@ -2930,7 +2960,6 @@ class AdminService {
           existing.totalCacheReadInputCost += usage.totalCacheReadInputCost;
           existing.totalCost += usage.totalCost;
           existing.uniqueApiKeysUsed += usage.uniqueApiKeysUsed;
-          existing.avgResponseTime = (existing.avgResponseTime + usage.avgResponseTime) / 2;
           existing.lastActivity = existing.lastActivity > usage.lastActivity ? existing.lastActivity : usage.lastActivity;
         } else {
           // Initialize with separate fields for API keys and AWS credentials
@@ -2948,6 +2977,7 @@ class AdminService {
         const email = usage.email;
         if (emailUsageMap.has(email)) {
           const existing = emailUsageMap.get(email);
+          existing.avgResponseTime = weightedAverage(existing.avgResponseTime, existing.totalRequests, usage.avgResponseTime, usage.totalRequests);
           existing.totalRequests += usage.totalRequests;
           existing.totalInputTokens += usage.totalInputTokens;
           existing.totalOutputTokens += usage.totalOutputTokens;
@@ -2960,7 +2990,6 @@ class AdminService {
           existing.totalCacheReadInputCost += usage.totalCacheReadInputCost;
           existing.totalCost += usage.totalCost;
           existing.uniqueAwsCredentialsUsed += usage.uniqueAwsCredentialsUsed;
-          existing.avgResponseTime = (existing.avgResponseTime + usage.avgResponseTime) / 2;
           existing.lastActivity = existing.lastActivity > usage.lastActivity ? existing.lastActivity : usage.lastActivity;
         } else {
           // Initialize with separate fields for API keys and AWS credentials
@@ -2976,15 +3005,48 @@ class AdminService {
       // Convert map to array
       const emailUsage = Array.from(emailUsageMap.values());
 
+      // Teams by cost (spec 2026-10-14 §6): grouped on the rows' team snapshot, both tables, merged in JS.
+      // Same where clauses as the e-mail queries, so a non-admin sees their own rows only.
+      const teamColumns = [
+        'team_ID as teamId', 'max(teamName) as teamName', 'count(*) as totalRequests',
+        'COALESCE(sum(inputTokens), 0) as totalInputTokens', 'COALESCE(sum(outputTokens), 0) as totalOutputTokens',
+        'COALESCE(sum(cacheCreationInputTokens), 0) as totalCacheCreationInputTokens', 'COALESCE(sum(cacheReadInputTokens), 0) as totalCacheReadInputTokens',
+        'COALESCE(sum(inputCost), 0) as totalInputCost', 'COALESCE(sum(outputCost), 0) as totalOutputCost',
+        'COALESCE(sum(cacheCreationInputCost), 0) as totalCacheCreationInputCost', 'COALESCE(sum(cacheReadInputCost), 0) as totalCacheReadInputCost',
+        'COALESCE(sum(totalCost), 0) as totalCost', 'COALESCE(avg(responseTime), 0) as avgResponseTime', 'max(validFrom) as lastActivity'
+      ];
+      const apiKeyTeamRows = await cds.run(inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage').where(emailWhereClause)).columns(teamColumns).groupBy('team_ID'));
+      const awsTeamRows = await cds.run(SELECT.from('sap.llm.gateway.admin.AwsCredentialUsage').where(awsEmailWhereClause).columns(teamColumns).groupBy('team_ID'));
+      // uniqueUsers is the size of the union of owner identities across both tables (Ruling R5).
+      const apiKeyTeamOwners = await cds.run(inTenant(SELECT.distinct.from('sap.llm.gateway.admin.ApiKeyUsage').where(emailWhereClause)).columns(['team_ID as teamId', 'email as owner']));
+      const awsTeamOwners = await cds.run(SELECT.distinct.from('sap.llm.gateway.admin.AwsCredentialUsage').where(awsEmailWhereClause).columns(['team_ID as teamId', 'userId as owner']));
+      const teamOwners = new Map<string, Set<string>>();
+      for (const o of [...apiKeyTeamOwners, ...awsTeamOwners]) {
+        const owners = teamOwners.get(o.teamId ?? '') ?? new Set<string>();
+        owners.add(o.owner);
+        teamOwners.set(o.teamId ?? '', owners);
+      }
+      const teamUsageMap = new Map<string, any>();
+      for (const usage of [...apiKeyTeamRows, ...awsTeamRows]) {
+        const key = usage.teamId ?? '';
+        const totalTokens = Number(usage.totalInputTokens) + Number(usage.totalOutputTokens) + Number(usage.totalCacheCreationInputTokens) + Number(usage.totalCacheReadInputTokens);
+        const existing = teamUsageMap.get(key);
+        if (!existing) { teamUsageMap.set(key, { ...usage, teamId: usage.teamId ?? null, teamName: usage.teamName ?? null, totalTokens, uniqueUsers: teamOwners.get(key)?.size ?? 0 }); continue; }
+        existing.avgResponseTime = weightedAverage(existing.avgResponseTime, existing.totalRequests, usage.avgResponseTime, usage.totalRequests);
+        for (const f of ['totalRequests', 'totalInputTokens', 'totalOutputTokens', 'totalCacheCreationInputTokens', 'totalCacheReadInputTokens', 'totalInputCost', 'totalOutputCost', 'totalCacheCreationInputCost', 'totalCacheReadInputCost', 'totalCost']) existing[f] = Number(existing[f]) + Number(usage[f]);
+        existing.totalTokens += totalTokens;
+        existing.lastActivity = existing.lastActivity > usage.lastActivity ? existing.lastActivity : usage.lastActivity;
+        if (!existing.teamName && usage.teamName) existing.teamName = usage.teamName;
+      }
+      const teamUsage = [...teamUsageMap.values()];
+
       // Query endpoint-based usage statistics for better granularity (with user filtering)
       let endpointWhereClause = { ...whereClause, provider: { '!=': null }, endpoint: { '!=': null } };
-      if (!isAdmin) {
-        endpointWhereClause = { ...endpointWhereClause, 'apiKey.email': userEmail };
-      }
+      endpointWhereClause = scoped(endpointWhereClause, 'email', 'team_ID');
 
       const endpointUsage = await cds.run(
-        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
-          .where(endpointWhereClause)
+        inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage')
+          .where(endpointWhereClause))
           .columns([
             'endpoint',
             'count(*) as totalRequests',
@@ -2999,17 +3061,19 @@ class AdminService {
 
       // Query model usage statistics from API key usage (with user filtering)
       let modelWhereClause = { ...whereClause, 'usage.provider': { '!=': null }, 'usage.model': { '!=': null } };
-      if (!isAdmin) {
-        modelWhereClause = { ...modelWhereClause, 'usage.apiKey.email': userEmail };
-      }
+      modelWhereClause = scoped(modelWhereClause, 'usage.email', 'usage.team_ID');
 
       const apiKeyModelUsage = await cds.run(
-        SELECT.from('sap.llm.gateway.admin.ApiKeyUsage as usage')
+        inTenant(SELECT.from('sap.llm.gateway.admin.ApiKeyUsage as usage')
           .leftJoin('sap.llm.gateway.admin.ModelCosts as costs').on('usage.model = costs.model AND costs.dateTo = \'9999-12-31T00:00:00.000Z\'')
-          .where(modelWhereClause)
+          // The Model Library names models that have no pricing row, such as deployment-served
+          // `<model>--deployed` twins; the raw id is the last resort.
+          .leftJoin('sap.llm.gateway.admin.LibraryModels as library').on('usage.model = library.modelId')
+          .where(modelWhereClause), 'usage.sapTenant', 'usage.origin', 'usage.connection')
           .columns([
             'usage.model as modelId',
-            'COALESCE(costs.displayName, usage.model) as displayName',
+            'COALESCE(costs.displayName, library.displayName, usage.model) as displayName',
+            'library.accessType as accessType',
             'usage.provider',
             'count(*) as totalRequests',
             'COALESCE(sum(usage.inputTokens), 0) as totalInputTokens',
@@ -3023,24 +3087,31 @@ class AdminService {
             'COALESCE(sum(usage.cacheReadInputCost), 0) as totalCacheReadInputCost',
             'COALESCE(sum(usage.totalCost), 0) as totalCost',
             'COALESCE(avg(usage.responseTime), 0) as avgResponseTime',
+            // Tokens per second (utils/throughput.ts): only rows with both an output and a
+            // measured time count, summed separately so the merge below stays a ratio of sums.
+            'COALESCE(sum(case when usage.outputTokens > 0 and usage.responseTime > 0 then usage.outputTokens else 0 end), 0) as throughputOutputTokens',
+            'COALESCE(sum(case when usage.outputTokens > 0 and usage.responseTime > 0 then usage.responseTime else 0 end), 0) as throughputResponseTime',
             'count(case when usage.statusCode >= 400 then 1 end) as errorCount'
           ])
-          .groupBy('usage.model', 'usage.provider', 'costs.displayName')
+          .groupBy('usage.model', 'usage.provider', 'costs.displayName', 'library.displayName', 'library.accessType')
       );
 
       // Query model usage statistics from AWS credential usage (with user filtering)
-      let awsModelWhereClause = { ...whereClause, 'usage.provider': { '!=': null }, 'usage.modelId': { '!=': null } };
-      if (!isAdmin) {
-        awsModelWhereClause = { ...awsModelWhereClause, 'usage.credential.userId': userEmail };
-      }
+      let awsModelWhereClause = { ...whereClause, ...awsTenant('usage.sapTenant'), 'usage.provider': { '!=': null }, 'usage.modelId': { '!=': null } };
+      // The joined credential's owner (see the per-credential query: a path expression beside
+      // the explicit joins rendered a FROM without the usage table).
+      awsModelWhereClause = scoped(awsModelWhereClause, 'cred.userId', 'usage.team_ID');
 
       const awsModelUsage = await cds.run(
         SELECT.from('sap.llm.gateway.admin.AwsCredentialUsage as usage')
           .leftJoin('sap.llm.gateway.admin.ModelCosts as costs').on('usage.modelId = costs.model AND costs.dateTo = \'9999-12-31T00:00:00.000Z\'')
+          .leftJoin('sap.llm.gateway.admin.LibraryModels as library').on('usage.modelId = library.modelId')
+          .leftJoin('sap.llm.gateway.admin.AwsCredentials as cred').on('usage.credential_ID = cred.ID')
           .where(awsModelWhereClause)
           .columns([
             'usage.modelId',
-            'COALESCE(costs.displayName, usage.modelId) as displayName',
+            'COALESCE(costs.displayName, library.displayName, usage.modelId) as displayName',
+            'library.accessType as accessType',
             'usage.provider',
             'count(*) as totalRequests',
             'COALESCE(sum(usage.inputTokens), 0) as totalInputTokens',
@@ -3054,9 +3125,11 @@ class AdminService {
             'COALESCE(sum(usage.cacheReadInputCost), 0) as totalCacheReadInputCost',
             'COALESCE(sum(usage.totalCost), 0) as totalCost',
             'COALESCE(avg(usage.responseTime), 0) as avgResponseTime',
+            'COALESCE(sum(case when usage.outputTokens > 0 and usage.responseTime > 0 then usage.outputTokens else 0 end), 0) as throughputOutputTokens',
+            'COALESCE(sum(case when usage.outputTokens > 0 and usage.responseTime > 0 then usage.responseTime else 0 end), 0) as throughputResponseTime',
             'count(case when usage.statusCode >= 400 then 1 end) as errorCount'
           ])
-          .groupBy('usage.modelId', 'usage.provider', 'costs.displayName')
+          .groupBy('usage.modelId', 'usage.provider', 'costs.displayName', 'library.displayName', 'library.accessType')
       );
 
       // Combine model usage results from both API key and AWS credential usage
@@ -3068,6 +3141,7 @@ class AdminService {
         modelUsageMap.set(key, {
           modelId: record.modelId,
           displayName: record.displayName,
+          accessType: record.accessType,
           provider: record.provider,
           totalRequests: record.totalRequests,
           totalInputTokens: record.totalInputTokens,
@@ -3081,15 +3155,18 @@ class AdminService {
           totalCacheReadInputCost: this.safeParseFloat(record, 'totalCacheReadInputCost'),
           totalCost: this.safeParseFloat(record, 'totalCost'),
           avgResponseTime: record.avgResponseTime,
+          throughputOutputTokens: record.throughputOutputTokens,
+          throughputResponseTime: record.throughputResponseTime,
           errorCount: record.errorCount
         });
       });
-      
+
       // Process AWS model usage and combine with API key usage
       awsModelUsage.forEach((record: any) => {
         const key = `${record.modelId}-${record.provider}`;
         if (modelUsageMap.has(key)) {
           const existing = modelUsageMap.get(key);
+          existing.avgResponseTime = weightedAverage(existing.avgResponseTime, existing.totalRequests, record.avgResponseTime, record.totalRequests);
           existing.totalRequests += record.totalRequests;
           existing.totalInputTokens += record.totalInputTokens;
           existing.totalOutputTokens += record.totalOutputTokens;
@@ -3101,12 +3178,13 @@ class AdminService {
           existing.totalCacheCreationInputCost += this.safeParseFloat(record, 'totalCacheCreationInputCost');
           existing.totalCacheReadInputCost += this.safeParseFloat(record, 'totalCacheReadInputCost');
           existing.totalCost += this.safeParseFloat(record, 'totalCost');
-          existing.avgResponseTime = (existing.avgResponseTime + record.avgResponseTime) / 2; // Simple average
+          Object.assign(existing, addThroughput(existing, record));
           existing.errorCount += record.errorCount;
         } else {
           modelUsageMap.set(key, {
             modelId: record.modelId,
             displayName: record.displayName,
+            accessType: record.accessType,
             provider: record.provider,
             totalRequests: record.totalRequests,
             totalInputTokens: record.totalInputTokens,
@@ -3120,18 +3198,27 @@ class AdminService {
             totalCacheReadInputCost: this.safeParseFloat(record, 'totalCacheReadInputCost'),
             totalCost: this.safeParseFloat(record, 'totalCost'),
             avgResponseTime: record.avgResponseTime,
+            throughputOutputTokens: record.throughputOutputTokens,
+            throughputResponseTime: record.throughputResponseTime,
             errorCount: record.errorCount
           });
         }
       });
-      
-      const modelUsage = Array.from(modelUsageMap.values());
+
+      const modelUsage = Array.from(modelUsageMap.values()).map(({ throughputOutputTokens, throughputResponseTime, ...model }) => ({
+        ...model,
+        // 'foundation' | 'deployment' | null: tells a model from its deployment-served twin,
+        // which shares its display name (utils/modelAccessType.ts).
+        accessType: modelAccessType(model.accessType, model.modelId),
+        tokensPerSecond: tokensPerSecond(throughputOutputTokens, throughputResponseTime)
+      }));
 
       logger.info('AdminService', 'Enhanced usage statistics retrieved', {
         apiKeyRecords: apiKeyUsage.length,
         awsCredentialRecords: awsCredentialUsage.length,
         providerRecords: providerUsage.length,
         emailRecords: emailUsage.length,
+        teamRecords: teamUsage.length,
         endpointRecords: endpointUsage.length,
         modelRecords: modelUsage.length,
         originalDateRange: { startDate, endDate },
@@ -3143,8 +3230,11 @@ class AdminService {
         awsCredentialUsage,
         providerUsage,
         emailUsage,
+        teamUsage,
         endpointUsage,
-        modelUsage
+        modelUsage,
+        connectionUsage,
+        connectionNames
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -3173,7 +3263,7 @@ class AdminService {
     const {
       from, to,
       invoiceGenAiTokens, invoiceCapacityUnits,
-      invoiceCacheReadInputTokens, invoiceCacheWriteInputTokens
+      invoiceCacheReadInputTokens, invoiceCacheWriteInputTokens, tenant
     } = req.data;
 
     const toNumber = (v: number | string | undefined): number | undefined =>
@@ -3187,7 +3277,8 @@ class AdminService {
         capacityUnits: toNumber(invoiceCapacityUnits),
         cacheReadInputTokens: toNumber(invoiceCacheReadInputTokens),
         cacheWriteInputTokens: toNumber(invoiceCacheWriteInputTokens)
-      }
+      },
+      tenant: typeof tenant === 'string' && tenant ? tenant : null
     });
 
     return {
@@ -3443,6 +3534,13 @@ class AdminService {
     });
   }
 
+  /** 400 when the e-mail is one reserved for platform service keys; such credentials are never created from the cockpit. */
+  private rejectIfServiceKeyEmail(req: any, email: string | undefined): boolean {
+    if (!email || !isServiceKeyEmail(email)) return false;
+    req.reject(400, 'This e-mail is reserved for platform service keys.');
+    return true;
+  }
+
   /** 403 user_deactivated when the owner is deactivated; used by every credential-creating and enabling path. */
   private async rejectIfDeactivated(req: any, email: string | undefined): Promise<boolean> {
     if (!email || !(await isDeactivated(cds, email))) return false;
@@ -3485,6 +3583,7 @@ class AdminService {
     try {
       await quotaStateStore.initialize();
       startRolloverTimer();
+      startTeamRolloverTimer();
       // Users are backfilled in initializeUsers (awaited at the end of init); publish once it is done.
       setTimeout(() => this.publishQuotaDocuments(1), 5000).unref?.();
     } catch (error) {
@@ -3506,6 +3605,10 @@ class AdminService {
       if (did) logger.info('AdminService', 'Usage buckets built from the usage rows (first start with counters)');
       const n = await republishAll();
       logger.info('AdminService', `Published ${n} quota documents`);
+      const didTeams = await rebuildTeamsIfEmpty(db);
+      if (didTeams) logger.info('AdminService', 'Team usage buckets built from the usage rows (first start with team counters)');
+      const t = await republishAllTeams();
+      logger.info('AdminService', `Published ${t} team quota documents`);
     } catch (e: any) {
       logger.warn('AdminService', `Usage buckets could not be built (${e?.message ?? e}); quota documents not published — quotas stay unenforced until rebuildUsageCounters or the next usage batch`);
       if (attempt === 1) setTimeout(() => this.publishQuotaDocuments(2), 60_000).unref?.();
@@ -3547,6 +3650,8 @@ class AdminService {
       const db = await cds.connect.to('db');
       const inserted = await seedSapCapacityUnitPrice(db);
       logger.info('AdminService', `SapCapacityUnitPrice seeded ${inserted} rows`);
+      const applied = await applySetupPriceRates(db);
+      if (applied) logger.info('AdminService', `SapCapacityUnitPrice: ${applied} setup rate rows added`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.warn('AdminService', `Failed to seed SAP capacity unit price: ${errorMsg}`);
@@ -3567,6 +3672,28 @@ class AdminService {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.warn('AdminService', `Failed to backfill neverExpires: ${errorMsg}`);
       // Don't throw - the backfill is a one-off migration, not critical for serving requests
+    }
+  }
+
+  /**
+   * SAP usage rows recorded before rows carried a tenant get the environment key's tenant, once ever
+   * (db/data/sap-tenant-backfill.ts). Needs AUTH_URL in the admin's environment; without it the first
+   * usage event served by the environment key does the same (usageEventProcessor). Never throws.
+   */
+  private async initializeSapTenantBackfill(): Promise<void> {
+    try {
+      const tenant = environmentTenant();
+      if (!tenant) {
+        logger.info('AdminService', 'SAP tenant backfill skipped: no AUTH_URL in the admin environment (the environment tenant\'s first usage event runs it)');
+        return;
+      }
+      const db = await cds.connect.to('db');
+      const updated = await backfillEnvironmentTenantOnce(db, tenant.zone, new Date());
+      if (updated === null) logger.debug('AdminService', 'SAP tenant backfill already ran');
+      else logger.info('AdminService', `SAP tenant backfill gave ${updated} usage rows the environment tenant ${tenant.zone}`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn('AdminService', `Failed to backfill the SAP tenant of usage rows: ${errorMsg}`);
     }
   }
 
@@ -3608,6 +3735,18 @@ class AdminService {
         logger.info('AdminService', `Tool usage indexes ensured (${ensured})`);
       } else {
         logger.warn('AdminService', `Tool usage indexes: ${ensured} ensured, ${failed.length} failed and retried on the next boot: ${failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
+      }
+      const sapTenant = await ensureSapTenantIndexes(db);
+      if (sapTenant.failed.length === 0) {
+        logger.info('AdminService', `SAP tenant indexes ensured (${sapTenant.ensured})`);
+      } else {
+        logger.warn('AdminService', `SAP tenant indexes: ${sapTenant.ensured} ensured, ${sapTenant.failed.length} failed and retried on the next boot: ${sapTenant.failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
+      }
+      const team = await ensureTeamIndexes(db);
+      if (team.failed.length === 0) {
+        logger.info('AdminService', `Team indexes ensured (${team.ensured})`);
+      } else {
+        logger.warn('AdminService', `Team indexes: ${team.ensured} ensured, ${team.failed.length} failed and retried on the next boot: ${team.failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -4129,6 +4268,7 @@ class AdminService {
     if (!isAdmin) {
       req.data.email ??= userEmail;
     }
+    if (this.rejectIfServiceKeyEmail(req, req.data.email)) return;
 
     logger.debug('AdminService', `NEW ApiKey draft prefilled for user ${userEmail}`, {
       isAdmin,
@@ -4192,6 +4332,7 @@ class AdminService {
       req.data.email = userEmail;  // lock to self
     }
 
+    if (this.rejectIfServiceKeyEmail(req, req.data.email)) return;
     if (await this.rejectIfDeactivated(req, req.data.email)) return;
 
     // Set defaults
@@ -4584,6 +4725,7 @@ class AdminService {
     isAdmin: boolean;
     isUser: boolean;
     deployTarget: string;
+    isTeamAdmin: boolean;
   }> {
     const userRoles = this.getUserRoles(req);
     await touchUser(cds, req.user?.id || '', { roles: userRoles });
@@ -4594,7 +4736,8 @@ class AdminService {
       attr: JSON.stringify((req.user as any)?.attr || {}),
       isAdmin: this.isAdmin(userRoles),
       isUser: userRoles.includes('user'),
-      deployTarget: process.env.DEPLOY_TARGET || 'development'
+      deployTarget: process.env.DEPLOY_TARGET || 'development',
+      isTeamAdmin: req.user?.id ? (await adminTeamIdsOf(cds, req.user.id)).length > 0 : false
     };
   }
 
@@ -4735,12 +4878,14 @@ class AdminService {
     req.data.neverExpires ??= false;
     req.data.isActive ??= true;
     req.data.usageCount ??= 0;
-    req.data.region ??= 'us-east-1';
-    req.data.sapAiRegion ??= process.env.SAP_AI_REGION || 'us-east-1';
+    const sapAiRegion = await activeSapRegion();
+    req.data.region ??= this.getAwsRegionFromSapAi(sapAiRegion);
+    req.data.sapAiRegion ??= sapAiRegion;
     if (!isAdmin) {
       req.data.userId ??= userEmail;
       req.data.email ??= userEmail;
     }
+    if (this.rejectIfServiceKeyEmail(req, req.data.email)) return;
 
     logger.debug('AdminService', `NEW AwsCredentials draft prefilled for user ${userEmail}`, {
       isAdmin,
@@ -4763,6 +4908,7 @@ class AdminService {
       req.data.email = userEmail;   // lock email to self
     }
 
+    if (this.rejectIfServiceKeyEmail(req, req.data.email)) return;
     if (await this.rejectIfDeactivated(req, req.data.email)) return;
 
     // Validate that userId is not empty
@@ -4774,8 +4920,9 @@ class AdminService {
     // Set defaults
     req.data.isActive ??= true;
     req.data.usageCount ??= 0;
-    req.data.region ??= 'us-east-1';
-    req.data.sapAiRegion ??= process.env.SAP_AI_REGION || 'us-east-1';
+    const sapAiRegion = await activeSapRegion();
+    req.data.region ??= this.getAwsRegionFromSapAi(sapAiRegion);
+    req.data.sapAiRegion ??= sapAiRegion;
     
     // Expiration is admin-managed: owners get the configured default, admins may pre-set a date
     // or flag the credential as never-expiring (only an administrator, so a non-admin's value is
@@ -4805,7 +4952,7 @@ class AdminService {
     }
     if (!req.data.secretAccessKey) {
       const secretAccessKey = crypto.randomBytes(20).toString('hex');
-      req.data.secretAccessKey = this.encryptSecret(secretAccessKey);
+      req.data.secretAccessKey = encryptSecret(secretAccessKey);
       
       // Generate salt and hash for signature validation
       const salt = crypto.randomBytes(16).toString('hex');
@@ -4854,6 +5001,8 @@ class AdminService {
       req.error(403, 'Access denied: You can only update your own AWS credentials');
       return;
     }
+
+    if ('email' in req.data && this.rejectIfServiceKeyEmail(req, req.data.email)) return;
 
     const lifecycleViolation = lifecycleChangeViolation({ isAdmin, data: req.data, stored });
     if (lifecycleViolation) {
@@ -4983,6 +5132,8 @@ class AdminService {
   async beforeUpdateAwsCredentialsDraft(req: any): Promise<void> {
     const isAdmin = req.user?.is ? req.user.is('admin') : false;
     const userEmail = this.getUserEmail(req);
+
+    if ('email' in req.data && this.rejectIfServiceKeyEmail(req, req.data.email)) return;
 
     // Role-based field guard: non-admins cannot change userId
     if (!isAdmin && 'userId' in req.data) {
@@ -5162,7 +5313,7 @@ class AdminService {
       if (credential.secretAccessKey) {
         try {
           // Decrypt the secret access key for display
-          const decryptedSecret = this.decryptSecret(credential.secretAccessKey);
+          const decryptedSecret = decryptSecret(credential.secretAccessKey);
           if (decryptedSecret) {
             credential.secretAccessKey = decryptedSecret;
           } else {
@@ -5943,12 +6094,14 @@ class AdminService {
         canDeleteOld: computed.canDeleteOld,
         canManageKeys: computed.canManageKeys,
         canManageAWS: computed.canManageAWS,
+        isTeamAdmin: (await adminTeamIdsOf(cds, userEmail)).length > 0,
         
         // UI preferences
         sidePanelCollapsed: preferences.sidePanelCollapsed || false,
         theme: preferences.theme || 'sap_horizon',
         density: preferences.density || 'cozy',
         tablePageSize: preferences.tablePageSize || 50,
+        language: preferences.language ?? null,
         
         // App preferences
         defaultNotificationFilter: preferences.defaultNotificationFilter,
@@ -5980,37 +6133,41 @@ class AdminService {
       return req.reject(400, 'Preference key is required');
     }
 
+    // Validate first: req.reject throws, so a 4xx raised inside the try below would become a 500
+    const validated = this.validatePreferenceUpdate(key, value);
+    if ('error' in validated) {
+      return req.reject(400, validated.error);
+    }
+
+    let found = true;
     try {
-      // Get user preferences
       const preferences = await cds.run(
         SELECT.one.from('sap.llm.gateway.admin.UserPreferences')
           .where({ email: userEmail })
       );
 
-      if (!preferences) {
-        return req.reject(404, 'User preferences not found');
+      if (preferences) {
+        await cds.run(
+          UPDATE('sap.llm.gateway.admin.UserPreferences')
+            .set(validated.data)
+            .where({ ID: preferences.ID })
+        );
+      } else {
+        found = false;
       }
-
-      // Validate and update the preference
-      const updateData = this.validatePreferenceUpdate(key, value);
-      if (!updateData) {
-        return req.reject(400, `Invalid preference key: ${key}`);
-      }
-
-      await cds.run(
-        UPDATE('sap.llm.gateway.admin.UserPreferences')
-          .set(updateData)
-          .where({ ID: preferences.ID })
-      );
-
-      return {
-        success: true,
-        message: `Preference '${key}' updated successfully`
-      };
     } catch (error) {
       logger.error('AdminService', `[updateUserPreference] Error updating ${key}:`, error instanceof Error ? error : new Error(String(error)));
       return req.reject(500, 'Failed to update user preference');
     }
+
+    if (!found) {
+      return req.reject(404, 'User preferences not found');
+    }
+
+    return {
+      success: true,
+      message: `Preference '${key}' updated successfully`
+    };
   }
 
   /**
@@ -6089,13 +6246,16 @@ class AdminService {
   }
 
   /**
-   * Validate preference update and return update object
+   * Validate a preference update: the update object, or the reason for a 400. Most values are
+   * coerced to a default; the cockpit language ('' = browser default) and theme are refused instead.
    */
-  private validatePreferenceUpdate(key: string, value: string): any | null {
+  private validatePreferenceUpdate(key: string, value: string): { data: any } | { error: string } {
+    const REFUSED = Symbol('refused');
     const allowedPreferences: { [key: string]: (val: string) => any } = {
       'sidePanelCollapsed': (val) => val === 'true',
-      'theme': (val) => ['sap_horizon', 'sap_fiori_3', 'sap_quartz_light', 'sap_quartz_dark'].includes(val) ? val : 'sap_horizon',
+      'theme': (val) => (typeof val === 'string' && COCKPIT_THEMES.includes(val)) ? val : REFUSED,
       'density': (val) => ['compact', 'cozy'].includes(val) ? val : 'cozy',
+      'language': (val) => (typeof val === 'string' && COCKPIT_LANGUAGES.includes(val)) ? val : REFUSED,
       'tablePageSize': (val) => {
         const num = parseInt(val, 10);
         return (num >= 10 && num <= 200) ? num : 50;
@@ -6121,13 +6281,27 @@ class AdminService {
       }
     };
 
-    if (!allowedPreferences[key]) {
-      return null;
+    if (!Object.prototype.hasOwnProperty.call(allowedPreferences, key)) {
+      return { error: `Invalid preference key: ${key}` };
+    }
+
+    let parsed: any;
+    try {
+      parsed = allowedPreferences[key](value);
+    } catch {
+      return { error: `Invalid value for preference: ${key}` };   // e.g. a missing value where text is expected
+    }
+    if (parsed === REFUSED) {
+      if (key === 'language') return { error: `Unsupported language: ${value}` };
+      if (key === 'theme') return { error: `Unsupported theme: ${value}` };
+      return { error: `Invalid value for preference: ${key}` };
     }
 
     return {
-      [key]: allowedPreferences[key](value),
-      modifiedAt: new Date().toISOString()
+      data: {
+        [key]: parsed,
+        modifiedAt: new Date().toISOString()
+      }
     };
   }
 
@@ -6141,53 +6315,25 @@ module.exports = (srv: any) => {
   // The init() promise is RETURNED, not dropped: cds awaits the impl function's return value
   // (@sap/cds lib/srv/factory.js:76, `await impl.call(srv, srv)`), so returning it is what makes
   // the awaited Model Library seed at the end of init() complete before the service is served.
-  // Everything below registers synchronously first, so the 'served' hook and the nextTick mount
-  // are in place regardless of when the seed settles.
+  // Everything below registers synchronously first, so the nextTick mount
+  // is in place regardless of when the seed settles.
   const initialized = adminService.init(srv).then(() => adminService);
   
-  // Mount REST API routes during service initialization
-  srv.on('served', () => {
-    try {
-      const app = cds.app || srv.app || (cds.server && cds.server.app);
-      if (app) {
-        app.use('/api/admin', configRestApi);
-        // Add SSE endpoint for real-time notifications
-        app.get('/api/notifications/stream', notificationStreamService.handleConnection);
-        logger.info('AdminService', 'REST API endpoints mounted at /api/admin');
-        logger.info('AdminService', 'SSE endpoint mounted at /api/notifications/stream');
-      } else {
-        logger.warn('AdminService', 'Express app not available - trying alternative mounting');
-        // Alternative mounting approach
-        try {
-          const express = require('express');
-          const cdsApp = cds.serve('AdminService');
-          if (cdsApp && cdsApp.app) {
-            cdsApp.app.use('/api/admin', configRestApi);
-            cdsApp.app.get('/api/notifications/stream', notificationStreamService.handleConnection);
-            logger.info('AdminService', 'REST API endpoints mounted via CDS app');
-            logger.info('AdminService', 'SSE endpoint mounted via CDS app');
-          }
-        } catch (altError) {
-          logger.error('AdminService', 'Alternative mounting also failed', altError as Error);
-        }
-      }
-    } catch (error) {
-      logger.error('AdminService', 'Failed to mount REST API endpoints', error as Error);
-    }
-  });
-  
-  // Also try to mount immediately after service init
+  // Mount the REST and SSE routes right after service init (the service itself never receives a 'served' event:
+  // cds emits it on the cds facade, @sap/cds server.js:59)
   process.nextTick(() => {
     try {
       const app = cds.app || srv.app || (cds.server && cds.server.app);
       if (app && !app._router.stack.some((layer: any) => layer.regexp.source.includes('api/admin'))) {
         app.use('/api/admin', configRestApi);
+        app.use('/api/grounding', groundingRestApi);
         app.get('/api/notifications/stream', notificationStreamService.handleConnection);
         logger.info('AdminService', 'REST API endpoints mounted immediately at /api/admin');
         logger.info('AdminService', 'SSE endpoint mounted immediately');
       }
     } catch (error) {
-      logger.debug('AdminService', 'Immediate mounting failed, will retry on served event', error as Error);
+      // Without these routes the cockpit's REST and SSE calls answer 404: an error, not a detail.
+      logger.error('AdminService', 'Mounting the REST and SSE routes failed', error as Error);
     }
   });
   

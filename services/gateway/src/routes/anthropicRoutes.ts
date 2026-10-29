@@ -4,6 +4,8 @@
 import express from 'express';
 import * as anthropicController from '../controllers/anthropicController';
 import * as countTokensController from '../controllers/countTokensController';
+import * as modelController from '../controllers/modelController';
+import { nulByteParamGuard } from '../middlewares/nulByteGuard';
 import unifiedTokenAuth, { createUnifiedTokenAuth } from '../middlewares/unifiedTokenAuth';
 import quotaEnforcement from '../middlewares/quotaEnforcement';
 import { unifiedAuthProxyService, serviceConfigurations } from '../services/unifiedAuthProxyService';
@@ -24,6 +26,11 @@ router.post('/messages/count_tokens',
   anthropicAuth,
   countTokensController.handleCountTokens
 );
+
+// Models list and lookup in Anthropic's format (n8n's credential test and model dropdown, the SDK's models.list())
+router.param('model_id', nulByteParamGuard);
+router.get('/models', anthropicAuth, modelController.getAnthropicModels);
+router.get('/models/:model_id', anthropicAuth, modelController.getAnthropicModelById);
 
 // Main messages endpoint with unified authentication
 router.post('/messages',

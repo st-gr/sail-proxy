@@ -111,30 +111,33 @@ app.use((req, res) => {
   });
 });
 
-// Start the server
-app.listen(PORT, HOST, () => {
-  console.log('🦙 Ollama Compatibility Server Started');
-  console.log(`📡 Server running at: http://${HOST}:${PORT}`);
-  console.log(`🔗 Main proxy URL: ${MAIN_PROXY_URL}`);
-  console.log('📝 Available endpoints:');
-  console.log(`   - Chat: POST http://${HOST}:${PORT}/api/chat`);
-  console.log(`   - Generate: POST http://${HOST}:${PORT}/api/generate`);
-  console.log(`   - Embeddings: POST http://${HOST}:${PORT}/api/embed`);
-  console.log(`   - Models: GET http://${HOST}:${PORT}/api/tags`);
-  console.log(`   - Version: GET http://${HOST}:${PORT}/api/version`);
-  console.log(`   - Health: GET http://${HOST}:${PORT}/health`);
-  console.log('');
-});
+// Start the server only when run as a program (node index.js, the npm CLI's spawn), so tests can
+// require the app and list its routes without opening a port.
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log('🦙 Ollama Compatibility Server Started');
+    console.log(`📡 Server running at: http://${HOST}:${PORT}`);
+    console.log(`🔗 Main proxy URL: ${MAIN_PROXY_URL}`);
+    console.log('📝 Available endpoints:');
+    console.log(`   - Chat: POST http://${HOST}:${PORT}/api/chat`);
+    console.log(`   - Generate: POST http://${HOST}:${PORT}/api/generate`);
+    console.log(`   - Embeddings: POST http://${HOST}:${PORT}/api/embed`);
+    console.log(`   - Models: GET http://${HOST}:${PORT}/api/tags`);
+    console.log(`   - Version: GET http://${HOST}:${PORT}/api/version`);
+    console.log(`   - Health: GET http://${HOST}:${PORT}/health`);
+    console.log('');
+  });
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down Ollama Compatibility Server...');
-  process.exit(0);
-});
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    console.log('\n🛑 Shutting down Ollama Compatibility Server...');
+    process.exit(0);
+  });
 
-process.on('SIGTERM', () => {
-  console.log('\n🛑 Shutting down Ollama Compatibility Server...');
-  process.exit(0);
-});
+  process.on('SIGTERM', () => {
+    console.log('\n🛑 Shutting down Ollama Compatibility Server...');
+    process.exit(0);
+  });
+}
 
 module.exports = app;

@@ -9,7 +9,7 @@
 		verticalScrolling="false"
 		ariaLabelledBy="popoverLabel">
 
-		<core:InvisibleText id="popoverLabel" text="Main" />
+		<core:InvisibleText id="popoverLabel" text="{i18n>nav.main}" />
 
 		<tnt:SideNavigation
 			id="sideNavInOverlay"
@@ -18,31 +18,40 @@
 			design="Plain"
 			itemSelect=".onItemSelect">
 			<tnt:NavigationList>
-				<tnt:NavigationListItem key="home" text="Home" icon="home" />
-				<tnt:NavigationListItem key="access" text="Access" icon="key" expanded="true"
+				<tnt:NavigationListItem key="home" text="{i18n>nav.home}" icon="home" />
+				<tnt:NavigationListItem key="access" text="{i18n>nav.access}" icon="key" expanded="true"
 					selectable="false">
-					<tnt:NavigationListItem key="apiKeys" text="API Keys" />
-					<tnt:NavigationListItem key="awsCredentials" text="AWS Credentials" />
+					<tnt:NavigationListItem key="apiKeys" text="{i18n>nav.apiKeys}" />
+					<tnt:NavigationListItem key="awsCredentials" text="{i18n>nav.awsCredentials}" />
 				</tnt:NavigationListItem>
-				<tnt:NavigationListItem key="analytics" text="Analytics" icon="business-by-design" expanded="true"
+				<tnt:NavigationListItem key="analytics" text="{i18n>nav.analytics}" icon="business-by-design" expanded="true"
 					selectable="false">
-					<tnt:NavigationListItem key="usage" text="Usage" />
-					<tnt:NavigationListItem key="securityEvents" text="Security Notifications" />
+					<tnt:NavigationListItem key="usage" text="{i18n>nav.usage}" />
+					<tnt:NavigationListItem key="securityEvents" text="{i18n>nav.securityEvents}" />
 				</tnt:NavigationListItem>
-				<tnt:NavigationListItem key="modelsGroup" text="Models" icon="product" expanded="true"
+				<tnt:NavigationListItem key="modelsGroup" text="{i18n>nav.models}" icon="product" expanded="true"
 					selectable="false">
-					<tnt:NavigationListItem key="modelLibrary" text="Model Library" />
-					<tnt:NavigationListItem key="catalogs" text="Entitlements &amp; Quotas" />
+					<tnt:NavigationListItem key="modelLibrary" text="{i18n>nav.modelLibrary}" />
+					<tnt:NavigationListItem key="catalogs" text="{i18n>nav.catalogs}" />
+				</tnt:NavigationListItem>
+				<tnt:NavigationListItem key="groundingGroup" text="{i18n>nav.grounding}" icon="documents" expanded="true"
+					selectable="false">
+					<tnt:NavigationListItem key="groundingStores" text="{i18n>nav.groundingStores}" />
+					<tnt:NavigationListItem key="groundingFiles" text="{i18n>nav.groundingFiles}" />
+					<tnt:NavigationListItem key="groundingJobs" text="{i18n>nav.groundingJobs}" />
+					<tnt:NavigationListItem key="groundingAdmin" text="{i18n>nav.groundingAdmin}" visible="{appView>/isAdmin}" />
 				</tnt:NavigationListItem>
 			</tnt:NavigationList>
 			<tnt:fixedItem>
 				<tnt:NavigationList>
-					<tnt:NavigationListItem key="settingsGroup" text="Settings" icon="settings" expanded="true"
+					<tnt:NavigationListItem key="settingsGroup" text="{i18n>settings.title}" icon="settings" expanded="true"
 						selectable="false">
-						<tnt:NavigationListItem key="settings" text="Configuration Management" />
-						<tnt:NavigationListItem key="sapRates" text="SAP Capacity Unit Prices" visible="{appView>/isAdmin}" />
-						<tnt:NavigationListItem key="users" text="Users &amp; Quotas" visible="{appView>/isAdmin}" />
-						<tnt:NavigationListItem key="toolPolicies" text="Tool Governance" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="settings" text="{i18n>nav.config}" />
+						<tnt:NavigationListItem key="sapRates" text="{i18n>nav.sapRates}" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="teams" text="{i18n>nav.teams}" visible="{= ${appView>/isAdmin} || ${appView>/isTeamAdmin} }" />
+						<tnt:NavigationListItem key="users" text="{i18n>nav.users}" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="toolPolicies" text="{i18n>nav.toolPolicies}" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="connections" text="{i18n>nav.connections}" visible="{appView>/isAdmin}" />
 					</tnt:NavigationListItem>
 				</tnt:NavigationList>
 			</tnt:fixedItem>

@@ -5,6 +5,8 @@ const logger = getDefaultLogger();
 import { Request, Response } from 'express';
 import configService from '../services/configService';
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
+import { redactUrl, redactQuery } from './redactUrl';
+import { API_KEY_HEADERS } from './extractApiKey';
 
 interface LoggingConfig {
   api_config?: {
@@ -81,7 +83,7 @@ const getLogDir = (): string => {
 // Headers that should be filtered out for security
 const SENSITIVE_HEADERS = [
   'authorization',
-  'x-api-key',
+  ...API_KEY_HEADERS,
   'x-auth-token',
   'cookie',
   'set-cookie',
@@ -89,16 +91,22 @@ const SENSITIVE_HEADERS = [
   'x-session-id',
   'proxy-authorization',
   'www-authenticate',
-  'x-forwarded-authorization'
+  'x-forwarded-authorization',
+  // Provider connection credentials: the Azure OpenAI key, an AWS session token, a Google API key
+  'api-key',
+  'x-amz-security-token',
+  'x-goog-api-key'
 ];
 
-function filterSensitiveHeaders(headers: Record<string, any>): Record<string, string> {
+export function filterSensitiveHeaders(headers: Record<string, any>): Record<string, string> {
   const filtered: Record<string, string> = {};
   
   for (const [key, value] of Object.entries(headers)) {
     const lowerKey = key.toLowerCase();
     if (SENSITIVE_HEADERS.includes(lowerKey)) {
       filtered[key] = '[REDACTED]';
+    } else if (lowerKey === 'referer' || lowerKey === 'referrer') {
+      filtered[key] = redactUrl(String(value));
     } else {
       filtered[key] = String(value);
     }
@@ -181,8 +189,8 @@ export const savePayload = (
     // Add request information if available
     if (req) {
       enhancedData.httpMethod = req.method;
-      enhancedData.url = req.originalUrl || req.url;
-      enhancedData.queryParams = req.query && Object.keys(req.query).length > 0 ? req.query : undefined;
+      enhancedData.url = redactUrl(req.originalUrl || req.url);
+      enhancedData.queryParams = req.query && Object.keys(req.query).length > 0 ? redactQuery(req.query as Record<string, unknown>) : undefined;
       enhancedData.requestHeaders = filterSensitiveHeaders(req.headers);
     }
 

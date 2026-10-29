@@ -163,6 +163,16 @@ export async function validateApiKey(apiKey: string): Promise<ValidatedApiKey | 
   }
 }
 
+/**
+ * The ID of a stored key that exists but is inactive, so a failed-auth event can name it;
+ * null for an unknown key.
+ */
+export async function findInactiveApiKeyId(apiKey: string): Promise<string | null> {
+  if (!apiKey) return null;
+  const record = (await listApiKeys()).find(k => k.key === apiKey && !k.isActive);
+  return record ? record.id : null;
+}
+
 class ApiKeyService {
   async createApiKey(createdBy: string, email: string): Promise<ApiKeyRecord> {
     return createApiKey(createdBy, email);
@@ -174,6 +184,10 @@ class ApiKeyService {
 
   async verifyApiKey(key: string): Promise<ApiKeyRecord | null> {
     return verifyApiKey(key);
+  }
+
+  async findInactiveApiKeyId(key: string): Promise<string | null> {
+    return findInactiveApiKeyId(key);
   }
 
   async listApiKeys(): Promise<ApiKeyRecord[]> {

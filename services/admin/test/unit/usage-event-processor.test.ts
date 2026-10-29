@@ -393,7 +393,7 @@ describe('UsageEventProcessor', () => {
       // observe how many events reach the DB layer via persistApiKeyUsage.
       persistSpy.mockRestore();
       const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
-        .mockResolvedValue([]);
+        .mockResolvedValue({ emails: [], teamIds: [] });
 
       const event: UsageEvent = {
         requestId: 'dup-req-1',
@@ -424,7 +424,7 @@ describe('UsageEventProcessor', () => {
     it('keeps distinct requestIds in the same batch', async () => {
       persistSpy.mockRestore();
       const apiKeySpy = jest.spyOn(processor as any, 'persistApiKeyUsage')
-        .mockResolvedValue([]);
+        .mockResolvedValue({ emails: [], teamIds: [] });
 
       const base = {
         timestamp: Math.floor(Date.now() / 1000),
@@ -455,7 +455,7 @@ describe('UsageEventProcessor', () => {
       // signature must keep events that differ in their billable fields.
       persistSpy.mockRestore();
       const awsSpy = jest.spyOn(processor as any, 'persistAwsCredentialUsage')
-        .mockResolvedValue([]);
+        .mockResolvedValue({ emails: [], teamIds: [] });
 
       const base = {
         requestId: 'unknown',
@@ -479,6 +479,102 @@ describe('UsageEventProcessor', () => {
       expect(awsSpy.mock.calls[0][1]).toHaveLength(2);
 
       awsSpy.mockRestore();
+    });
+  });
+
+  describe('cross-batch dedup does not key on requestId (C6)', () => {
+    // The intra-batch dedup above (persistUsageEvents) already keys on a content
+    // signature. This is the OTHER guard: `processedRequestIds`, checked in
+    // queueEvent/processMemoryQueue BEFORE a batch reaches persistUsageEvents, and
+    // populated AFTER a batch persists. It used to key on the raw requestId, and
+    // every AWS Bedrock event carries the fallback requestId 'unknown' whenever the
+    // gateway's payload logging is off — so after the first Bedrock event in a
+    // batch, every later one was dropped here, never even reaching persist.
+
+    it('queueEvent/processBatch: processes a later event sharing the fallback requestId "unknown" instead of dropping it', async () => {
+      const bedrockEvent1: UsageEvent = {
+        requestId: 'unknown',
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'aws_credential',
+        credentialId: 'aws-key-1',
+        provider: 'aws-bedrock',
+        model: 'anthropic.claude-3-sonnet',
+        inputTokens: 100,
+        outputTokens: 200,
+        responseTime: 1500,
+        statusCode: 200
+      };
+      const bedrockEvent2: UsageEvent = {
+        ...bedrockEvent1,
+        inputTokens: 999,
+        outputTokens: 888,
+        timestamp: bedrockEvent1.timestamp + 5
+      };
+
+      (processor as any).queueEvent(bedrockEvent1);
+      await (processor as any).processBatch();
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+
+      (processor as any).queueEvent(bedrockEvent2);
+      await (processor as any).processBatch();
+
+      expect(persistSpy).toHaveBeenCalledTimes(2);
+      expect(persistSpy).toHaveBeenNthCalledWith(2, [bedrockEvent2]);
+    });
+
+    it('processMemoryQueue: processes a later event sharing the fallback requestId "unknown" across calls', async () => {
+      const bedrockEvent1: UsageEvent = {
+        requestId: 'unknown',
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'aws_credential',
+        credentialId: 'aws-key-2',
+        provider: 'aws-bedrock',
+        model: 'anthropic.claude-3-haiku',
+        inputTokens: 10,
+        outputTokens: 20,
+        responseTime: 500,
+        statusCode: 200
+      };
+      const bedrockEvent2: UsageEvent = {
+        ...bedrockEvent1,
+        inputTokens: 30,
+        outputTokens: 40,
+        timestamp: bedrockEvent1.timestamp + 5
+      };
+
+      await processor.processMemoryQueue([bedrockEvent1]);
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+
+      await processor.processMemoryQueue([bedrockEvent2]);
+
+      expect(persistSpy).toHaveBeenCalledTimes(2);
+      expect(persistSpy).toHaveBeenNthCalledWith(2, [bedrockEvent2]);
+    });
+
+    it('still suppresses a genuine cross-batch redelivery of the same (non-fallback) requestId', async () => {
+      const event: UsageEvent = {
+        requestId: 'redelivered-req-1',
+        timestamp: Math.floor(Date.now() / 1000),
+        authType: 'api_key',
+        credentialId: 'key-123',
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet',
+        inputTokens: 100,
+        outputTokens: 200,
+        responseTime: 1500,
+        statusCode: 200
+      };
+
+      (processor as any).queueEvent(event);
+      await (processor as any).processBatch();
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+
+      // Same request redelivered in a later batch (e.g. at-least-once Valkey
+      // redelivery) — still dropped before it reaches persist.
+      (processor as any).queueEvent({ ...event });
+      await (processor as any).processBatch();
+
+      expect(persistSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -560,7 +656,7 @@ describe('UsageEventProcessor', () => {
 
       await expect(
         (processor as any).persistApiKeyUsage(testDb, [baseEvent])
-      ).resolves.toEqual([]);
+      ).resolves.toEqual({ emails: [], teamIds: [] });
 
       const entries = getEntries();
       expect(entries).toHaveLength(1);
@@ -601,7 +697,7 @@ describe('UsageEventProcessor', () => {
       expect(row.imageOutputTokens).toBe(1290);
       expect(row.imageOutputCost).toBe(0.07);
       expect(row.totalCost).toBe(0.1);
-      expect(calc).toHaveBeenCalledWith('gemini-3.1-flash-image--deployed', 17, 1296, expect.any(Date), 0, 0, 1290, 0, 0);
+      expect(calc).toHaveBeenCalledWith('gemini-3.1-flash-image--deployed', 17, 1296, expect.any(Date), 0, 0, 1290, 0, 0, { zeroWhenUnpriced: false });
       expect(computeSpy).toHaveBeenCalledWith(expect.objectContaining({ outputTokens: 1296, imageOutputTokens: 1290 }));
 
       computeSpy.mockRestore();
@@ -625,7 +721,7 @@ describe('UsageEventProcessor', () => {
       expect(row.audioInputCost).toBe(0.03);
       expect(row.audioOutputCost).toBe(0.04);
       expect(row.totalCost).toBe(0.1);
-      expect(calc).toHaveBeenCalledWith('gpt-realtime--deployed', 95, 30, expect.any(Date), undefined, 5, 0, 55, 20);
+      expect(calc).toHaveBeenCalledWith('gpt-realtime--deployed', 95, 30, expect.any(Date), undefined, 5, 0, 55, 20, { zeroWhenUnpriced: false });
       expect(computeSpy).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 95, outputTokens: 30, audioInputTokens: 55, audioOutputTokens: 20 }));
     });
 
@@ -673,7 +769,7 @@ describe('UsageEventProcessor', () => {
 
       await expect(
         (processor as any).persistAwsCredentialUsage(testDb, [baseAwsEvent])
-      ).resolves.toEqual([]);
+      ).resolves.toEqual({ emails: [], teamIds: [] });
 
       const entries = getEntries();
       expect(entries).toHaveLength(1);

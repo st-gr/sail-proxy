@@ -12,7 +12,7 @@ sap.ui.define([
 			QUnit.module("Model library grid (" + expectations.role + ")");
 			opaTest("The grid shows the role's entitled models", function (Given, When, Then) {
 				// the standalone app page (its own bootstrap), relative to this test page
-				Given.iStartMyAppInAFrame("../../index.html");
+				Given.iStartMyAppInAFrame("../app.html?sap-language=EN");
 				// the admin sees every foundation model, the user only their catalog's members
 				var iExpected = oLib.seesAllModels ? oFx.allIds : oFx.memberIds.length;
 				Then.onTheLibrary.iSeeTheCount(iExpected);

@@ -52,6 +52,8 @@ export function getPidPath(service: 'gateway' | 'ollama'): string {
 // Repo dev tree: services/ is at <repo>/, so go up 4 to reach repo root.
 const BUNDLED_GATEWAY_ENTRY = ['..', '..', 'bundled', 'gateway', 'services', 'gateway', 'src', 'index.js'];
 const DEV_GATEWAY_ENTRY = ['..', '..', '..', '..', 'services', 'gateway', 'dist', 'services', 'gateway', 'src', 'index.js'];
+const BUNDLED_MIGRATE_CLI = ['..', '..', 'bundled', 'gateway', 'services', 'gateway', 'src', 'fileSearch', 'migrateCli.js'];
+const DEV_MIGRATE_CLI = ['..', '..', '..', '..', 'services', 'gateway', 'dist', 'services', 'gateway', 'src', 'fileSearch', 'migrateCli.js'];
 const BUNDLED_GATEWAY_ROOT = ['..', '..', 'bundled', 'gateway'];
 const DEV_GATEWAY_ROOT = ['..', '..', '..', '..', 'services', 'gateway'];
 const BUNDLED_OLLAMA_ENTRY = ['..', '..', 'bundled', 'ollama', 'services', 'ollama', 'index.js'];
@@ -66,6 +68,14 @@ const DEV_OLLAMA_ENTRY = ['..', '..', '..', '..', 'services', 'ollama', 'index.j
 export function getGatewayPath(): string {
   const bundled = join(__dirname, ...BUNDLED_GATEWAY_ENTRY);
   return existsSync(bundled) ? bundled : join(__dirname, ...DEV_GATEWAY_ENTRY);
+}
+
+/**
+ * Get the path to the gateway's file_search migration CLI (bundled or dev, like getGatewayPath).
+ */
+export function getMigrateCliPath(): string {
+  const bundled = join(__dirname, ...BUNDLED_MIGRATE_CLI);
+  return existsSync(bundled) ? bundled : join(__dirname, ...DEV_MIGRATE_CLI);
 }
 
 /**

@@ -22,6 +22,7 @@ const { spawnSync, execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { withRelayEnv } = require('../ci/scripts/sap-relay-env');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const NPM_DIST_DIR = path.join(REPO_ROOT, 'npm-dist', 'sail-proxy');
@@ -140,7 +141,8 @@ try {
   const parser = require(path.join(cliRoot, 'node_modules', '@sap-llm-gateway', 'service-key-parser'));
   const cfg = parser.parseServiceKey(extractFirstJsonObject(skJson));
   cfg.PORT = PORT;
-  const envBody = parser.formatAsEnvFile(cfg);
+  // The CLI's .env overrides the process environment, so the relay settings go into the file itself.
+  const envBody = withRelayEnv(parser.formatAsEnvFile(cfg), process.env.SAP_RELAY_BASE);
   const cfgDir = path.join(fakeHome, '.sail-proxy');
   fs.mkdirSync(cfgDir, { recursive: true });
   fs.writeFileSync(path.join(cfgDir, '.env'), envBody);

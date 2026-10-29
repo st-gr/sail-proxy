@@ -6,6 +6,7 @@ import { getPidPath, getConfigPath, getGatewayPath, getGatewayCwd, getLogPath, e
 import { createLogStream, formatLogLine, rotateLogsIfNeeded } from '../utils/log-manager';
 import { getStoredApiKeys } from '../utils/apikey-storage';
 import { getStoredAwsCredentials } from '../utils/aws-credentials-storage';
+import { buildGatewayEnv } from '../utils/gateway-env';
 import axios from 'axios';
 import ora from 'ora';
 import dotenv from 'dotenv';
@@ -74,12 +75,8 @@ export async function runServer(): Promise<void> {
     
     gatewayProcess = spawn('node', [gatewayPath], {
       cwd: gatewayCwd,
-      env: {
-        ...process.env,
-        ...envConfig,
-        CONFIG_FILE_PATH: getConfigPath('api_config.json'),
-        NODE_ENV: 'production',
-      },
+      // Includes the lite gateway's fixed settings (no OCR), after the user's .env.
+      env: buildGatewayEnv(process.env, envConfig, getConfigPath('api_config.json')),
       detached: true,
       stdio: stdio
     });

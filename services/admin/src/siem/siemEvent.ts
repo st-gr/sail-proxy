@@ -26,9 +26,10 @@ export interface SiemEvent {
   outcome: 'success' | 'failure' | 'unknown';
   actor: {
     credential_id?: string;
-    // First 8 characters of the presented value, set only when credential_id is a hash of
-    // an unresolved credential (see gateway's utils/credentialIdentity.ts) — format
-    // identification (sk-proj-, ghp_, AKIA, xoxb-) without the secret.
+    // First 8 characters of the presented value (see gateway's utils/credentialIdentity.ts) —
+    // format identification (sk-proj-, ghp_, AKIA, xoxb-) without the secret. credential_id is
+    // the admin row UUID whenever the gateway resolved the credential (API key or AWS: wrong
+    // signature/payload, disabled, expired, stale request date), the hash only when it did not.
     credential_hint?: string;
     // The full presented value for an unresolved credential. Carried through the durable
     // outbox but stripped before every sink send (siem/dispatcher.ts) unless that sink's
@@ -177,8 +178,9 @@ function stripQueryString(endpoint: string | undefined): string | undefined {
 // The spec is explicit that actor carries "never the key material". Truncating a raw key
 // to a fixed-length prefix (this normalizer's previous approach) is NOT sufficient — a
 // prefix of a secret is still secret material. The source is now responsible for never
-// handing this normalizer anything unsafe: a resolved credential arrives as the stored
-// row's ID (ApiKeys/AwsCredentials are cuid — already opaque; see rotateApiKey /
+// handing this normalizer anything unsafe: a credential the gateway resolved — also one it
+// refused afterwards (wrong signature/payload, disabled, expired, stale request date) — arrives
+// as the stored row's ID (ApiKeys/AwsCredentials are cuid — already opaque; see rotateApiKey /
 // rotateAwsCredentials in admin-service.ts), an unresolved one arrives pre-hashed with a
 // separate credential_hint (see gateway's utils/credentialIdentity.ts), and a sentinel
 // ('missing', 'unknown') arrives as-is. credential_id is therefore passed through

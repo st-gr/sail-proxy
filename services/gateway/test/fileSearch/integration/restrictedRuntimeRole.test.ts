@@ -18,6 +18,7 @@
 import * as crypto from 'crypto';
 import { Pool } from 'pg';
 import { getPool, runMigration, isFileSearchAvailable, __resetForTests } from '../../../src/fileSearch/db';
+import { unavailableCause } from '../../../src/fileSearch/unavailableCause';
 import { getDefaultLogger } from '@libs/logger';
 import { createFreshDatabase, dsnWithCredentials } from './dbFixture';
 
@@ -152,6 +153,7 @@ d('runtime role restriction / fail-closed behaviour (requires FILE_SEARCH_TEST_D
 
       expect(ok).toBe(false);
       expect(isFileSearchAvailable()).toBe(false);
+      expect(unavailableCause()).toBe('schema_not_provisioned');
       expect(errorSpy).not.toHaveBeenCalled(); // no permission-denied caught-and-logged; DDL was never attempted
 
       const admin2 = new Pool({ connectionString: db.dsn });

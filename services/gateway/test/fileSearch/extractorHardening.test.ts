@@ -24,7 +24,8 @@ jest.mock('child_process', () => {
   };
 });
 
-import { runExtractor } from '../../src/fileSearch/extractors/runners';
+import * as os from 'os';
+import { runExtractor, runExtractorBuffer, resolveBinary } from '../../src/fileSearch/extractors/runners';
 import { UnsupportedFileTypeError } from '../../src/fileSearch/extractors/registry';
 
 /** A minimal fake ChildProcess: just enough surface for runExtractor's
@@ -66,6 +67,51 @@ describe('extractor subprocess hardening', () => {
     // Let the in-flight promise settle so the test doesn't leak a timer.
     child.emit('close', 0);
     await runPromise;
+  });
+
+  it('pins the spawn call existing callers (pdftotext, pandoc) make: tool by absolute path, empty env, no shell', async () => {
+    const child = makeFakeChild();
+    spawnMock.mockReturnValue(child);
+
+    const runPromise = runExtractor('node', ['-', '-'], Buffer.from('x'), { timeoutMs: 5000 });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock.mock.calls[0]).toEqual([
+      resolveBinary('node'),
+      ['-', '-'],
+      { env: {}, cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: true },
+    ]);
+
+    child.stdout.emit('data', Buffer.from('text'));
+    child.emit('close', 0);
+    await expect(runPromise).resolves.toBe('text');
+  });
+
+  it('wraps the tool in nice -n 10 (absolute paths, argv array) when lowPriority is set', async () => {
+    const child = makeFakeChild();
+    spawnMock.mockReturnValue(child);
+
+    const runPromise = runExtractorBuffer('node', ['stdin', 'stdout'], Buffer.from('x'), {
+      timeoutMs: 5000,
+      lowPriority: true,
+      env: { OMP_THREAD_LIMIT: '1' },
+    });
+
+    expect(spawnMock.mock.calls[0]).toEqual([
+      resolveBinary('nice'),
+      ['-n', '10', resolveBinary('node'), 'stdin', 'stdout'],
+      { env: { OMP_THREAD_LIMIT: '1' }, cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: true },
+    ]);
+
+    child.emit('close', 0);
+    await runPromise;
+  });
+
+  it('throws on a disallowed env variable before anything is spawned', () => {
+    expect(() =>
+      runExtractor('node', [], Buffer.from('x'), { timeoutMs: 5000, env: { PATH: '/usr/bin' } as any })
+    ).toThrow(/not allowed/);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('does not expose the raw extension as a readable property', () => {

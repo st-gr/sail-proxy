@@ -71,7 +71,7 @@ describe('the Catalogs view against the bundles', () => {
   it('names at least the profile-mode texts', () => {
     expect(keys()).toEqual(expect.arrayContaining([
       'assignHintProfile', 'assignSelectedProfile', 'assignedProfile', 'deleteProfile',
-      'limits', 'modeCatalogs', 'modeProfiles', 'newProfile', 'noProfile', 'usersCount'
+      'limits', 'modeCatalogs', 'modeProfiles', 'newProfile', 'noProfile', 'assignedUsersTeams'
     ]));
   });
 

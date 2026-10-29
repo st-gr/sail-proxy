@@ -1,0 +1,25 @@
+{
+  "name": "screencast",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Screenshot and screencast toolkit for the documentation site: demo stack, seed, redaction, manifest, casts, recorder, cards, narration, assembly.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test stack/*.test.mjs lib/*.test.mjs lib/overlays/*.test.mjs seed/*.test.mjs teaser/*.test.mjs check.test.mjs shots.test.mjs",
+    "check": "node check.js",
+    "shots": "node shots.js",
+    "cast": "node cast.js",
+    "record": "node record.js",
+    "dry-run": "node record.js --dry-run",
+    "cards": "node cards.js",
+    "narrate": "node narrate.js",
+    "assemble": "node assemble.js",
+    "narration-check": "node lib/narration-check.mjs",
+    "teaser": "node teaser.js"
+  },
+  "devDependencies": {
+    "asciinema-player": "3.17.0",
+    "puppeteer": "24.43.1",
+    "ws": "^8.21.0"
+  }
+}

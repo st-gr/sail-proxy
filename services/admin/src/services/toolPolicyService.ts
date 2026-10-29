@@ -5,6 +5,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { getDefaultLogger } from '@libs/logger';
+import { teamsUsingPolicy, memberEmailsOfTeams } from './teamLookups';
 const cds = require('@sap/cds');
 
 const logger = getDefaultLogger();
@@ -68,6 +69,15 @@ export async function keyPolicyBlockFor(db: any, keyId: string): Promise<ToolPol
   return policy ? blockOf(db, policy) : null;
 }
 
+const TEAMS = 'sap.llm.gateway.admin.Teams';
+/** The team's own policy, or null when the team names none (spec 2026-10-14 §4). */
+export async function teamPolicyBlockFor(db: any, teamId: string): Promise<ToolPolicyBlock | null> {
+  const team = (await db.run(cds.ql.SELECT.from(TEAMS).columns('toolPolicy_ID').where({ ID: teamId })))[0];
+  if (!team?.toolPolicy_ID) return null;
+  const policy = await getPolicy(db, team.toolPolicy_ID);
+  return policy ? blockOf(db, policy) : null;
+}
+
 const PATTERN_HINT = 'must look like function:name, hosted:type[/name] or mcp:server[/tool], optionally ending in *';
 
 /** Errors for a create or update payload (deep, with allows/denies) against the stored row (null on create). */
@@ -99,7 +109,8 @@ export async function affectedEmails(db: any, policyId: string): Promise<string[
   const { SELECT } = cds.ql;
   const users = await db.run(SELECT.from(USERS).columns('email').where({ toolPolicy_ID: policyId }));
   const keys = await db.run(SELECT.from(API_KEYS).columns('email').where({ toolPolicy_ID: policyId }));
-  return [...new Set([...users, ...keys].map((r: any) => r.email).filter(Boolean))].sort();
+  const members = await memberEmailsOfTeams(db, (await teamsUsingPolicy(db, policyId)).map((t) => t.ID));
+  return [...new Set([...users, ...keys].map((r: any) => r.email).concat(members).filter(Boolean))].sort();
 }
 
 /** Deleting a policy sends its users and keys back to the default. */

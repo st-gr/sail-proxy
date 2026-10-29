@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 export type NamespacedEdit = { file: string; format: 'toml' | 'json'; blocks: Record<string, string> };
 
@@ -61,6 +62,8 @@ export function applyEdit(edit: NamespacedEdit, opts: { dryRun?: boolean } = {})
     backupPath = `${edit.file}.sailproxy-bak-${Date.now()}`;
     copyFileSync(edit.file, backupPath);
   }
+  // A client that was never started has no config directory yet (opencode's ~/.config/opencode).
+  mkdirSync(dirname(edit.file), { recursive: true });
   writeFileSync(edit.file, next);
   return { backupPath };
 }

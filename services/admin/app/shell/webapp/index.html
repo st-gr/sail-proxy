@@ -16,12 +16,49 @@
 		<link rel="icon" type="image/x-icon" href="images/favicon/favicon.ico">
 		<link rel="manifest" href="images/favicon/site.webmanifest">
 
+		<script>
+			// The cockpit language, decided before UI5 boots: URL sap-language, then the choice stored
+			// by the Settings dialog ("" = browser), then the first supported browser language, else en.
+			// Dependency-free copy of resolveLanguage in model/language.ts; keep the two in step.
+			(function () {
+				var supported = ["", "en", "de", "es", "fr", "it", "nl", "pt"];
+				var url = new URLSearchParams(window.location.search).get("sap-language");
+				var stored = null;
+				try { stored = window.localStorage.getItem("sail.cockpit.language"); } catch (e) { /* storage blocked */ }
+				var browser = navigator.languages || [navigator.language];
+				var lang = "en";
+				if (url) { lang = url; }
+				else if (stored && supported.indexOf(stored) >= 0) { lang = stored; }
+				else {
+					for (var i = 0; i < browser.length; i++) {
+						var primary = String(browser[i]).toLowerCase().split("-")[0];
+						if (primary && supported.indexOf(primary) >= 0) { lang = primary; break; }
+					}
+				}
+				window["sap-ui-config"] = Object.assign(window["sap-ui-config"] || {}, { language: lang });
+			})();
+			// The cockpit theme, decided before UI5 boots (no light flash): URL sap-theme or sap-ui-theme, then the
+			// choice stored by the Settings dialog (system = dark or light by prefers-color-scheme), else
+			// light. Dependency-free copy of resolveTheme in model/theme.ts; keep the two in step. The
+			// bootstrap tag below carries no data-sap-ui-theme: it would take precedence over this.
+			(function () {
+				var params = new URLSearchParams(window.location.search);
+				var url = params.get("sap-theme") || params.get("sap-ui-theme");
+				var stored = null;
+				try { stored = window.localStorage.getItem("sail.cockpit.theme"); } catch (e) { /* storage blocked */ }
+				var dark = false;
+				try { dark = window.matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) { /* no matchMedia */ }
+				var theme = "sap_horizon";
+				if (url) { theme = url; }
+				else if (stored === "sap_horizon_dark" || (stored === "system" && dark)) { theme = "sap_horizon_dark"; }
+				window["sap-ui-config"] = Object.assign(window["sap-ui-config"] || {}, { theme: theme });
+			})();
+		</script>
+
 		<script
 			id="sap-ui-bootstrap"
 			src="resources/sap-ui-core.js"
-			data-sap-ui-theme="sap_horizon"
 			data-sap-ui-async="true"
-			data-sap-ui-language="en"
 			data-sap-ui-compat-version="edge"
 			data-sap-ui-oninit="module:sap/ui/core/ComponentSupport"
 			data-sap-ui-libs="sap.m,sap.f,sap.tnt,sap.ui.mdc,sap.ui.fl,sap.viz,sap.suite.ui.microchart,sap.ui.export"

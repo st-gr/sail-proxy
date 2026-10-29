@@ -3,8 +3,8 @@
  *
  * The admin Docker image is built from a hand-maintained slim manifest
  * (package.docker.json) that replaces package.json inside the image (see
- * docker/admin.Dockerfile). The production stage runs `pnpm install --prod`
- * against that file only, so any runtime dependency added to package.json but
+ * docker/admin.Dockerfile). The runtime-deps stage runs `pnpm install --prod`
+ * against that file only and the production stage copies its node_modules, so any runtime dependency added to package.json but
  * not to package.docker.json is silently absent from the deployed container
  * (this is how wink-nlp went missing from the gateway image in the Kyma
  * deployment while local dev kept working).
@@ -23,8 +23,6 @@ const DOCKER_EXCLUDED: Record<string, string> = {
   // Docker/Kyma deployments run against PostgreSQL; SQLite is local/dev only.
   '@cap-js/sqlite': 'local dev database only',
   sqlite3: 'local dev database only',
-  // CAP development CLI, not needed at runtime.
-  '@sap/cds-dk': 'dev CLI tooling',
   // Not imported by admin src (session handling is done by approuter/CAP middleware).
   'cookie-parser': 'not a runtime import',
   'express-session': 'not a runtime import',
@@ -47,7 +45,7 @@ const DOCKER_ONLY: Record<string, string> = {
  */
 const VERSION_MISMATCH_ALLOWED: Record<string, string> = {
   // docker pins a stricter floor (^4.19.2) than main (^4); same major,
-  // and the effective version is governed by root pnpm.overrides.
+  // and the effective version is governed by the pnpm.overrides block of docker/package.json (the image workspace root; kept equal to the root block by the last test below).
   express: 'stricter floor in docker, superseded by root overrides',
 };
 
@@ -90,5 +88,17 @@ describe('package.docker.json stays in sync with package.json', () => {
   it('only allowlists dependencies that still exist in package.json', () => {
     const stale = Object.keys(DOCKER_EXCLUDED).filter((dep) => !(dep in mainDeps));
     expect(stale).toEqual([]);
+  });
+});
+
+describe('docker/package.json pnpm.overrides mirror the root package.json', () => {
+  // The Dockerfiles copy docker/package.json in as the pnpm workspace root, so the
+  // root package.json's overrides never apply inside the images: this block is the
+  // only one that governs the shipped dependency closure.
+  const readOverrides = (file: string): Record<string, string> =>
+    JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', '..', file), 'utf8')).pnpm?.overrides ?? {};
+
+  it('carries exactly the root overrides, so a CVE pin cannot be missed in the images', () => {
+    expect(readOverrides('docker/package.json')).toEqual(readOverrides('package.json'));
   });
 });

@@ -1,7 +1,7 @@
 <core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core" xmlns:f="sap.f" xmlns:mc="sap.suite.ui.microchart">
     <f:Card id="myQuotaCard" width="28rem" class="sapUiMediumMarginTop" visible="{quota>/available}">
         <f:header>
-            <card:Header xmlns:card="sap.f.cards" title="My quota" subtitle="Consumption against your limits (UTC calendar windows)" iconSrc="sap-icon://measuring-point"/>
+            <card:Header xmlns:card="sap.f.cards" title="{i18n>quota.title}" subtitle="{i18n>quota.subtitle}" iconSrc="sap-icon://measuring-point"/>
         </f:header>
         <f:content>
             <!-- The card content is a flex row, so a VBox without a width shrinks to its longest row. -->
