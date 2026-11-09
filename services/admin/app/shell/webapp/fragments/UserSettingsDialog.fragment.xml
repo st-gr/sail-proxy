@@ -1,0 +1,36 @@
+<core:FragmentDefinition
+	xmlns="sap.m"
+	xmlns:core="sap.ui.core">
+
+	<Dialog id="settings" title="{i18n>settings.title}" contentWidth="28rem">
+		<content>
+			<VBox class="sapUiMediumMargin">
+				<Label text="{i18n>settings.language}" labelFor="settingsLanguage" />
+				<!-- The native names stay untranslated so every user finds their own language -->
+				<Select id="settingsLanguage" width="100%" selectedKey="{settings>/language}">
+					<core:Item key="" text="{i18n>settings.language.browserDefault}" />
+					<core:Item key="en" text="English" />
+					<core:Item key="de" text="Deutsch" />
+					<core:Item key="es" text="Español" />
+					<core:Item key="fr" text="Français" />
+					<core:Item key="it" text="Italiano" />
+					<core:Item key="nl" text="Nederlands" />
+					<core:Item key="pt" text="Português" />
+				</Select>
+				<Text class="sapUiSmallMarginTop" text="{i18n>settings.language.reloadHint}" />
+				<Label class="sapUiMediumMarginTop" text="{i18n>settings.theme}" labelFor="settingsTheme" />
+				<Select id="settingsTheme" width="100%" selectedKey="{settings>/theme}">
+					<core:Item key="sap_horizon" text="{i18n>settings.theme.light}" />
+					<core:Item key="sap_horizon_dark" text="{i18n>settings.theme.dark}" />
+					<core:Item key="system" text="{i18n>settings.theme.system}" />
+				</Select>
+			</VBox>
+		</content>
+		<beginButton>
+			<Button id="settingsSave" type="Emphasized" text="{i18n>settings.save}" press=".onSettingsSave" />
+		</beginButton>
+		<endButton>
+			<Button id="settingsCancel" text="{i18n>settings.cancel}" press=".onSettingsCancel" />
+		</endButton>
+	</Dialog>
+</core:FragmentDefinition>

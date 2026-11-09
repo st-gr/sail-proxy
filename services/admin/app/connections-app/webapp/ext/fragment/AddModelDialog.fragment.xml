@@ -1,0 +1,25 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+	<!--
+		Add model. The combo box offers the names the provider lists; while that call runs it is busy,
+		and when it fails it stays a free-text field, so a deployment name can be typed.
+	-->
+	<Dialog id="dialog" title="{i18n>addModel.dialogTitle}" contentWidth="28rem" draggable="false" resizable="false"
+		busy="{dlg>/busy}" busyIndicatorDelay="0" afterClose=".onAfterClose">
+		<VBox class="sapUiSmallMargin">
+			<MessageStrip text="{dlg>/listError}" type="Warning" showIcon="true" visible="{= !!${dlg>/listError} }" class="sapUiSmallMarginBottom"/>
+			<Label text="{i18n>addModel.upstreamModel}" labelFor="upstream" required="true"/>
+			<ComboBox id="upstream" items="{dlg>/models}" busy="{dlg>/loading}" busyIndicatorDelay="0" maxLength="64"
+				placeholder="{i18n>addModel.upstreamPlaceholder}" showSecondaryValues="false" submit=".onOk">
+				<core:Item key="{dlg>name}" text="{dlg>name}"/>
+			</ComboBox>
+			<Label text="{i18n>addModel.displayName}" labelFor="displayName" class="sapUiSmallMarginTop"/>
+			<Input id="displayName" maxLength="100" submit=".onOk"/>
+			<Label text="{i18n>addModel.family}" labelFor="family" required="true" class="sapUiSmallMarginTop"/>
+			<Select id="family" selectedKey="{dlg>/family}" items="{dlg>/families}">
+				<core:Item key="{dlg>key}" text="{dlg>text}"/>
+			</Select>
+		</VBox>
+		<beginButton><Button text="{i18n>addModel.add}" type="Emphasized" press=".onOk"/></beginButton>
+		<endButton><Button text="{i18n>cancel}" press=".onCancel"/></endButton>
+	</Dialog>
+</core:FragmentDefinition>

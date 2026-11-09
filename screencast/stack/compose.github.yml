@@ -1,0 +1,13 @@
+# GitHub sign-in for the documentation demo stack (the GitHub clip of the Kyma video and the teaser). Use on top of
+# compose.docs.yml after `node screencast/stack/github-dex.mjs`:
+#   … -f docker/docker-compose.yml -f screencast/stack/compose.docs.yml -f screencast/stack/compose.github.yml up -d dex admin
+# Dex then offers GitHub next to the local accounts, and members of the org's admin team are admins. Without this
+# file (`… up -d dex admin` again) the stack is back to the local sign-in only.
+services:
+  dex:
+    volumes: !override
+      - ../screencast/out/github-dex.config.yaml:/etc/dex/config.yaml:ro
+      - ./okta-saml-ca.pem:/etc/dex/saml-ca.pem:ro
+  admin:
+    environment:
+      ROLE_MAPPING: ${SAIL_DOCS_ROLE_MAPPING:?set SAIL_DOCS_ROLE_MAPPING, e.g. the local mapping plus "<org>:<admin team>":"admin"}

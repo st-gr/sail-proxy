@@ -1,0 +1,11 @@
+{
+  "id": "resizeOversizedImages",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Resizes images above the per-model dimension limit in requests with several images."
+    }
+  }
+}

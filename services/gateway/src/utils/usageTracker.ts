@@ -1,0 +1,235 @@
+import { Request } from 'express';
+import { UsageEvent, UsageMetrics } from '../types/usage';
+import usageEmitter from '../services/usageEventEmitter';
+import { getDefaultLogger } from '@libs/logger';
+import { redactUrl } from './redactUrl';
+const logger = getDefaultLogger();
+import { isStandaloneMode } from '../config/unifiedAuthConfig';
+import { emitSiemUsageEvent } from '../services/siemUsageEvent';
+import { toolsForEvent } from '../toolGovernance/record';
+import { teamFromRequest } from './userBlock';
+
+/**
+ * Extract authentication info from request for usage tracking
+ */
+export function extractAuthInfo(req: Request): { authType: 'api_key' | 'aws_credential'; credentialId: string } | null {
+  try {
+    // Check unified auth first
+    if ((req as any).unifiedAuth?.valid) {
+      return {
+        authType: (req as any).unifiedAuth.authType,
+        credentialId: (req as any).unifiedAuth.data?.id || (req as any).unifiedAuth.data?.keyId || (req as any).unifiedAuth.data?.credentialId || 'unknown'
+      };
+    }
+
+    // Fallback to legacy auth patterns
+    if ((req as any).apiKey?.id) {
+      return {
+        authType: 'api_key' as const,
+        credentialId: (req as any).apiKey.id
+      };
+    }
+
+    if ((req as any).awsCredential?.accessKeyId) {
+      return {
+        authType: 'aws_credential' as const, 
+        credentialId: (req as any).awsCredential.accessKeyId
+      };
+    }
+
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Create usage metrics tracker for request
+ */
+export function createUsageMetrics(): UsageMetrics {
+  return {
+    startTime: Date.now(),
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    imageInputTokens: 0,
+    imageOutputTokens: 0,
+    audioInputTokens: 0,
+    audioOutputTokens: 0
+  };
+}
+
+/**
+ * Update token counts in usage metrics with separate cache token tracking
+ */
+export function updateTokenCounts(
+  metrics: UsageMetrics, 
+  inputTokens: number, 
+  outputTokens: number,
+  cacheCreationInputTokens?: number,
+  cacheReadInputTokens?: number,
+  imageInputTokens?: number,
+  imageOutputTokens?: number
+): void {
+  const safeInputTokens = inputTokens || 0;
+  const safeOutputTokens = outputTokens || 0;
+  const safeCacheCreationTokens = cacheCreationInputTokens || 0;
+  const safeCacheReadTokens = cacheReadInputTokens || 0;
+  const safeImageInputTokens = imageInputTokens || 0;
+  const safeImageOutputTokens = imageOutputTokens || 0;
+
+  metrics.inputTokens += safeInputTokens;
+  metrics.outputTokens += safeOutputTokens;
+  metrics.cacheCreationInputTokens = (metrics.cacheCreationInputTokens || 0) + safeCacheCreationTokens;
+  metrics.cacheReadInputTokens = (metrics.cacheReadInputTokens || 0) + safeCacheReadTokens;
+  metrics.imageInputTokens = (metrics.imageInputTokens || 0) + safeImageInputTokens;
+  metrics.imageOutputTokens = (metrics.imageOutputTokens || 0) + safeImageOutputTokens;
+
+  // Add instrumentation logging
+  logger.info('UsageTrackingService', 'Token counts updated', {
+    inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens,
+    cacheCreationInputTokens: metrics.cacheCreationInputTokens,
+    cacheReadInputTokens: metrics.cacheReadInputTokens,
+    imageInputTokens: metrics.imageInputTokens,
+    imageOutputTokens: metrics.imageOutputTokens,
+    delta: {
+      input: safeInputTokens,
+      output: safeOutputTokens,
+      cacheCreation: safeCacheCreationTokens,
+      cacheRead: safeCacheReadTokens,
+      image: safeImageInputTokens,
+      imageOutput: safeImageOutputTokens,
+      originalInput: inputTokens,
+      originalOutput: outputTokens,
+      originalCacheCreation: cacheCreationInputTokens,
+      originalCacheRead: cacheReadInputTokens,
+      originalImage: imageInputTokens,
+      originalImageOutput: imageOutputTokens
+    }
+  });
+}
+
+/**
+ * Emit usage event - minimal overhead, fire-and-forget
+ * Provider is now resolved from model cache instead of being passed in
+ */
+/** The caller's User-Agent, capped at the column width the admin stores it in. */
+function userAgentOf(req: any): string | undefined {
+  const raw = typeof req?.get === 'function' ? req.get('user-agent') : req?.headers?.['user-agent'];
+  return typeof raw === 'string' && raw.length > 0 ? raw.slice(0, 500) : undefined;
+}
+
+export async function emitUsageEvent(
+  req: Request,
+  metrics: UsageMetrics,
+  model: string,
+  statusCode: number
+): Promise<void> {
+  try {
+    // Skip usage tracking in standalone mode
+    if (isStandaloneMode()) {
+      return;
+    }
+
+    const authInfo = extractAuthInfo(req);
+
+    // The SIEM usage event is emitted before the auth-info gate below, and independently of
+    // the billing usage event: an operator exporting request-level events to a SIEM wants
+    // the request that could not be attributed to a credential at least as much as the ones
+    // that could. Everything it needs comes off `req` and the arguments already here - no
+    // configuration is read on this line, deliberately, so nothing about the SIEM export can
+    // throw before the billing event below is emitted. The whole call is fire-and-forget and
+    // self-silencing; see services/siemUsageEvent.ts for the two per-sink gates that decide
+    // whether it may carry any content.
+    void emitSiemUsageEvent(req, {
+      model,
+      statusCode,
+      requestId: (req as any).debugRequestId,
+      credentialId: authInfo?.credentialId,
+      authType: authInfo?.authType,
+      endpoint: redactUrl(req.originalUrl || req.url || ''),
+    });
+
+    if (!authInfo) return; // Skip if no auth info available
+
+    // Provider will be resolved by admin service from model data
+    // Gateway no longer needs to resolve providers during request processing.
+    // A Connection model is the exception (spec 2026-10-23 §5.5): the resolver tagged the request,
+    // and the admin must know it is external so it never prices it as SAP.
+    const external = (req as any).__externalUsage;
+    const provider = external?.provider ?? 'unknown';
+
+    const responseTime = Date.now() - metrics.startTime;
+    
+    // Extract clean endpoint without provider-specific path components
+    const originalUrl = req.originalUrl || req.url || '';
+    let endpoint = originalUrl;
+    
+    // Remove query parameters for cleaner endpoint tracking
+    if (endpoint.includes('?')) {
+      endpoint = endpoint.split('?')[0];
+    }
+    
+    const teamId = teamFromRequest(req)?.teamId;
+
+    const event: UsageEvent = {
+      requestId: (req as any).debugRequestId || 'unknown',
+      timestamp: Math.floor(Date.now() / 1000), // Unix timestamp
+      authType: authInfo.authType,
+      credentialId: authInfo.credentialId,
+      provider,
+      model,
+      inputTokens: metrics.inputTokens,
+      outputTokens: metrics.outputTokens,
+      cacheCreationInputTokens: metrics.cacheCreationInputTokens,
+      cacheReadInputTokens: metrics.cacheReadInputTokens,
+      imageInputTokens: metrics.imageInputTokens,
+      imageOutputTokens: metrics.imageOutputTokens,
+      audioInputTokens: metrics.audioInputTokens,
+      audioOutputTokens: metrics.audioOutputTokens,
+      responseTime,
+      statusCode,
+      endpoint,
+      usageEstimated: metrics.usageEstimated,
+      unit: metrics.unit ?? 'tokens',
+      tools: toolsForEvent(req),
+      userAgent: userAgentOf(req),
+      teamId: typeof teamId === 'string' ? teamId : undefined,
+      // Stamped by sapTenantMiddleware when the request entered; a Connection request never reached SAP.
+      sapTenant: external ? null : ((req as any).__sapTenant ?? null),
+      sapTenantSource: external ? null : ((req as any).__sapTenantSource ?? null),
+      ...(external ? { connectionId: external.connectionId, upstreamModel: external.upstreamModel, origin: 'external' as const } : {})
+    };
+
+    // Add comprehensive logging before emission
+    logger.info('UsageTrackingService', 'Emitting usage event', {
+      requestId: event.requestId,
+      provider: event.provider,
+      model: event.model,
+      tokens: {
+        input: event.inputTokens,
+        output: event.outputTokens,
+        cacheCreation: event.cacheCreationInputTokens,
+        cacheRead: event.cacheReadInputTokens,
+        image: event.imageInputTokens,
+        imageOutput: event.imageOutputTokens,
+        total: event.inputTokens + event.outputTokens + (event.cacheCreationInputTokens || 0) + (event.cacheReadInputTokens || 0)
+      },
+      authType: event.authType,
+      credentialId: event.credentialId,
+      statusCode: event.statusCode,
+      responseTime: event.responseTime
+    });
+
+    // Fire and forget - don't await to minimize overhead
+    usageEmitter.emit(event).catch((error) => {
+      logger.error('UsageTrackingService', 'Failed to emit usage event', error, {
+        requestId: event.requestId
+      });
+    });
+  } catch (error) {
+    // Never throw from usage tracking
+  }
+}

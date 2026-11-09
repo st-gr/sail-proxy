@@ -1,0 +1,41 @@
+meta {
+  name: Get API Key by Key
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/getApiKeyByKey(key='{{created_api_key}}')
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:pre-request {
+  const apiKey = bru.getVar('created_api_key');
+  if (!apiKey) {
+    throw new Error('This test requires created_api_key from "Create API Key" test. Please run that test first.');
+  }
+}
+
+script:post-response {
+  if (res.body.found) {
+    console.log('✓ API Key found successfully');
+    console.log('Key ID:', res.body.keyInfo.id);
+    console.log('Name:', res.body.keyInfo.name);
+    console.log('Email:', res.body.keyInfo.email);
+    console.log('Active:', res.body.keyInfo.isActive);
+    console.log('Permissions:', res.body.keyInfo.permissions);
+  } else {
+    console.log('⚠ API Key not found');
+    console.log('Response:', res.body);
+  }
+}

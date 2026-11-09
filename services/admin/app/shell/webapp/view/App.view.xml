@@ -1,0 +1,150 @@
+<mvc:View
+	controllerName="admin.shell.controller.App"
+	displayBlock="true"
+	height="100%"
+	xmlns="sap.m"
+	xmlns:mvc="sap.ui.core.mvc"
+	xmlns:core="sap.ui.core"
+	xmlns:tnt="sap.tnt"
+	xmlns:webc="sap.ui.webc.main"
+	xmlns:webcf="sap.ui.webc.fiori">
+	<App id="app">
+		<Page id="toolPageWrapper" showHeader="false">
+			<tnt:ToolPage id="toolPage" sideExpanded="{= !${device>/system/phone} &amp;&amp; ${ui>/sideExpanded} }">
+				<tnt:header>
+					<webcf:ShellBar
+						primaryTitle=""
+						secondaryTitle="Cockpit"
+						showNotifications="true"
+						notificationsCount="{appView>/notificationsCount}"
+						notificationsClick=".onNotificationsClick"
+						profileClick=".onProfileClick"
+						logoClick=".onLogoClick"
+						showProductSwitch="false"
+						showSearchField="false"
+					>
+						<webcf:startButton>
+							<webc:Button id="toggleMenu" icon="menu2" tooltip="{i18n>toggleNav}"
+								click=".onMenuButtonClick" />
+						</webcf:startButton>
+
+						<webcf:logo>
+							<Image src="images/sail_proxy_logo.svg" width="48px" height="40px" />
+						</webcf:logo>
+
+						<webcf:profile>
+							<webc:Avatar id="profileAvatar" initials="{appView>/userInitials}" shape="Circle" size="XS" />
+						</webcf:profile>
+					</webcf:ShellBar>
+				</tnt:header>
+
+				<tnt:sideContent>
+					<tnt:SideNavigation
+						id="sideNavigation"
+						ariaLabel="{i18n>nav.main}"
+						expanded="true"
+						selectedKey="home"
+						width="18rem"
+						itemSelect=".onItemSelect">
+						<tnt:NavigationList>
+							<tnt:NavigationListItem key="home" text="{i18n>nav.home}" icon="home" />
+							<tnt:NavigationListItem key="access" text="{i18n>nav.access}" icon="key" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="apiKeys" text="{i18n>nav.apiKeys}" />
+								<tnt:NavigationListItem key="awsCredentials" text="{i18n>nav.awsCredentials}" />
+							</tnt:NavigationListItem>
+							<tnt:NavigationListItem key="analytics" text="{i18n>nav.analytics}" icon="business-by-design" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="usage" text="{i18n>nav.usage}" />
+								<tnt:NavigationListItem key="securityEvents" text="{i18n>nav.securityEvents}" />
+							</tnt:NavigationListItem>
+							<tnt:NavigationListItem key="modelsGroup" text="{i18n>nav.models}" icon="product" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="modelLibrary" text="{i18n>nav.modelLibrary}" />
+								<tnt:NavigationListItem key="catalogs" text="{i18n>nav.catalogs}" />
+							</tnt:NavigationListItem>
+							<tnt:NavigationListItem key="groundingGroup" text="{i18n>nav.grounding}" icon="documents" expanded="true"
+								selectable="false">
+								<tnt:NavigationListItem key="groundingStores" text="{i18n>nav.groundingStores}" />
+								<tnt:NavigationListItem key="groundingFiles" text="{i18n>nav.groundingFiles}" />
+								<tnt:NavigationListItem key="groundingJobs" text="{i18n>nav.groundingJobs}" />
+								<tnt:NavigationListItem key="groundingAdmin" text="{i18n>nav.groundingAdmin}" visible="{appView>/isAdmin}" />
+							</tnt:NavigationListItem>
+						</tnt:NavigationList>
+						<tnt:fixedItem>
+							<tnt:NavigationList>
+								<tnt:NavigationListItem key="settingsGroup" text="{i18n>settings.title}" icon="settings" expanded="true"
+									selectable="false">
+									<tnt:NavigationListItem key="settings" text="{i18n>nav.config}" />
+									<tnt:NavigationListItem key="sapRates" text="{i18n>nav.sapRates}" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="teams" text="{i18n>nav.teams}" visible="{= ${appView>/isAdmin} || ${appView>/isTeamAdmin} }" />
+									<tnt:NavigationListItem key="users" text="{i18n>nav.users}" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="toolPolicies" text="{i18n>nav.toolPolicies}" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="connections" text="{i18n>nav.connections}" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="plugins" text="{i18n>nav.plugins}" visible="{appView>/isAdmin}" />
+								</tnt:NavigationListItem>
+							</tnt:NavigationList>
+						</tnt:fixedItem>
+					</tnt:SideNavigation>
+				</tnt:sideContent>
+
+				<tnt:mainContents>
+					<!-- Direct VBox without Page wrapper to avoid internal headers -->
+					<VBox id="mainContent" fitContainer="true" class="shellFlexGrow shellRoot sapUiMediumMargin">
+						<VBox id="updateNotice" visible="{appView>/updateNotice/visible}" class="sapUiSmallMarginBottom">
+							<MessageStrip id="updateNoticeStrip" type="Information" showIcon="true" showCloseButton="true"
+								close=".onUpdateNoticeClose" text="{appView>/updateNotice/text}">
+								<link>
+									<Link id="updateReleaseLink" text="{i18n>update.releaseNotes}" href="{appView>/updateNotice/releaseUrl}" target="_blank" />
+								</link>
+							</MessageStrip>
+							<Link id="updateRunbookLink" text="{i18n>update.runbook}" href="{appView>/updateNotice/runbookUrl}" target="_blank" class="sapUiTinyMarginTop" />
+						</VBox>
+						<!-- Navigation breadcrumb area -->
+						<HBox id="navigationArea" visible="false" alignItems="Center" class="sapUiMediumMarginBottom">
+							<Button id="backButton" icon="sap-icon://nav-back" tooltip="{i18n>back}" press=".onBackPress" type="Transparent" />
+							<Breadcrumbs id="breadcrumbs" class="sapUiTinyMarginBegin">
+								<Link id="homeLink" text="{i18n>nav.home}" press=".onHomeLinkPress" />
+							</Breadcrumbs>
+						</HBox>
+						
+						<!-- Title area (fixed height) -->
+						<Title id="contentTitle" text="{i18n>shellTitle}" class="sapUiMediumMarginBottom" />
+						
+						<!-- Persistent FE container that fills the space -->
+						<core:ComponentContainer 
+							id="feContainer" 
+							async="true" 
+							width="100%" 
+							height="100%" 
+							visible="false">
+							<core:layoutData>
+								<FlexItemData growFactor="1"/>
+							</core:layoutData>
+						</core:ComponentContainer>
+						
+						<!-- Static content (does NOT grow) -->
+						<VBox id="staticContent" visible="true" class="sapUiResponsiveContentPadding">
+							<!-- Static content will be populated dynamically -->
+						</VBox>
+					</VBox>
+				</tnt:mainContents>
+			</tnt:ToolPage>
+
+			<!-- User Profile Popover -->
+			<webc:Popover id="userProfilePopover" placementType="Bottom" class="sapUiContentPadding" horizontalAlign="Center" allowTargetOverlap="false" hideArrow="false">
+				<VBox alignItems="Center" class="sapUiSmallMargin">
+					<webc:Avatar initials="{appView>/userInitials}" shape="Circle" size="L" class="sapUiSmallMarginBottom" />
+					<Text text="{appView>/userEmail}" class="sapUiSmallMarginBottom" />
+					<Text text="{= ${appView>/isAdmin} ? ${i18n>profile.role.admin} : ${i18n>profile.role.user} }" class="sapUiTinyMarginBottom" />
+					<core:Fragment fragmentName="admin.shell.fragments.MyQuotaCompact" type="XML" />
+					<webc:Button id="settingsButton" text="{i18n>settings.title}" icon="action-settings" click=".onSettingsOpen"
+						design="Transparent" class="sapUiTinyMarginBottom" />
+					<webc:Button text="{i18n>signOut}" icon="log" click=".onSignOut" design="Emphasized" />
+				</VBox>
+			</webc:Popover>
+
+			<mvc:XMLView id="notificationsView" viewName="admin.shell.view.Notifications" />
+		</Page>
+	</App>
+</mvc:View>

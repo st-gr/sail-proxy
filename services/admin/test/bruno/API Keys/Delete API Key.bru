@@ -1,0 +1,47 @@
+meta {
+  name: Delete API Key
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{base_url}}/deleteApiKey
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "keyId": "{{enabled_api_key_id}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: eq true
+  res.body.message: eq "API key deleted successfully"
+}
+
+script:pre-request {
+  if (!bru.getVar('enabled_api_key_id')) {
+    throw new Error('No enabled API key ID available. Run "Enable API Key" first.');
+  }
+}
+
+script:post-response {
+  if (res.body.success) {
+    console.log('Deleted API key:', bru.getVar('enabled_api_key_id'));
+    
+    // Clear variables since key is deleted
+    bru.setVar('created_api_key_id', '');
+    bru.setVar('disabled_api_key_id', '');
+    bru.setVar('enabled_api_key_id', '');
+  } else {
+    throw new Error(`Failed to delete API key: ${res.body.message}`);
+  }
+}

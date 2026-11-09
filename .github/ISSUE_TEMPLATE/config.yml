@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/st-gr/sail-proxy/discussions/categories/q-a
+    about: Questions about setting up, configuring or using sail-proxy go to Discussions Q&A.
+  - name: Share an idea
+    url: https://github.com/st-gr/sail-proxy/discussions/categories/ideas
+    about: Talk an idea through in Discussions before it becomes a feature request.
+  - name: Report a security vulnerability
+    url: https://github.com/st-gr/sail-proxy/blob/main/SECURITY.md
+    about: Never in public. Follow the Security Policy to report it privately.
+  - name: Documentation
+    url: https://st-gr.github.io/sail-proxy/
+    about: Guides, deployment, configuration, troubleshooting and FAQ.

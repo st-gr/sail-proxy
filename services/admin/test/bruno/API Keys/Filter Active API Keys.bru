@@ -1,0 +1,33 @@
+meta {
+  name: Filter Active API Keys
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/ApiKeys?$filter=isActive eq true
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isArray
+}
+
+script:post-response {
+  // Verify all returned keys are active
+  res.body.value.forEach(key => {
+    if (!key.isActive) {
+      throw new Error('All keys should be active');
+    }
+  });
+  
+  console.log('Found', res.body.value.length, 'active API keys');
+}

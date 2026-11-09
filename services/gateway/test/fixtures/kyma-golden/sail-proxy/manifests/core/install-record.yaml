@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sail-proxy-install
+  namespace: sail-proxy
+  labels:
+    app.kubernetes.io/part-of: sail-proxy
+data:
+  version: "1.2.3"
+  answers: "{\"AUTH_URL\":\"https://auth.example.test\",\"CLIENT_ID\":\"example-client\",\"LOGOUT_REDIRECT_URL\":\"auto-shell\",\"POSTGRES_USER\":\"gw_admin\",\"SAP_AI_CORE_URL\":\"https://api.ai.example.test\",\"SAP_AI_REGION\":\"example-region\",\"SAP_AI_RESOURCE_GROUP\":\"default\",\"allowIstioSystemChanges\":true,\"clusterSubdomain\":\"c-abc123\",\"configMethod\":\"manual\",\"deploymentType\":\"public\",\"domain\":\"sail-proxy\",\"imagePullSecrets\":true,\"imageTag\":\"1.2.3\",\"ipAllowlist\":\"198.51.100.0/24,203.0.113.12/32\",\"organization\":\"example-org\",\"provider\":\"local\",\"registry\":\"ghcr.io\",\"sccTunnel\":true}"
+  recordedBy: "setup"

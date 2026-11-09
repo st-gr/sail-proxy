@@ -1,0 +1,53 @@
+meta {
+  name: Admin Updates with 128-char Key (SUCCESS)
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{base_url}}/ApiKeys({{other_user_api_key_id}})
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "name": "Admin Max Length Key Test",
+    "key": "sk-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: eq "Admin Max Length Key Test"
+  res.body.ID: eq {{other_user_api_key_id}}
+}
+
+script:pre-request {
+  // Check if we have the required other user API key
+  const otherUserApiKeyId = bru.getVar('other_user_api_key_id');
+  if (!otherUserApiKeyId) {
+    throw new Error('This test requires other_user_api_key_id from "Create Other User API Key" test. Please run that test first.');
+  }
+  
+  // Validate our test key is exactly 128 characters
+  const testKey = "sk-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567";
+  if (testKey.length !== 128) {
+    throw new Error(`Test key should be exactly 128 characters, got ${testKey.length}`);
+  }
+}
+
+script:post-response {
+  // Validate that sensitive fields are not exposed
+  if (res.body.key) {
+    throw new Error('API key field should not be exposed in PATCH response');
+  }
+  
+  console.log(`Admin successfully updated API key with maximum length (128 chars): ${res.body.ID}`);
+  console.log(`New name: ${res.body.name}`);
+}

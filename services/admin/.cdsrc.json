@@ -1,0 +1,33 @@
+{
+  "[docker]": {
+    "requires": {
+      "db": {
+        "kind": "postgres",
+        "impl": "@cap-js/postgres",
+        "credentials": {
+          "host": "postgres",
+          "port": 5432,
+          "user": "admin_user",
+          "password": "admin_password",
+          "database": "sap_llm_gateway"
+        },
+        "schema_evolution": "auto"
+      }
+    },
+    "sql": {
+      "dialect": "postgres"
+    },
+    "features": {
+      "drafts": true
+    },
+    "fiori": {
+      "lean_draft": true
+    }
+  },
+  "features": {
+    "drafts": true
+  },
+  "fiori": {
+    "lean_draft": true
+  }
+}

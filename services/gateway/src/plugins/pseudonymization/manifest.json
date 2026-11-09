@@ -1,0 +1,11 @@
+{
+  "id": "pseudonymization",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Masks personal data and secrets in requests and restores them in responses."
+    }
+  }
+}

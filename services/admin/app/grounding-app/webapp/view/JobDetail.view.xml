@@ -1,0 +1,164 @@
+<mvc:View
+    controllerName="admin.grounding.controller.JobDetail"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:f="sap.ui.layout.form"
+    xmlns="sap.m">
+    <Page id="jobDetailPage" title="{i18n>jobDetailTitle}" showNavButton="true" navButtonPress=".onBack" busy="{view>/busy}" busyIndicatorDelay="0">
+        <headerContent>
+            <Button id="cancelJobButton" text="{i18n>cancelJob}" visible="{view>/job/canCancel}" press=".onCancel"/>
+            <Button id="retryJobButton" text="{i18n>retryJob}" visible="{view>/job/canRetry}" press=".onRetry"/>
+            <Button id="openStoreButton" text="{i18n>openStore}" visible="{= !!${view>/job/storeId} &amp;&amp; !${view>/adminView} }" press=".onOpenStore"/>
+        </headerContent>
+        <content>
+            <f:Form id="jobForm" editable="false">
+                <f:layout><f:ColumnLayout/></f:layout>
+                <f:formContainers>
+                    <f:FormContainer>
+                        <f:formElements>
+                            <f:FormElement label="{i18n>jobId}">
+                                <f:fields><Text text="{view>/job/id}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnKind}">
+                                <f:fields><Text text="{view>/job/kindText}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnStore}" visible="{= !${view>/blobMigration} }">
+                                <f:fields><Text text="{view>/job/storeName}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnState}">
+                                <f:fields><ObjectStatus id="jobState" text="{view>/job/stateText}" state="{view>/job/stateColor}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnProgress}">
+                                <f:fields><Text id="jobProgress" text="{view>/job/progress}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{= ${view>/blobMigration} ? ${i18n>columnBlobs} : ${i18n>columnFiles} }">
+                                <f:fields><Text text="{view>/counts}"/></f:fields>
+                            </f:FormElement>
+                        </f:formElements>
+                    </f:FormContainer>
+                    <f:FormContainer>
+                        <f:formElements>
+                            <f:FormElement label="{i18n>columnTokens}" visible="{= !${view>/blobMigration} }">
+                                <f:fields><Text text="{view>/job/tokens}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobTargetChunking}" visible="{= ${view>/job/rechunk} === true }">
+                                <f:fields><Text id="jobTargetChunkingText" text="{view>/job/targetChunkingText}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobContextInputTokens}" visible="{= ${view>/job/contextual} === true }">
+                                <f:fields><Text id="jobContextInputTokens" text="{view>/job/contextInputTokens}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobContextCachedTokens}" visible="{= ${view>/job/contextual} === true }">
+                                <f:fields><Text id="jobContextCachedTokens" text="{view>/job/contextCachedTokens}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobContextOutputTokens}" visible="{= ${view>/job/contextual} === true }">
+                                <f:fields><Text id="jobContextOutputTokens" text="{view>/job/contextOutputTokens}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobContextFailedChunks}" visible="{= ${view>/job/contextual} === true }">
+                                <f:fields><Text id="jobContextFailedChunks" text="{view>/job/contextFailedChunks}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobOcrPages}" visible="{= !!${view>/job/ocrPages} &amp;&amp; ${view>/job/ocrPages} !== '0' }">
+                                <f:fields><Text id="jobOcrPages" text="{view>/job/ocrPages}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobOcrSkippedPages}" visible="{= !!${view>/job/ocrSkippedPages} &amp;&amp; ${view>/job/ocrSkippedPages} !== '0' }">
+                                <f:fields><Text id="jobOcrSkippedPages" text="{view>/job/ocrSkippedPages}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobVisionPages}" visible="{= !!${view>/job/visionPages} &amp;&amp; ${view>/job/visionPages} !== '0' }">
+                                <f:fields><Text id="jobVisionPages" text="{view>/job/visionPages}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobVisionSkippedPages}" visible="{= !!${view>/job/visionSkippedPages} &amp;&amp; ${view>/job/visionSkippedPages} !== '0' }">
+                                <f:fields><Text id="jobVisionSkippedPages" text="{view>/job/visionSkippedPages}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>detailCreated}">
+                                <f:fields><Text text="{view>/job/created}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnStarted}">
+                                <f:fields><Text text="{view>/job/started}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnFinished}">
+                                <f:fields><Text text="{view>/job/finished}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>jobStartedBy}">
+                                <f:fields><Text text="{view>/job/startedBy}"/></f:fields>
+                            </f:FormElement>
+                            <f:FormElement label="{i18n>columnError}" visible="{= !!${view>/job/errorText} }">
+                                <f:fields><Text text="{view>/job/errorText}" class="groundingFileError"/></f:fields>
+                            </f:FormElement>
+                        </f:formElements>
+                    </f:FormContainer>
+                </f:formContainers>
+            </f:Form>
+            <Table id="jobFailedFilesTable" items="{view>/failedFiles}" noDataText="{i18n>noFailedFiles}" class="sapUiSmallMarginTop"
+                visible="{= !!${view>/job/batchId} }">
+                <headerToolbar>
+                    <OverflowToolbar>
+                        <Title text="{i18n>jobFailedFiles}" level="H3"/>
+                    </OverflowToolbar>
+                </headerToolbar>
+                <columns>
+                    <Column><Text text="{i18n>columnFile}"/></Column>
+                    <Column><Text text="{i18n>columnError}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem>
+                        <cells>
+                            <Text text="{view>filename}"/>
+                            <Text text="{view>error}" class="groundingFileError"/>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+            <Table id="jobReembedFailuresTable" items="{view>/reembedFailures/rows}" noDataText="{i18n>noFailedFiles}" class="sapUiSmallMarginTop"
+                visible="{view>/reembed}"
+                busy="{view>/reembedFailures/busy}" busyIndicatorDelay="0">
+                <headerToolbar>
+                    <OverflowToolbar>
+                        <Title text="{i18n>jobFailedFiles}" level="H3"/>
+                    </OverflowToolbar>
+                </headerToolbar>
+                <columns>
+                    <Column visible="{view>/reembedFailures/showStore}"><Text text="{i18n>columnStore}"/></Column>
+                    <Column><Text text="{i18n>columnFile}"/></Column>
+                    <Column><Text text="{i18n>columnError}"/></Column>
+                    <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnAttempts}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem>
+                        <cells>
+                            <Text text="{view>storeName}"/>
+                            <Text text="{view>filename}"/>
+                            <Text text="{view>error}" class="groundingFileError"/>
+                            <Text text="{view>attempts}"/>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+            <Table id="jobBlobFailuresTable" items="{view>/reembedFailures/rows}" noDataText="{i18n>noFailedBlobs}" class="sapUiSmallMarginTop"
+                visible="{view>/blobMigration}"
+                busy="{view>/reembedFailures/busy}" busyIndicatorDelay="0">
+                <headerToolbar>
+                    <OverflowToolbar>
+                        <Title text="{i18n>jobFailedBlobs}" level="H3"/>
+                    </OverflowToolbar>
+                </headerToolbar>
+                <columns>
+                    <Column><Text text="{i18n>columnSha256}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnSourceStorage}"/></Column>
+                    <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnSize}"/></Column>
+                    <Column><Text text="{i18n>columnError}"/></Column>
+                    <Column hAlign="End" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnAttempts}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem>
+                        <cells>
+                            <Text text="{view>shortSha}" tooltip="{view>sha256}"/>
+                            <Text text="{view>source}"/>
+                            <Text text="{view>size}"/>
+                            <Text text="{view>error}" class="groundingFileError"/>
+                            <Text text="{view>attempts}"/>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+            <Button id="jobReembedFailuresMore" text="{i18n>adminMore}" visible="{view>/reembedFailures/hasMore}" press=".onMoreFailures" width="100%" type="Transparent"/>
+        </content>
+    </Page>
+</mvc:View>

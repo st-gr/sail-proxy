@@ -1,0 +1,38 @@
+meta {
+  name: REST API - Get Configuration Status
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{base_url}}/api/admin/api-config/status
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.timestamp: isDefined
+  res.body.eventPublishing: isDefined
+  res.body.activeConfig: isDefined
+}
+
+script:post-response {
+  console.log('✅ REST API configuration status retrieved');
+  console.log('Timestamp:', res.body.timestamp);
+  console.log('Event Publishing:', res.body.eventPublishing);
+  
+  const activeConfig = res.body.activeConfig;
+  console.log('Has Active Config:', activeConfig.hasActiveConfig);
+  
+  if (activeConfig.hasActiveConfig) {
+    console.log('Active Version:', activeConfig.version);
+    console.log('Deployed At:', activeConfig.deployedAt);
+    console.log('Checksum:', activeConfig.checksum.substring(0, 8) + '...');
+  }
+}

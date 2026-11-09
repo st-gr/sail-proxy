@@ -1,0 +1,219 @@
+# Gateway Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: __NAMESPACE__
+  labels:
+    app: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# Gateway Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: __NAMESPACE__
+  labels:
+    app: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+        # Disable Istio injection for backend service
+        sidecar.istio.io/inject: "false"
+    spec:
+      imagePullSecrets:
+      - name: registry-secret
+      initContainers:
+      - name: wait-for-admin
+        image: busybox:1.36
+        command: 
+        - sh
+        - -c
+        - |
+          echo 'Waiting for Admin service to be ready...'
+          ADMIN_URL="${ADMIN_SERVICE_URL:-http://admin:4004}"
+          echo "Admin service URL: $ADMIN_URL"
+          # Wait for Admin service
+          attempt=0
+          max_attempts=60
+          while [ $attempt -lt $max_attempts ]; do
+            if wget -q -O /dev/null "$ADMIN_URL/api/health" 2>/dev/null; then
+              echo "Admin service is healthy!"
+              break
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Waiting for admin service..."
+            sleep 2
+          done
+          if [ $attempt -eq $max_attempts ]; then
+            echo "ERROR: Admin service failed to become ready after $max_attempts attempts"
+            exit 1
+          fi
+          
+          # Wait for Valkey
+          echo "Checking Valkey..."
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if nc -z valkey 6379 2>/dev/null; then
+              echo "Valkey is ready at valkey:6379!"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Waiting for Valkey..."
+            sleep 2
+          done
+          echo "ERROR: Valkey failed to become ready after $max_attempts attempts"
+          exit 1
+        envFrom:
+        - secretRef:
+            name: gateway-env
+      # Applies the file_search schema migration and provisions the
+      # `gateway` container's DML-only runtime role (FILE_SEARCH_DATABASE_URL
+      # in the gateway-env Secret above), then exits — the ONLY place
+      # gateway-migration-env's FILE_SEARCH_MIGRATION_DATABASE_URL (a
+      # bootstrap-superuser DSN) is used or even present in this Deployment.
+      # initContainers get their own independent env — this Secret is never
+      # attached to the long-running `gateway` container below. Runs after
+      # wait-for-admin (not because it needs Admin itself, only Postgres,
+      # which Admin's own startup already required) so migrateCli.ts's
+      # getConfigAsync() pre-fetch of file_search.embedding_dimensions has a
+      # reachable Admin/Valkey to resolve the real configured value from,
+      # instead of falling back to the default. See
+      # services/gateway/src/fileSearch/migrateCli.ts and
+      # docs/developer/release.md.
+      - name: migrate-file-search
+        image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-gateway:__CONTAINER_TAG__
+        command: ["node", "services/gateway/dist/services/gateway/src/fileSearch/migrateCli.js"]
+        envFrom:
+        # `optional: true` as defence in depth against exactly the class of
+        # mistake that briefly existed in deploy-kyma.js — its secretFiles
+        # whitelist not yet including this Secret would otherwise mean
+        # kubectl never applies it and the kubelet cannot build this
+        # container's env at all (CreateContainerConfigError), wedging the
+        # *entire* pod (this initContainer never completes, so the main
+        # `gateway` container never starts either) — a total-gateway outage
+        # for what should only ever degrade file_search. With `optional:
+        # true`, a genuinely missing Secret instead leaves
+        # FILE_SEARCH_MIGRATION_DATABASE_URL unset, which migrateCli.ts's
+        # runMigration() already treats as "no privileged DSN configured"
+        # and falls back to the unrestricted single-DSN path (or reports
+        # unavailable, per its own fail-closed handling) — never a wedged
+        # pod. `gateway-env` below is deliberately NOT optional: it's
+        # required by the `gateway` container too, so a missing gateway-env
+        # is a broken deployment either way and there's nothing to gain by
+        # papering over it in just this one container.
+        - secretRef:
+            name: gateway-migration-env
+            optional: true
+        - secretRef:
+            name: gateway-env
+        # UNIFIED_TOKEN_SYSTEM_ENABLED lives in this ConfigMap, and
+        # isStandaloneMode() (unifiedAuthConfig.ts:33) reports standalone
+        # whenever it is unset — the VALKEY_URL/ADMIN_SERVICE_URL in the Secret
+        # above are necessary but not sufficient. Without this reference the
+        # migration ran standalone, so migrateCli.ts's `if (!isStandaloneMode())`
+        # pre-fetch was skipped and runMigration() built the vector column from
+        # FILE_SEARCH_DEFAULTS rather than the configured
+        # file_search.embedding_dimensions — the wrong width for any install
+        # that sets one. Standalone also sent configService.ts's "create the
+        # default config file" branch at getConfig()'s local-file fallback into
+        # writing /app/api_config.json as uid 1001 inside a root-owned WORKDIR,
+        # which is the EACCES this container used to log on every boot.
+        # Admin and Valkey are reachable by the time this runs (the
+        # wait-for-admin initContainer above guarantees it), which is precisely
+        # the non-standalone path docker-compose.yml's gateway-migrate comment
+        # names as Kyma's intended approach; getConfigAsync() bounds its own
+        # wait at 10s and falls back to HTTP, so this cannot wedge the pod.
+        #
+        # Hand-written rather than left to setup-kyma.js's
+        # updateDeploymentManifests(): that function's guard (setup-kyma.js:3161)
+        # skips the entire patch when the file already contains
+        # `name: gateway-config`, which the `gateway` container below always
+        # satisfies — so its auto-append never reached this initContainer. One
+        # more reference here keeps that guard satisfied exactly as before,
+        # leaving the auto-append the no-op it already was.
+        - configMapRef:
+            name: gateway-config
+        env:
+        # An initContainer that exits non-zero blocks the whole pod: the
+        # main `gateway` container never starts (all LLM proxying, not just
+        # file_search) until every initContainer succeeds. Before this
+        # migration step existed, a broken migration cost file_search a 503
+        # and nothing else — this flag (see migrateCli.ts's own doc
+        # comment) keeps that exact blast radius: migration still runs
+        # first and its failure is still logged loudly (kubectl logs
+        # <pod> -c migrate-file-search), but it can never prevent the
+        # gateway from starting.
+        - name: FILE_SEARCH_MIGRATE_NEVER_BLOCK
+          value: "true"
+      containers:
+      - name: gateway
+        image: __CONTAINER_REGISTRY__/__CONTAINER_ORGANIZATION__/sail-proxy-gateway:__CONTAINER_TAG__
+        envFrom:
+        - secretRef:
+            name: gateway-env
+        # FILE_SEARCH_S3_ACCESS_KEY_ID / FILE_SEARCH_S3_SECRET_ACCESS_KEY for
+        # file_search blobs stored in S3. Created by the operator only when S3
+        # is used (kyma/templates/secrets/gateway-s3-env.yaml.template);
+        # optional, so the gateway starts without it and file_search keeps
+        # storing blobs in the database. setup-kyma.js carries the live
+        # Secret's values over on a re-run.
+        - secretRef:
+            name: gateway-s3-env
+            optional: true
+        - configMapRef:
+            name: gateway-config
+        ports:
+        - containerPort: 8080
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: DISABLE_FILE_LOGGING
+          value: "true"

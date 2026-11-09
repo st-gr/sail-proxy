@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cast</title>
+<link rel="stylesheet" href="/player/asciinema-player.css">
+<style>
+  @font-face { font-family: '72'; src: url('/fonts/72-Regular.woff2') format('woff2'); font-weight: 400; }
+  @font-face { font-family: '72'; src: url('/fonts/72-Bold.woff2') format('woff2'); font-weight: 700; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(120% 120% at 0% 0%, #123A62 0%, #0B1F33 55%, #081626 100%); font-family: '72', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 1680px; border-radius: 14px; overflow: hidden; background: #0B1F33; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); }
+  .bar { height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 18px; background: #0F2A47; color: #8FD0FF; font-size: 17px; letter-spacing: .02em; }
+  .bar i { width: 12px; height: 12px; border-radius: 50%; background: #33B1FF; opacity: .55; display: block; }
+  .bar span { margin-left: 8px; }
+  .term { padding: 10px 14px 14px; }
+  .asciinema-player-theme-sail { --term-color-foreground: #E6EEF7; --term-color-background: #0B1F33;
+    --term-color-0: #0B1F33; --term-color-1: #FF7A7A; --term-color-2: #7CE38B; --term-color-3: #FFD77A; --term-color-4: #4DB1FF; --term-color-5: #D7A6FF; --term-color-6: #7FE0E8; --term-color-7: #E6EEF7;
+    --term-color-8: #5B6B7B; --term-color-9: #FF9A9A; --term-color-10: #9CF0A8; --term-color-11: #FFE5A0; --term-color-12: #7FC8FF; --term-color-13: #E6C3FF; --term-color-14: #A8ECF2; --term-color-15: #FFFFFF; }
+</style>
+</head>
+<body>
+<div class="frame"><div class="bar"><i></i><i></i><i></i><span id="title"></span></div><div class="term" id="term"></div></div>
+<script src="/player/asciinema-player.min.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById('title').textContent = q.get('title') || 'Terminal';
+  const player = AsciinemaPlayer.create(q.get('src'), document.getElementById('term'), {
+    autoPlay: true, controls: false, idleTimeLimit: 2, theme: 'sail', fit: 'width',
+    terminalFontSize: '20px', terminalFontFamily: "'JetBrains Mono', Menlo, Consolas, monospace", terminalLineHeight: 1.3
+  });
+  // `playing` fires with the first frame shown; the recorder takes the cast's timing mark there.
+  player.addEventListener('playing', () => { document.title = 'playing'; });
+  // page.screencast writes a frame only when the next one arrives, so the cast's last screen (a static page after
+  // the end) would never reach the clip: an invisible pixel keeps repainting (a change no idle detection sees).
+  const keepPainting = () => {
+    const px = document.createElement('div'); px.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px';
+    document.body.appendChild(px); let k = 0; setInterval(() => { px.style.background = k++ % 2 ? '#081626' : '#081627'; }, 100);
+  };
+  player.addEventListener('ended', () => { keepPainting(); document.title = 'ended'; });
+</script>
+</body>
+</html>

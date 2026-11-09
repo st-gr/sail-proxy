@@ -1,0 +1,40 @@
+meta {
+  name: REST API - Rollback Configuration
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{base_url}}/api/admin/api-config/rollback
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "reason": "REST API test rollback - testing REST rollback endpoint"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+}
+
+script:post-response {
+  if (res.body.success) {
+    console.log('✅ REST API configuration rolled back successfully');
+    console.log('Rolled back from:', res.body.rolledBackFrom);
+    console.log('Rolled back to:', res.body.rolledBackTo);
+    console.log('Reason:', res.body.reason);
+    console.log('Rolled back at:', res.body.rolledBackAt);
+  } else {
+    console.log('❌ REST API rollback failed');
+    console.log('Error:', res.body.error);
+  }
+}

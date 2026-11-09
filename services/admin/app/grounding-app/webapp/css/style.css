@@ -1,0 +1,15 @@
+/* Grounding app. The error text of a failed file wraps instead of widening the table. */
+.groundingFileError {
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* A retrieved passage wraps inside its column; long tokens such as URLs break instead of widening it. */
+.groundingPassage {
+    word-break: break-word;
+}
+
+/* An Administration overview tile: the value reads as a headline figure. */
+.groundingTileValue {
+    font-size: 1.5rem;
+}

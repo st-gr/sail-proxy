@@ -1,0 +1,68 @@
+# Istio AuthorizationPolicy to protect health check endpoints from external access
+# This provides network-level security in addition to nginx IP restrictions
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: health-check-external-deny
+  namespace: istio-system
+  labels:
+    app: sail-proxy
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway  # Apply to ingress gateway, not nginx directly
+  action: DENY
+  rules:
+  # Deny the admin health endpoint to every request through the ingress gateway. In-cluster
+  # callers reach nginx directly and never pass the ingress. /gateway/health stays public
+  # for monitoring (docs/deploy/kyma.md).
+  - to:
+    - operation:
+        hosts:
+        - "sail-proxy.c-abc123.kyma.ondemand.com"
+        paths:
+        - "/admin/api/health"
+        methods: ["GET", "HEAD", "POST"]
+        # The gateway pod's port: on an ingress gateway Istio matches ports against the pod,
+        # and Kyma's istio-ingressgateway Service maps 443 to 8443 ("443" never matched).
+        # Scoped to a port so this HTTP-only DENY does not deny all TCP traffic (Istio IST0133).
+        ports: ["8443"]
+---
+# Allow health checks only from specific sources: internal traffic can still reach the health endpoints
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: health-check-allow-internal
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  action: ALLOW
+  rules:
+  # Allow health checks from Kubernetes system namespaces
+  - from:
+    - source:
+        namespaces: ["kube-system", "istio-system", "kyma-system"]
+    to:
+    - operation:
+        paths: 
+        - "/admin/api/health"
+        - "/gateway/health"
+  # Allow health checks from within the same namespace (pod-to-pod)
+  - from:
+    - source:
+        namespaces: ["sail-proxy"]
+    to:
+    - operation:
+        paths: 
+        - "/admin/api/health"
+        - "/gateway/health"
+  # Allow all other traffic (non-health endpoints)
+  - to:
+    - operation:
+        notPaths:
+        - "/admin/api/health"
+        - "/gateway/health"

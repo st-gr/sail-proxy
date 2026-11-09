@@ -1,0 +1,4855 @@
+openapi: 3.1.0
+info:
+  title: sail-proxy admin REST API
+  version: 0.12.1
+  summary: The admin service's REST routes for the gateway configuration, the cockpit's Grounding screens and the gateway plugins.
+  description: |-
+    The admin service's REST routes. The cockpit's other data (API keys, users, teams, usage, the Model Library and the configuration editor) is the admin's OData API, described in its own document.
+
+    These paths are those of the Docker and Kyma admin behind nginx (`/admin/api`); a local development admin started with `cds serve` does not mount `/api`.
+
+    **Sign-in:** every route takes the cockpit session. Behind nginx (Docker, Kyma) that is the oauth2-proxy session cookie: nginx asks oauth2-proxy about every `/admin/api/` request, redirects a request without a valid session to the sign-in page, and passes the signed-in user's identity on to the admin.
+
+    **Configuration** (`/api-config`) is the gateway configuration as one JSON document: read the active one, replace it (the new version is validated and activated at once) or roll back to the previous one. `/api-config/status` says whether a configuration is active and whether configuration changes reach the gateways. All of them need the admin role. The cockpit edits the same configuration through the OData API.
+
+    **Plugins** (`/plugins/...`) manage the gateway plugins an admin installs from the cockpit: upload a package, enable a version, disable it, remove a stored version, list what is stored and what the gateways report, store a configuration with a plugin's suggested hooks, and give the configuration form the settings schemas of the enabled plugins. Every route needs the admin role (403 `Forbidden`; 401 `authentication_required` without a signed-in user). Upload and enable are refused with 403 `INSTALLED_PLUGINS_DISABLED` while `INSTALLED_PLUGINS_ENABLED` is off on the admin; disable and remove stay available. Errors are `{error, message}`; for a refused package `error` is the package check's code. A change reaches the gateways by a change marker and takes effect without a restart where the gateways can hear it; the list's status shows the result.
+
+    **Grounding** (`/grounding/...`) is the cockpit's door to the gateway's file search: files, vector stores, their jobs and their administration. The admin adds no file search logic of its own. For every route except `GET /grounding/model-cost` it:
+
+    - refuses a caller without a signed-in e-mail address with 401 `authentication_required`, and an e-mail address that is not printable ASCII (it travels in a header) with 400 `unsupported_identity`;
+    - refuses a path parameter that is not 1 to 64 letters, digits, `_` or `-` with 400 `invalid_id`, so an id cannot reach another gateway route;
+    - calls the gateway (`/api/admin/grounding/...`) with its own service key, naming the signed-in user, the user's role (`admin` when the user has the cockpit's admin role, else `user`) and the user's teams as the admin's membership records list them (at most 200, the teams the user administers first; none when the records cannot be read). Identity, role or team headers the browser sends are ignored;
+    - on the JSON routes (every route except the file upload and download), forwards the query's plain string values (a bracketed parameter such as `?x[a]=1` is dropped) and, on a POST, the JSON body (at most 1 MB); the upload and the download forward no query, and the upload streams its multipart body unchanged;
+    - returns the gateway's status and body unchanged, errors included, and answers 502 `gateway_unreachable` when the gateway cannot be reached.
+
+    Who may do what is decided by the gateway: a store or file of another user is a 404, the `/grounding/admin/...` routes answer 403 `grounding_admin_required` unless the signed-in user is an admin, and the routes that start paid work (embedding, context and vision calls, searches) check the payer's quota first (429 `quota_exceeded`). Errors from the admin itself are `{error, message}` with a string `error`; errors from the gateway use OpenAI's envelope `{error: {message, type, code}}`.
+
+    Lists are paged with `limit` and `after` (the previous page's `last_id`) and answer `{object: "list", data, has_more, first_id, last_id}`. Times on file, store, batch and search objects are Unix seconds, as OpenAI's; times on jobs are ISO 8601 strings.
+servers:
+  - url: /admin/api
+    description: Docker or Kyma, behind nginx
+security:
+  - cockpitSession: []
+tags:
+  - name: Configuration
+    description: The gateway configuration and the configuration service's status.
+  - name: Plugins
+    description: Gateway plugins installed from the cockpit. Every route needs the admin role.
+  - name: Version
+    description: The running version and installation type. Needs the admin role.
+  - name: Grounding status
+  - name: Grounding files
+  - name: Grounding vector stores
+  - name: Grounding jobs
+  - name: Grounding re-embedding, chunking and re-extraction
+  - name: Grounding administration
+    description: Everyone's stores, files, jobs and storage, and the blob storage. Every route answers 403 `grounding_admin_required` unless the signed-in user is an admin.
+paths:
+  /api-config:
+    get:
+      tags:
+        - Configuration
+      operationId: getApiConfig
+      summary: Read the active configuration
+      description: The active gateway configuration as one JSON document with the `api_config` wrapper, as the gateway reads it. The response headers name the configuration's version, checksum and activation time, so a caller can tell whether it changed; the checksum is also the `ETag`. Read as the signed-in user, who needs the admin role.
+      x-sail-upstream: The admin's configuration store
+      responses:
+        "200":
+          description: The active configuration.
+          headers:
+            X-Config-Version:
+              description: The configuration's version.
+              schema:
+                type: string
+            X-Config-Checksum:
+              description: The configuration's checksum.
+              schema:
+                type: string
+            X-Config-Deployed-At:
+              description: When the configuration was activated (ISO 8601).
+              schema:
+                type: string
+                format: date-time
+            ETag:
+              description: The checksum in quotes.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiConfigDocument"
+        "404":
+          description: No configuration is active (`No active configuration found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "500":
+          $ref: "#/components/responses/ConfigReadFailed"
+        "503":
+          description: The admin's services are not up yet (`Service unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+    put:
+      tags:
+        - Configuration
+      operationId: replaceApiConfig
+      summary: Replace the configuration
+      description: Validates the document, stores it as a new configuration version and activates it; the gateways pick it up. A document that fails validation is refused and nothing changes. The body may be up to 10 MB. The signed-in user needs the admin role.
+      x-sail-upstream: The admin's configuration store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiConfigDocument"
+      responses:
+        "200":
+          description: The new configuration is active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiConfigActivated"
+        "400":
+          description: The body has no `api_config`, or the configuration failed validation (`errors` lists why).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigValidationError"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "413":
+          description: The body is larger than 10 MB.
+        "500":
+          description: The configuration could not be stored or activated (`Internal server error` with a `message`, or `Failed to activate configuration`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+  /api-config/rollback:
+    post:
+      tags:
+        - Configuration
+      operationId: rollbackApiConfig
+      summary: Roll back to the previous configuration
+      description: Deactivates the active configuration and activates the one activated before it; the gateways pick it up. The body is optional. The signed-in user needs the admin role.
+      x-sail-upstream: The admin's configuration store
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiConfigRollbackRequest"
+      responses:
+        "200":
+          description: The previous configuration is active again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiConfigRolledBack"
+        "400":
+          description: Nothing to roll back (no active configuration, or no earlier one).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "413":
+          description: The body is larger than 10 MB.
+        "500":
+          description: The rollback failed (`Internal server error` with a `message`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+  /api-config/status:
+    get:
+      tags:
+        - Configuration
+      operationId: getConfigurationStatus
+      summary: Configuration service status
+      description: Whether a configuration is active (with its version, activation time and checksum) and whether configuration changes are published to the gateways (Valkey reachable). Read as the signed-in user, who needs the admin role.
+      x-sail-upstream: The admin's configuration store
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigStatus"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "500":
+          $ref: "#/components/responses/ConfigFailed"
+
+  /version:
+    get:
+      tags:
+        - Version
+      operationId: getVersion
+      summary: The running version and installation type
+      description: The admin's own version (admin and gateway ship together), how this installation was set up (`kyma` on Kubernetes, `docker` for a Docker Compose install, `local` otherwise) and whether the cockpit's update check is on (`UPDATE_CHECK_ENABLED`, on unless set to false, 0, no or off). Needs the admin role.
+      x-sail-upstream: The admin's package version and environment
+      responses:
+        "200":
+          description: The version, the installation type and the update-check switch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+
+  /plugins:
+    get:
+      tags:
+        - Plugins
+      operationId: listPlugins
+      summary: List the plugins
+      description: The installed plugins with their stored versions, the enabled version, the upload (who and when) and what each gateway instance reports for them (state, error, version and the rules the plugin registered), and the plugins that ship with the gateway, read-only. `enabled` is false when `INSTALLED_PLUGINS_ENABLED` is off on the admin. `gatewayStatus.available` is false when the status store (Valkey) cannot be reached; no instance in the list means no gateway is reporting, and a change then applies at the gateway's next start. The zips are not part of the answer.
+      x-sail-upstream: The admin's plugin store and the gateways' status reports
+      responses:
+        "200":
+          description: The plugins.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+    post:
+      tags:
+        - Plugins
+      operationId: uploadPlugin
+      summary: Upload a plugin package
+      description: |-
+        Stores a plugin package, the zip of the plugin's folder, as a new version, disabled. The body is the zip itself with `Content-Type: application/zip`, at most 20 MB. The package is checked as the gateway checks it before it unpacks: manifest, entry file, forbidden content, the limits (20 MB compressed, 100 MB unpacked, 5,000 files), a settings schema that compiles and no `$ref` in it. A refused package answers 400 with the check's code in `error`. The `gateway` range is not matched against the running version here; enabling does that.
+
+        The same id and version with the same content answers 200 and stores nothing new; with other content, 409 `VERSION_EXISTS`. An id that a plugin shipped with the gateway already uses answers 409 `PLUGIN_ID_TAKEN`, as far as a gateway has reported its plugins; otherwise the gateway's own check at sync decides. 403 `INSTALLED_PLUGINS_DISABLED` while `INSTALLED_PLUGINS_ENABLED` is off.
+      x-sail-upstream: The admin's plugin store
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: This exact package is already stored; nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginUploaded"
+        "201":
+          description: The package is stored and disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginUploaded"
+        "400":
+          description: The package is refused. `error` is the code (`NOT_A_ZIP`, `NAME_ENCODING`, `MANIFEST_MISSING`, `MANIFEST_INVALID`, `RUNTIME_UNSUPPORTED`, `ENTRY_MISSING`, `SCHEMA_REF_REFUSED`, `SETTINGS_SCHEMA_INVALID`, `TOO_LARGE_UNPACKED`, `TOO_MANY_FILES`, `DUPLICATE_PATH` and the other codes of the package check) and `message` says what is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "409":
+          description: The id is taken by a plugin shipped with the gateway (`PLUGIN_ID_TAKEN`), or this version is stored with other content (`VERSION_EXISTS`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "413":
+          description: The body is larger than 20 MB (`TOO_LARGE`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/settings-schemas:
+    get:
+      tags:
+        - Plugins
+      operationId: listPluginSettingsSchemas
+      summary: The settings schemas of the enabled plugins
+      description: The settings schema of each enabled plugin that has one, for the configuration form to add under `plugins`. The plugin's help in the asked language is written into the schema's `title` and `description`, and `summary` is its one-line description. The language is matched exactly, then by its base language (`pt-BR` finds `pt`), then the first language the plugin lists; `helpFallback` is true in the last case. Plugins that are disabled or have no settings schema are not listed, and the list is empty while `INSTALLED_PLUGINS_ENABLED` is off. Only manifests are read, never the packages. This path is matched before `/plugins/{id}`; a plugin cannot be uploaded under the id `settings-schemas`.
+      x-sail-upstream: The admin's plugin store
+      parameters:
+        - name: lang
+          in: query
+          required: false
+          description: The UI language, such as `de` or `pt-BR`. Defaults to `en`.
+          schema:
+            type: string
+            maxLength: 35
+          example: pt-BR
+      responses:
+        "200":
+          description: The schemas, ordered by plugin id.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PluginSettingsSchema"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/{id}/enable:
+    post:
+      tags:
+        - Plugins
+      operationId: enablePlugin
+      summary: Enable a version
+      description: Makes a stored version the plugin's enabled one, which replaces the version enabled before. Refused with 409 `INCOMPATIBLE` when the version's `gateway` range does not match the version of the admin, which ships together with the gateway. The gateways are told by a change marker and fetch the package; the result of that appears in the list's status. 404 `PACKAGE_NOT_FOUND` for a version that is not stored, 403 `INSTALLED_PLUGINS_DISABLED` while `INSTALLED_PLUGINS_ENABLED` is off. The change is recorded in the audit trail with the package's sha256.
+      x-sail-upstream: The admin's plugin store
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - version
+              properties:
+                version:
+                  type: string
+                  description: A stored version of the plugin.
+                  example: 1.2.0
+      responses:
+        "200":
+          description: The version is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginEnabled"
+        "400":
+          description: The id is not valid (`invalid_id`) or no version is named (`VERSION_REQUIRED`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "404":
+          description: The plugin has no such stored version (`PACKAGE_NOT_FOUND`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "409":
+          description: The version does not match this installation (`INCOMPATIBLE`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/{id}/disable:
+    post:
+      tags:
+        - Plugins
+      operationId: disablePlugin
+      summary: Disable a plugin
+      description: Stops serving the plugin to the gateways, which remove it. Always allowed, also while `INSTALLED_PLUGINS_ENABLED` is off. `warnings` names the rules of this plugin, as the gateways report them, that hooks of the active configuration still name; those hooks do nothing until the plugin is enabled again. Disabling a plugin that is already disabled is not an error. Send a `Content-Type` of `application/json` (an empty object as the body is enough); any other type is refused, so that a page on another site cannot trigger it.
+      x-sail-upstream: The admin's plugin store
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+      responses:
+        "200":
+          description: The plugin is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDisabled"
+        "400":
+          description: The id is not valid (`invalid_id`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "404":
+          description: There is no such plugin (`PLUGIN_NOT_FOUND`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "415":
+          description: The request did not have a `Content-Type` of `application/json` (`unsupported_media_type`). The body may be empty (`{}`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/suggested-hooks:
+    post:
+      tags:
+        - Plugins
+      operationId: addSuggestedHooksOfPlugins
+      summary: Store one configuration with the suggested hooks of several plugins
+      description: Works like the single-plugin route, for all the plugins named, in one new configuration, so that activating it brings all their hooks. With one id it is named `<id> <version> suggested hooks`, with more `Suggested hooks:` followed by the plugins and versions, cut at 100 characters. A plugin that is missing or not enabled refuses the whole request and nothing is created. A plugin with nothing to add is left out and named in `warnings`; when that is all of them, the first one's refusal is the answer. Send a `Content-Type` of `application/json`; any other type is refused, so that a page on another site cannot trigger it.
+      x-sail-upstream: The admin's plugin store and configuration store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ids
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: "^[A-Za-z0-9_-]{1,64}$"
+      responses:
+        "200":
+          description: The configuration is stored, not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginSuggestedHooksCreated"
+        "400":
+          description: The `ids` are not valid (`invalid_id`), no plugin named suggests hooks (`NO_SUGGESTED_HOOKS`), or the merged configuration is refused by validation (`CONFIGURATION_INVALID`, with `errors`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginConfigurationRefused"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "404":
+          description: A plugin named does not exist (`PLUGIN_NOT_FOUND`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "409":
+          description: A plugin named is not enabled (`PLUGIN_NOT_ENABLED`), no configuration is active (`NO_ACTIVE_CONFIGURATION`), the configuration defines a rule of the same id differently (`HOOK_CONFLICT`), or it already has all the hooks (`HOOKS_ALREADY_PRESENT`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "415":
+          description: The request did not have a `Content-Type` of `application/json` (`unsupported_media_type`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/{id}/suggested-hooks:
+    post:
+      tags:
+        - Plugins
+      operationId: addPluginSuggestedHooks
+      summary: Store a configuration with the plugin's suggested hooks
+      description: Takes the active stored configuration, merges the hooks the enabled version's manifest suggests (rule definitions and the entries of `hooks.defaults`), and stores the result as a new configuration named `<id> <version> suggested hooks`. It is validated like any saved configuration and is not activated; activate it the usual way, which keeps configuration history as the undo. Entries already present are not added twice. `warnings` names models whose own hook list for a subpath replaces the defaults, because the plugin will not run there, and carries the configuration's own validation warnings. Nothing is created when the configuration would be refused. Send a `Content-Type` of `application/json` (an empty object as the body is enough); any other type is refused, so that a page on another site cannot trigger it.
+      x-sail-upstream: The admin's plugin store and configuration store
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+      responses:
+        "200":
+          description: The configuration is stored, not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginSuggestedHooksCreated"
+        "400":
+          description: The id is not valid (`invalid_id`), the enabled version suggests no hooks (`NO_SUGGESTED_HOOKS`), or the merged configuration is refused by validation (`CONFIGURATION_INVALID`, with `errors`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginConfigurationRefused"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "404":
+          description: There is no such plugin (`PLUGIN_NOT_FOUND`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "409":
+          description: The plugin is not enabled (`PLUGIN_NOT_ENABLED`), no configuration is active (`NO_ACTIVE_CONFIGURATION`), the configuration defines a rule of the same id differently (`HOOK_CONFLICT`), or it already has all the hooks (`HOOKS_ALREADY_PRESENT`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "415":
+          description: The request did not have a `Content-Type` of `application/json` (`unsupported_media_type`). The body may be empty (`{}`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+  /plugins/{id}/versions/{version}:
+    delete:
+      tags:
+        - Plugins
+      operationId: removePluginVersion
+      summary: Remove a stored version
+      description: Deletes one stored version. Always allowed, also while `INSTALLED_PLUGINS_ENABLED` is off, except for the enabled version (409 `VERSION_ENABLED`; disable the plugin or enable another version first). The removal is recorded in the audit trail.
+      x-sail-upstream: The admin's plugin store
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+        - name: version
+          in: path
+          required: true
+          description: The stored version.
+          schema:
+            type: string
+            pattern: "^[0-9A-Za-z.+-]{1,64}$"
+          example: 1.2.0
+      responses:
+        "200":
+          description: The version is removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginRemoved"
+        "400":
+          description: The id or version is not valid (`invalid_id`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PluginsForbidden"
+        "404":
+          description: The plugin has no such stored version (`PACKAGE_NOT_FOUND`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "409":
+          description: The version is the enabled one (`VERSION_ENABLED`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "500":
+          $ref: "#/components/responses/PluginsFailed"
+
+  /grounding/status:
+    get:
+      tags:
+        - Grounding status
+      operationId: getGroundingStatus
+      summary: File search status
+      description: Whether file search can be used here and, if not, why; the embedding model and dimensions, the blob storage, the upload and store limits, the chunking setting a new store gets, and whether a store may use vision transcription of PDF pages. Always 200 from the gateway, also when file search is unavailable.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+  /grounding/model-cost:
+    get:
+      tags:
+        - Grounding status
+      operationId: getGroundingModelCost
+      summary: Price an estimate's tokens
+      description: |-
+        What that many tokens of a model cost by the Model Library's current price, priced like a usage event (GenAI tokens × CU factor × the capacity unit price). Answered by the admin; the gateway is not called. The cockpit uses it to price the estimates of re-chunking and re-extraction.
+
+        `priced: false` when the model has no price; `cost` and `currency` are null when no capacity unit price is maintained. Any signed-in user may call it.
+      x-sail-upstream: The admin's Model Library prices
+      parameters:
+        - name: model
+          in: query
+          required: true
+          description: "The model id, 1 to 100 of `A-Z a-z 0-9 . _ : -`."
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._:-]{1,100}$"
+          example: gemini-example-flash-lite
+        - name: input_tokens
+          in: query
+          required: false
+          description: Whole input tokens (up to 13 digits); 0 when absent.
+          schema:
+            type: string
+            pattern: "^\\d{1,13}$"
+          example: "125000"
+        - name: output_tokens
+          in: query
+          required: false
+          description: Whole output tokens (up to 13 digits); 0 when absent.
+          schema:
+            type: string
+            pattern: "^\\d{1,13}$"
+          example: "4096"
+      responses:
+        "200":
+          description: The price.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelCost"
+        "400":
+          description: No valid model id or a token count that is not a whole number (`invalid_request`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: The price could not be read (`price_lookup_failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminError"
+  /grounding/storage:
+    get:
+      tags:
+        - Grounding status
+      operationId: getGroundingStorage
+      summary: The signed-in user's storage
+      description: How many files the signed-in user owns and their logical size (the sum of the file sizes, before content deduplication).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The user's storage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerStorage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+  /grounding/files:
+    post:
+      tags:
+        - Grounding files
+      operationId: uploadGroundingFile
+      summary: Upload a file
+      description: |-
+        Uploads a file into the gateway's file store, owned by the signed-in user, as OpenAI's file upload does. The body is streamed to the gateway unchanged.
+
+        The admin refuses a body that is not `multipart/form-data` (400 `invalid_content_type`) and, when the request declares its length, a body larger than the gateway's file limit plus 1 MiB for the multipart framing (413 `file_too_large`), because the gateway answers an oversized file by closing the connection. The gateway refuses a file larger than `capabilities.file_search.limits.max_file_bytes` and a `purpose` other than `assistants` or `user_data`.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/FileUpload"
+      responses:
+        "200":
+          description: The stored file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/File"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: The file is larger than the limit (`file_too_large`), refused by the admin or the gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyError"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    get:
+      tags:
+        - Grounding files
+      operationId: listGroundingFiles
+      summary: List the signed-in user's files
+      description: The signed-in user's files, newest first unless `order=asc`, paged with `after` or `before` (OpenAI's file list; up to 10000 per page, all by default).
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - name: purpose
+          in: query
+          required: false
+          description: Only files of this purpose.
+          schema:
+            type: string
+            enum:
+              - assistants
+              - user_data
+        - $ref: "#/components/parameters/FilesLimit"
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/Before"
+      responses:
+        "200":
+          description: A page of files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/file-attachments:
+    get:
+      tags:
+        - Grounding files
+      operationId: listGroundingFileAttachments
+      summary: The stores each file is attached to
+      description: For each of the signed-in user's files named in `file_ids`, the user's own stores it is attached to, with the attachment's status. A file without attachments (or not the user's) maps to an empty list.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - name: file_ids
+          in: query
+          required: false
+          description: Up to 100 comma-separated file ids, each 1 to 64 of `A-Z a-z 0-9 _ -` (400 `invalid_file_ids` otherwise). None answers an empty map.
+          schema:
+            type: string
+          example: file-example1,file-example2
+      responses:
+        "200":
+          description: The attachments by file id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileAttachments"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/files/{id}:
+    parameters:
+      - $ref: "#/components/parameters/FileIdInPath"
+    get:
+      tags:
+        - Grounding files
+      operationId: getGroundingFile
+      summary: Read a file
+      description: One of the signed-in user's files (OpenAI's file object).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/File"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    delete:
+      tags:
+        - Grounding files
+      operationId: deleteGroundingFile
+      summary: Delete a file
+      description: Detaches one of the signed-in user's files from every store of the user and deletes it, in one transaction. 409 `file_in_use` when the file is attached to a store of another owner. `?detach=true`, which the cockpit sends, gives the same result.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - name: detach
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - "true"
+      responses:
+        "200":
+          description: The file is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/files/{id}/content:
+    parameters:
+      - $ref: "#/components/parameters/FileIdInPath"
+    get:
+      tags:
+        - Grounding files
+      operationId: downloadGroundingFile
+      summary: Download a file's content
+      description: The file's bytes, streamed from the gateway with its `Content-Type`, `Content-Length` and `Content-Disposition` (attachment, with the file name). A browser that stops reading stops the gateway's stream.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file content.
+          headers:
+            Content-Disposition:
+              description: "`attachment` with the file name."
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+  /grounding/stores:
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: createGroundingStore
+      summary: Create a vector store
+      description: |-
+        Creates a vector store owned by the signed-in user, as OpenAI's create does, and attaches `file_ids` (the user's own files, at most 500). `chunking` is the store's chunking setting; without it the store gets the installation's default (`GET /grounding/status` `chunking`). A vision mode is refused where vision transcription is switched off.
+
+        With `file_ids` the user's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StoreCreateRequest"
+      responses:
+        "200":
+          description: The created store (OpenAI's vector store object).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: listGroundingStores
+      summary: List the stores the user can see
+      description: The signed-in user's stores and every store shared with everyone or with one of the user's teams, newest first, with the Grounding fields (sharing, embedding state, chunking). Paged forwards only; `order=asc` and `before` are refused with 400 `unsupported_parameter`.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/StoreLimit"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: A page of stores.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStoreList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: getGroundingStore
+      summary: Read a store
+      description: A store the signed-in user owns or that is shared with them, with the Grounding fields. Another user's unshared store is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: modifyGroundingStore
+      summary: Rename or change a store
+      description: Changes the name, expiry or metadata of one of the signed-in user's stores (OpenAI's modify). A shared store of another owner is a 404.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StoreModifyRequest"
+      responses:
+        "200":
+          description: The changed store (OpenAI's vector store object).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    delete:
+      tags:
+        - Grounding vector stores
+      operationId: deleteGroundingStore
+      summary: Delete a store
+      description: Deletes one of the signed-in user's stores with its attachments and chunks. The files stay.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The store is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/files:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: attachGroundingStoreFile
+      summary: Attach a file to a store
+      description: Attaches one of the signed-in user's files to one of the user's stores; it is chunked and embedded in the background. The store owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StoreFileCreateRequest"
+      responses:
+        "200":
+          description: The attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: listGroundingStoreFiles
+      summary: List a store's files
+      description: The files attached to one of the signed-in user's stores (OpenAI's list), each with `context_stopped`.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/StoreLimit"
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/Before"
+        - $ref: "#/components/parameters/StoreFileFilter"
+      responses:
+        "200":
+          description: A page of attachments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFileList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/files/{file_id}:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+      - $ref: "#/components/parameters/StoreFileId"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: getGroundingStoreFile
+      summary: Read an attachment
+      description: One file's attachment to one of the signed-in user's stores.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: updateGroundingStoreFile
+      summary: Change an attachment's attributes
+      description: Replaces the attributes of a file's attachment (used by search filters).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StoreFileUpdateRequest"
+      responses:
+        "200":
+          description: The attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+    delete:
+      tags:
+        - Grounding vector stores
+      operationId: detachGroundingStoreFile
+      summary: Detach a file from a store
+      description: Detaches the file and drops its chunks from the store. The file stays.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file is detached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFileDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/files/{file_id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+      - $ref: "#/components/parameters/StoreFileId"
+    post:
+      tags:
+        - Grounding jobs
+      operationId: retryGroundingStoreFile
+      summary: Retry a failed file
+      description: Re-opens one failed file of one of the signed-in user's stores. 409 `job_running` while its batch is still running, `store_expired` for an expired store, `nothing_to_retry` when the file is no longer failed; 503 `retry_conflict` when the file is being processed right now. The store owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file is queued again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreFileRetried"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/file_batches:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: createGroundingFileBatch
+      summary: Attach several files
+      description: Attaches several of the signed-in user's files to one of the user's stores as one batch (OpenAI's file batch), which is also a job in `GET /grounding/jobs`. The store owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileBatchCreateRequest"
+      responses:
+        "200":
+          description: The batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileBatch"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/file_batches/{batch_id}:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+      - $ref: "#/components/parameters/BatchId"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: getGroundingFileBatch
+      summary: Read a batch
+      description: A batch of one of the signed-in user's stores, with its status and file counts derived from its files.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileBatch"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/file_batches/{batch_id}/files:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+      - $ref: "#/components/parameters/BatchId"
+    get:
+      tags:
+        - Grounding vector stores
+      operationId: listGroundingFileBatchFiles
+      summary: List a batch's files
+      description: The attachments of one batch, paged like a store's files, each with `context_stopped`.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/StoreLimit"
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/Before"
+        - $ref: "#/components/parameters/StoreFileFilter"
+      responses:
+        "200":
+          description: A page of attachments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VectorStoreFileList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/search:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: searchGroundingStore
+      summary: Search a store
+      description: |-
+        Searches a store the signed-in user owns or that is shared with them (hybrid vector and lexical retrieval, optionally reranked, as configured under `capabilities.file_search`). The searcher pays: the signed-in user's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: The results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/share-team:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: shareGroundingStoreWithTeam
+      summary: Share a store with a team
+      description: Shares one of the signed-in user's stores with a team the user administers (any team for an admin), read-only for its members. The admin first checks that the team exists (404 `team_not_found`, the message in the caller's `Accept-Language`). 403 `team_admin_required` for a team the user does not administer; another owner's store is a 404, also for an admin.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamShareRequest"
+      responses:
+        "200":
+          description: The store, with the team in `team_ids`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such team (`team_not_found`, from the admin) or no such store of the user (`vector_store_not_found`, from the gateway).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyError"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/unshare-team:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding vector stores
+      operationId: unshareGroundingStoreFromTeam
+      summary: Stop sharing a store with a team
+      description: Removes a team's share of a store the signed-in user can see. Allowed for the store's owner, an administrator of that team and an admin (403 `team_admin_required` otherwise). A team the store is not shared with is not an error.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamShareRequest"
+      responses:
+        "200":
+          description: The store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+  /grounding/jobs:
+    get:
+      tags:
+        - Grounding jobs
+      operationId: listGroundingJobs
+      summary: List the signed-in user's jobs
+      description: The signed-in user's jobs (file batches, re-embeds, re-chunks, re-extractions and, for an admin, bulk re-embeds and blob migrations), newest first.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/AdminLimit"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/JobStateFilter"
+      responses:
+        "200":
+          description: A page of jobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/jobs/{job_id}:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags:
+        - Grounding jobs
+      operationId: getGroundingJob
+      summary: Read a job
+      description: One of the signed-in user's jobs (404 `not_found` otherwise).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/jobs/{job_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    post:
+      tags:
+        - Grounding jobs
+      operationId: cancelGroundingJob
+      summary: Cancel a job
+      description: Cancels one of the signed-in user's jobs. A queued or running batch gets the cancel request; a finished one is answered unchanged. A re-embed or re-chunk is cancelled by the re-embed engine (a failed one can be cancelled to discard its new generation). Bulk re-embeds and blob migrations can be cancelled only while the user is an admin.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job after the cancel request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/jobs/{job_id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    post:
+      tags:
+        - Grounding jobs
+      operationId: retryGroundingJob
+      summary: Retry a job's failed files
+      description: Re-opens the failed files of one of the signed-in user's finished jobs (the failed items of a re-embed or a blob migration). 409 `job_running`, `store_expired`, `superseded` (a newer blob migration was started) or `nothing_to_retry`; 503 `retry_conflict` when the files are being processed right now. The payer's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job, with the number of re-opened items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobRetried"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/jobs/{job_id}/failures:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags:
+        - Grounding jobs
+      operationId: listGroundingJobFailures
+      summary: List a job's failed items
+      description: The files a re-embed, re-chunk or re-extract job of the signed-in user could not process, or the blobs a blob migration could not move. Any other job is a 404.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/AdminLimit"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: A page of failed items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobFailureList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+  /grounding/stores/{id}/reembed/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: estimateGroundingReembed
+      summary: Estimate a re-embed
+      description: The completed files, embedded chunks and estimated tokens of one of the signed-in user's own stores, and its embedding state against the configured model. A shared store of another owner is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReembedEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/reembed:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: startGroundingReembed
+      summary: Re-embed a store
+      description: Starts re-embedding one of the signed-in user's own stores with the configured embedding model. 409 `store_dimension_mismatch`, `store_expired`, `reembed_running` or `store_current`. The owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The started job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/chunking/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: estimateGroundingRechunk
+      summary: Estimate a re-chunk
+      description: What re-chunking one of the signed-in user's own stores to the setting in the query would cost (estimates only; nothing is read, embedded or called). An invalid setting is a 400 naming the parameter.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/ChunkingType"
+        - $ref: "#/components/parameters/ChunkingMaxTokens"
+        - $ref: "#/components/parameters/ChunkingOverlapTokens"
+        - $ref: "#/components/parameters/ChunkingContextual"
+        - $ref: "#/components/parameters/ChunkingVision"
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechunkEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/chunking:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: startGroundingRechunk
+      summary: Change a store's chunking
+      description: |-
+        Starts re-chunking one of the signed-in user's own stores to `chunking` (a re-embed job with `target_chunking`). The models the job needs are checked with one small call each before it is created.
+
+        409 `reembed_running`, `chunking_current` (unless the store's contextual chunks lack their context, which the start then fills), `store_expired`, `store_dimension_mismatch`, `store_model_unavailable`, `context_model_unavailable` or `vision_model_unavailable`. The owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChunkingStartRequest"
+      responses:
+        "200":
+          description: The started job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/reextract/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: estimateGroundingReextract
+      summary: Estimate a re-extraction
+      description: Which files of one of the signed-in user's own stores would be read again (those an older extractor read), which are kept, the failed files of a type this build now reads that a start queues again, and what reading them again costs (estimates; the vision figures are upper bounds).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReextractEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/stores/{id}/reextract:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding re-embedding, chunking and re-extraction
+      operationId: startGroundingReextract
+      summary: Re-extract a store
+      description: Reads the files an older extractor read again with the store's own chunking setting, and queues its failed files of a type this build now reads. No body. 409 `nothing_to_reextract`, `store_chunking_invalid` and the re-chunk's refusals. The owner's quota is checked first (429).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The started job (null when only failed files were queued) and the queued and refused files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReextractStarted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+  /grounding/admin/overview:
+    get:
+      tags:
+        - Grounding administration
+      operationId: getGroundingAdminOverview
+      summary: Overview figures
+      description: Stores, files, logical and stored bytes, the bytes saved by content deduplication, failed ingestions and the stores whose embedding model is outdated (expired stores not counted).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The figures.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores:
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminStores
+      summary: List everyone's stores
+      description: Every owner's stores with the Grounding fields, filtered by owner, status, sharing and embedding state.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/Owner"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - in_progress
+              - completed
+              - expired
+        - name: shared
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: embedding_state
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/EmbeddingState"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/AdminLimit"
+      responses:
+        "200":
+          description: A page of stores.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStoreList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    delete:
+      tags:
+        - Grounding administration
+      operationId: deleteGroundingAdminStore
+      summary: Delete anyone's store
+      description: Deletes a store of any owner, as its owner would.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The store is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/files/{file_id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+      - $ref: "#/components/parameters/StoreFileId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: retryGroundingAdminStoreFile
+      summary: Retry anyone's failed file
+      description: Re-opens a failed file of any owner's store, as its owner would (`POST /grounding/stores/{id}/files/{file_id}/retry`). No quota check.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file is queued again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreFileRetried"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/share:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: shareGroundingAdminStore
+      summary: Share a store with everyone
+      description: Shares a store the signed-in admin owns with every user, read-only. Another owner's store is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The store, `is_shared` true.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/unshare:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: unshareGroundingAdminStore
+      summary: Stop sharing a store with everyone
+      description: Ends the everyone-share of a store the signed-in admin owns. Another owner's store is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The store, `is_shared` false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundingStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/reembed/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding administration
+      operationId: estimateGroundingAdminReembed
+      summary: Estimate a re-embed of anyone's store
+      description: The owner's re-embed estimate of any owner's store.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReembedEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/reembed:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: startGroundingAdminReembed
+      summary: Re-embed anyone's store
+      description: Starts the owner's re-embed of any owner's store; the job shows in the owner's jobs, started by the admin. Refusals as for the owner's start. No quota check.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The started job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/chunking/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding administration
+      operationId: estimateGroundingAdminRechunk
+      summary: Estimate a re-chunk of anyone's store
+      description: The owner's re-chunk estimate of any owner's store, for the setting in the query.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/ChunkingType"
+        - $ref: "#/components/parameters/ChunkingMaxTokens"
+        - $ref: "#/components/parameters/ChunkingOverlapTokens"
+        - $ref: "#/components/parameters/ChunkingContextual"
+        - $ref: "#/components/parameters/ChunkingVision"
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechunkEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/chunking:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: startGroundingAdminRechunk
+      summary: Change anyone's store's chunking
+      description: Starts the owner's re-chunk of any owner's store, started by the admin. Refusals as for the owner's start. No quota check.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChunkingStartRequest"
+      responses:
+        "200":
+          description: The started job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/reextract/estimate:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      tags:
+        - Grounding administration
+      operationId: estimateGroundingAdminReextract
+      summary: Estimate a re-extraction of anyone's store
+      description: The owner's re-extraction estimate of any owner's store.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReextractEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/stores/{id}/reextract:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: startGroundingAdminReextract
+      summary: Re-extract anyone's store
+      description: Starts the owner's re-extraction of any owner's store, started by the admin. Refusals as for the owner's start. No quota check.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The started job and the queued and refused files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReextractStarted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/reembed-outdated/estimate:
+    get:
+      tags:
+        - Grounding administration
+      operationId: estimateGroundingAdminReembedOutdated
+      summary: Estimate re-embedding every outdated store
+      description: Every owner's stores whose embedding model is outdated, their files, chunks and estimated tokens, and the stores a bulk run would skip (another dimension, expired, already re-embedding).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The estimate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutdatedEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/reembed-outdated:
+    post:
+      tags:
+        - Grounding administration
+      operationId: startGroundingAdminReembedOutdated
+      summary: Re-embed every outdated store
+      description: One bulk job, owned by the signed-in admin, with one re-embed per outdated store (owned by the store's owner, started by the admin). 409 `nothing_to_reembed` when no store can be re-embedded.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The bulk job and the skipped stores.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkReembedStarted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/files:
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminFiles
+      summary: List everyone's files
+      description: Every owner's files with the owner and how many stores each is attached to.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/Owner"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/AdminLimit"
+      responses:
+        "200":
+          description: A page of files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminFileList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/files/{id}:
+    parameters:
+      - $ref: "#/components/parameters/FileIdInPath"
+    delete:
+      tags:
+        - Grounding administration
+      operationId: deleteGroundingAdminFile
+      summary: Delete anyone's file
+      description: Detaches a file of any owner from the owner's stores and deletes it, as the owner's delete does (409 `file_in_use` when another owner's store uses it).
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The file is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/failed:
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminFailed
+      summary: List failed ingestions
+      description: Every owner's attachments whose ingestion failed, with the sanitised error.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/Owner"
+        - name: batch_id
+          in: query
+          required: false
+          description: Only the failures of this batch.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/AdminLimit"
+      responses:
+        "200":
+          description: A page of failed attachments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FailedAttachmentList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/storage:
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminStorage
+      summary: Storage per owner
+      description: File count and logical bytes per owner, ordered by e-mail address. The page is keyed on the e-mail address, so `first_id`, `last_id` and `after` are e-mail addresses.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/AdminLimit"
+      responses:
+        "200":
+          description: A page of owners.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerStorageList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/jobs:
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminJobs
+      summary: List everyone's jobs
+      description: Every owner's jobs, newest first, read-only, with the owner.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/Owner"
+        - $ref: "#/components/parameters/JobStateFilter"
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/AdminLimit"
+      responses:
+        "200":
+          description: A page of jobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminJobList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/jobs/{job_id}:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags:
+        - Grounding administration
+      operationId: getGroundingAdminJob
+      summary: Read anyone's job
+      description: One job of any owner, with its owner.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminJob"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/jobs/{job_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: cancelGroundingAdminJob
+      summary: Cancel anyone's re-embed or blob migration
+      description: Cancels a re-embed, re-chunk or re-extract job of any owner, or a blob migration. Any other job (a file batch) is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job after the cancel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminJob"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/jobs/{job_id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    post:
+      tags:
+        - Grounding administration
+      operationId: retryGroundingAdminJob
+      summary: Retry anyone's re-embed or blob migration
+      description: Re-opens the failed items of a finished re-embed job of any owner or of a blob migration, as the owner's retry does. Any other job is a 404.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The job, with the number of re-opened items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobRetried"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/jobs/{job_id}/failures:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags:
+        - Grounding administration
+      operationId: listGroundingAdminJobFailures
+      summary: List anyone's job's failed items
+      description: The failed items of a re-embed job of any owner or of a blob migration. Any other job is a 404.
+      x-sail-upstream: The gateway's file search
+      parameters:
+        - $ref: "#/components/parameters/AdminLimit"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: A page of failed items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobFailureList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/blob-storage:
+    get:
+      tags:
+        - Grounding administration
+      operationId: getGroundingAdminBlobStorage
+      summary: Blob storage figures
+      description: The configured blob backend, whether S3 is configured (never its bucket, endpoint or keys), blob counts and bytes per storage (live and released apart), the deletion queue, and the unfinished or most recent blob migration.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The figures.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobStorageOverview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/blob-storage/test:
+    post:
+      tags:
+        - Grounding administration
+      operationId: testGroundingAdminBlobStorage
+      summary: Test the S3 connection
+      description: Writes and reads a fixed probe object under the configured S3 prefix (left in place). Always 200; a failure names only the reason and the S3 operation, status and error code.
+      x-sail-upstream: The gateway's file search
+      responses:
+        "200":
+          description: The result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobConnectionTest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+  /grounding/admin/blob-storage/migrate:
+    post:
+      tags:
+        - Grounding administration
+      operationId: startGroundingAdminBlobMigration
+      summary: Move every blob to one storage
+      description: |-
+        Starts moving every blob that is not in `target` there. `job` is null when nothing is to be moved. 400 `invalid_target`; 409 `migration_running` (with `job_id`) or `target_unavailable` (with `detail`: the storage and the S3 operation, status and code, never a key or bucket). Cancel, retry and failures use the job routes.
+      x-sail-upstream: The gateway's file search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobMigrateRequest"
+      responses:
+        "200":
+          description: The started migration, or none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobMigrationStarted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/GatewayUnreachable"
+        "503":
+          $ref: "#/components/responses/FileSearchUnavailable"
+
+components:
+  securitySchemes:
+    cockpitSession:
+      type: apiKey
+      in: cookie
+      name: _oauth2_proxy
+      description: The cockpit session cookie oauth2-proxy sets at sign-in (its default name; neither the Docker nor the Kyma configuration renames it). Sign in to the cockpit in the same browser.
+  parameters:
+    PluginId:
+      name: id
+      in: path
+      required: true
+      description: The plugin id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: acmeRedaction
+    StoreId:
+      name: id
+      in: path
+      required: true
+      description: The vector store id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: vs_example1
+    FileIdInPath:
+      name: id
+      in: path
+      required: true
+      description: The file id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: file-example1
+    StoreFileId:
+      name: file_id
+      in: path
+      required: true
+      description: The file id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: file-example1
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: The job id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: job_example1
+    BatchId:
+      name: batch_id
+      in: path
+      required: true
+      description: The batch id.
+      schema:
+        $ref: "#/components/schemas/Id"
+      example: vsfb_example1
+    After:
+      name: after
+      in: query
+      required: false
+      description: The previous page's `last_id`.
+      schema:
+        type: string
+    Before:
+      name: before
+      in: query
+      required: false
+      description: A page before this id.
+      schema:
+        type: string
+    Order:
+      name: order
+      in: query
+      required: false
+      description: Newest first (`desc`, the default) or oldest first.
+      schema:
+        type: string
+        enum:
+          - asc
+          - desc
+    FilesLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size; out-of-range values are clamped.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 10000
+        default: 10000
+    StoreLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size; out-of-range values are clamped.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    AdminLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size (400 `invalid_limit` outside 1 to 100).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Owner:
+      name: owner
+      in: query
+      required: false
+      description: Only this owner's (e-mail address).
+      schema:
+        type: string
+      example: user@example.com
+    JobStateFilter:
+      name: state
+      in: query
+      required: false
+      description: Only jobs in this state (400 `invalid_state` otherwise).
+      schema:
+        $ref: "#/components/schemas/JobState"
+    StoreFileFilter:
+      name: filter
+      in: query
+      required: false
+      description: Only attachments with this status.
+      schema:
+        $ref: "#/components/schemas/StoreFileStatus"
+    ChunkingType:
+      name: type
+      in: query
+      required: false
+      description: The target setting's type.
+      schema:
+        type: string
+        enum:
+          - static
+          - structure
+    ChunkingMaxTokens:
+      name: max_tokens
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 100
+        maximum: 4096
+    ChunkingOverlapTokens:
+      name: overlap_tokens
+      in: query
+      required: false
+      description: At most half of `max_tokens`.
+      schema:
+        type: integer
+        minimum: 0
+    ChunkingContextual:
+      name: contextual
+      in: query
+      required: false
+      description: A model-written context per chunk (only with `structure`).
+      schema:
+        type: string
+        enum:
+          - "true"
+          - "false"
+    ChunkingVision:
+      name: vision
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/VisionMode"
+  headers:
+    Retry-After:
+      description: Seconds until the quota window resets.
+      schema:
+        type: string
+  responses:
+    PluginsForbidden:
+      description: The signed-in user does not have the admin role (`Forbidden`), or installing plugins is switched off (`INSTALLED_PLUGINS_DISABLED`, the message names `INSTALLED_PLUGINS_ENABLED`; only upload and enable).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdminError"
+    PluginsFailed:
+      description: The request could not be completed (`plugins_failed`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdminError"
+    ConfigForbidden:
+      description: The signed-in user does not have the admin role (`Forbidden`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConfigError"
+    ConfigReadFailed:
+      description: The configuration could not be read (`Internal server error` with a `message`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConfigError"
+    ConfigFailed:
+      description: The status could not be read (`Internal server error` with a `message`, or the store's own `error`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConfigError"
+    Unauthorized:
+      description: No signed-in user with an e-mail address (`authentication_required`). Behind nginx a request without a session is redirected to the sign-in page before it reaches the admin.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdminError"
+    BadRequest:
+      description: Refused by the admin (`invalid_id`, `unsupported_identity`, `invalid_content_type`) or by the gateway (`invalid_request_error` with a code such as `invalid_limit`, `unsupported_parameter`, `invalid_team_id`, or the parameter of an invalid chunking setting).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnyError"
+    Forbidden:
+      description: The signed-in user is not allowed to (`grounding_admin_required`, `team_admin_required`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    NotFound:
+      description: No such object of the signed-in user (`file_not_found`, `vector_store_not_found`, `not_found`); another user's object answers the same.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    Conflict:
+      description: The object's state does not allow it; `code` says why (for example `file_in_use`, `job_running`, `reembed_running`, `store_current`, `concurrent_modification`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+    QuotaExceeded:
+      description: The payer's usage quota is used up (`quota_exceeded`); `resets_at` says when new work can start. Work already queued continues.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QuotaError"
+    GatewayUnreachable:
+      description: The gateway could not be reached (`gateway_unreachable`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdminError"
+    FileSearchUnavailable:
+      description: File search is unavailable here (`file_search_unavailable`, with the reason in words), busy (`file_search_busy`), its content storage cannot be reached (`blob_storage_unavailable`), or a retry met files being processed (`retry_conflict`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayError"
+  schemas:
+    PluginRule:
+      type: object
+      required:
+        - id
+        - strategy
+      properties:
+        id:
+          type: string
+          description: The rule id a hook's `callback.id` names.
+        strategy:
+          type: string
+    PluginInstanceStatus:
+      type: object
+      description: What one gateway instance reports for an installed plugin.
+      required:
+        - instance
+        - version
+        - state
+        - rules
+        - at
+      properties:
+        instance:
+          type: string
+          description: The gateway instance (its host name).
+        version:
+          type: string
+          description: The version the gateway works on; empty when it cannot tell.
+        state:
+          type: string
+          enum:
+            - running
+            - installed
+            - failed
+            - incompatible
+          description: "`running` loaded; `installed` unpacked and not loaded yet; `failed` the fetch, unpack or load failed (`error` says why); `incompatible` the gateway does not fit the version's range."
+        error:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginRule"
+        at:
+          type: string
+          format: date-time
+          description: When the instance wrote its report.
+    PluginVersion:
+      type: object
+      required:
+        - version
+        - sha256
+        - sizeBytes
+        - uploadedBy
+        - uploadedAt
+        - compatible
+        - help
+        - hasSettings
+      properties:
+        version:
+          type: string
+        sha256:
+          type: string
+          description: Of the zip as uploaded, lower-case hex.
+        sizeBytes:
+          type: integer
+        uploadedBy:
+          type: string
+        uploadedAt:
+          type: string
+          format: date-time
+        gateway:
+          type:
+            - string
+            - "null"
+          description: The version range of the gateway the plugin works with.
+        compatible:
+          type: boolean
+          description: Whether the range matches the admin's own version, which ships together with the gateway.
+        help:
+          type: object
+          description: The manifest's help by language (`summary`, and `settings` texts by key). Written by the plugin's author.
+          additionalProperties:
+            type: object
+        hasSettings:
+          type: boolean
+          description: Whether the manifest declares a settings schema.
+    InstalledPlugin:
+      type: object
+      required:
+        - id
+        - enabledVersion
+        - versions
+        - status
+      properties:
+        id:
+          type: string
+        enabledVersion:
+          type:
+            - string
+            - "null"
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginVersion"
+        status:
+          type: array
+          description: One entry per reporting gateway instance; empty when none reports the plugin.
+          items:
+            $ref: "#/components/schemas/PluginInstanceStatus"
+    PluginBuiltin:
+      type: object
+      description: A plugin that ships with the gateway.
+      required:
+        - id
+        - kind
+        - version
+        - rules
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+            - shipped
+        version:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginRule"
+    VersionInfo:
+      type: object
+      required: [version, installType, updateCheck]
+      properties:
+        version:
+          type: string
+          description: The running admin version.
+        installType:
+          type: string
+          enum: [kyma, docker, local]
+        updateCheck:
+          type: boolean
+          description: False when UPDATE_CHECK_ENABLED turns the cockpit's update check off.
+    PluginList:
+      type: object
+      required:
+        - enabled
+        - adminVersion
+        - gatewayStatus
+        - plugins
+        - builtins
+      properties:
+        enabled:
+          type: boolean
+          description: False while `INSTALLED_PLUGINS_ENABLED` is off.
+        adminVersion:
+          type: string
+        gatewayStatus:
+          type: object
+          required:
+            - available
+            - instances
+          properties:
+            available:
+              type: boolean
+              description: False when the status store cannot be reached.
+            instances:
+              type: array
+              items:
+                type: object
+                description: One gateway instance's report, as written by the gateway (`instance`, `gatewayVersion`, `at`, `plugins`, and `unpackDisabledReason` where the runtime does not unpack).
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/InstalledPlugin"
+        builtins:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginBuiltin"
+    PluginUploaded:
+      type: object
+      required:
+        - id
+        - version
+        - sha256
+        - sizeBytes
+      properties:
+        id:
+          type: string
+        version:
+          type: string
+        sha256:
+          type: string
+        sizeBytes:
+          type: integer
+        enabled:
+          type: boolean
+          description: Always false on a first upload.
+        unchanged:
+          type: boolean
+          description: True when this exact package was stored already.
+    PluginEnabled:
+      type: object
+      required:
+        - id
+        - enabledVersion
+        - sha256
+      properties:
+        id:
+          type: string
+        enabledVersion:
+          type: string
+        sha256:
+          type: string
+        warnings:
+          type: array
+          description: Stored settings of this plugin in the active configuration that do not fit the enabled version's schema (`STORED_SETTINGS_INVALID`). The enable has happened; saving that configuration again is refused until the settings are fixed.
+          items:
+            type: object
+            required:
+              - code
+              - message
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+    PluginSettingsSchema:
+      type: object
+      required:
+        - id
+        - schema
+        - summary
+        - helpFallback
+      properties:
+        id:
+          type: string
+        schema:
+          type: object
+          description: The plugin's JSON Schema for `plugins.<id>`, with the help texts applied.
+          additionalProperties: true
+        summary:
+          type: string
+          description: The plugin's one-line description in the language used.
+        helpFallback:
+          type: boolean
+          description: True when the plugin has no help in the asked language and another was used.
+    PluginSuggestedHooksCreated:
+      type: object
+      required:
+        - configId
+        - version
+        - name
+        - warnings
+      properties:
+        configId:
+          type: string
+        version:
+          type: string
+        name:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    PluginConfigurationRefused:
+      type: object
+      description: An error answered by the admin; `errors` and `warnings` are present when the configuration was refused.
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    PluginDisabled:
+      type: object
+      required:
+        - id
+        - enabledVersion
+        - warnings
+      properties:
+        id:
+          type: string
+        enabledVersion:
+          type: "null"
+        warnings:
+          type: array
+          items:
+            type: object
+            required:
+              - code
+              - message
+              - ruleIds
+            properties:
+              code:
+                type: string
+                description: "`HOOKS_REFERENCE_PLUGIN`."
+              message:
+                type: string
+              ruleIds:
+                type: array
+                items:
+                  type: string
+    PluginRemoved:
+      type: object
+      required:
+        - id
+        - version
+        - removed
+      properties:
+        id:
+          type: string
+        version:
+          type: string
+        removed:
+          type: boolean
+    Id:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{1,64}$"
+    AdminError:
+      type: object
+      description: An error answered by the admin.
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: For example `authentication_required`, `unsupported_identity`, `invalid_id`, `invalid_content_type`, `file_too_large`, `team_not_found`, `gateway_unreachable`, `invalid_request`, `price_lookup_failed`.
+        message:
+          type: string
+    GatewayError:
+      type: object
+      description: An error answered by the gateway, in OpenAI's envelope. Some carry more fields beside `error` (a blob migration's `job_id` and `detail`).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - code
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              description: For example `invalid_request_error`, `permission_error`, `authentication_error`, `file_search_unavailable`, `server_error`.
+            code:
+              type: string
+            param:
+              type:
+                - string
+                - "null"
+    AnyError:
+      description: An error from the admin or from the gateway.
+      anyOf:
+        - $ref: "#/components/schemas/AdminError"
+        - $ref: "#/components/schemas/GatewayError"
+    QuotaError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - type
+            - code
+            - message
+            - scope
+            - dimension
+            - window
+            - resets_at
+          properties:
+            type:
+              const: quota_exceeded
+            code:
+              const: quota_exceeded
+            message:
+              type: string
+            scope:
+              type: string
+              description: Whose quota, for example `user` or `team`.
+            team:
+              type: string
+              description: The team's name, for a team quota.
+            dimension:
+              type: string
+              description: What is counted, for example tokens or cost.
+            window:
+              type: string
+              description: The quota's period, for example `day` or `month`.
+            limit:
+              type: number
+              description: Only when the payer is the caller.
+            used:
+              type: number
+              description: Only when the payer is the caller.
+            resets_at:
+              type: string
+              format: date-time
+
+    ConfigError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+    ApiConfigDocument:
+      type: object
+      description: The gateway configuration. Its content is the gateway's `api_config` document (providers, models, rate limits, platform settings), validated on every change.
+      required:
+        - api_config
+      properties:
+        api_config:
+          type: object
+          additionalProperties: true
+    ApiConfigRollbackRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Why; recorded with the rollback. Defaults to `Manual rollback via REST API`.
+          example: The last change broke a model route.
+    ApiConfigActivated:
+      type: object
+      required:
+        - success
+        - version
+        - checksum
+        - activatedAt
+      properties:
+        success:
+          const: true
+        version:
+          type: string
+        checksum:
+          type: string
+        activatedAt:
+          type: string
+          format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
+    ApiConfigRolledBack:
+      type: object
+      required:
+        - success
+        - rolledBackFrom
+        - rolledBackTo
+        - rolledBackAt
+      properties:
+        success:
+          const: true
+        rolledBackFrom:
+          type: string
+          description: The version that was active.
+        rolledBackTo:
+          type: string
+          description: The version that is active now.
+        reason:
+          type: string
+        rolledBackAt:
+          type: string
+          format: date-time
+    ConfigValidationError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    ConfigStatus:
+      type: object
+      required:
+        - timestamp
+        - eventPublishing
+        - activeConfig
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        eventPublishing:
+          type: boolean
+          description: Whether configuration changes are published to the gateways (Valkey is reachable).
+        activeConfig:
+          type: object
+          required:
+            - hasActiveConfig
+          properties:
+            hasActiveConfig:
+              type: boolean
+            version:
+              type: string
+            deployedAt:
+              type: string
+              format: date-time
+            checksum:
+              type: string
+
+    ListPage:
+      type: object
+      description: A page of a list. `first_id` and `last_id` are null on an empty page.
+      required:
+        - object
+        - data
+        - has_more
+        - first_id
+        - last_id
+      properties:
+        object:
+          const: list
+        data:
+          type: array
+        has_more:
+          type: boolean
+        first_id:
+          type:
+            - string
+            - "null"
+        last_id:
+          type:
+            - string
+            - "null"
+    VisionMode:
+      type: string
+      description: Which PDF pages a vision model transcribes (`off`, the default, transcribes none).
+      enum:
+        - "off"
+        - no_text
+        - auto
+        - all
+    ChunkingSetting:
+      type: object
+      description: A store's chunking setting. `max_tokens` 100 to 4096, `overlap_tokens` at most half of it; `contextual` (a model-written context per chunk) only with `structure`.
+      required:
+        - type
+        - max_tokens
+        - overlap_tokens
+        - contextual
+      properties:
+        type:
+          type: string
+          enum:
+            - static
+            - structure
+        max_tokens:
+          type: integer
+          minimum: 100
+          maximum: 4096
+        overlap_tokens:
+          type: integer
+          minimum: 0
+        contextual:
+          type: boolean
+        vision:
+          $ref: "#/components/schemas/VisionMode"
+      example:
+        type: structure
+        max_tokens: 800
+        overlap_tokens: 0
+        contextual: true
+    EmbeddingState:
+      type: string
+      description: A store's embedding against the configured model (`outdated`, another model; `dimension_mismatch`, another dimension, which cannot be re-embedded).
+      enum:
+        - current
+        - outdated
+        - dimension_mismatch
+    GroundingStatus:
+      type: object
+      required:
+        - available
+        - reason
+        - embeddingModel
+        - embeddingDimensions
+        - blobBackend
+        - limits
+        - chunking
+        - vision
+      properties:
+        available:
+          type: boolean
+        reason:
+          description: Why file search is unavailable, null when it is available.
+          type:
+            - string
+            - "null"
+          enum:
+            - disabled
+            - no_database
+            - embedding_dimensions
+            - schema_not_provisioned
+            - schema_outdated
+            - migration_failed
+            - not_migrated
+            - null
+        embeddingModel:
+          type: string
+        embeddingDimensions:
+          type: integer
+        blobBackend:
+          type: string
+          enum:
+            - db
+            - local
+            - s3
+        limits:
+          type: object
+          required:
+            - maxFileBytes
+            - maxFilesPerStore
+          properties:
+            maxFileBytes:
+              type: integer
+            maxFilesPerStore:
+              type: integer
+        chunking:
+          $ref: "#/components/schemas/ChunkingSetting"
+        vision:
+          type: object
+          required:
+            - available
+            - model
+            - unmaskedWarning
+          properties:
+            available:
+              type: boolean
+              description: Whether a store may use a vision mode here.
+            model:
+              type: string
+            unmaskedWarning:
+              type: boolean
+              description: Page images would reach the vision model unmasked while pseudonymization applies to file search content.
+    ModelCost:
+      type: object
+      required:
+        - priced
+        - capacity_units
+        - cost
+        - currency
+      properties:
+        priced:
+          type: boolean
+        capacity_units:
+          type:
+            - number
+            - "null"
+        cost:
+          type:
+            - number
+            - "null"
+        currency:
+          type:
+            - string
+            - "null"
+      example:
+        priced: true
+        capacity_units: 19.0385
+        cost: 1.42
+        currency: EUR
+    OwnerStorage:
+      type: object
+      required:
+        - owner_email
+        - file_count
+        - logical_bytes
+      properties:
+        owner_email:
+          type: string
+          example: user@example.com
+        file_count:
+          type: integer
+        logical_bytes:
+          type: integer
+          description: The sum of the owner's file sizes, before content deduplication.
+    OwnerStorageList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/OwnerStorage"
+
+    FileUpload:
+      type: object
+      required:
+        - file
+        - purpose
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+        purpose:
+          type: string
+          enum:
+            - assistants
+            - user_data
+        expires_after[anchor]:
+          type: string
+          enum:
+            - created_at
+        expires_after[seconds]:
+          type: integer
+          minimum: 3600
+          maximum: 2592000
+    File:
+      type: object
+      description: OpenAI's file object.
+      required:
+        - id
+        - object
+        - bytes
+        - created_at
+        - filename
+        - purpose
+      properties:
+        id:
+          type: string
+          example: file-example1
+        object:
+          const: file
+        bytes:
+          type: integer
+        created_at:
+          type: integer
+        expires_at:
+          type: integer
+        filename:
+          type: string
+          example: handbook.pdf
+        purpose:
+          type: string
+        status:
+          const: processed
+        status_details:
+          type: "null"
+    FileList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/File"
+    FileDeleted:
+      type: object
+      required:
+        - id
+        - object
+        - deleted
+      properties:
+        id:
+          type: string
+        object:
+          const: file
+        deleted:
+          const: true
+    FileAttachments:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          description: By file id.
+          additionalProperties:
+            type: array
+            items:
+              type: object
+              required:
+                - store_id
+                - store_name
+                - status
+              properties:
+                store_id:
+                  type: string
+                store_name:
+                  type:
+                    - string
+                    - "null"
+                status:
+                  $ref: "#/components/schemas/StoreFileStatus"
+    AdminFileList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+                required:
+                  - id
+                  - object
+                  - bytes
+                  - created_at
+                  - filename
+                  - purpose
+                  - owner_email
+                  - attachment_count
+                properties:
+                  id:
+                    type: string
+                  object:
+                    const: file
+                  bytes:
+                    type: integer
+                  created_at:
+                    type: integer
+                  filename:
+                    type: string
+                  purpose:
+                    type: string
+                  owner_email:
+                    type: string
+                  attachment_count:
+                    type: integer
+    FailedAttachmentList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+                required:
+                  - id
+                  - store_id
+                  - file_id
+                  - owner_email
+                  - last_error
+                  - attempts
+                  - created_at
+                properties:
+                  id:
+                    type: string
+                    description: "`<store_id>/<file_id>`, the paging cursor."
+                  store_id:
+                    type: string
+                  store_name:
+                    type:
+                      - string
+                      - "null"
+                  file_id:
+                    type: string
+                  filename:
+                    type: string
+                  owner_email:
+                    type: string
+                  last_error:
+                    type: object
+                    properties:
+                      message:
+                        type:
+                          - string
+                          - "null"
+                      name:
+                        type:
+                          - string
+                          - "null"
+                  attempts:
+                    type: integer
+                  batch_id:
+                    type:
+                      - string
+                      - "null"
+                  created_at:
+                    type: integer
+
+    ExpiresAfter:
+      type: object
+      required:
+        - anchor
+        - days
+      properties:
+        anchor:
+          const: last_active_at
+        days:
+          type: integer
+          minimum: 1
+          maximum: 365
+    FileCounts:
+      type: object
+      required:
+        - in_progress
+        - completed
+        - failed
+        - cancelled
+        - total
+      properties:
+        in_progress:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        total:
+          type: integer
+    VectorStore:
+      type: object
+      description: OpenAI's vector store object. `status` follows the file counts (`in_progress` while a file is), except `expired`.
+      required:
+        - id
+        - object
+        - created_at
+        - name
+        - usage_bytes
+        - file_counts
+        - status
+        - expires_after
+        - expires_at
+        - last_active_at
+        - metadata
+      properties:
+        id:
+          type: string
+          example: vs_example1
+        object:
+          const: vector_store
+        created_at:
+          type: integer
+        name:
+          type:
+            - string
+            - "null"
+          example: Handbooks
+        usage_bytes:
+          type: integer
+        file_counts:
+          $ref: "#/components/schemas/FileCounts"
+        status:
+          type: string
+          enum:
+            - in_progress
+            - completed
+            - expired
+        expires_after:
+          oneOf:
+            - $ref: "#/components/schemas/ExpiresAfter"
+            - type: "null"
+        expires_at:
+          type:
+            - integer
+            - "null"
+        last_active_at:
+          type:
+            - integer
+            - "null"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    GroundingStore:
+      description: A vector store with the Grounding fields.
+      allOf:
+        - $ref: "#/components/schemas/VectorStore"
+        - type: object
+          required:
+            - is_shared
+            - owned
+            - owner_email
+            - embedding_model
+            - embedding_dim
+            - active_generation
+            - embedding_state
+            - reembed_job_id
+            - chunking
+            - team_ids
+          properties:
+            is_shared:
+              type: boolean
+              description: Shared read-only with every user.
+            owned:
+              type: boolean
+              description: The signed-in user owns it.
+            owner_email:
+              type: string
+            embedding_model:
+              type: string
+            embedding_dim:
+              type: integer
+            active_generation:
+              type: integer
+            embedding_state:
+              $ref: "#/components/schemas/EmbeddingState"
+            reembed_job_id:
+              description: The store's unfinished re-embed or re-chunk; null on another owner's store (except in the admin list).
+              type:
+                - string
+                - "null"
+            chunking:
+              description: The store's chunking setting; null for a store from before the setting (static, 800 tokens, 400 overlap).
+              oneOf:
+                - $ref: "#/components/schemas/ChunkingSetting"
+                - type: "null"
+            team_ids:
+              type: array
+              description: The teams it is shared with; on another owner's store only the signed-in user's own teams (all of them for an admin).
+              items:
+                type: string
+    GroundingStoreList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/GroundingStore"
+    StoreDeleted:
+      type: object
+      required:
+        - id
+        - object
+        - deleted
+      properties:
+        id:
+          type: string
+        object:
+          const: vector_store.deleted
+        deleted:
+          const: true
+    StoreCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: Handbooks
+        file_ids:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+        expires_after:
+          $ref: "#/components/schemas/ExpiresAfter"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        chunking_strategy:
+          $ref: "#/components/schemas/ChunkingStrategyRequest"
+        chunking:
+          $ref: "#/components/schemas/ChunkingSetting"
+    StoreModifyRequest:
+      type: object
+      properties:
+        name:
+          type:
+            - string
+            - "null"
+        expires_after:
+          oneOf:
+            - $ref: "#/components/schemas/ExpiresAfter"
+            - type: "null"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    ChunkingStrategyRequest:
+      type: object
+      description: OpenAI's `chunking_strategy` for the attached files (`auto`, or `static` with its sizes); a store's own `chunking` setting applies when it is absent.
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - auto
+            - static
+        static:
+          type: object
+          properties:
+            max_chunk_size_tokens:
+              type: integer
+              minimum: 100
+              maximum: 4096
+            chunk_overlap_tokens:
+              type: integer
+              minimum: 0
+    StoreFileStatus:
+      type: string
+      enum:
+        - in_progress
+        - completed
+        - failed
+        - cancelled
+    VectorStoreFile:
+      type: object
+      description: OpenAI's vector store file object. In a list the cockpit gets `context_stopped` too.
+      required:
+        - id
+        - object
+        - usage_bytes
+        - created_at
+        - vector_store_id
+        - status
+        - last_error
+        - chunking_strategy
+        - attributes
+      properties:
+        id:
+          type: string
+          description: The file id.
+        object:
+          const: vector_store.file
+        usage_bytes:
+          type: integer
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/StoreFileStatus"
+        last_error:
+          type:
+            - object
+            - "null"
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        chunking_strategy:
+          type: object
+          description: The effective strategy, `static` with its sizes, or `other` for `structure`.
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - static
+                - other
+            static:
+              type: object
+              properties:
+                max_chunk_size_tokens:
+                  type: integer
+                chunk_overlap_tokens:
+                  type: integer
+        attributes:
+          type: object
+        context_stopped:
+          description: Why writing the file's chunk contexts stopped, null when it did not.
+          type:
+            - object
+            - "null"
+    VectorStoreFileList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/VectorStoreFile"
+    VectorStoreFileDeleted:
+      type: object
+      required:
+        - id
+        - object
+        - deleted
+      properties:
+        id:
+          type: string
+        object:
+          const: vector_store.file.deleted
+        deleted:
+          const: true
+    StoreFileCreateRequest:
+      type: object
+      required:
+        - file_id
+      properties:
+        file_id:
+          type: string
+          example: file-example1
+        attributes:
+          type: object
+        chunking_strategy:
+          $ref: "#/components/schemas/ChunkingStrategyRequest"
+    StoreFileUpdateRequest:
+      type: object
+      required:
+        - attributes
+      properties:
+        attributes:
+          type: object
+          example:
+            department: sales
+    FileBatchCreateRequest:
+      type: object
+      description: "`file_ids`, or `files` with per-file attributes and strategy."
+      properties:
+        file_ids:
+          type: array
+          items:
+            type: string
+        files:
+          type: array
+          items:
+            type: object
+            required:
+              - file_id
+            properties:
+              file_id:
+                type: string
+              attributes:
+                type: object
+              chunking_strategy:
+                $ref: "#/components/schemas/ChunkingStrategyRequest"
+        attributes:
+          type: object
+        chunking_strategy:
+          $ref: "#/components/schemas/ChunkingStrategyRequest"
+      example:
+        file_ids:
+          - file-example1
+          - file-example2
+    FileBatch:
+      type: object
+      required:
+        - id
+        - object
+        - created_at
+        - vector_store_id
+        - status
+        - file_counts
+      properties:
+        id:
+          type: string
+        object:
+          const: vector_store.file_batch
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - in_progress
+            - completed
+            - failed
+            - cancelled
+        file_counts:
+          $ref: "#/components/schemas/FileCounts"
+    SearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          description: One query, or 1 to 10 queries searched together.
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: array
+              minItems: 1
+              maxItems: 10
+              items:
+                type: string
+                minLength: 1
+          example: travel expense limits
+        max_num_results:
+          type: integer
+          minimum: 1
+          maximum: 50
+        filters:
+          type: object
+          description: OpenAI's attribute filter (comparison or compound).
+        ranking_options:
+          type: object
+          properties:
+            ranker:
+              type: string
+              description: "`none` skips the rerank; the others rerank."
+              enum:
+                - none
+                - auto
+                - default-2024-11-15
+                - default_2024_08_21
+            score_threshold:
+              type: number
+            hybrid_search:
+              type: object
+              properties:
+                embedding_weight:
+                  type: number
+                text_weight:
+                  type: number
+        rewrite_query:
+          type: boolean
+    SearchResults:
+      type: object
+      required:
+        - object
+        - search_query
+        - data
+        - has_more
+        - next_page
+      properties:
+        object:
+          const: vector_store.search_results.page
+        search_query:
+          type: array
+          description: Every query searched, after an optional rewrite.
+          items:
+            type: string
+        data:
+          type: array
+          items:
+            type: object
+            required:
+              - file_id
+              - filename
+              - score
+              - attributes
+              - content
+            properties:
+              file_id:
+                type: string
+              filename:
+                type: string
+              score:
+                type: number
+              attributes:
+                type: object
+              content:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - type
+                    - text
+                  properties:
+                    type:
+                      const: text
+                    text:
+                      type: string
+              pages:
+                type: object
+                description: The pages the content spans, for a file with pages.
+                required:
+                  - first
+                  - last
+                properties:
+                  first:
+                    type: integer
+                  last:
+                    type: integer
+        has_more:
+          type: boolean
+        next_page:
+          type:
+            - string
+            - "null"
+    TeamShareRequest:
+      type: object
+      required:
+        - teamId
+      properties:
+        teamId:
+          type: string
+          format: uuid
+          example: 0b7e9c3a-4f2d-4e8a-9c1b-2d3e4f5a6b7c
+
+    JobState:
+      type: string
+      enum:
+        - queued
+        - running
+        - cancelling
+        - cancelled
+        - completed
+        - completed_with_errors
+        - failed
+    Job:
+      type: object
+      description: A job with its counters, derived from its items on every read.
+      required:
+        - id
+        - kind
+        - store_id
+        - store_name
+        - batch_id
+        - state
+        - total
+        - done
+        - failed
+        - cancelled
+        - in_progress
+        - embedding_tokens
+        - target_chunking
+        - reextract
+        - error
+        - created_at
+        - started_at
+        - finished_at
+        - started_by
+      properties:
+        id:
+          type: string
+          example: job_example1
+        kind:
+          type: string
+          description: "`file_batch`, `reembed_store` (also a re-chunk or re-extract), `reembed_bulk` or `blob_migration`."
+          enum:
+            - file_batch
+            - reembed_store
+            - reembed_bulk
+            - blob_migration
+        store_id:
+          type:
+            - string
+            - "null"
+        store_name:
+          type:
+            - string
+            - "null"
+        batch_id:
+          type:
+            - string
+            - "null"
+        state:
+          $ref: "#/components/schemas/JobState"
+        total:
+          type: integer
+        done:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        in_progress:
+          type: integer
+        embedding_tokens:
+          type: integer
+        target_chunking:
+          description: A re-chunk's target setting, else null.
+          oneOf:
+            - $ref: "#/components/schemas/ChunkingSetting"
+            - type: "null"
+        reextract:
+          type: boolean
+          description: A re-extraction (`target_chunking` is the store's own setting).
+        context_input_tokens:
+          type: integer
+        context_cached_tokens:
+          type: integer
+        context_output_tokens:
+          type: integer
+        context_failed_chunks:
+          type: integer
+        ocr_pages:
+          type: integer
+        ocr_skipped_pages:
+          type: integer
+        vision_pages:
+          type: integer
+        vision_skipped_pages:
+          type: integer
+        error:
+          type:
+            - object
+            - "null"
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        started_by:
+          type:
+            - string
+            - "null"
+    AdminJob:
+      description: A job with its owner (a blob migration also with its target storage).
+      allOf:
+        - $ref: "#/components/schemas/Job"
+        - type: object
+          required:
+            - owner_email
+          properties:
+            owner_email:
+              type:
+                - string
+                - "null"
+            target_storage:
+              type:
+                - string
+                - "null"
+    JobList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Job"
+    AdminJobList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/AdminJob"
+    JobRetried:
+      allOf:
+        - $ref: "#/components/schemas/Job"
+        - type: object
+          required:
+            - retried
+          properties:
+            retried:
+              type: integer
+              description: The number of re-opened items.
+    StoreFileRetried:
+      type: object
+      required:
+        - job_id
+        - job
+        - retried
+      properties:
+        job_id:
+          type:
+            - string
+            - "null"
+        job:
+          oneOf:
+            - $ref: "#/components/schemas/Job"
+            - type: "null"
+        retried:
+          type: integer
+    JobFailureList:
+      allOf:
+        - $ref: "#/components/schemas/ListPage"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                anyOf:
+                  - type: object
+                    description: A file a re-embed, re-chunk or re-extract job could not process; `id` is `<job_id>/<file_id>`.
+                    required:
+                      - id
+                      - job_id
+                      - store_id
+                      - file_id
+                      - filename
+                      - last_error
+                      - attempts
+                    properties:
+                      id:
+                        type: string
+                      job_id:
+                        type: string
+                      store_id:
+                        type: string
+                      store_name:
+                        type:
+                          - string
+                          - "null"
+                      file_id:
+                        type: string
+                      filename:
+                        description: Null once the file was deleted.
+                        type:
+                          - string
+                          - "null"
+                      last_error:
+                        type: object
+                        properties:
+                          message:
+                            type:
+                              - string
+                              - "null"
+                      attempts:
+                        type: integer
+                  - type: object
+                    description: A blob a migration could not move; `id` is its SHA-256.
+                    required:
+                      - id
+                      - sha256
+                      - source_storage
+                      - size_bytes
+                      - last_error
+                      - attempts
+                    properties:
+                      id:
+                        type: string
+                      sha256:
+                        type: string
+                      source_storage:
+                        type: string
+                      size_bytes:
+                        type:
+                          - integer
+                          - "null"
+                      last_error:
+                        type: object
+                        properties:
+                          message:
+                            type:
+                              - string
+                              - "null"
+                      attempts:
+                        type: integer
+    ReembedEstimate:
+      type: object
+      required:
+        - files
+        - chunks
+        - estimated_tokens
+        - state
+      properties:
+        files:
+          type: integer
+          description: Completed files.
+        chunks:
+          type: integer
+          description: Embedded chunks of the active generation.
+        estimated_tokens:
+          type: integer
+        state:
+          $ref: "#/components/schemas/EmbeddingState"
+    SkippedStore:
+      type: object
+      required:
+        - store_id
+        - owner_email
+        - reason
+      properties:
+        store_id:
+          type: string
+        owner_email:
+          type: string
+        reason:
+          type: string
+          description: Why a bulk re-embed leaves the store out (a store that changed between estimate and start is skipped with its start refusal).
+    OutdatedEstimate:
+      type: object
+      required:
+        - stores
+        - files
+        - chunks
+        - estimated_tokens
+        - skipped
+      properties:
+        stores:
+          type: integer
+        files:
+          type: integer
+        chunks:
+          type: integer
+        estimated_tokens:
+          type: integer
+        skipped:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkippedStore"
+    BulkReembedStarted:
+      type: object
+      required:
+        - job
+        - skipped
+      properties:
+        job:
+          $ref: "#/components/schemas/Job"
+        skipped:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkippedStore"
+    ChunkingStartRequest:
+      type: object
+      required:
+        - chunking
+      properties:
+        chunking:
+          $ref: "#/components/schemas/ChunkingSetting"
+    VisionEstimate:
+      type: object
+      description: The vision transcription figures (zero and null without a vision mode).
+      required:
+        - vision_model
+        - vision_files
+        - estimated_vision_pages
+        - estimated_vision_input_tokens
+        - estimated_vision_output_tokens
+        - vision_switched_off
+        - vision_unmasked_warning
+      properties:
+        vision_model:
+          type:
+            - string
+            - "null"
+        vision_files:
+          type: integer
+          description: PDFs that would be read with the vision mode.
+        estimated_vision_pages:
+          type: integer
+          description: An upper bound, the page limit per file for each of those PDFs.
+        estimated_vision_input_tokens:
+          type: integer
+        estimated_vision_output_tokens:
+          type: integer
+          description: An upper bound.
+        vision_switched_off:
+          type: boolean
+          description: Vision is switched off on this gateway; a start with a vision mode is refused.
+        vision_unmasked_warning:
+          type: boolean
+          description: Page images would reach the vision model unmasked while pseudonymization applies to file search content.
+    RechunkEstimate:
+      allOf:
+        - $ref: "#/components/schemas/VisionEstimate"
+        - type: object
+          required:
+            - store_id
+            - current
+            - target
+            - unchanged
+            - chunks_without_context
+            - running_job_id
+            - embedding_model
+            - embedding_model_unavailable
+            - files
+            - current_chunks
+            - estimated_chunks
+            - estimated_embedding_tokens
+            - context_model
+            - estimated_context_input_tokens
+            - estimated_context_output_tokens
+          properties:
+            store_id:
+              type: string
+            current:
+              description: The store's setting now; null when the stored value is invalid.
+              oneOf:
+                - $ref: "#/components/schemas/ChunkingSetting"
+                - type: "null"
+            target:
+              $ref: "#/components/schemas/ChunkingSetting"
+            unchanged:
+              type: boolean
+              description: The target is the current setting; a start is refused unless chunks lack their context.
+            chunks_without_context:
+              type: integer
+            running_job_id:
+              description: The store's unfinished re-embed or re-chunk, which a start would be refused for.
+              type:
+                - string
+                - "null"
+            embedding_model:
+              type: string
+              description: The store's own model, which the re-chunk embeds with.
+            embedding_model_unavailable:
+              type: boolean
+              description: That model was already found not served; a start would be refused.
+            files:
+              type: integer
+            current_chunks:
+              type: integer
+            estimated_chunks:
+              type: integer
+            estimated_embedding_tokens:
+              type: integer
+            context_model:
+              type:
+                - string
+                - "null"
+            estimated_context_input_tokens:
+              type: integer
+            estimated_context_output_tokens:
+              type: integer
+              description: An upper bound.
+    ReextractEstimate:
+      allOf:
+        - $ref: "#/components/schemas/VisionEstimate"
+        - type: object
+          required:
+            - store_id
+            - setting
+            - running_job_id
+            - embedding_model
+            - embedding_model_unavailable
+            - files
+            - kept_files
+            - ocr_available
+            - files_without_text
+            - current_chunks
+            - estimated_chunks
+            - estimated_embedding_tokens
+            - context_model
+            - estimated_context_input_tokens
+            - estimated_context_output_tokens
+            - retry_files
+          properties:
+            store_id:
+              type: string
+            setting:
+              description: The store's setting the files are chunked with again; null when it is invalid (a start is refused).
+              oneOf:
+                - $ref: "#/components/schemas/ChunkingSetting"
+                - type: "null"
+            running_job_id:
+              type:
+                - string
+                - "null"
+            embedding_model:
+              type: string
+            embedding_model_unavailable:
+              type: boolean
+            files:
+              type: integer
+              description: Completed files read again.
+            kept_files:
+              type: integer
+              description: Completed files kept as they are (no cost).
+            ocr_available:
+              type: boolean
+            files_without_text:
+              type: integer
+              description: Of `files`, PDFs without text now that OCR or vision may read.
+            current_chunks:
+              type: integer
+            estimated_chunks:
+              type: integer
+            estimated_embedding_tokens:
+              type: integer
+            context_model:
+              type:
+                - string
+                - "null"
+            estimated_context_input_tokens:
+              type: integer
+            estimated_context_output_tokens:
+              type: integer
+            retry_files:
+              type: integer
+              description: Failed files of a type this build now reads, which a start queues again.
+    ReextractStarted:
+      type: object
+      required:
+        - job
+        - retried_files
+        - refused_files
+      properties:
+        job:
+          oneOf:
+            - $ref: "#/components/schemas/Job"
+            - type: "null"
+        retried_files:
+          type: integer
+        refused_files:
+          type: array
+          items:
+            type: object
+            required:
+              - file_id
+              - error
+            properties:
+              file_id:
+                type: string
+              error:
+                type: string
+                description: For example `job_running` or `nothing_to_retry`.
+
+    AdminOverview:
+      type: object
+      required:
+        - stores
+        - files
+        - logical_bytes
+        - physical_bytes
+        - savings_bytes
+        - failed_ingestions
+        - outdated_stores
+      properties:
+        stores:
+          type: integer
+        files:
+          type: integer
+        logical_bytes:
+          type: integer
+          description: The sum of every file's size.
+        physical_bytes:
+          type: integer
+          description: The sum of the stored contents, one copy per distinct content.
+        savings_bytes:
+          type: integer
+        failed_ingestions:
+          type: integer
+        outdated_stores:
+          type: integer
+    BlobStorageOverview:
+      type: object
+      required:
+        - configured_backend
+        - s3
+        - storages
+        - garbage
+        - migration
+      properties:
+        configured_backend:
+          type: string
+        s3:
+          type: object
+          required:
+            - configured
+            - credentials_present
+            - prefix
+            - outside_prefix_blobs
+          properties:
+            configured:
+              type: boolean
+            credentials_present:
+              type: boolean
+            prefix:
+              type: string
+            outside_prefix_blobs:
+              type: integer
+              description: S3 blobs stored outside the configured prefix (unreadable until it is set back).
+        storages:
+          type: array
+          items:
+            type: object
+            required:
+              - storage
+              - live_blobs
+              - live_bytes
+              - released_blobs
+              - released_bytes
+              - addressable
+            properties:
+              storage:
+                type: string
+              live_blobs:
+                type: integer
+              live_bytes:
+                type: integer
+              released_blobs:
+                type: integer
+                description: Blobs no file uses any more, waiting for deletion.
+              released_bytes:
+                type: integer
+              addressable:
+                type: boolean
+        garbage:
+          type: array
+          items:
+            type: object
+            required:
+              - storage
+              - entries
+              - due
+              - failing
+            properties:
+              storage:
+                type: string
+              entries:
+                type: integer
+              due:
+                type: integer
+              failing:
+                type: integer
+        migration:
+          description: The unfinished migration, else the most recent one; null when none was started.
+          oneOf:
+            - $ref: "#/components/schemas/AdminJob"
+            - type: "null"
+    BlobConnectionTest:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: object
+          required:
+            - reason
+          properties:
+            reason:
+              type: string
+            op:
+              type: string
+            status:
+              type: integer
+            code:
+              type: string
+    BlobMigrateRequest:
+      type: object
+      required:
+        - target
+      properties:
+        target:
+          type: string
+          enum:
+            - db
+            - s3
+    BlobMigrationStarted:
+      type: object
+      required:
+        - job
+      properties:
+        job:
+          oneOf:
+            - $ref: "#/components/schemas/AdminJob"
+            - type: "null"

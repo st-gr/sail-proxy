@@ -1,0 +1,11 @@
+{
+  "id": "responsesImagePlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Turns remote input_image URLs into data URLs on the Responses orchestration bridge."
+    }
+  }
+}

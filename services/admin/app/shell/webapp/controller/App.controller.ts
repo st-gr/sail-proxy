@@ -1,0 +1,1896 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+import BaseController from "admin/shell/controller/BaseController";
+import UI5Element from "sap/ui/core/Element";
+import Device from "sap/ui/Device";
+import XMLView from "sap/ui/core/mvc/XMLView";
+import Fragment from "sap/ui/core/Fragment";
+import JSONModel from "sap/ui/model/json/JSONModel";
+import NumberFormat from "sap/ui/core/format/NumberFormat";
+import DateFormat from "sap/ui/core/format/DateFormat";
+import Log from "sap/base/Log";
+import Text from "sap/m/Text";
+import Title from "sap/m/Title";
+import ResponsivePopover from "sap/m/ResponsivePopover";
+import ToolPage from "sap/tnt/ToolPage";
+import Dialog from "sap/m/Dialog";
+import SideNavigation, { SideNavigation$ItemSelectEvent } from "sap/tnt/SideNavigation";
+import NavigationListItem from "sap/tnt/NavigationListItem";
+import Component from "sap/ui/core/Component";
+import ComponentContainer from "sap/ui/core/ComponentContainer";
+import UIComponent from "sap/ui/core/UIComponent";
+import VBox from "sap/m/VBox";
+import Breadcrumbs from "sap/m/Breadcrumbs";
+import Link from "sap/m/Link";
+import Button from "sap/m/Button";
+import HBox from "sap/m/HBox";
+import { toQuotaView } from "../model/quotaDisplay";
+import { toTeamsView } from "../model/teamsDisplay";
+import { toHomeView } from "../model/homeTiles";
+import { backTargetRoute } from "../model/backTarget";
+import { SESSION_RELOAD_KEY, STORAGE_KEY, isSupported, languageChangeAction, needsServerLanguage, serverLanguageAction } from "../model/language";
+import { STORAGE_KEY as THEME_STORAGE_KEY, SYSTEM, currentChoice, followsSystem, serverThemeAction, themeChangeAction, themeFor, urlThemeOverride } from "../model/theme";
+import { checkForUpdate, dismiss, InstallType, versionUrl } from "../model/updateNotice";
+import { SettingsValues, changedSettings } from "../model/settings";
+import Theming from "sap/ui/core/Theming";
+import MessageToast from "sap/m/MessageToast";
+import BusyIndicator from "sap/ui/core/BusyIndicator";
+import ResourceModel from "sap/ui/model/resource/ResourceModel";
+import ResourceBundle from "sap/base/i18n/ResourceBundle";
+import type NotificationsController from "admin/shell/controller/Notifications.controller";
+
+// UI5 Web Components - Now using SAPUI5 wrapper types
+import ShellBar, { ShellBar$NotificationsClickEvent } from "sap/ui/webc/fiori/ShellBar";
+
+// Icons are provided via SAPUI5 icon pool, no explicit imports needed
+
+/** A section of the cockpit that is a UI5 app loaded into the shell's component container. */
+interface AppConfiguration {
+	componentName: string;
+	manifest: boolean;
+	title: string;
+	route: string;
+}
+
+/**
+ * @namespace admin.shell.controller
+ */
+export default class App extends BaseController {
+	useOverlayNav: boolean = false;
+	private feContainer!: ComponentContainer;
+	private currentAppKey: string = "";
+	private feRouter?: any;
+	private currentRouteName: string = "";
+	private sseConnection?: EventSource;
+	private sseReconnectAttempts: number = 0;
+	private maxReconnectAttempts: number = 5;
+	// The "My quota" card load in flight, so a second Home render waits for it (loadStaticContent)
+	private _myQuotaCardLoad: Promise<void> | null = null;
+	// This tab's theme choice (Light, Dark or System); index.html applied it before UI5 booted
+	private _themeChoice: string = currentChoice(null);
+	private _darkSchemeQuery: MediaQueryList | null = null;
+	/** System mode follows the operating system live; Light, Dark and a URL theme override do not. */
+	private readonly _onColorSchemeChange = (event: MediaQueryListEvent): void => {
+		if (followsSystem(this._themeChoice, urlThemeOverride(window.location.search))) {
+			Theming.setTheme(themeFor(SYSTEM, event.matches));
+		}
+	};
+	
+	// Configuration for the single admin app
+	private appConfigurations: { [appKey: string]: AppConfiguration | undefined } = {
+		"apiKeys": {
+			componentName: "admin.app.Component",
+			manifest: true,
+			title: "title.apiKeys",
+			route: "#api-keys"
+		},
+		"awsCredentials": {
+			componentName: "admin.awscredentials.Component", 
+			manifest: true,
+			title: "title.awsCredentials",
+			route: "#aws-credentials"
+		},
+		"sapRates": {
+			componentName: "admin.saprates.Component",
+			manifest: true,
+			title: "nav.sapRates",
+			route: "#sap-rates"
+		},
+		"securityEvents": {
+			componentName: "admin.securitynotifications.Component",
+			manifest: true,
+			title: "nav.securityEvents",
+			route: "#security-events"
+		},
+		"usage": {
+			componentName: "admin.usageanalytics.Component",
+			manifest: true,
+			title: "title.usage",
+			route: "#usage-analytics"
+		},
+		"config": {
+			componentName: "admin.config.Component",
+			manifest: true,
+			title: "nav.config",
+			route: "#config"
+		},
+		"modelLibrary": {
+			componentName: "admin.modellibrary.Component",
+			manifest: true,
+			title: "nav.modelLibrary",
+			route: "#model-library"
+		},
+		"catalogs": {
+			componentName: "admin.modellibrary.Component",
+			manifest: true,
+			title: "nav.catalogs",
+			route: "#catalogs"
+		},
+		"groundingStores": {
+			componentName: "admin.grounding.Component",
+			manifest: true,
+			title: "nav.groundingStores",
+			route: "#grounding-stores"
+		},
+		"groundingFiles": {
+			componentName: "admin.grounding.Component",
+			manifest: true,
+			title: "nav.groundingFiles",
+			route: "#grounding-files"
+		},
+		"groundingJobs": {
+			componentName: "admin.grounding.Component",
+			manifest: true,
+			title: "nav.groundingJobs",
+			route: "#grounding-jobs"
+		},
+		"groundingAdmin": {
+			componentName: "admin.grounding.Component",
+			manifest: true,
+			title: "nav.groundingAdmin",
+			route: "#grounding-admin"
+		},
+		"teams": {
+			componentName: "admin.teams.Component",
+			manifest: true,
+			title: "nav.teams",
+			route: "#teams"
+		},
+		"users": {
+			componentName: "admin.users.Component",
+			manifest: true,
+			title: "nav.users",
+			route: "#users"
+		},
+		"toolPolicies": {
+			componentName: "admin.toolpolicies.Component",
+			manifest: true,
+			title: "nav.toolPolicies",
+			route: "#tool-policies"
+		},
+		"connections": {
+			componentName: "admin.connections.Component",
+			manifest: true,
+			title: "nav.connections",
+			route: "#connections"
+		},
+		"plugins": {
+			componentName: "admin.plugins.Component",
+			manifest: true,
+			title: "nav.plugins",
+			route: "#plugins"
+		}
+	};
+
+	// Track deployment target (populated during initialization)
+	private deployTarget: string = 'unknown';
+	/** Settles once detectDeploymentTarget has run; started in onInit, awaited by callers that build URLs. */
+	private deployTargetDetected: Promise<void> = Promise.resolve();
+
+	/**
+	 * Detect deployment target by calling backend endpoint
+	 * This avoids assumptions about ports, proxies, or URL patterns
+	 */
+	private async detectDeploymentTarget(): Promise<void> {
+		try {
+			// Use relative URL to avoid hardcoding base URLs
+			const response = await fetch('/odata/v4/admin/whoami', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				}
+			});
+			
+			if (response.ok) {
+				const result = await response.json();
+				// The backend can include deployment info in the response
+				this.deployTarget = result.deployTarget || 'development';
+				console.log(`[detectDeploymentTarget] Detected: ${this.deployTarget}`);
+			} else {
+				// Fallback: assume local development if API call fails
+				this.deployTarget = 'development';
+				console.warn('[detectDeploymentTarget] API call failed, assuming development');
+			}
+		} catch (error) {
+			// Fallback: assume local development on any error
+			this.deployTarget = 'development';
+			console.warn('[detectDeploymentTarget] Error detecting deployment target:', error);
+		}
+	}
+
+	/**
+	 * Get environment-specific component URL for Fiori Elements apps
+	 * Uses relative URLs to avoid hardcoding base paths
+	 */
+	private getComponentUrl(appKey: string): string {
+		if (this.deployTarget === 'docker') {
+			// Docker: Use full app directory names with /admin/app prefix for nginx routing
+			const appPathMap: { [key: string]: string } = {
+				'apiKeys': '/admin/app/api-keys-app/',
+				'awsCredentials': '/admin/app/aws-credentials-app/',
+				'sapRates': '/admin/app/sap-rates-app/',
+				'securityEvents': '/admin/app/security-notifications-app/',
+				'usage': '/admin/app/usage-analytics-app/',
+				'config': '/admin/app/config-app/',
+				'modelLibrary': '/admin/app/model-library-app/',
+				'catalogs': '/admin/app/model-library-app/',
+				'groundingStores': '/admin/app/grounding-app/',
+				'groundingFiles': '/admin/app/grounding-app/',
+				'groundingJobs': '/admin/app/grounding-app/',
+				'groundingAdmin': '/admin/app/grounding-app/',
+				'teams': '/admin/app/teams-app/',
+				'users': '/admin/app/users-app/',
+				'toolPolicies': '/admin/app/tool-policies-app/',
+				'connections': '/admin/app/connections-app/',
+				'plugins': '/admin/app/plugins-app/'
+			};
+			return appPathMap[appKey] || '/admin/app/api-keys-app/';
+		} else {
+			// Local development: Use simple relative paths
+			const appPathMap: { [key: string]: string } = {
+				'apiKeys': '/api-keys/',
+				'awsCredentials': '/aws-credentials/',
+				'sapRates': '/sap-rates/',
+				'securityEvents': '/security-notifications/',
+				'usage': '/usage-analytics/',
+				'config': '/config/',
+				'modelLibrary': '/model-library/',
+				'catalogs': '/model-library/',
+				'groundingStores': '/grounding/',
+				'groundingFiles': '/grounding/',
+				'groundingJobs': '/grounding/',
+				'groundingAdmin': '/grounding/',
+				'teams': '/teams/',
+				'users': '/users/',
+				'toolPolicies': '/tool-policies/',
+				'connections': '/connections/',
+				'plugins': '/plugins/'
+			};
+			return appPathMap[appKey] || '/api-keys/';
+		}
+	}
+
+	/**
+	 * Called when the controller is instantiated.
+	 */
+	onInit(): void {
+		Log.setLevel(Log.Level.DEBUG);
+
+		this.applyContentDensity();
+		this.initViewModel();
+		this.initOverlayNav();
+		this._initTheme();
+		
+		// Initialize persistent ComponentContainer reference
+		this.feContainer = this.view().byId("feContainer") as ComponentContainer;
+		
+		// Detect the deployment target; URL-building loads wait for it
+		this.deployTargetDetected = this.detectDeploymentTarget();
+
+		// Load user preferences and apply sidepanel state
+		this._loadUserPreferences();
+		
+		// Initialize SSE with the correct URL once the target is known
+		this.deployTargetDetected.then(() => {
+			// Initialize real-time notification system after deployment target is known
+			this.initSSE();
+		});
+
+		// UI5 does not wait for onInit, and the async i18n model may still be loading here: everything
+		// above is set up at once, and the texts computed in code are redone once the bundle is there.
+		void this.textsLoaded().then(() => this.applyLoadedTexts());
+	}
+
+	onExit(): void {
+		this._darkSchemeQuery?.removeEventListener("change", this._onColorSchemeChange);
+	}
+
+	/** Takes the stored theme choice (index.html already applied it) and follows the OS in System mode. */
+	private _initTheme(): void {
+		let stored: string | null = null;
+		try {
+			stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+		} catch (e) {
+			// Storage blocked: Light until the account choice is adopted
+		}
+		this._themeChoice = currentChoice(stored);
+		if (typeof window.matchMedia === "function") {
+			this._darkSchemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+			this._darkSchemeQuery.addEventListener("change", this._onColorSchemeChange);
+		}
+	}
+
+	/** Applies a theme choice live, Theming.setTheme being a no-op for the theme already shown. */
+	private _applyThemeChoice(choice: string): void {
+		this._themeChoice = choice;
+		Theming.setTheme(themeFor(choice, !!this._darkSchemeQuery?.matches));
+	}
+
+	/** Keeps a theme choice for the next boot of this browser; the account keeps it anyway. */
+	private _storeThemeChoice(choice: string): void {
+		try {
+			window.localStorage.setItem(THEME_STORAGE_KEY, choice);
+		} catch (e) {
+			Log.warning("The theme choice could not be stored in this browser", String(e), "App.controller");
+		}
+	}
+
+	/**
+	 * Recomputes the texts that code (not a binding) took from the bundle before it had loaded: the
+	 * "unavailable" quota and home models. Loaded figures are left alone, their loaders wait for the bundle.
+	 */
+	private applyLoadedTexts(): void {
+		const view = this.view();
+		const quota = view.getModel("quota") as JSONModel;
+		if (!quota.getProperty("/available")) {
+			quota.setData(toQuotaView(null, this.money, this.formatDate, this.translate, this.int));
+		}
+		const home = view.getModel("home") as JSONModel;
+		if (!home.getProperty("/available")) {
+			home.setData(toHomeView(null, undefined, this.translate));
+		}
+	}
+
+	/**
+	 * Resolves once the async i18n bundle has loaded (at once when it already has). Never rejects:
+	 * without a bundle, text() falls back to the keys and the screens still work.
+	 */
+	private textsLoaded(): Promise<unknown> {
+		return Promise.resolve(this.getResourceBundle()).catch(() => undefined);
+	}
+
+	onAfterRendering() {
+		// Initialize home content after view is fully rendered
+		this.updateContent("home").catch(error => {
+			Log.error("Failed to initialize home content", error);
+		});
+		
+		// User preferences are now loaded in onInit()
+		
+		// Temporary fix for the issue with the side navigation not scrolling to the top
+		// Scroll the SideNavigation's NavigationList to the top
+		setTimeout(() => {
+			const sideNav = this.view().byId("sideNavigation");
+			if (sideNav) {
+				// Find the DOM element with class 'sapTntNL'
+				const navList = sideNav.getDomRef()?.querySelector(".sapTntNL");
+				if (navList) {
+					navList.scrollTop = 0;
+				}
+			}
+		}, 0);
+		
+		// Fix FE floating footer positioning
+		this.fixMainContentHeight();
+		
+		// Apply custom ShellBar styling after rendering
+		this._applyShellBarStyling();
+	}
+
+	/**
+	 * Simple fix for FE floating footer positioning
+	 */
+	fixMainContentHeight(): void {
+		const oMainFlex = this.view().byId("mainContent") as VBox | undefined;
+		if (oMainFlex) {
+			oMainFlex.setHeight("calc(100% - 35px)");
+		}
+	}
+
+	/**
+	 * Applies the content density mode to the view.
+	 */
+	applyContentDensity(): void {
+		this.view().addStyleClass(this.getOwnerComponent().getContentDensityClass());
+	}
+
+	/**
+	 * Initializes the view model.
+	 * This is used to set the initial state of the app.
+	 */
+	initViewModel(): void {
+		const appViewModel = new JSONModel({
+			notificationsCount: 0, // Will be updated by Notifications controller
+			userInitials: "U", // Default, will be updated when user info is loaded
+			userEmail: "", // Will be updated when user info is loaded
+			isAdmin: false, // Will be updated based on isAdmin flag; gates admin-only nav entries
+			isTeamAdmin: false // From getCurrentUserPreferences; shows the Teams nav entry to team admins
+		});
+		this.view().setModel(appViewModel, "appView");
+		
+		// Initialize UI state model with default sidepanel state
+		// This ensures the first render has the correct state (avoids visual artifacts)
+		const uiModel = new JSONModel({
+			sideExpanded: true // Default to expanded, will be overridden by user preferences
+		});
+		this.view().setModel(uiModel, "ui");
+
+		// Initialize the "My quota" view model with the "unavailable" state until _loadMyQuota resolves
+		this.view().setModel(new JSONModel(toQuotaView(null, this.money, this.formatDate, this.translate, this.int)), "quota");
+		this.view().setModel(new JSONModel(toTeamsView(null)), "teams");
+		// The home tiles likewise start "unavailable" until _loadHomeSummary resolves
+		this.view().setModel(new JSONModel(toHomeView(null, undefined, this.translate)), "home");
+	}
+
+	/**
+	 * Called when the view is created.
+	 * This is used to initialize the overlay navigation.
+	 */
+	initOverlayNav(): void {
+		const params = new URLSearchParams(window.location.search);
+		this.useOverlayNav = params.get("overlayNavigation") === "true";
+
+		if (this.useOverlayNav) {
+			const sideNav = this.view().byId("sideNavigation") as SideNavigation;
+			sideNav.setVisible(false);
+		}
+	}
+
+	/**
+	 * Called when the user clicks on the menu button.
+	 * This is used to toggle the side navigation.
+	 */
+	async onMenuButtonClick(): Promise<void> {
+		if (!this.useOverlayNav) {
+			// Get current state from the UI model instead of the control
+			const uiModel = this.view().getModel("ui") as JSONModel;
+			const currentSideExpanded = uiModel.getProperty("/sideExpanded");
+			const newSideExpanded = !currentSideExpanded;
+			
+			// Update the UI model - this will trigger the binding and update the ToolPage
+			uiModel.setProperty("/sideExpanded", newSideExpanded);
+			
+			// Save the new state to user preferences
+			this._saveSidepanelState(!newSideExpanded); // inverted because sidePanelCollapsed = !sideExpanded
+			
+			Log.info(`Sidepanel toggled via model: sideExpanded=${newSideExpanded}`, "", "App.controller");
+		} else {
+			const menuButton = this.view().byId("toggleMenu") as Button;
+			await this.openNavigationInOverlay(menuButton);
+		}
+	}
+
+	/**
+	 * Closes the side navigation on phone devices for better UX.
+	 */
+	closeSideNavigationOnPhone(): void {
+		if (Device.system.phone && !this.useOverlayNav) {
+			const uiModel = this.view().getModel("ui") as JSONModel;
+			const wasExpanded = uiModel.getProperty("/sideExpanded");
+			
+			// Update via model binding
+			uiModel.setProperty("/sideExpanded", false);
+			
+			// Save the collapsed state for phone devices
+			if (wasExpanded) {
+				this._saveSidepanelState(true); // collapsed = true
+			}
+		}
+	}
+
+	/**
+	 * Called when the user clicks on the logo button.
+	 */
+	async onLogoClick(): Promise<void> {
+		// updateContent will set the selectedKey, so we don't need to do it here
+		await this.updateContent("home");
+
+		this.closeSideNavigationOnPhone();
+	}
+
+
+	/**
+	 * Called when the user clicks on the notifications button.
+	 */
+	onNotificationsClick(event: ShellBar$NotificationsClickEvent): void {
+		const notificationsView = this.view().byId("notificationsView") as XMLView;
+		const pop = notificationsView.byId("notificationsPopover") as any;
+		const wc = pop?.getDomRef() as any;
+		
+		// Get opener element from ShellBar's targetRef
+		const opener = event.getParameter("targetRef");
+		
+		if (!opener) {
+			Log.warning("Notifications opener not found", "", "App.controller");
+			return;
+		}
+		
+		// Check if popover is open
+		const isOpen = () => wc?.hasAttribute?.("open") || wc?.open === true;
+		
+		if (isOpen()) {
+			// v2: close declaratively
+			wc.open = false;
+			Log.info("Closing notifications popover", "", "App.controller");
+			return;
+		}
+		
+		// Pass opener to Notifications controller to handle the opening
+		const notificationsController = notificationsView.getController() as any;
+		if (notificationsController && notificationsController.showNotificationsPopover) {
+			notificationsController.showNotificationsPopover(opener);
+		}
+	}
+
+
+
+	/**
+	 * Called when the user clicks on the profile button.
+	 */
+	async onProfileClick(event: any): Promise<void> {
+		void this._loadMyQuota();
+		void this._loadMyTeams();
+
+		const popoverCtl = this.view().byId("userProfilePopover") as any;
+		const popEl = popoverCtl?.getDomRef?.() as any;
+		
+		// 1) Prefer ShellBar's targetRef (same as notifications!)
+		const opener = event.getParameter && event.getParameter("targetRef")
+			? event.getParameter("targetRef") as HTMLElement
+			: (this.view().byId("profileAvatar")?.getDomRef() as HTMLElement | null);
+		
+		if (!opener || !popEl) {
+			Log.warning("Profile popover or opener not found", "", "App.controller");
+			return;
+		}
+		
+		// 2) Simple, idempotent toggle with single source of truth
+		const isOpen = popEl.open === true || popEl.hasAttribute?.("open");
+		
+		if (isOpen) {
+			popEl.open = false;
+			Log.info("Closing profile popover", "", "App.controller");
+			return;
+		}
+		
+		// Set opener and open
+		popEl.opener = opener;   // HTMLElement, not ID
+		popEl.open = true;
+		Log.info("Profile popover opened with targetRef", "", "App.controller");
+	}
+
+
+	/**
+	 * Called when the user clicks Sign Out
+	 * Handles logout by calling the admin service logout API
+	 */
+	async onSignOut(): Promise<void> {
+		try {
+			Log.info('Logout initiated by user', '', 'App.controller');
+			
+			// Show busy indicator
+			BusyIndicator.show(0);
+			
+			// Call the comprehensive logout API that handles all IdPs
+			const response = await fetch('/admin/logout', {
+				method: 'POST',
+				headers: {
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				credentials: 'include'
+			});
+			
+			// Development mode no longer returns 401, but handle it just in case
+			if (response.status === 401) {
+				Log.info('Unexpected 401 during logout - redirecting to home', '', 'App.controller');
+				// Hide busy indicator
+				BusyIndicator.hide();
+				window.location.href = window.location.origin + '/shell/index.html';
+				return;
+			}
+			
+			if (!response.ok) {
+				throw new Error(`Logout request failed: ${response.status} ${response.statusText}`);
+			}
+			
+			const logoutData = await response.json();
+			Log.info('Logout response received', JSON.stringify(logoutData), 'App.controller');
+			
+			// Hide busy indicator
+			BusyIndicator.hide();
+			
+			// Handle the comprehensive logout response
+			if (logoutData.success && logoutData.redirectUrl) {
+				// Show a message to the user
+				const message = logoutData.message || 'Logging out...';
+				Log.info(`Logout successful: ${message}`, '', 'App.controller');
+				
+				// Log development note if present
+				if (logoutData.devNote) {
+					Log.info(`Development note: ${logoutData.devNote}`, '', 'App.controller');
+				}
+				
+				// Redirect to the logout URL
+				window.location.href = logoutData.redirectUrl;
+			} else if (logoutData.action === 'authenticate') {
+				// Legacy handling - should not occur with new implementation
+				window.location.href = window.location.origin + '/shell/index.html';
+			} else if (logoutData.message === 'Logged out successfully') {
+				// Fallback for simple logout responses
+				const redirectUrl = window.location.origin + '/shell/index.html';
+				window.location.href = redirectUrl;
+			} else {
+				// Handle error case
+				Log.error('Logout failed', logoutData.error || 'Unknown error', 'App.controller');
+				
+				// Show error message to user
+				const MessageToast = (await import("sap/m/MessageToast")).default;
+				MessageToast.show(logoutData.error || this.text("logout.failedRetry"));
+			}
+			
+		} catch (error) {
+			// Hide busy indicator on error
+			BusyIndicator.hide();
+			
+			Log.error('Logout process failed', error as Error, 'App.controller');
+			
+			// Show error message to user
+			try {
+				const MessageToast = (await import("sap/m/MessageToast")).default;
+				MessageToast.show(this.text("logout.failedClose"));
+			} catch (importError) {
+				// Fallback if MessageToast import fails
+				console.error('Failed to show error message:', importError);
+				alert(this.text("logout.failedClose"));
+			}
+		}
+	}
+
+
+	/** The language ("" = browser default) and theme choice this tab runs with. */
+	private _currentSettings(): SettingsValues {
+		let stored: string | null = null;
+		try {
+			stored = window.localStorage.getItem(STORAGE_KEY);
+		} catch (e) {
+			// Storage blocked: the browser default is the current choice
+		}
+		return { language: isSupported(stored) ? (stored as string) : "", theme: this._themeChoice };
+	}
+
+	/** Opens the Settings dialog from the profile popover, showing the current choices. */
+	async onSettingsOpen(): Promise<void> {
+		const popEl = (this.view().byId("userProfilePopover") as any)?.getDomRef?.() as any;
+		if (popEl) {
+			popEl.open = false;
+		}
+		let dialog = this.view().byId("settings") as Dialog;
+		if (!dialog) {
+			dialog = await Fragment.load({
+				id: this.view().getId(),
+				name: "admin.shell.fragments.UserSettingsDialog",
+				type: "XML",
+				controller: this
+			}) as Dialog;
+			this.view().addDependent(dialog);
+		}
+		// A fresh model on every open: what Cancel (or Escape) left unsaved is gone
+		dialog.setModel(new JSONModel(this._currentSettings()), "settings");
+		dialog.open();
+	}
+
+	/** Discards the edits; nothing was applied or written. */
+	onSettingsCancel(): void {
+		(this.view().byId("settings") as Dialog)?.close();
+	}
+
+	/**
+	 * Writes the changed settings to the account and applies each value the account took: the theme
+	 * live, then the language by storing it and reloading once (views and Fiori Elements metadata keep
+	 * the texts they were built with, so only a fresh boot applies it). A value the account did not
+	 * take is not applied (the next load would revert it to the account's value): the dialog stays
+	 * open showing the current value and says so. A failed theme save stops before the language, whose
+	 * reload would otherwise swallow the message.
+	 */
+	async onSettingsSave(): Promise<void> {
+		const dialog = this.view().byId("settings") as Dialog;
+		const model = dialog.getModel("settings") as JSONModel;
+		const current = this._currentSettings();
+		const edited: SettingsValues = { language: model.getProperty("/language") ?? "", theme: model.getProperty("/theme") };
+		const showToast = async (textKey: string): Promise<void> => {
+			const bundle = await ((this.getOwnerComponent().getModel("i18n") as ResourceModel).getResourceBundle() as Promise<ResourceBundle> | ResourceBundle);
+			MessageToast.show(bundle.getText(textKey) as string);
+		};
+		dialog.setBusy(true);
+		try {
+			for (const key of changedSettings(current, edited)) {
+				const value = edited[key];
+				const saved = await this._saveSettingsPreference(key, value);
+				if (key === "theme") {
+					const action = themeChangeAction(value, saved);
+					if (action === "keep") {
+						model.setProperty("/theme", current.theme);
+						await showToast("settings.theme.saveFailed");
+						return;
+					}
+					if (action === "apply") {
+						this._storeThemeChoice(value);
+						this._applyThemeChoice(value);
+						// A sap-theme / sap-ui-theme URL parameter would override the choice on the next load
+						const url = new URL(window.location.href);
+						if (urlThemeOverride(url.search) !== null) {
+							url.searchParams.delete("sap-theme");
+							url.searchParams.delete("sap-ui-theme");
+							window.history.replaceState(window.history.state, "", url.toString());
+						}
+					}
+					continue;
+				}
+				const action = languageChangeAction(value, saved);
+				if (action === "keep") {
+					model.setProperty("/language", current.language);
+					await showToast("settings.language.saveFailed");
+					return;
+				}
+				if (action !== "apply") {
+					continue;
+				}
+				try {
+					window.localStorage.setItem(STORAGE_KEY, value);
+				} catch (e) {
+					Log.warning("The language choice could not be stored", String(e), "App.controller");
+					dialog.close();
+					await showToast("settings.language.notSaved");
+					return;
+				}
+				// A sap-language URL parameter would override the new choice after the reload
+				const url = new URL(window.location.href);
+				if (url.searchParams.has("sap-language")) {
+					url.searchParams.delete("sap-language");
+					window.location.replace(url.toString());
+				} else {
+					window.location.reload();
+				}
+				return;
+			}
+			dialog.close();
+		} finally {
+			dialog.setBusy(false);
+		}
+	}
+
+
+	/**
+	 * Called when opening the side navigation in overlay mode.
+	 */
+	async openNavigationInOverlay(menuButton: Button): Promise<void> {
+		let popover = this.view().byId("sideNavPopover") as ResponsivePopover;
+		if (!popover) {
+			popover = await Fragment.load({
+				id: this.view().getId(),
+				name: "admin.shell.fragments.SideNavPopover",
+				type: "XML",
+				controller: this
+			}) as ResponsivePopover;
+
+			this.view().addDependent(popover);
+			popover.setShowHeader(Device.system.phone);
+		}
+
+		if (popover.isOpen()) {
+			popover.close();
+		} else {
+			popover.openBy(menuButton);
+		}
+	}
+
+
+
+	/**
+	 * Called when an item is selected in the side navigation.
+	 */
+	async onItemSelect(event: SideNavigation$ItemSelectEvent): Promise<void> {
+		const item = event.getParameter("item") as NavigationListItem;
+		const key = item.getKey();
+		const text = item.getText();
+
+		console.log("[onItemSelect] key=", key, "text=", text);
+
+		// Update the content based on the selected item
+		// Note: updateContent will set the selectedKey, so we don't need to do it here
+		await this.updateContent(key);
+
+		// if in popover - close the popover
+		const popover = this.view().byId("sideNavPopover") as ResponsivePopover;
+		if (popover?.isOpen()) {
+			popover.close();
+		}
+
+		this.closeSideNavigationOnPhone();
+	}
+
+	/**
+	 * Updates the main content area based on the selected navigation item.
+	 */
+	async updateContent(key: string): Promise<void> {
+		const staticContainer = this.view().byId("staticContent") as VBox | undefined;
+		const contentTitle = this.view().byId("contentTitle") as Title;
+		if (!staticContainer) return;
+
+		// Map settings to config app
+		if (key === "settings") {
+			key = "config";
+		}
+
+		console.log("[updateContent] key=", key, "hasCfg=", !!this.appConfigurations[key]);
+		
+		// Update side navigation selectedKey to ensure it's in sync
+		const sideNav = this.view().byId("sideNavigation") as SideNavigation;
+		const navKey = key === "config" ? "settings" : key;
+		
+		// Only set selectedKey if it's a valid navigation item key
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+			sideNav.setSelectedKey(navKey);
+		}
+
+		// Check if this is a Fiori Elements app
+		if (this.appConfigurations[key]) {
+			// Hide shell title for FE apps (they have their own titles)
+			contentTitle.setVisible(false);
+			// Hide static content, show FE container
+			staticContainer.setVisible(false);
+			await this.loadFioriElementsApp(key);
+		} else {
+			// Show shell title for static content, update text
+			contentTitle.setVisible(true);
+			// The title is set in code, so it waits for the bundle (the first Home render can come before it)
+			void this.textsLoaded().then(() => {
+				const sideNav = this.view().byId("sideNavigation") as SideNavigation;
+				// SideNavigation's selectedItem is an association: it holds the item's id, not the item
+				const selectedId = sideNav.getSelectedItem();
+				const selectedItem = selectedId ? UI5Element.getElementById(selectedId) as NavigationListItem | undefined : undefined;
+				if (selectedItem && selectedItem.getKey() === navKey) {
+					contentTitle.setText(selectedItem.getText());
+				} else {
+					// Fallback title based on key (every other section is a Fiori Elements app and never gets here)
+					contentTitle.setText(key === "home" ? this.text("nav.home") : this.text("title.administration"));
+				}
+			});
+			// Show static content, hide FE container
+			this.feContainer.setVisible(false);
+			staticContainer.setVisible(true);
+			// Remove existing static content
+			staticContainer.removeAllItems();
+			this.loadStaticContent(key, staticContainer);
+			
+			// Update breadcrumb for static content (especially important for home)
+			this.updateBreadcrumb(key);
+		}
+	}
+
+	/**
+	 * Loads the FE app using persistent ComponentContainer pattern (research model recommended)
+	 */
+	private async loadFioriElementsApp(appKey: string): Promise<void> {
+		const cfg = this.appConfigurations[appKey];
+		if (!cfg) return;
+
+		BusyIndicator.show(0);
+		try {
+			// Run in standalone mode - no UShell services needed
+			
+			// Destroy previous FE component, if any
+			const oldComponent = this.feComponent();
+			if (oldComponent) {
+				console.log("[loadFioriElementsApp] Destroying old component:", oldComponent.getId());
+				oldComponent.destroy();
+			}
+
+			// Create FE component and attach it to the persistent container
+			// Use environment-aware URL generation
+			const componentUrl = this.getComponentUrl(appKey);
+			
+			let componentConfig: { name: string; url: string; manifest: boolean };
+			if (appKey === "apiKeys") {
+				componentConfig = {
+					name: "admin.app",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "awsCredentials") {
+				componentConfig = {
+					name: "admin.awscredentials",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "sapRates") {
+				componentConfig = {
+					name: "admin.saprates",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "securityEvents") {
+				componentConfig = {
+					name: "admin.securitynotifications",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "usage") {
+				componentConfig = {
+					name: "admin.usageanalytics",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "config") {
+				componentConfig = {
+					name: "admin.config",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "modelLibrary" || appKey === "catalogs") {
+				componentConfig = {
+					name: "admin.modellibrary",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "groundingStores" || appKey === "groundingFiles" || appKey === "groundingJobs" || appKey === "groundingAdmin") {
+				componentConfig = {
+					name: "admin.grounding",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "teams") {
+				componentConfig = { name: "admin.teams", url: componentUrl, manifest: true };
+			} else if (appKey === "connections") {
+				componentConfig = { name: "admin.connections", url: componentUrl, manifest: true };
+			} else if (appKey === "plugins") {
+				componentConfig = { name: "admin.plugins", url: componentUrl, manifest: true };
+			} else if (appKey === "users") {
+				componentConfig = {
+					name: "admin.users",
+					url: componentUrl,
+					manifest: true
+				};
+			} else if (appKey === "toolPolicies") {
+				componentConfig = {
+					name: "admin.toolpolicies",
+					url: componentUrl,
+					manifest: true
+				};
+			} else {
+				// Default to API Keys for other cases
+				const defaultUrl = this.getComponentUrl('apiKeys');
+				componentConfig = {
+					name: "admin.app",
+					url: defaultUrl,
+					manifest: true
+				};
+			}
+			
+			console.log(`[loadFioriElementsApp] Loading ${appKey} from ${componentUrl} (deployTarget: ${this.deployTarget})`);
+			
+			// Every cockpit app is a UIComponent (Fiori Elements AppComponent or a freestyle UIComponent)
+			const component = await Component.create(componentConfig) as UIComponent;
+
+			console.log("[Component.create OK]", component.getId());
+			
+			// Propagate OData model from shell to child components (especially usage analytics and config)
+			if (appKey === "usage" || appKey === "config") {
+				const shellModel = this.getOwnerComponent()?.getModel();
+				if (shellModel) {
+					console.log(`[Model Propagation] Setting OData model on ${appKey} component`);
+					component.setModel(shellModel);
+				} else {
+					console.warn("[Model Propagation] Shell OData model not found");
+				}
+			}
+			
+			this.feContainer.setComponent(component);
+			this.feContainer.setVisible(true);
+			
+			console.log("[ComponentContainer] visible:", this.feContainer.getVisible());
+			console.log("[ComponentContainer] component:", this.feComponent()?.getId());
+			console.log("[ComponentContainer] DOM:", this.feContainer.getDomRef());
+			
+			// Store current app key for navigation
+			this.currentAppKey = appKey;
+			
+			// Navigate to the appropriate route within the FE app
+			const router = component.getRouter();
+			if (router) {
+				// Setup router listeners for breadcrumb updates
+				this.setupFERouterListeners(router);
+				
+				// Ensure side navigation is updated before navigation
+				const sideNav = this.view().byId("sideNavigation") as SideNavigation;
+				const navKey = appKey === "config" ? "settings" : appKey;
+				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+					sideNav.setSelectedKey(navKey);
+				}
+				
+				if (appKey === "apiKeys") {
+					router.navTo("ApiKeysList");
+					this.updateBreadcrumb("apiKeys");
+				} else if (appKey === "awsCredentials") {
+					router.navTo("AwsCredentialsList");
+					this.updateBreadcrumb("awsCredentials");
+				} else if (appKey === "sapRates") {
+					router.navTo("SapCapacityUnitPriceList");
+					this.updateBreadcrumb("sapRates");
+				} else if (appKey === "securityEvents") {
+					router.navTo("MySecurityNotificationsList");
+					this.updateBreadcrumb("securityEvents");
+				} else if (appKey === "usage") {
+					router.navTo("overview");
+					this.updateBreadcrumb("usage");
+				} else if (appKey === "config") {
+					router.navTo("main");
+					this.updateBreadcrumb("config");
+				} else if (appKey === "modelLibrary") {
+					router.navTo("library");
+					this.updateBreadcrumb("modelLibrary");
+				} else if (appKey === "catalogs") {
+					router.navTo("catalogs");
+					this.updateBreadcrumb("catalogs");
+				} else if (appKey === "groundingStores") {
+					router.navTo("groundingStores");
+					this.updateBreadcrumb("groundingStores");
+				} else if (appKey === "groundingFiles") {
+					router.navTo("groundingFiles");
+					this.updateBreadcrumb("groundingFiles");
+				} else if (appKey === "groundingJobs") {
+					router.navTo("groundingJobs");
+					this.updateBreadcrumb("groundingJobs");
+				} else if (appKey === "groundingAdmin") {
+					router.navTo("groundingAdmin");
+					this.updateBreadcrumb("groundingAdmin");
+				} else if (appKey === "teams") {
+					router.navTo("TeamsList");
+					this.updateBreadcrumb("teams");
+				} else if (appKey === "users") {
+					router.navTo("UsersList");
+					this.updateBreadcrumb("users");
+				} else if (appKey === "toolPolicies") {
+					router.navTo("ToolPoliciesList");
+					this.updateBreadcrumb("toolPolicies");
+				} else if (appKey === "connections") {
+					router.navTo("ConnectionsList");
+					this.updateBreadcrumb("connections");
+				} else if (appKey === "plugins") {
+					router.navTo("pluginsList");
+					this.updateBreadcrumb("plugins");
+				}
+
+				// Apply the simple height fix for floating footer positioning
+				this.fixMainContentHeight();
+			}
+			
+		} catch (error) {
+			Log.error("Failed to load FE app", error instanceof Error ? error : String(error));
+			console.error("[Component.create failed]", error);
+			// Show error in static content instead
+			this.feContainer.setVisible(false);
+			const staticContainer = this.view().byId("staticContent") as VBox;
+			staticContainer.setVisible(true);
+			staticContainer.removeAllItems();
+			this.loadStaticContent("error", staticContainer);
+		} finally {
+			BusyIndicator.hide();
+		}
+	}
+
+	/**
+	 * Loads static content for non-app sections
+	 */
+	private loadStaticContent(key: string, contentContainer: any): void {
+		let contentText = "";
+		let descriptionText = "";
+
+		switch (key) {
+			case "home":
+				// Home carries no text: this month's key-metric tiles and the "My quota" card (below)
+				break;
+			default:
+				// Every section but Home is a Fiori Elements app: this is reached when one fails to load ("error")
+				contentText = this.text("content.notAvailable");
+				descriptionText = this.text("content.notImplemented");
+		}
+
+		if (key !== "home") {
+			// Create new content
+			const welcomeText = new Text({
+				text: contentText
+			}).addStyleClass("sapUiMediumMarginBottom");
+
+			const descText = new Text({
+				text: descriptionText
+			}).addStyleClass("sapUiSmallMarginTop");
+
+			contentContainer.addItem(welcomeText);
+			contentContainer.addItem(descText);
+			return;
+		}
+
+		// Every return to Home shows this month's figures as they stand now, not as they were at sign-in
+		void this._loadHomeSummary();
+		// A fast Home -> away -> Home used to issue a second Fragment.load while the first was
+		// still in flight: the second destroy() found no card yet, both loads then resolved and
+		// the second was rejected on the duplicate id into the .catch below, leaving Home with
+		// no card at all. Chain on the load already in flight instead, so the previous fragments
+		// are destroyed only once their own load has settled, and clear the field when this one does.
+		const load = (this._myQuotaCardLoad ?? Promise.resolve())
+			.then(() => {
+				this.view().byId("homeTiles")?.destroy();
+				this.view().byId("myQuotaCard")?.destroy();
+				return Fragment.load({ id: this.view().getId(), name: "admin.shell.fragments.HomeTiles", type: "XML", controller: this });
+			})
+			.then((tiles) => {
+				this.view().addDependent(tiles as any); contentContainer.addItem(tiles);
+				return Fragment.load({ id: this.view().getId(), name: "admin.shell.fragments.MyQuota", type: "XML", controller: this });
+			})
+			.then((card) => { this.view().addDependent(card as any); contentContainer.addItem(card); })
+			.catch((e: any) => Log.warning(`Home content failed: ${e?.message ?? e}`, "", "App.controller"))
+			.finally(() => { if (this._myQuotaCardLoad === load) { this._myQuotaCardLoad = null; } });
+		this._myQuotaCardLoad = load;
+	}
+
+	/** A home tile opens Usage Analytics, where the same figures are broken down. */
+	public onHomeTilePress(): void {
+		void this.updateContent("usage");
+	}
+
+	/**
+	 * Handle back button press - navigate back appropriately
+	 */
+	onBackPress(): void {
+		console.log("onBackPress: currentRouteName =", this.currentRouteName);
+		console.log("onBackPress: currentAppKey =", this.currentAppKey);
+		
+		// If we're on an Object Page, go back to the List Report
+		if (this.currentRouteName && (this.currentRouteName.includes("ObjectPage") || this.currentRouteName === "detail" || this.currentRouteName === "groundingStoreDetail" || this.currentRouteName === "groundingJobDetail")) {
+			if (this.feRouter) {
+				const target = backTargetRoute(this.currentRouteName, this.currentAppKey);
+				if (target) {
+					console.log("Navigating back to", target);
+					this.feRouter.navTo(target);
+				}
+				return;
+			}
+		}
+		
+		// Otherwise, go back to home
+		console.log("Navigating back to home");
+		this.onHomeLinkPress();
+	}
+
+	/**
+	 * Handle home link press in breadcrumb
+	 */
+	async onHomeLinkPress(): Promise<void> {
+		// updateContent will set the selectedKey and update breadcrumb
+		await this.updateContent("home");
+	}
+
+	/**
+	 * Navigate via breadcrumb and update side navigation to keep it in sync
+	 */
+	private navigateViaBreadcrumb(appKey: string): void {
+		// Update the side navigation to reflect the current app
+		const sideNav = this.view().byId("sideNavigation") as SideNavigation;
+		
+		// Map config to settings for side navigation
+		const navKey = appKey === "config" ? "settings" : appKey;
+		
+		// Only set selectedKey if it's a valid navigation item key
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+			sideNav.setSelectedKey(navKey);
+		}
+
+		if (this.feRouter) {
+			if (appKey === "apiKeys") {
+				this.feRouter.navTo("ApiKeysList");
+			} else if (appKey === "awsCredentials") {
+				this.feRouter.navTo("AwsCredentialsList");
+			} else if (appKey === "sapRates") {
+				this.feRouter.navTo("SapCapacityUnitPriceList");
+			} else if (appKey === "securityEvents") {
+				this.feRouter.navTo("MySecurityNotificationsList");
+			} else if (appKey === "usage") {
+				this.feRouter.navTo("overview");
+			} else if (appKey === "config") {
+				this.feRouter.navTo("main");
+			} else if (appKey === "modelLibrary") {
+				this.feRouter.navTo("library");
+				this.updateBreadcrumb("modelLibrary");
+			} else if (appKey === "catalogs") {
+				this.feRouter.navTo("catalogs");
+				this.updateBreadcrumb("catalogs");
+			} else if (appKey === "groundingStores") {
+				this.feRouter.navTo("groundingStores");
+				this.updateBreadcrumb("groundingStores");
+			} else if (appKey === "groundingFiles") {
+				this.feRouter.navTo("groundingFiles");
+				this.updateBreadcrumb("groundingFiles");
+			} else if (appKey === "groundingJobs") {
+				this.feRouter.navTo("groundingJobs");
+				this.updateBreadcrumb("groundingJobs");
+			} else if (appKey === "groundingAdmin") {
+				this.feRouter.navTo("groundingAdmin");
+				this.updateBreadcrumb("groundingAdmin");
+			} else if (appKey === "teams") {
+				this.feRouter.navTo("TeamsList");
+			} else if (appKey === "users") {
+				this.feRouter.navTo("UsersList");
+			} else if (appKey === "toolPolicies") {
+				this.feRouter.navTo("ToolPoliciesList");
+			} else if (appKey === "connections") {
+				this.feRouter.navTo("ConnectionsList");
+			} else if (appKey === "plugins") {
+				this.feRouter.navTo("pluginsList");
+				this.updateBreadcrumb("plugins");
+			}
+		}
+	}
+
+	/**
+	 * Update breadcrumb based on current navigation state
+	 */
+	private updateBreadcrumb(appKey: string, objectPageTitle: string = ""): void {
+		const navigationArea = this.view().byId("navigationArea") as HBox;
+		const breadcrumbs = this.view().byId("breadcrumbs") as Breadcrumbs;
+		const homeLink = this.view().byId("homeLink") as Link;
+
+		if (appKey === "home") {
+			// Hide navigation area for home
+			navigationArea.setVisible(false);
+		} else {
+			// Show navigation area for FE apps
+			navigationArea.setVisible(true);
+			
+			// Clear existing breadcrumb links except home
+			breadcrumbs.removeAllLinks();
+			breadcrumbs.addLink(homeLink);
+
+			// Add app-level breadcrumb
+			const appConfig = this.appConfigurations[appKey];
+			if (appConfig) {
+				const appLink = new Link({
+					text: this.text(appConfig.title),
+					press: () => {
+						// Don't update side navigation when navigating via breadcrumbs
+						// Just navigate directly to avoid selectedItem warnings
+						this.navigateViaBreadcrumb(appKey);
+					}
+				});
+				
+				breadcrumbs.addLink(appLink);
+
+				// Add object page breadcrumb if provided
+				if (objectPageTitle) {
+					const objectLink = new Link({
+						text: objectPageTitle,
+						enabled: false // Current page, not clickable
+					});
+					breadcrumbs.addLink(objectLink);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Setup FE router event listeners for breadcrumb updates
+	 */
+	private setupFERouterListeners(router: any): void {
+		this.feRouter = router;
+		
+		router.attachRouteMatched((event: any) => {
+			const routeName = event.getParameter("name");
+			console.log("Route matched:", routeName);
+			
+			// Store current route name for back button logic
+			this.currentRouteName = routeName;
+			
+			// Update breadcrumb based on route
+			if (routeName === "ApiKeysList") {
+				this.updateBreadcrumb("apiKeys");
+			} else if (routeName === "ApiKeysObjectPage") {
+				// Try to get object title from context
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("apiKeys", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "AwsCredentialsList") {
+				this.updateBreadcrumb("awsCredentials");
+			} else if (routeName === "AwsCredentialsObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("awsCredentials", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "SapCapacityUnitPriceList") {
+				this.updateBreadcrumb("sapRates");
+			} else if (routeName === "SapCapacityUnitPriceObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("sapRates", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "TeamsList") {
+				this.updateBreadcrumb("teams");
+			} else if (routeName === "TeamsObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("teams", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "UsersList") {
+				this.updateBreadcrumb("users");
+			} else if (routeName === "UsersObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("users", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "ToolPoliciesList") {
+				this.updateBreadcrumb("toolPolicies");
+			} else if (routeName === "ToolPoliciesObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("toolPolicies", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "pluginsList") {
+				this.updateBreadcrumb("plugins");
+			} else if (routeName === "ConnectionsList") {
+				this.updateBreadcrumb("connections");
+			} else if (routeName === "ConnectionsObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("connections", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "ToolInventoryList") {
+				this.updateBreadcrumb("toolPolicies", this.text("crumb.toolInventory"));
+			} else if (routeName === "MySecurityNotificationsList") {
+				this.updateBreadcrumb("securityEvents");
+			} else if (routeName === "MySecurityNotificationsObjectPage") {
+				setTimeout(() => {
+					const objectTitle = this.getObjectPageTitle();
+					this.updateBreadcrumb("securityEvents", objectTitle || this.text("crumb.details"));
+				}, 100);
+			} else if (routeName === "overview") {
+				this.updateBreadcrumb("usage");
+			} else if (routeName === "costs") {
+				this.updateBreadcrumb("usage", this.text("crumb.costAnalysis"));
+			} else if (routeName === "performance") {
+				this.updateBreadcrumb("usage", this.text("crumb.performanceAnalysis"));
+			} else if (routeName === "models") {
+				this.updateBreadcrumb("usage", this.text("crumb.modelAnalysis"));
+			} else if (routeName === "detail") {
+				this.updateBreadcrumb(this.currentAppKey, decodeURIComponent(event.getParameter("arguments").modelId));
+			} else if (routeName === "library") {
+				// The two list routes of the model-library app. Without them the crumb kept the
+				// model it was showing when the back button or the breadcrumb itself navigated to
+				// the list: nothing else clears the object-page crumb, since it is only ever added
+				// by the "detail" branch above.
+				this.updateBreadcrumb("modelLibrary");
+			} else if (routeName === "catalogs") {
+				this.updateBreadcrumb("catalogs");
+			} else if (routeName === "groundingStores") {
+				this.updateBreadcrumb("groundingStores");
+			} else if (routeName === "groundingStoreDetail") {
+				// The crumb shows the store's id: the shell cannot know its name.
+				this.updateBreadcrumb("groundingStores", event.getParameter("arguments").storeId);
+			} else if (routeName === "groundingFiles") {
+				this.updateBreadcrumb("groundingFiles");
+			} else if (routeName === "groundingJobs") {
+				this.updateBreadcrumb("groundingJobs");
+			} else if (routeName === "groundingJobDetail") {
+				// The crumb shows the job's id, like the store detail shows the store's id.
+				this.updateBreadcrumb("groundingJobs", event.getParameter("arguments").jobId);
+			} else if (routeName === "groundingAdmin") {
+				// Every tab of the screen is one route; the crumb names the screen, the tab bar the tab.
+				this.updateBreadcrumb("groundingAdmin");
+			}
+		});
+	}
+
+	/** The app component the shell's component container currently shows, if any. */
+	private feComponent(): UIComponent | undefined {
+		const componentId = this.feContainer.getComponent();
+		// A ComponentContainer only accepts a UIComponent (setComponent)
+		return componentId ? Component.getComponentById(componentId) as UIComponent | undefined : undefined;
+	}
+
+	/**
+	 * Get object page title from FE app
+	 */
+	private getObjectPageTitle(): string {
+		try {
+			// Try to get title from FE app's object page
+			const feComponent = this.feComponent();
+			if (feComponent) {
+				const rootView = feComponent.getRootControl();
+				// This is a simplified approach - in practice you might need to dig deeper
+				// into the FE component structure to get the actual object title
+				return this.text("crumb.objectDetails");
+			}
+		} catch (error) {
+			Log.debug("Could not get object page title", error instanceof Error ? error : String(error));
+		}
+		return this.text("crumb.details");
+	}
+
+	/**
+	 * Initialize Server-Sent Events connection for real-time notifications
+	 */
+	private initSSE(): void {
+		try {
+			Log.info("Initializing SSE connection for real-time notifications", "", "App.controller");
+			
+			// Connect to SSE endpoint - use environment-aware URL
+			const sseUrl = this.deployTarget === 'docker' ? '/admin/api/notifications/stream' : '/api/notifications/stream';
+			this.sseConnection = new EventSource(sseUrl, {
+				withCredentials: true
+			});
+
+			this.sseConnection.onopen = () => {
+				Log.info("SSE connection established", "", "App.controller");
+				this.sseReconnectAttempts = 0;
+			};
+
+			this.sseConnection.onmessage = (event) => {
+				try {
+					const data = JSON.parse(event.data);
+					Log.info("Received SSE message: " + event.type, JSON.stringify(data), "App.controller");
+					
+					// Handle the real-time notification
+					this.handleSSENotification(event.type, data);
+				} catch (error) {
+					Log.error("Failed to process SSE message", error as Error, "App.controller");
+				}
+			};
+
+			// Handle specific SSE event types
+			this.sseConnection.addEventListener('new-security-event', (event) => {
+				try {
+					const data = JSON.parse(event.data);
+					Log.info("New security event received via SSE", JSON.stringify(data), "App.controller");
+					
+					// Trigger notification refresh
+					this.refreshNotifications();
+				} catch (error) {
+					Log.error("Failed to process new security event", error as Error, "App.controller");
+				}
+			});
+
+			// Handle notification state changes (pin, unpin, mark seen, etc.)
+			this.sseConnection.addEventListener('notification-state-changed', (event) => {
+				try {
+					const data = JSON.parse(event.data);
+					Log.info("Notification state changed via SSE", JSON.stringify(data), "App.controller");
+					
+					// Trigger notification refresh
+					this.refreshNotifications();
+				} catch (error) {
+					Log.error("Failed to process notification state change", error as Error, "App.controller");
+				}
+			});
+
+			// Handle bulk notification changes
+			this.sseConnection.addEventListener('notification-bulk-changed', (event) => {
+				try {
+					const data = JSON.parse(event.data);
+					Log.info("Bulk notification change via SSE", JSON.stringify(data), "App.controller");
+					
+					// Trigger notification refresh
+					this.refreshNotifications();
+				} catch (error) {
+					Log.error("Failed to process bulk notification change", error as Error, "App.controller");
+				}
+			});
+
+			this.sseConnection.addEventListener('connected', (event) => {
+				try {
+					const data = JSON.parse(event.data);
+					Log.info("SSE connected for user: " + data.userId, "", "App.controller");
+				} catch (error) {
+					Log.warning("SSE connected but failed to parse data", error as Error, "App.controller");
+				}
+			});
+
+			this.sseConnection.onerror = (error) => {
+				Log.error("SSE connection error", `${error.type} (readyState ${this.sseConnection?.readyState})`, "App.controller");
+				this.handleSSEReconnection();
+			};
+
+		} catch (error) {
+			Log.error("Failed to initialize SSE connection", error as Error, "App.controller");
+			this.handleSSEReconnection();
+		}
+	}
+
+	/**
+	 * Handle SSE reconnection with exponential backoff
+	 */
+	private handleSSEReconnection(): void {
+		if (this.sseReconnectAttempts >= this.maxReconnectAttempts) {
+			Log.error("Max SSE reconnection attempts (" + this.maxReconnectAttempts + ") reached", "", "App.controller");
+			return;
+		}
+
+		this.sseReconnectAttempts++;
+		const delay = Math.pow(2, this.sseReconnectAttempts) * 1000; // Exponential backoff
+
+		Log.info("Attempting SSE reconnection in " + delay + "ms (attempt " + this.sseReconnectAttempts + "/" + this.maxReconnectAttempts + ")", "", "App.controller");
+
+		setTimeout(() => {
+			if (this.sseConnection) {
+				this.sseConnection.close();
+			}
+			this.initSSE();
+		}, delay);
+	}
+
+	/**
+	 * Handle incoming SSE notifications
+	 */
+	private handleSSENotification(eventType: string, data: any): void {
+		Log.info("Handling SSE notification: " + eventType, JSON.stringify(data), "App.controller");
+		
+		// Refresh notifications to show new content
+		this.refreshNotifications();
+	}
+
+	/**
+	 * Refresh the notifications view and count
+	 */
+	private refreshNotifications(): void {
+		try {
+			// Update the notification count in the shell bar
+			const notificationsView = this.view().byId("notificationsView") as XMLView;
+			if (notificationsView) {
+				const notificationsController = notificationsView.getController() as NotificationsController | undefined;
+				if (notificationsController && typeof notificationsController._loadSecurityNotifications === 'function') {
+					Log.info("Refreshing notifications due to SSE event", "", "App.controller");
+					notificationsController._loadSecurityNotifications();
+				}
+			}
+		} catch (error) {
+			Log.error("Failed to refresh notifications", error as Error, "App.controller");
+		}
+	}
+
+	/** myTeams() for the signed-in user: memberships and each team's month pool (spec 2026-10-14 §9). */
+	private async _loadMyTeams(): Promise<void> {
+		const model = this.view().getModel("teams") as JSONModel;
+		try {
+			const response = await fetch('/odata/v4/admin/myTeams()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
+			const body = response.ok ? await response.json() : null;
+			await this.textsLoaded();
+			model.setData(toTeamsView(body?.value ?? null, this.money, this.int, this.translate));
+		} catch (error) {
+			Log.warning(`myTeams failed: ${(error as Error).message}`, "", "App.controller");
+			model.setData(toTeamsView(null));
+		}
+	}
+
+	/** myQuotaStatus() for the signed-in user (spec §5) — called on user load and whenever the profile opens. */
+	private async _loadMyQuota(): Promise<void> {
+		try {
+			const response = await fetch('/odata/v4/admin/myQuotaStatus()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
+			const status = response.ok ? await response.json() : null;
+			await this.textsLoaded();
+			(this.view().getModel("quota") as JSONModel).setData(toQuotaView(status, this.money, this.formatDate, this.translate, this.int));
+		} catch (error) {
+			Log.warning(`myQuotaStatus failed: ${(error as Error).message}`, "", "App.controller");
+			await this.textsLoaded();
+			(this.view().getModel("quota") as JSONModel).setData(toQuotaView(null, this.money, this.formatDate, this.translate, this.int));
+		}
+	}
+
+	/** myUsageSummary() — this month's figures for the home tiles: the caller's own, or every user's for an administrator. */
+	private async _loadHomeSummary(): Promise<void> {
+		const model = this.view().getModel("home") as JSONModel;
+		try {
+			const response = await fetch('/odata/v4/admin/myUsageSummary()', { method: 'GET', headers: { Accept: 'application/json' }, credentials: 'include' });
+			const summary = response.ok ? await response.json() : null;
+			await this.textsLoaded();
+			model.setData(toHomeView(summary, {
+				int: (n) => NumberFormat.getIntegerInstance({ groupingEnabled: true }).format(n),
+				money: (n, c) => NumberFormat.getCurrencyInstance({ currencyCode: true }).format(n, c)
+			}, this.translate));
+		} catch (error) {
+			Log.warning(`myUsageSummary failed: ${(error as Error).message}`, "", "App.controller");
+			await this.textsLoaded();
+			model.setData(toHomeView(null, undefined, this.translate));
+		}
+	}
+
+	/**
+	 * Money for the quota card and the profile block: UI5's currency formatter with the currency code
+	 * after the figure ("0.26 USD"), so the decimals follow the currency (two for USD and EUR, none for
+	 * JPY) and the grouping follows the user's locale.
+	 */
+	private readonly money = (amount: number, currency: string): string =>
+		NumberFormat.getCurrencyInstance({ currencyCode: true }).format(amount, currency);
+
+	/** Whole numbers for the quota card (token figures, requests per minute), grouped in the user's locale ("1,234", "1.234"). */
+	private readonly int = (n: number): string =>
+		NumberFormat.getIntegerInstance({ groupingEnabled: true }).format(n);
+
+	/** Reset times for the quota card: medium date + short time in the viewer's locale and zone ("17 Sep 2026, 5:00 PM"). */
+	private readonly formatDate = (iso: string): string =>
+		DateFormat.getDateTimeInstance({ style: "medium/short" }).format(new Date(iso));
+
+	/** Bundle-backed translator for the pure quota/home view-model derivations. */
+	private readonly translate = (key: string, args?: (string | number)[]): string =>
+		this.text(key, args as unknown[]);
+
+	/** Shows the dismissible "newer release" banner to administrators. */
+	private async _loadUpdateNotice(): Promise<void> {
+		try {
+			await this.deployTargetDetected;
+			const response = await fetch(versionUrl(this.deployTarget), { headers: { Accept: 'application/json' }, credentials: 'include' });
+			if (!response.ok) return;
+			const info = await response.json() as { version: string; installType: InstallType; updateCheck: boolean };
+			const notice = await checkForUpdate({
+				current: info.version,
+				installType: info.installType,
+				enabled: info.updateCheck === true,
+				now: Date.now(),
+				storage: window.localStorage,
+				fetch: window.fetch.bind(window) as never
+			});
+			const appViewModel = this.view().getModel("appView") as JSONModel;
+			if (!notice) {
+				appViewModel.setProperty("/updateNotice", { visible: false });
+				return;
+			}
+			appViewModel.setProperty("/updateNotice", {
+				visible: true,
+				latest: notice.latest,
+				text: this.text("update.available", [notice.latest, notice.current]),
+				releaseUrl: notice.releaseUrl,
+				runbookUrl: notice.runbookUrl
+			});
+		} catch (error) {
+			Log.warning(`Update check skipped: ${String(error)}`, "", "App.controller");
+		}
+	}
+
+	onUpdateNoticeClose(): void {
+		const appViewModel = this.view().getModel("appView") as JSONModel;
+		try {
+			dismiss(window.localStorage, String(appViewModel.getProperty("/updateNotice/latest") ?? ""));
+		} catch {
+			/* storage unavailable: the banner returns on the next load */
+		}
+		appViewModel.setProperty("/updateNotice/visible", false);
+	}
+
+	/**
+	 * Load user preferences and apply sidepanel state via model binding
+	 */
+	private async _loadUserPreferences(): Promise<void> {
+		try {
+			Log.info("Loading user preferences for sidepanel state", "", "App.controller");
+			
+			// Use direct HTTP request to the CAP service (unbound function)
+			const response = await fetch('/odata/v4/admin/getCurrentUserPreferences', {
+				method: 'POST',
+				headers: {
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				credentials: 'include'
+			});
+			
+			if (!response.ok) {
+				Log.warning(`Failed to fetch user preferences: ${response.status}`, "", "App.controller");
+				return;
+			}
+			
+			const result = await response.json();
+			Log.info(`User preferences response: ${JSON.stringify(result)}`, "", "App.controller");
+			
+			// Update user initials, email and role
+			const appViewModel = this.view().getModel("appView") as JSONModel;
+			if (result.email && appViewModel) {
+				const initial = result.email.charAt(0).toUpperCase();
+				appViewModel.setProperty("/userInitials", initial);
+				appViewModel.setProperty("/userEmail", result.email);
+				appViewModel.setProperty("/isAdmin", !!result.isAdmin);
+				appViewModel.setProperty("/isTeamAdmin", !!result.isTeamAdmin);
+			}
+
+			if (result?.isAdmin) void this._loadUpdateNotice();
+
+			void this._loadMyQuota();
+			void this._loadMyTeams();
+
+			this._adoptServerTheme(result?.theme);
+			this._adoptServerLanguage(result?.language);
+
+			if (result && typeof result.sidePanelCollapsed === 'boolean') {
+				const sideExpanded = !result.sidePanelCollapsed; // invert because sidePanelCollapsed = !sideExpanded
+				
+				Log.info(`Applying saved sidepanel state via model: sidePanelCollapsed=${result.sidePanelCollapsed}, sideExpanded=${sideExpanded}`, "", "App.controller");
+				
+				// Update the UI model - this triggers the binding automatically
+				const uiModel = this.view().getModel("ui") as JSONModel;
+				if (uiModel) {
+					uiModel.setProperty("/sideExpanded", sideExpanded);
+					// Force immediate render since this happens after initial load
+					sap.ui.getCore().applyChanges();
+					Log.info(`UI model updated: sideExpanded=${sideExpanded}`, "", "App.controller");
+				}
+			} else {
+				Log.info("No sidepanel preference found or invalid format, using default (expanded)", "", "App.controller");
+			}
+			
+		} catch (error) {
+			Log.error("Failed to load user preferences", error as Error, "App.controller");
+			// Continue with default state on error
+		}
+	}
+
+	/** Stores a Settings choice (language or theme) for the signed-in user; true when the account took it. */
+	private async _saveSettingsPreference(key: keyof SettingsValues, value: string): Promise<boolean> {
+		try {
+			const response = await fetch('/odata/v4/admin/updateUserPreference', {
+				method: 'POST',
+				headers: {
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				credentials: 'include',
+				body: JSON.stringify({ key, value }),
+				signal: AbortSignal.timeout(10000)
+			});
+			if (!response.ok) {
+				Log.warning(`Failed to save the ${key} preference: ${response.status}`, "", "App.controller");
+				return false;
+			}
+			return true;
+		} catch (error) {
+			Log.warning(`Failed to save the ${key} preference`, String(error), "App.controller");
+			return false;
+		}
+	}
+
+	/**
+	 * Adopts the signed-in user's theme (chosen in another browser) when it differs from this
+	 * browser's choice: applied live and kept for the next boot. Not under a URL theme override.
+	 */
+	private _adoptServerTheme(server: string | null | undefined): void {
+		let stored: string | null = null;
+		try {
+			stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+		} catch (e) {
+			// Storage blocked: compare with Light, which index.html then applied
+		}
+		if (serverThemeAction(server, stored, urlThemeOverride(window.location.search)) !== "adopt") {
+			return;
+		}
+		Log.info(`Adopting the account theme "${server}"`, "", "App.controller");
+		this._storeThemeChoice(server as string);
+		this._applyThemeChoice(server as string);
+	}
+
+	/**
+	 * Adopts the signed-in user's language (from another browser) when it differs from this
+	 * browser's choice: mirrors it into localStorage and reloads once. No reload when storage is
+	 * blocked, the write did not stick, or this tab already reloaded for this very value (no loop).
+	 */
+	private _adoptServerLanguage(server: string | null | undefined): void {
+		let stored: string | null = null;
+		try {
+			stored = window.localStorage.getItem(STORAGE_KEY);
+		} catch (e) {
+			// Storage blocked: nothing can be adopted before UI5 boots
+		}
+		const urlParam = new URL(window.location.href).searchParams.get("sap-language");
+		if (!needsServerLanguage(server, stored, urlParam)) {
+			return;
+		}
+		let adoptedMarker: string | null = null;
+		let storageWritable = false;
+		try {
+			adoptedMarker = window.sessionStorage.getItem(SESSION_RELOAD_KEY);
+			if (adoptedMarker !== server) {
+				window.localStorage.setItem(STORAGE_KEY, server as string);
+				window.sessionStorage.setItem(SESSION_RELOAD_KEY, server as string);
+				storageWritable = window.localStorage.getItem(STORAGE_KEY) === server
+					&& window.sessionStorage.getItem(SESSION_RELOAD_KEY) === server;
+			}
+		} catch (e) {
+			Log.warning("The account language could not be stored in this browser", String(e), "App.controller");
+		}
+		if (serverLanguageAction(server, stored, urlParam, storageWritable, adoptedMarker) === "reload") {
+			Log.info(`Adopting the account language "${server}"`, "", "App.controller");
+			window.location.reload();
+		}
+	}
+
+	/**
+	 * Save sidepanel state to user preferences
+	 */
+	private async _saveSidepanelState(collapsed: boolean): Promise<void> {
+		try {
+			Log.info(`Saving sidepanel state: collapsed=${collapsed}`, "", "App.controller");
+			
+			// Use direct HTTP request to the CAP service
+			const response = await fetch('/odata/v4/admin/updateUserPreference', {
+				method: 'POST',
+				headers: {
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				credentials: 'include',
+				body: JSON.stringify({
+					key: 'sidePanelCollapsed',
+					value: collapsed.toString()
+				})
+			});
+			
+			if (!response.ok) {
+				Log.warning(`Failed to save sidepanel state: ${response.status}`, "", "App.controller");
+				return;
+			}
+			
+			Log.info("Sidepanel state saved successfully", "", "App.controller");
+			
+		} catch (error) {
+			Log.error("Failed to save sidepanel state", error as Error, "App.controller");
+			// Continue silently - don't disrupt user experience
+		}
+	}
+
+	/**
+	 * Apply custom styling to ShellBar titles and profile button after DOM rendering
+	 * This is necessary because Web Components shadow DOM prevents external CSS
+	 */
+	private _applyShellBarStyling(): void {
+		setTimeout(() => {
+			try {
+				// Find the ShellBar element
+				const shellBars = document.querySelectorAll('[ui5-shellbar], ui5-shellbar-ui5');
+				shellBars.forEach((shellBar: any) => {
+					if (shellBar && shellBar.shadowRoot) {
+						// Find the title elements in the shadow DOM
+						const primaryTitle = shellBar.shadowRoot.querySelector('.ui5-shellbar-title bdi') || 
+						                    shellBar.shadowRoot.querySelector('.ui5-shellbar-title');
+						const secondaryTitle = shellBar.shadowRoot.querySelector('.ui5-shellbar-secondary-title');
+						
+						// Apply styles to SAP AI Core (primary title)
+						if (primaryTitle) {
+							primaryTitle.style.fontWeight = '400';
+							primaryTitle.style.fontSize = '14px';
+							primaryTitle.style.color = 'var(--sapShell_TextColor, #32363a)';
+						}
+						
+						// Apply styles to LLM Gateway (secondary title)
+						if (secondaryTitle) {
+							secondaryTitle.style.fontWeight = '700';
+							secondaryTitle.style.fontSize = '16px';
+							secondaryTitle.style.color = 'var(--sapShell_SubBrand_TextColor, #0a6ed1)';
+						}
+						
+					}
+				});
+				
+				// Let ShellBar control avatar sizing - removed custom styling
+			} catch (error) {
+				Log.debug("Failed to apply ShellBar/Avatar styling", error instanceof Error ? error : String(error));
+			}
+		}, 100); // Small delay to ensure DOM is ready
+	}
+
+
+}

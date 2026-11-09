@@ -1,0 +1,166 @@
+/* Notifications */
+.notificationsPopover {
+	width: 27rem;
+	max-height: 40rem;
+}
+
+.notificationsPopover::part(header) {
+	padding: 0;
+	box-shadow: none;
+}
+
+.notificationsPopover::part(content) {
+	padding: 0;
+}
+
+.notificationsPopoverList {
+	height: 100%;
+}
+
+.notificationsPopoverBar,
+.notificationsPopoverBar::part(bar) {
+	box-shadow: none;
+}
+
+/* End notifications */
+
+
+/* Simple height management for FE component embedding */
+/* Back to the working approach - just make the offset dynamic */
+
+/* Proper height chain for FE floating footer support */
+html, body { 
+	height: 100%; 
+}
+
+/* Shell root components */
+#__component0---app--toolPage,
+#__component0---app--mainContent { 
+	height: 100%; 
+}
+
+/* Alternative selector for any shell app */
+[id*="toolPage"],
+[id*="mainContent"] {
+	height: 100%;
+}
+
+/* Flex layout optimized for FE apps with floating footers */
+.shellFlexGrow {
+	display: flex !important;
+	flex-direction: column !important;
+	flex: 1 1 auto !important;      /* Grow and shrink as needed */
+	min-height: 0 !important;       /* Crucial: allow flex children to shrink */
+}
+
+/* Ensure title has proper spacing but doesn't interfere with flex layout */
+.shellFlexGrow > .sapMTitle {
+	flex-shrink: 0 !important;      /* Title should not shrink */
+}
+
+/* FE container: constrained height to fix floating footer positioning */
+[id*="feContainer"] { 
+	flex: 1 1 auto !important;      /* Fill available space */
+	min-height: 0 !important;       /* Allow shrinking */
+	overflow: hidden !important;    /* Force FE app to respect height limits */
+}
+
+/* Shell root class for scoped styling */
+.shellRoot .shellFlexGrow {
+	height: 100%;
+	display: flex !important;
+	flex-direction: column !important;
+	min-height: 0 !important;
+}
+
+/* Logo styling */
+.shellLogoTextLight {
+	font-weight: 300;
+	font-size: 14px;
+	color: #32363a;
+	line-height: 1.2;
+}
+
+.shellLogoTextBold {
+	font-weight: 600;
+	font-size: 16px;
+	color: #0070f2;
+	line-height: 1.2;
+}
+
+/* ShellBar title styling to match original */
+/* Need to use the actual webcomponent tag name */
+[ui5-shellbar]::part(title) bdi,
+ui5-shellbar-ui5::part(title) bdi {
+	font-weight: 300 !important;
+	font-size: 14px !important;
+	color: #32363a !important;
+}
+
+[ui5-shellbar]::part(secondaryTitle),
+ui5-shellbar-ui5::part(secondaryTitle) {
+	font-weight: 700 !important;
+	font-size: 16px !important;
+	color: #0070f2 !important;
+}
+
+/* Avatar XS size support for proper circular shape */
+ui5-avatar[size="XS"],
+ui5-avatar-ui5[size="XS"],
+[ui5-avatar][size="XS"] {
+	width: 2rem !important;
+	height: 2rem !important;
+	min-width: 2rem !important;
+	min-height: 2rem !important;
+}
+
+/* The reset line under each bullet chart on the "My quota" card: a caption under a chart, not a
+   value (UI5 has no small-text class of its own). */
+.adminShellQuotaReset {
+	font-size: 0.75rem;
+}
+
+/* The quota card is 28rem wide; the responsive bullet chart caps itself at 20rem, so let it fill the row. */
+.adminShellQuotaChart .sapSuiteBMCVerticalAlignmentContainer { max-width: none; }
+
+/* My quota card: each unit (Spend, Tokens) is a group — a bold name, a muted line with its three
+   windows, then a chart per limited window. Groups are separated by a hairline and breathing room. */
+.adminShellQuotaGroup { padding: 0.75rem 0; }
+.adminShellQuotaGroup + .adminShellQuotaGroup { border-top: 1px solid var(--sapList_BorderColor, #e5e5e5); }
+.adminShellQuotaSummary { color: var(--sapContent_LabelColor, #556b82); font-size: 0.875rem; margin-top: 0.125rem; }
+
+/* Dark theme (Settings > Theme): the hard-coded colours above are light-only. UI5 sets
+   sapUiTheme-<id> on <html> at boot and on every Theming.setTheme, so these follow live.
+   The ShellBar title needs no dark rule: the `::part(title) bdi` rule above never matches (nothing
+   may follow ::part), so App.controller's inline var(--sapShell_TextColor) already applies. */
+html.sapUiTheme-sap_horizon_dark [ui5-shellbar]::part(secondaryTitle),
+html.sapUiTheme-sap_horizon_dark ui5-shellbar-ui5::part(secondaryTitle) {
+	color: var(--sapShell_SubBrand_TextColor) !important;
+}
+
+/* Security notification cards (Notifications.controller.ts): Light keeps their inline colours;
+   !important is needed to win over those inline styles, the hover ones included */
+html.sapUiTheme-sap_horizon_dark .notification-item-high {
+	background-color: var(--sapErrorBackground) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-medium {
+	background-color: var(--sapWarningBackground) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item:hover {
+	background-color: var(--sapList_Hover_Background) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-title {
+	color: var(--sapTextColor) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-message,
+html.sapUiTheme-sap_horizon_dark .notification-item-close {
+	color: var(--sapContent_LabelColor) !important;
+}
+
+html.sapUiTheme-sap_horizon_dark .notification-item-close:hover {
+	background-color: var(--sapButton_Lite_Hover_Background) !important;
+}

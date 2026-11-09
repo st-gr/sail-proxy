@@ -1,0 +1,9 @@
+{
+  "id": "webSearch",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": { "summary": "Runs Anthropic's web_search server tool through Perplexity on SAP AI Core." }
+  }
+}

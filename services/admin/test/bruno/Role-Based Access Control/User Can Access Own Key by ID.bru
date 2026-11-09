@@ -1,0 +1,48 @@
+meta {
+  name: User Can Access Own Key by ID
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{base_url}}/ApiKeys({{user_api_key_id}})
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: user@test.com
+  password: user
+}
+
+assert {
+  res.status: eq 200
+  res.body.ID: eq {{user_api_key_id}}
+  res.body.email: eq "user@test.com"
+  res.body.key: isDefined
+}
+
+script:pre-request {
+  // Check if we have user API key ID from RBAC tests
+  const userApiKeyId = bru.getVar('user_api_key_id');
+  if (!userApiKeyId) {
+    throw new Error('This test requires user_api_key_id from RBAC tests. Please run "Create User API Key" test first.');
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    // Verify user can access their own key with unmasked value
+    if (!res.body.key || !res.body.key.startsWith('sk-')) {
+      throw new Error('User should see unmasked key value for their own key');
+    }
+    
+    if (res.body.email !== 'user@test.com') {
+      throw new Error(`Expected key for user@test.com, got ${res.body.email}`);
+    }
+    
+    console.log(`✓ User can access their own API key ${res.body.ID} with unmasked value`);
+  } else {
+    throw new Error(`Expected status 200, got ${res.status}: ${res.body.message || 'No message'}`);
+  }
+}

@@ -1,0 +1,7 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+  <SelectDialog id="modelPicker" multiSelect="true" title="{i18n>addModels}" noDataText="{i18n>noModelsMatchEntitlement}"
+    items="{path: '/LibraryModels', parameters: {$select: 'modelId,displayName,provider'}, sorter: {path: 'displayName'}}"
+    confirm=".onModelsPicked" search=".onModelPickSearch" cancel=".onModelPickCancel">
+    <StandardListItem title="{displayName}" description="{modelId}" info="{provider}"/>
+  </SelectDialog>
+</core:FragmentDefinition>

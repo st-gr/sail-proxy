@@ -1,0 +1,76 @@
+WEBVTT
+
+00:00:08.000 --> 00:00:24.013
+Every client in this video talks to the same gateway, here the Docker Compose stack behind nginx, with one user's key. The sail-proxy CLI launches each coding agent with the gateway already set; the documentation shows the manual configuration too.
+
+00:00:24.360 --> 00:00:38.656
+Each agent gets the same task in its own interface: add a greet function to a small project, call it with SAP and run it. Claude Code shows the change as a diff and asks before it edits and before it runs the file.
+
+00:01:03.663 --> 00:01:21.347
+Then a question only the web can answer. SAP AI Core has no web search of its own, so the gateway's web search plugin runs it on Perplexity Sonar Pro on SAP AI Core. The search leaves under your SAP AI Core tenant, never from the user's machine, and carries nothing that identifies the user.
+
+00:01:24.023 --> 00:01:27.115
+Claude answers from the results and lists its sources.
+
+00:01:40.217 --> 00:01:50.017
+Codex gets a provider entry with the gateway's OpenAI base URL and the responses wire API. It edits the file, runs it and reports the output.
+
+00:02:10.217 --> 00:02:25.800
+GitHub Copilot is a VS Code extension. A patch script in the repository points its OpenRouter provider at the gateway; running it again reverts the patch. The Ollama provider works without a patch, through the Ollama-compatible service next to the gateway.
+
+00:02:30.317 --> 00:02:40.988
+Gemini CLI reads the Google base URL and an API key from the environment; the launcher sets them and selects the API key mode. It asks before the edit and before the shell command.
+
+00:03:14.792 --> 00:03:22.782
+pi reads the gateway's model list and writes one provider with every chat model of the library; here GPT-5 mini does the work.
+
+00:03:49.992 --> 00:03:57.186
+opencode gets a provider on the gateway's Responses API with GPT-5.6 Sol, the same route Codex uses.
+
+00:04:32.792 --> 00:04:51.499
+Claude Code also runs inside an NVIDIA OpenShell sandbox on Kubernetes, here on SAP BTP Kyma. The sandbox gets the gateway's in-cluster address as its Anthropic base URL and only a placeholder for the key: its supervisor puts the real key into requests to the gateway, and to nothing else.
+
+00:04:52.792 --> 00:05:04.437
+A direct call to Anthropic is refused, because the sandbox has no route of its own. Claude Code does the same task, and every call goes through the gateway, metered and governed like the rest.
+
+00:05:14.844 --> 00:05:26.740
+The sandbox's policy decides which programs may reach the gateway; here only Claude Code and Node.js may. Every sandbox shares the provider's key, so their usage shows up in the cockpit under that key.
+
+00:05:49.540 --> 00:05:57.959
+Claude Desktop has a gateway mode for companies: the gateway's Anthropic base URL and a key, and no Claude.ai account.
+
+00:05:58.540 --> 00:06:08.015
+The model picker lists the Claude models of your SAP AI Core deployments under their own names. A question in the chat goes through the gateway like any other call.
+
+00:06:19.121 --> 00:06:27.786
+The Code tab runs Claude Code on a folder. It reads index.js, adds the greet function and runs it with Node, every step through the gateway.
+
+00:06:45.421 --> 00:06:53.518
+It prints Hello, SAP. The app's own short requests, such as the titles of its conversations, go through the gateway too, under the same key.
+
+00:07:04.121 --> 00:07:18.317
+Open WebUI is a self-hosted chat interface for a whole team. Its OpenAI connection points at the gateway's OpenAI base URL with a key, and the model list comes from the gateway, so every chat model of your instance is there to pick.
+
+00:07:19.795 --> 00:07:26.087
+Here it runs next to the stack, and a question to GPT-5 mini goes through the gateway like any other call.
+
+00:07:33.295 --> 00:07:53.190
+Open WebUI makes images too. Its image engine uses the same OpenAI base URL with a deployed Gemini image model, Nano Banana. SAP AI Core's orchestration service answers with text only; images need a deployment of their own, and the gateway calls it directly, so the picture comes back on the same key.
+
+00:07:57.195 --> 00:08:07.233
+The workflow automation tool n8n reaches the gateway through its OpenAI, Anthropic, Gemini or AWS credential, each with the gateway's address as its base URL.
+
+00:08:13.395 --> 00:08:25.988
+This AI Agent has the Calculator as its tool. Asked for 1234 times 5678, it calls the tool and answers, and every model call goes through the gateway on the same key.
+
+00:08:40.995 --> 00:08:47.472
+Each call lands in Usage Analytics under the key that made it; a key per tool shows which tool costs what.
+
+00:08:54.537 --> 00:08:58.552
+The Cost tab has the cost per model, per key and per user.
+
+00:09:08.637 --> 00:09:15.855
+The Models tab splits the same calls by model, so you see which models were asked for and what they cost.
+
+00:09:19.007 --> 00:09:32.702
+Nine tools, one gateway, agents in OpenShell sandboxes too, a key per tool if you like, images from a deployed model, and every call in the usage page. The overview video shows the whole picture in five minutes.

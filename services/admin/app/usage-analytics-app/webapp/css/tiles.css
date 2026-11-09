@@ -1,0 +1,37 @@
+/* Custom tile styling using SAP UI5 theme parameters */
+.usageAnalyticsApp .tileModelName,
+.usageAnalyticsApp .tileModelNameLong {
+  /* Use theme-aware font family with fallback */
+  font-family: var(--sapFontLightFamily, var(--sapFontFamily));
+  font-weight: 300;                /* Light weight for 72 font family */
+  line-height: 1.2;
+  color: var(--sapTextColor);      /* Theme-aware text color */
+  text-align: center;
+  width: 100%;
+  /* A raw model id such as anthropic--claude-4.8-opus--deployed has no spaces to wrap at:
+     break it anywhere so it stays inside the tile. */
+  overflow-wrap: anywhere;
+}
+
+.usageAnalyticsApp .tileModelName {
+  /* Responsive font size with clamp for better scaling */
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+}
+
+.usageAnalyticsApp .tileModelNameLong {
+  /* Names longer than one line (the view switches at 22 characters): two lines of this
+     size fit the tile's content area, two lines of the large size are clipped at the top. */
+  font-size: clamp(1.1rem, 2vw, 1.5rem);
+}
+
+.usageAnalyticsApp .tileCostValue {
+  /* Use theme-aware numeric content font styling */
+  font-family: var(--sapFontLightFamily, var(--sapFontFamily));
+  font-weight: 300;                /* Light weight matching NumericContent */
+  line-height: 1.2;
+  color: var(--sapPositiveColor);  /* Good/positive color for cost savings */
+  text-align: center;
+  width: 100%;
+  /* Larger font size for numeric emphasis, matching NumericContent */
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+}

@@ -1,0 +1,5612 @@
+{
+  "_notice": "Trimmed snapshot of model_prices_and_context_window.json from LiteLLM (https://github.com/BerriAI/litellm), commit 4fa8bf1ff5515e2cb98908c62ba84c87ef938620, snapshot 2026-10-24. Used only to suggest list prices.\n\nMIT License\n\nCopyright (c) 2023 Berri AI\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
+  "prices": {
+    "ai21.j2-mid-v1": {
+      "input_cost_per_token": 0.0000125,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000125
+    },
+    "ai21.j2-ultra-v1": {
+      "input_cost_per_token": 0.0000188,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000188
+    },
+    "ai21.jamba-1-5-large-v1:0": {
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "ai21.jamba-1-5-mini-v1:0": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "ai21.jamba-instruct-v1:0": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7e-7
+    },
+    "amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "amazon.nova-2-multimodal-embeddings-v1:0": {
+      "input_cost_per_token": 1.35e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "amazon.nova-2-pro-preview-20251202-v1:0": {
+      "cache_read_input_token_cost": 3.125e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "amazon.nova-lite-v1:0": {
+      "cache_read_input_token_cost": 1.5e-8,
+      "input_cost_per_token": 6e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.4e-7
+    },
+    "amazon.nova-micro-v1:0": {
+      "cache_read_input_token_cost": 8.75e-9,
+      "input_cost_per_token": 3.5e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1.4e-7
+    },
+    "amazon.nova-premier-v1:0": {
+      "cache_read_input_token_cost": 6.25e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000125
+    },
+    "amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    },
+    "amazon.titan-embed-g1-text-02": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "amazon.titan-embed-image-v1": {
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "amazon.titan-embed-text-v1": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "amazon.titan-embed-text-v2:0": {
+      "input_cost_per_token": 2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "amazon.titan-text-express-v1": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "amazon.titan-text-lite-v1": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "amazon.titan-text-premier-v1:0": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "anthropic.claude-3-5-haiku-20241022-v1:0": {
+      "cache_creation_input_token_cost": 0.000001,
+      "cache_read_input_token_cost": 8e-8,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-3-7-sonnet-20240620-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "anthropic.claude-3-7-sonnet-20250219-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-3-opus-20240229-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.00000125,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005
+    },
+    "anthropic.claude-haiku-4-5@20251001": {
+      "cache_creation_input_token_cost": 0.00000125,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005
+    },
+    "anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "anthropic.claude-instant-v1": {
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "anthropic.claude-mythos-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "anthropic.claude-mythos-preview": {
+      "cache_creation_input_token_cost": 0.000034375,
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.0000275,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0001375
+    },
+    "anthropic.claude-opus-4-1-20250805-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "anthropic.claude-opus-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "anthropic.claude-opus-4-5-20251101-v1:0": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "anthropic.claude-opus-4-6-v1": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "anthropic.claude-sonnet-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "anthropic.claude-v1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "anthropic.claude-v2:1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "apac.amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 9.9e-8,
+      "input_cost_per_token": 3.96e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003311
+    },
+    "apac.amazon.nova-2-pro-preview-20251202-v1:0": {
+      "cache_read_input_token_cost": 3.4375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "apac.amazon.nova-lite-v1:0": {
+      "cache_read_input_token_cost": 1.575e-8,
+      "input_cost_per_token": 6.3e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.52e-7
+    },
+    "apac.amazon.nova-micro-v1:0": {
+      "cache_read_input_token_cost": 9.25e-9,
+      "input_cost_per_token": 3.7e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1.48e-7
+    },
+    "apac.amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2.1e-7,
+      "input_cost_per_token": 8.4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000336
+    },
+    "apac.anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "apac.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.000001375,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000055
+    },
+    "apac.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "apac.anthropic.claude-mythos-preview": {
+      "cache_creation_input_token_cost": 0.000034375,
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.0000275,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0001375
+    },
+    "apac.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "apac.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "apac.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "apac.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "apac.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "apac.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "apac.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "apac.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "au.anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "au.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.000001375,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000055
+    },
+    "au.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "au.anthropic.claude-mythos-preview": {
+      "cache_creation_input_token_cost": 0.000034375,
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.0000275,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0001375
+    },
+    "au.anthropic.claude-opus-4-6-v1": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "au.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "au.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "au.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "au.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "au.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "au.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "au.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "au.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/ada": {
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/apac/gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/chat-latest": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/command-r-plus": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "azure/computer-use-preview": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/container": {
+      "litellm_provider": "azure",
+      "mode": "chat"
+    },
+    "azure/eu/computer-use-preview": {
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000132
+    },
+    "azure/eu/gpt-4.1": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/eu/gpt-4.1-mini": {
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 4.4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000176
+    },
+    "azure/eu/gpt-4.1-nano": {
+      "cache_read_input_token_cost": 2.8e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/eu/gpt-4o": {
+      "cache_creation_input_token_cost": 0.00000138,
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-4o-2024-05-13": {
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/eu/gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-4o-2024-11-20": {
+      "cache_creation_input_token_cost": 0.00000138,
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-4o-mini": {
+      "cache_read_input_token_cost": 8.3e-8,
+      "input_cost_per_token": 1.65e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "azure/eu/gpt-4o-mini-2024-07-18": {
+      "cache_read_input_token_cost": 8.3e-8,
+      "input_cost_per_token": 1.65e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "azure/eu/gpt-5": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-5-2025-08-07": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-5-mini": {
+      "cache_read_input_token_cost": 2.75e-8,
+      "input_cost_per_token": 2.75e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000022
+    },
+    "azure/eu/gpt-5-mini-2025-08-07": {
+      "cache_read_input_token_cost": 2.75e-8,
+      "input_cost_per_token": 2.75e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000022
+    },
+    "azure/eu/gpt-5-nano": {
+      "cache_read_input_token_cost": 5.5e-9,
+      "input_cost_per_token": 5.5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/eu/gpt-5-nano-2025-08-07": {
+      "cache_read_input_token_cost": 5.5e-9,
+      "input_cost_per_token": 5.5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/eu/gpt-5.1": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-5.1-chat": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/eu/gpt-5.2": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/eu/gpt-5.2-chat": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/eu/gpt-5.3-chat": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/eu/gpt-5.4": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/eu/gpt-5.4-2026-03-05": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/eu/gpt-5.4-mini": {
+      "cache_read_input_token_cost": 8.25e-8,
+      "input_cost_per_token": 8.25e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000495
+    },
+    "azure/eu/gpt-5.4-nano": {
+      "cache_read_input_token_cost": 2.2e-8,
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000001375
+    },
+    "azure/eu/gpt-5.5": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/eu/gpt-5.5-2026-04-23": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/eu/gpt-5.5-2026-04-24": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/eu/gpt-5.6": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 4.4e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "azure/eu/gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.75e-7,
+      "cache_read_input_token_cost": 2.2e-8,
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000132
+    },
+    "azure/eu/gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 4.4e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "azure/eu/gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000132
+    },
+    "azure/eu/gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.000015,
+      "cache_read_input_token_cost": 0.0000012,
+      "input_cost_per_token": 0.000012,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "azure/eu/gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.5e-7,
+      "cache_read_input_token_cost": 1.2e-8,
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "azure/eu/gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/eu/gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/eu/o1": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/eu/o1-2024-12-17": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/eu/o1-mini": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/o1-mini-2024-09-12": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/o1-preview": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/eu/o3": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/eu/o3-2025-04-16": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/eu/o3-deep-research": {
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000044
+    },
+    "azure/eu/o3-mini": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/o3-mini-2025-01-31": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/o4-mini": {
+      "cache_read_input_token_cost": 3.03e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/o4-mini-2025-04-16": {
+      "cache_read_input_token_cost": 3.03e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/eu/text-embedding-3-large": {
+      "input_cost_per_token": 1.43e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "azure/eu/text-embedding-3-small": {
+      "input_cost_per_token": 2.2e-8,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "azure/eu/text-embedding-ada-002": {
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "azure/global-standard/gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/global-standard/gpt-4o-2024-11-20": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/global-standard/gpt-4o-mini": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "azure/global/gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/global/gpt-4o-2024-11-20": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/global/gpt-5.1": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-3.5-turbo": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "azure/gpt-35-turbo": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "azure/gpt-35-turbo-16k": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "azure/gpt-35-turbo-16k-0613": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "azure/gpt-4": {
+      "input_cost_per_token": 0.00003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "azure/gpt-4-0125-preview": {
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/gpt-4-0613": {
+      "input_cost_per_token": 0.00003,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "azure/gpt-4-1106-preview": {
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/gpt-4-32k": {
+      "input_cost_per_token": 0.00006,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00012
+    },
+    "azure/gpt-4-32k-0613": {
+      "input_cost_per_token": 0.00006,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00012
+    },
+    "azure/gpt-4-turbo": {
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/gpt-4-turbo-2024-04-09": {
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/gpt-4-turbo-vision-preview": {
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/gpt-4.1": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "azure/gpt-4.1-2025-04-14": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "azure/gpt-4.1-mini": {
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000016
+    },
+    "azure/gpt-4.1-mini-2025-04-14": {
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000016
+    },
+    "azure/gpt-4.1-nano": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "azure/gpt-4.1-nano-2025-04-14": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "azure/gpt-4.5-preview": {
+      "cache_read_input_token_cost": 0.0000375,
+      "input_cost_per_token": 0.000075,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00015
+    },
+    "azure/gpt-4o": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-4o-2024-05-13": {
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "azure/gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-4o-2024-11-20": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-4o-audio-preview-2024-12-17": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-4o-mini": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "azure/gpt-4o-mini-2024-07-18": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "azure/gpt-4o-mini-audio-preview-2024-12-17": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "azure/gpt-5": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5-2025-08-07": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5-chat": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5-mini": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 2.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "azure/gpt-5-mini-2025-08-07": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 2.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "azure/gpt-5-nano": {
+      "cache_read_input_token_cost": 5e-9,
+      "input_cost_per_token": 5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "azure/gpt-5-nano-2025-08-07": {
+      "cache_read_input_token_cost": 5e-9,
+      "input_cost_per_token": 5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "azure/gpt-5.1": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5.1-2025-11-13": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5.1-chat": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-5.2": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "azure/gpt-5.2-2025-12-11": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "azure/gpt-5.2-chat": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "azure/gpt-5.3-chat": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "azure/gpt-5.4": {
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "azure/gpt-5.4-2026-03-05": {
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "azure/gpt-5.4-mini": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 7.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000045
+    },
+    "azure/gpt-5.4-mini-2026-03-17": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 7.5e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000045
+    },
+    "azure/gpt-5.4-nano": {
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000125
+    },
+    "azure/gpt-5.4-nano-2026-03-17": {
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000125
+    },
+    "azure/gpt-5.5": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/gpt-5.5-2026-04-23": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/gpt-5.5-2026-04-24": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/gpt-5.6": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "azure/gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.5e-7,
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "azure/gpt-5.6-luna-2026-07-09": {
+      "cache_creation_input_token_cost": 2.5e-7,
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "azure/gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "azure/gpt-5.6-sol-2026-07-09": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "azure/gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/gpt-5.6-terra-2026-07-09": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "azure/gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "azure/gpt-6-astra-2026-09-03": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "azure/gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "azure/gpt-6-luna-2026-09-22": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "azure/gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-6-sol-2026-09-22": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-6.1-sol-2026-09-29": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-audio": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-audio-1.5": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-audio-1.5-2026-02-23": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-audio-2025-08-28": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "azure/gpt-audio-mini": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "azure/gpt-audio-mini-2025-10-06": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "azure/gpt-chat-latest": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "azure/mistral-large-2402": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "azure/mistral-large-latest": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "azure/model-router": {
+      "input_cost_per_token": 1.4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0
+    },
+    "azure/o1": {
+      "cache_read_input_token_cost": 0.0000075,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "azure/o1-2024-12-17": {
+      "cache_read_input_token_cost": 0.0000075,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "azure/o1-mini": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/o1-mini-2024-09-12": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/o3": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "azure/o3-2025-04-16": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "azure/o3-mini": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/o3-mini-2025-01-31": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/o4-mini": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/o4-mini-2025-04-16": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "azure/text-embedding-3-large": {
+      "input_cost_per_token": 1.43e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/text-embedding-3-small": {
+      "input_cost_per_token": 2.2e-8,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/text-embedding-ada-002": {
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/us-gov/gpt-5.1": {
+      "cache_read_input_token_cost": 1.71875e-7,
+      "input_cost_per_token": 0.00000171875,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001375
+    },
+    "azure/us-gov/o3-mini": {
+      "cache_read_input_token_cost": 7.57e-7,
+      "input_cost_per_token": 0.000001513,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000605
+    },
+    "azure/us-gov/text-embedding-3-large": {
+      "input_cost_per_token": 1.63e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/us-gov/text-embedding-3-small": {
+      "input_cost_per_token": 2.5e-8,
+      "litellm_provider": "azure",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "azure/us/computer-use-preview": {
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000132
+    },
+    "azure/us/gpt-4.1": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/us/gpt-4.1-2025-04-14": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/us/gpt-4.1-mini": {
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 4.4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000176
+    },
+    "azure/us/gpt-4.1-mini-2025-04-14": {
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 4.4e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000176
+    },
+    "azure/us/gpt-4.1-nano": {
+      "cache_read_input_token_cost": 2.8e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/us/gpt-4.1-nano-2025-04-14": {
+      "cache_read_input_token_cost": 2.8e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/us/gpt-4o": {
+      "cache_creation_input_token_cost": 0.00000138,
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-4o-2024-05-13": {
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/us/gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-4o-2024-11-20": {
+      "cache_creation_input_token_cost": 0.00000138,
+      "cache_read_input_token_cost": 0.000001375,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-4o-mini": {
+      "cache_read_input_token_cost": 8.3e-8,
+      "input_cost_per_token": 1.65e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "azure/us/gpt-4o-mini-2024-07-18": {
+      "cache_read_input_token_cost": 8.3e-8,
+      "input_cost_per_token": 1.65e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "azure/us/gpt-5": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-5-2025-08-07": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-5-mini": {
+      "cache_read_input_token_cost": 2.75e-8,
+      "input_cost_per_token": 2.75e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000022
+    },
+    "azure/us/gpt-5-mini-2025-08-07": {
+      "cache_read_input_token_cost": 2.75e-8,
+      "input_cost_per_token": 2.75e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000022
+    },
+    "azure/us/gpt-5-nano": {
+      "cache_read_input_token_cost": 5.5e-9,
+      "input_cost_per_token": 5.5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/us/gpt-5-nano-2025-08-07": {
+      "cache_read_input_token_cost": 5.5e-9,
+      "input_cost_per_token": 5.5e-8,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 4.4e-7
+    },
+    "azure/us/gpt-5.1": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-5.1-chat": {
+      "cache_read_input_token_cost": 1.375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-5.2": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/us/gpt-5.2-chat": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/us/gpt-5.3-chat": {
+      "cache_read_input_token_cost": 1.925e-7,
+      "input_cost_per_token": 0.000001925,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000154
+    },
+    "azure/us/gpt-5.4": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/us/gpt-5.4-2026-03-05": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "azure/us/gpt-5.4-mini": {
+      "cache_read_input_token_cost": 8.25e-8,
+      "input_cost_per_token": 8.25e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000495
+    },
+    "azure/us/gpt-5.4-nano": {
+      "cache_read_input_token_cost": 2.2e-8,
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000001375
+    },
+    "azure/us/gpt-5.5": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/us/gpt-5.5-2026-04-23": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/us/gpt-5.5-2026-04-24": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/us/gpt-5.6": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 4.4e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "azure/us/gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.75e-7,
+      "cache_read_input_token_cost": 2.2e-8,
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000132
+    },
+    "azure/us/gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 4.4e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "azure/us/gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000132
+    },
+    "azure/us/gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "azure/us/gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "azure/us/gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "azure/us/gpt-chat-latest": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "azure/us/o1": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/us/o1-2024-12-17": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/us/o1-mini": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/o1-mini-2024-09-12": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/o1-preview": {
+      "cache_read_input_token_cost": 0.00000825,
+      "input_cost_per_token": 0.0000165,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000066
+    },
+    "azure/us/o3": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/us/o3-2025-04-16": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000088
+    },
+    "azure/us/o3-deep-research": {
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.000044
+    },
+    "azure/us/o3-mini": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/o3-mini-2025-01-31": {
+      "cache_read_input_token_cost": 6.05e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/o4-mini": {
+      "cache_read_input_token_cost": 3.03e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/o4-mini-2025-04-16": {
+      "cache_read_input_token_cost": 3.03e-7,
+      "input_cost_per_token": 0.00000121,
+      "litellm_provider": "azure",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000484
+    },
+    "azure/us/text-embedding-3-large": {
+      "input_cost_per_token": 1.43e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "azure/us/text-embedding-3-small": {
+      "input_cost_per_token": 2.2e-8,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "azure/us/text-embedding-ada-002": {
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "azure",
+      "mode": "embedding"
+    },
+    "bedrock/*/1-month-commitment/cohere.command-light-text-v14": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/*/1-month-commitment/cohere.command-text-v14": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/*/6-month-commitment/cohere.command-light-text-v14": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/*/6-month-commitment/cohere.command-text-v14": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/1-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/1-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/1-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/6-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/6-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/6-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/ap-northeast-1/anthropic.claude-instant-v1": {
+      "input_cost_per_token": 0.00000223,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000755
+    },
+    "bedrock/ap-northeast-1/anthropic.claude-v1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/ap-northeast-1/anthropic.claude-v2:1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/ap-northeast-1/deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "bedrock/ap-northeast-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-northeast-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-northeast-1/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 7.3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000303
+    },
+    "bedrock/ap-northeast-1/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000036
+    },
+    "bedrock/ap-northeast-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-northeast-1/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000145
+    },
+    "bedrock/ap-south-1/deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "bedrock/ap-south-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000318,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000042
+    },
+    "bedrock/ap-south-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "bedrock/ap-south-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-south-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-south-1/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 7.1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000294
+    },
+    "bedrock/ap-south-1/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000036
+    },
+    "bedrock/ap-south-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-south-1/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000141
+    },
+    "bedrock/ap-southeast-2/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000124
+    },
+    "bedrock/ap-southeast-2/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.545e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000001236
+    },
+    "bedrock/ap-southeast-3/deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "bedrock/ap-southeast-3/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-southeast-3/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ap-southeast-3/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000036
+    },
+    "bedrock/ap-southeast-3/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/ca-central-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000305,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000403
+    },
+    "bedrock/ca-central-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6.9e-7
+    },
+    "bedrock/eu-central-1/1-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/1-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/1-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/6-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/6-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/6-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/eu-central-1/anthropic.claude-instant-v1": {
+      "input_cost_per_token": 0.00000248,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000838
+    },
+    "bedrock/eu-central-1/anthropic.claude-v1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/eu-central-1/anthropic.claude-v2:1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/eu-central-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-central-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-central-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-north-1/deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "bedrock/eu-north-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-north-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-north-1/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000036
+    },
+    "bedrock/eu-south-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-south-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-south-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-west-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000286,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000378
+    },
+    "bedrock/eu-west-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6.5e-7
+    },
+    "bedrock/eu-west-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-west-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-west-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/eu-west-1/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000141
+    },
+    "bedrock/eu-west-2/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000345,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000455
+    },
+    "bedrock/eu-west-2/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3.9e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.8e-7
+    },
+    "bedrock/eu-west-2/minimax.minimax-m2.1": {
+      "input_cost_per_token": 4.7e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000186
+    },
+    "bedrock/eu-west-2/minimax.minimax-m2.5": {
+      "input_cost_per_token": 4.7e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000186
+    },
+    "bedrock/eu-west-2/nvidia.nemotron-super-3-120b": {
+      "input_cost_per_token": 2.3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000101
+    },
+    "bedrock/eu-west-2/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 7.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000186
+    },
+    "bedrock/eu-west-2/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 2.3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000186
+    },
+    "bedrock/eu-west-3/mistral.mistral-7b-instruct-v0:2": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.6e-7
+    },
+    "bedrock/eu-west-3/mistral.mistral-large-2402-v1:0": {
+      "input_cost_per_token": 0.0000052,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000156
+    },
+    "bedrock/eu-west-3/mistral.mixtral-8x7b-instruct-v0:1": {
+      "input_cost_per_token": 5.9e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 9.1e-7
+    },
+    "bedrock/invoke/anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "bedrock/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "bedrock/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "bedrock/sa-east-1/deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "bedrock/sa-east-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000445,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000588
+    },
+    "bedrock/sa-east-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000101
+    },
+    "bedrock/sa-east-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/sa-east-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/sa-east-1/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 7.3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000303
+    },
+    "bedrock/sa-east-1/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000036
+    },
+    "bedrock/sa-east-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000144
+    },
+    "bedrock/sa-east-1/qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000145
+    },
+    "bedrock/us-east-1/1-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/1-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/1-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/6-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/6-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/6-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-east-1/anthropic.claude-instant-v1": {
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "bedrock/us-east-1/anthropic.claude-v1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-east-1/anthropic.claude-v2:1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-east-1/deepseek.v3.2": {
+      "input_cost_per_token": 6.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000185
+    },
+    "bedrock/us-east-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000265,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000035
+    },
+    "bedrock/us-east-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "bedrock/us-east-1/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-east-1/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-east-1/mistral.mistral-7b-instruct-v0:2": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "bedrock/us-east-1/mistral.mistral-large-2402-v1:0": {
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-east-1/mistral.mixtral-8x7b-instruct-v0:1": {
+      "input_cost_per_token": 4.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7e-7
+    },
+    "bedrock/us-east-1/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "bedrock/us-east-1/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "bedrock/us-east-1/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-east-1/zai.glm-5": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    },
+    "bedrock/us-east-2/deepseek.v3.2": {
+      "input_cost_per_token": 6.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000185
+    },
+    "bedrock/us-east-2/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-east-2/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-east-2/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "bedrock/us-east-2/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "bedrock/us-east-2/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-gov-east-1/amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 9.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000384
+    },
+    "bedrock/us-gov-east-1/amazon.titan-embed-text-v1": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "bedrock/us-gov-east-1/amazon.titan-embed-text-v2:0": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "bedrock/us-gov-east-1/amazon.titan-text-express-v1": {
+      "input_cost_per_token": 0.0000013,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000017
+    },
+    "bedrock/us-gov-east-1/amazon.titan-text-lite-v1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "bedrock/us-gov-east-1/amazon.titan-text-premier-v1:0": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.000015,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000012,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.0000015,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000012,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.5e-7,
+      "cache_read_input_token_cost": 1.2e-8,
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000006,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000048,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-gov-east-1/anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-gov-east-1/claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "bedrock/us-gov-east-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000265,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000035
+    },
+    "bedrock/us-gov-east-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000265
+    },
+    "bedrock/us-gov-east-1/nvidia.nemotron-nano-12b-v2": {
+      "input_cost_per_token": 2.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "bedrock/us-gov-east-1/nvidia.nemotron-nano-3-30b": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.88e-7
+    },
+    "bedrock/us-gov-east-1/nvidia.nemotron-nano-9b-v2": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.76e-7
+    },
+    "bedrock/us-gov-east-1/nvidia.nemotron-super-3-120b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.8e-7
+    },
+    "bedrock/us-gov-east-1/openai.gpt-oss-120b-1:0": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "bedrock/us-gov-east-1/openai.gpt-oss-20b-1:0": {
+      "input_cost_per_token": 8.4e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 3.6e-7
+    },
+    "bedrock/us-gov-west-1/amazon.nova-2-multimodal-embeddings-v1:0": {
+      "input_cost_per_token": 1.62e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "bedrock/us-gov-west-1/amazon.nova-lite-v1:0": {
+      "cache_read_input_token_cost": 1.8e-8,
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.88e-7
+    },
+    "bedrock/us-gov-west-1/amazon.nova-micro-v1:0": {
+      "cache_read_input_token_cost": 1.05e-8,
+      "input_cost_per_token": 4.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.68e-7
+    },
+    "bedrock/us-gov-west-1/amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 9.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000384
+    },
+    "bedrock/us-gov-west-1/amazon.titan-embed-text-v1": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "bedrock/us-gov-west-1/amazon.titan-embed-text-v2:0": {
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "bedrock/us-gov-west-1/amazon.titan-text-express-v1": {
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000016
+    },
+    "bedrock/us-gov-west-1/amazon.titan-text-lite-v1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "bedrock/us-gov-west-1/amazon.titan-text-premier-v1:0": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.000015,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000012,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.0000015,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000012,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.5e-7,
+      "cache_read_input_token_cost": 1.2e-8,
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000006,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000048,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-gov-west-1/anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-gov-west-1/claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "bedrock/us-gov-west-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000265,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000035
+    },
+    "bedrock/us-gov-west-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "bedrock/us-gov-west-1/nvidia.nemotron-nano-12b-v2": {
+      "input_cost_per_token": 2.4e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "bedrock/us-gov-west-1/nvidia.nemotron-nano-3-30b": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.88e-7
+    },
+    "bedrock/us-gov-west-1/nvidia.nemotron-nano-9b-v2": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.76e-7
+    },
+    "bedrock/us-gov-west-1/nvidia.nemotron-super-3-120b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.8e-7
+    },
+    "bedrock/us-gov-west-1/openai.gpt-oss-120b-1:0": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "bedrock/us-gov-west-1/openai.gpt-oss-20b-1:0": {
+      "input_cost_per_token": 8.4e-8,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 3.6e-7
+    },
+    "bedrock/us-west-1/meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000265,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000035
+    },
+    "bedrock/us-west-1/meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "bedrock/us-west-2/1-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/1-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/1-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/6-month-commitment/anthropic.claude-instant-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/6-month-commitment/anthropic.claude-v1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/6-month-commitment/anthropic.claude-v2:1": {
+      "litellm_provider": "bedrock",
+      "mode": "chat"
+    },
+    "bedrock/us-west-2/anthropic.claude-instant-v1": {
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "bedrock/us-west-2/anthropic.claude-v1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-west-2/anthropic.claude-v2:1": {
+      "input_cost_per_token": 0.000008,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "bedrock/us-west-2/deepseek.v3.2": {
+      "input_cost_per_token": 6.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000185
+    },
+    "bedrock/us-west-2/minimax.minimax-m2.1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-west-2/minimax.minimax-m2.5": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-west-2/mistral.mistral-7b-instruct-v0:2": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "bedrock/us-west-2/mistral.mistral-large-2402-v1:0": {
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "bedrock/us-west-2/mistral.mixtral-8x7b-instruct-v0:1": {
+      "input_cost_per_token": 4.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7e-7
+    },
+    "bedrock/us-west-2/moonshotai.kimi-k2-thinking": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "bedrock/us-west-2/moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "bedrock/us-west-2/qwen.qwen3-coder-next": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "bedrock/us-west-2/zai.glm-5": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    },
+    "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+      "cache_creation_input_token_cost": 0.000001,
+      "cache_read_input_token_cost": 8e-8,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "chat-latest": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "claude-fable-5": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "claude-haiku-4-5": {
+      "cache_creation_input_token_cost": 0.00000125,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005
+    },
+    "claude-haiku-4-5-20251001": {
+      "cache_creation_input_token_cost": 0.00000125,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005
+    },
+    "claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "claude-mythos-5": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "claude-mythos-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "claude-mythos-preview": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "claude-opus-4-5": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-5-20251101": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-6": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-6-20260205": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-7-20260416": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-5": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "claude-sonnet-4-5": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "claude-sonnet-4-5-20250929": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "anthropic",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "cohere.command-light-text-v14": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "cohere.command-text-v14": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "cohere.embed-english-v3": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "cohere.embed-multilingual-v3": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "cohere.embed-v4:0": {
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "computer-use-preview": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "computer-use-preview-2025-03-11": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "daybreak-blue-latest": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "daybreak-red-latest": {
+      "cache_creation_input_token_cost": 0.000015625,
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "deepseek.r1-v1:0": {
+      "input_cost_per_token": 0.00000135,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000054
+    },
+    "deepseek.v3-v1:0": {
+      "input_cost_per_token": 5.8e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000168
+    },
+    "deepseek.v3.2": {
+      "input_cost_per_token": 6.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000185
+    },
+    "eu.amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 1.0725e-7,
+      "input_cost_per_token": 4.29e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003597
+    },
+    "eu.amazon.nova-2-pro-preview-20251202-v1:0": {
+      "cache_read_input_token_cost": 3.4375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "eu.amazon.nova-lite-v1:0": {
+      "cache_read_input_token_cost": 1.95e-8,
+      "input_cost_per_token": 7.8e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 3.12e-7
+    },
+    "eu.amazon.nova-micro-v1:0": {
+      "cache_read_input_token_cost": 1.15e-8,
+      "input_cost_per_token": 4.6e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1.84e-7
+    },
+    "eu.amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2.625e-7,
+      "input_cost_per_token": 0.00000105,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000042
+    },
+    "eu.anthropic.claude-3-5-haiku-20241022-v1:0": {
+      "cache_creation_input_token_cost": 0.000001,
+      "cache_read_input_token_cost": 8e-8,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "eu.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "eu.anthropic.claude-3-5-sonnet-20241022-v2:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "eu.anthropic.claude-3-7-sonnet-20250219-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "eu.anthropic.claude-3-opus-20240229-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "eu.anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "eu.anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.000001375,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000055
+    },
+    "eu.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "eu.anthropic.claude-opus-4-1-20250805-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "eu.anthropic.claude-opus-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "eu.anthropic.claude-opus-4-5-20251101-v1:0": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "eu.anthropic.claude-opus-4-6-v1": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "eu.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "eu.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "eu.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "eu.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "eu.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "eu.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "eu.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "eu.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "eu.deepseek.v3.2": {
+      "input_cost_per_token": 7.4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000222
+    },
+    "eu.meta.llama3-2-1b-instruct-v1:0": {
+      "input_cost_per_token": 1.3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.3e-7
+    },
+    "eu.meta.llama3-2-3b-instruct-v1:0": {
+      "input_cost_per_token": 1.9e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.9e-7
+    },
+    "eu.mistral.pixtral-large-2502-v1:0": {
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "eu.twelvelabs.marengo-embed-2-7-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "eu.twelvelabs.marengo-embed-3-0-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "eu.twelvelabs.pegasus-1-2-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "ft:gpt-3.5-turbo": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "ft:gpt-3.5-turbo-0125": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "ft:gpt-3.5-turbo-0613": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "ft:gpt-3.5-turbo-1106": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "ft:gpt-4-0613": {
+      "input_cost_per_token": 0.00003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "ft:gpt-4.1-2025-04-14": {
+      "cache_read_input_token_cost": 7.5e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "ft:gpt-4.1-mini-2025-04-14": {
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    },
+    "ft:gpt-4.1-nano-2025-04-14": {
+      "cache_read_input_token_cost": 5e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 8e-7
+    },
+    "ft:gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.000001875,
+      "input_cost_per_token": 0.00000375,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "ft:gpt-4o-2024-11-20": {
+      "cache_creation_input_token_cost": 0.000001875,
+      "input_cost_per_token": 0.00000375,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "ft:gpt-4o-mini-2024-07-18": {
+      "cache_read_input_token_cost": 1.5e-7,
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "ft:o4-mini-2025-04-16": {
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000016
+    },
+    "global.amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "global.anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "global.anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.00000125,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005
+    },
+    "global.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "global.anthropic.claude-mythos-5-1": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "global.anthropic.claude-opus-4-6-v1": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "global.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "global.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "global.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.00000625,
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "global.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "global.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "global.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "global.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "global.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "global.cohere.embed-v4:0": {
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "global.moonshotai.kimi-k3": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "global.openai.gpt-5.4": {
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "global.openai.gpt-5.5": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "global.openai.gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.5e-7,
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "global.openai.gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "global.openai.gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "global.openai.gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "global.openai.gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "global.openai.gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "global.openai.gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "global.twelvelabs.pegasus-1-2-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "global.twelvelabs.pegasus-1-5-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "global.xai.grok-4.6": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "global.xai.grok-4.7": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "global.zai.glm-5.3": {
+      "cache_creation_input_token_cost": 0.0000021,
+      "cache_read_input_token_cost": 3.12e-7,
+      "input_cost_per_token": 0.00000168,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000528
+    },
+    "google.gemma-3-12b-it": {
+      "input_cost_per_token": 9e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.9e-7
+    },
+    "google.gemma-3-27b-it": {
+      "input_cost_per_token": 2.3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 3.8e-7
+    },
+    "google.gemma-3-4b-it": {
+      "input_cost_per_token": 4e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 8e-8
+    },
+    "gpt-3.5-turbo": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "gpt-3.5-turbo-0125": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "gpt-3.5-turbo-1106": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "gpt-3.5-turbo-16k": {
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "gpt-4": {
+      "input_cost_per_token": 0.00003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "gpt-4-0613": {
+      "input_cost_per_token": 0.00003,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "gpt-4-1106-preview": {
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "gpt-4-turbo": {
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "gpt-4-turbo-2024-04-09": {
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "gpt-4.1": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "gpt-4.1-2025-04-14": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "gpt-4.1-mini": {
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 4e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000016
+    },
+    "gpt-4.1-mini-2025-04-14": {
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 4e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000016
+    },
+    "gpt-4.1-nano": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "gpt-4.1-nano-2025-04-14": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "gpt-4o": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-2024-05-13": {
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "gpt-4o-2024-08-06": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-2024-11-20": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-audio-preview-2024-12-17": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-audio-preview-2025-06-03": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-mini": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "gpt-4o-mini-2024-07-18": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "gpt-4o-mini-audio-preview-2024-12-17": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "gpt-4o-mini-search-preview": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "gpt-4o-mini-search-preview-2025-03-11": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "gpt-4o-search-preview": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-4o-search-preview-2025-03-11": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5-2025-08-07": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5-chat": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5-chat-latest": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5-mini": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 2.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "gpt-5-mini-2025-08-07": {
+      "cache_read_input_token_cost": 2.5e-8,
+      "input_cost_per_token": 2.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "gpt-5-nano": {
+      "cache_read_input_token_cost": 5e-9,
+      "input_cost_per_token": 5e-8,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "gpt-5-nano-2025-08-07": {
+      "cache_read_input_token_cost": 5e-9,
+      "input_cost_per_token": 5e-8,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "gpt-5-search-api": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5-search-api-2025-10-14": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5.1": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5.1-2025-11-13": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5.1-chat-latest": {
+      "cache_read_input_token_cost": 1.25e-7,
+      "input_cost_per_token": 0.00000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-5.2": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "gpt-5.2-2025-12-11": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "gpt-5.2-chat-latest": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "gpt-5.3-chat-latest": {
+      "cache_read_input_token_cost": 1.75e-7,
+      "input_cost_per_token": 0.00000175,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000014
+    },
+    "gpt-5.4": {
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "gpt-5.4-2026-03-05": {
+      "cache_read_input_token_cost": 2.5e-7,
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "gpt-5.4-mini": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 7.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000045
+    },
+    "gpt-5.4-mini-2026-03-17": {
+      "cache_read_input_token_cost": 7.5e-8,
+      "input_cost_per_token": 7.5e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000045
+    },
+    "gpt-5.4-nano": {
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000125
+    },
+    "gpt-5.4-nano-2026-03-17": {
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000125
+    },
+    "gpt-5.5": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "gpt-5.5-2026-04-23": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "gpt-5.5-cyber": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "gpt-5.5-cyber-preview": {
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "gpt-5.6": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "gpt-5.6-cyber": {
+      "cache_creation_input_token_cost": 0.000015625,
+      "cache_read_input_token_cost": 0.00000125,
+      "input_cost_per_token": 0.0000125,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.5e-7,
+      "cache_read_input_token_cost": 2e-8,
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.000005,
+      "cache_read_input_token_cost": 4e-7,
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00002
+    },
+    "gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.0000125,
+      "cache_read_input_token_cost": 0.000001,
+      "input_cost_per_token": 0.00001,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00005
+    },
+    "gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 1e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-audio": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-audio-1.5": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-audio-2025-08-28": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "gpt-audio-mini": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "gpt-audio-mini-2025-10-06": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "gpt-audio-mini-2025-12-15": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "gpt-rosalind-discovery": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "gpt-rosalind-research": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000005,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000025
+    },
+    "in.moonshotai.kimi-k3": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "jp.amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 9.9e-8,
+      "input_cost_per_token": 3.96e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003311
+    },
+    "jp.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.000001375,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000055
+    },
+    "jp.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "jp.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "jp.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "jp.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "jp.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "jp.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "jp.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "jp.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "jp.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "meta.llama2-13b-chat-v1": {
+      "input_cost_per_token": 7.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000001
+    },
+    "meta.llama2-70b-chat-v1": {
+      "input_cost_per_token": 0.00000195,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000256
+    },
+    "meta.llama3-1-405b-instruct-v1:0": {
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "meta.llama3-1-70b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "meta.llama3-1-8b-instruct-v1:0": {
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.2e-7
+    },
+    "meta.llama3-2-11b-instruct-v1:0": {
+      "input_cost_per_token": 1.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.6e-7
+    },
+    "meta.llama3-2-1b-instruct-v1:0": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1e-7
+    },
+    "meta.llama3-2-3b-instruct-v1:0": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.5e-7
+    },
+    "meta.llama3-2-90b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "meta.llama3-3-70b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "meta.llama3-70b-instruct-v1:0": {
+      "input_cost_per_token": 0.00000265,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000035
+    },
+    "meta.llama3-8b-instruct-v1:0": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "meta.llama4-maverick-17b-instruct-v1:0": {
+      "input_cost_per_token": 2.4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 9.7e-7
+    },
+    "meta.llama4-scout-17b-instruct-v1:0": {
+      "input_cost_per_token": 1.7e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "minimax.minimax-m2": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "minimax.minimax-m2.1": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "minimax.minimax-m2.5": {
+      "input_cost_per_token": 3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "mistral.devstral-2-123b": {
+      "input_cost_per_token": 4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000002
+    },
+    "mistral.magistral-small-2509": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "mistral.ministral-3-14b-instruct": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "mistral.ministral-3-3b-instruct": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1e-7
+    },
+    "mistral.ministral-3-8b-instruct": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1.5e-7
+    },
+    "mistral.mistral-7b-instruct-v0:2": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "mistral.mistral-large-2402-v1:0": {
+      "input_cost_per_token": 0.000004,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "mistral.mistral-large-2407-v1:0": {
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "mistral.mistral-large-3-675b-instruct": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000015
+    },
+    "mistral.mistral-small-2402-v1:0": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "mistral.mixtral-8x7b-instruct-v0:1": {
+      "input_cost_per_token": 4.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7e-7
+    },
+    "mistral.pixtral-large-2502-v1:0": {
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "mistral.voxtral-mini-3b-2507": {
+      "input_cost_per_token": 4e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 4e-8
+    },
+    "mistral.voxtral-small-24b-2507": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 3e-7
+    },
+    "moonshot.kimi-k2-thinking": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000025
+    },
+    "moonshotai.kimi-k2.5": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000003
+    },
+    "moonshotai.kimi-k3": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "nvidia.nemotron-nano-12b-v2": {
+      "input_cost_per_token": 2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "nvidia.nemotron-nano-3-30b": {
+      "input_cost_per_token": 6e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.4e-7
+    },
+    "nvidia.nemotron-nano-9b-v2": {
+      "input_cost_per_token": 6e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.3e-7
+    },
+    "nvidia.nemotron-super-3-120b": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6.5e-7
+    },
+    "o1": {
+      "cache_read_input_token_cost": 0.0000075,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "o1-2024-12-17": {
+      "cache_read_input_token_cost": 0.0000075,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "o3": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "o3-2025-04-16": {
+      "cache_read_input_token_cost": 5e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.000008
+    },
+    "o3-mini": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "o3-mini-2025-01-31": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "o4-mini": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "o4-mini-2025-04-16": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "openai",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000044
+    },
+    "openai.gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.25e-7,
+      "cache_read_input_token_cost": 1e-8,
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5e-7
+    },
+    "openai.gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "openai.gpt-oss-120b-1:0": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "openai.gpt-oss-20b-1:0": {
+      "input_cost_per_token": 7e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 3e-7
+    },
+    "openai.gpt-oss-safeguard-120b": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "openai.gpt-oss-safeguard-20b": {
+      "input_cost_per_token": 7e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2e-7
+    },
+    "openai/container": {
+      "litellm_provider": "openai",
+      "mode": "chat"
+    },
+    "qwen.qwen3-235b-a22b-2507-v1:0": {
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 8.8e-7
+    },
+    "qwen.qwen3-32b-v1:0": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "qwen.qwen3-coder-30b-a3b-v1:0": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "qwen.qwen3-coder-480b-a35b-v1:0": {
+      "input_cost_per_token": 4.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000018
+    },
+    "qwen.qwen3-coder-next": {
+      "input_cost_per_token": 5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "qwen.qwen3-next-80b-a3b": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000012
+    },
+    "qwen.qwen3-vl-235b-a22b": {
+      "input_cost_per_token": 5.3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000266
+    },
+    "text-embedding-3-large": {
+      "input_cost_per_token": 1.3e-7,
+      "litellm_provider": "openai",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "text-embedding-3-small": {
+      "input_cost_per_token": 2e-8,
+      "litellm_provider": "openai",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "text-embedding-ada-002": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "openai",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "text-embedding-ada-002-v2": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "openai",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "twelvelabs.marengo-embed-2-7-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "twelvelabs.marengo-embed-3-0-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "twelvelabs.pegasus-1-2-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "twelvelabs.pegasus-1-5-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "us-gov.anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.000015,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000012,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00006
+    },
+    "us-gov.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.5e-7,
+      "cache_read_input_token_cost": 1.2e-8,
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "us-gov.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "us-gov.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.0000075,
+      "cache_read_input_token_cost": 6e-7,
+      "input_cost_per_token": 0.000006,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00003
+    },
+    "us-gov.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.000006,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000048,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000024
+    },
+    "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.0000045,
+      "cache_read_input_token_cost": 3.6e-7,
+      "input_cost_per_token": 0.0000036,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000018
+    },
+    "us-gov.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 2.4e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "us-gov.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.000003,
+      "cache_read_input_token_cost": 1.2e-7,
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000012
+    },
+    "us-gov.nvidia.nemotron-nano-12b-v2": {
+      "input_cost_per_token": 2.4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "us-gov.nvidia.nemotron-nano-3-30b": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.88e-7
+    },
+    "us-gov.nvidia.nemotron-nano-9b-v2": {
+      "input_cost_per_token": 7.2e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.76e-7
+    },
+    "us-gov.nvidia.nemotron-super-3-120b": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 7.8e-7
+    },
+    "us-gov.openai.gpt-oss-120b-1:0": {
+      "input_cost_per_token": 1.8e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "us-gov.openai.gpt-oss-20b-1:0": {
+      "input_cost_per_token": 8.4e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 3.6e-7
+    },
+    "us-gov.xai.grok-4.6": {
+      "cache_read_input_token_cost": 6.6e-7,
+      "input_cost_per_token": 0.00000264,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000792
+    },
+    "us.amazon.nova-2-lite-v1:0": {
+      "cache_read_input_token_cost": 8.25e-8,
+      "input_cost_per_token": 3.3e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000275
+    },
+    "us.amazon.nova-2-pro-preview-20251202-v1:0": {
+      "cache_read_input_token_cost": 3.4375e-7,
+      "input_cost_per_token": 0.000001375,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "us.amazon.nova-lite-v1:0": {
+      "cache_read_input_token_cost": 1.5e-8,
+      "input_cost_per_token": 6e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 2.4e-7
+    },
+    "us.amazon.nova-micro-v1:0": {
+      "cache_read_input_token_cost": 8.75e-9,
+      "input_cost_per_token": 3.5e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 1.4e-7
+    },
+    "us.amazon.nova-pro-v1:0": {
+      "cache_read_input_token_cost": 2e-7,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    },
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+      "cache_creation_input_token_cost": 0.000001,
+      "cache_read_input_token_cost": 8e-8,
+      "input_cost_per_token": 8e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000004
+    },
+    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "us.anthropic.claude-3-opus-20240229-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "us.anthropic.claude-fable-5": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "us.anthropic.claude-fable-5-1": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "cache_creation_input_token_cost": 0.000001375,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000055
+    },
+    "us.anthropic.claude-haiku-5-5": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "us.anthropic.claude-mythos-5": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "us.anthropic.claude-mythos-5-1": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "us.anthropic.claude-mythos-preview": {
+      "cache_creation_input_token_cost": 0.000034375,
+      "cache_read_input_token_cost": 0.00000275,
+      "input_cost_per_token": 0.0000275,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0001375
+    },
+    "us.anthropic.claude-opus-4-1-20250805-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "us.anthropic.claude-opus-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00001875,
+      "cache_read_input_token_cost": 0.0000015,
+      "input_cost_per_token": 0.000015,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000075
+    },
+    "us.anthropic.claude-opus-4-5-20251101-v1:0": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "us.anthropic.claude-opus-4-6-v1": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "us.anthropic.claude-opus-4-7": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "us.anthropic.claude-opus-4-8": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "us.anthropic.claude-opus-5": {
+      "cache_creation_input_token_cost": 0.000006875,
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000275
+    },
+    "us.anthropic.claude-opus-5-5": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "cache_creation_input_token_cost": 0.00000375,
+      "cache_read_input_token_cost": 3e-7,
+      "input_cost_per_token": 0.000003,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000015
+    },
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "us.anthropic.claude-sonnet-4-6": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "us.anthropic.claude-sonnet-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "us.anthropic.claude-sonnet-5-5": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "us.cohere.embed-v4:0": {
+      "input_cost_per_token": 1.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "us.deepseek.r1-v1:0": {
+      "input_cost_per_token": 0.00000135,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000054
+    },
+    "us.deepseek.v3.2": {
+      "input_cost_per_token": 6.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000185
+    },
+    "us.meta.llama3-1-405b-instruct-v1:0": {
+      "input_cost_per_token": 0.0000024,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000024
+    },
+    "us.meta.llama3-1-70b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "us.meta.llama3-1-8b-instruct-v1:0": {
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 2.2e-7
+    },
+    "us.meta.llama3-2-11b-instruct-v1:0": {
+      "input_cost_per_token": 1.6e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.6e-7
+    },
+    "us.meta.llama3-2-1b-instruct-v1:0": {
+      "input_cost_per_token": 1e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1e-7
+    },
+    "us.meta.llama3-2-3b-instruct-v1:0": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 1.5e-7
+    },
+    "us.meta.llama3-2-90b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "us.meta.llama3-3-70b-instruct-v1:0": {
+      "input_cost_per_token": 7.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 7.2e-7
+    },
+    "us.meta.llama4-maverick-17b-instruct-v1:0": {
+      "input_cost_per_token": 2.4e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 9.7e-7
+    },
+    "us.meta.llama4-scout-17b-instruct-v1:0": {
+      "input_cost_per_token": 1.7e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6.6e-7
+    },
+    "us.mistral.pixtral-large-2502-v1:0": {
+      "input_cost_per_token": 0.000002,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "us.moonshotai.kimi-k3": {
+      "cache_creation_input_token_cost": 0.000004125,
+      "cache_read_input_token_cost": 3.3e-7,
+      "input_cost_per_token": 0.0000033,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "us.openai.gpt-5.4": {
+      "cache_read_input_token_cost": 2.75e-7,
+      "input_cost_per_token": 0.00000275,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000165
+    },
+    "us.openai.gpt-5.5": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000055,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000033
+    },
+    "us.openai.gpt-5.6-luna": {
+      "cache_creation_input_token_cost": 2.75e-7,
+      "cache_read_input_token_cost": 2.2e-8,
+      "input_cost_per_token": 2.2e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00000132
+    },
+    "us.openai.gpt-5.6-sol": {
+      "cache_creation_input_token_cost": 0.0000055,
+      "cache_read_input_token_cost": 4.4e-7,
+      "input_cost_per_token": 0.0000044,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000022
+    },
+    "us.openai.gpt-5.6-terra": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000132
+    },
+    "us.openai.gpt-6-astra": {
+      "cache_creation_input_token_cost": 0.00001375,
+      "cache_read_input_token_cost": 0.0000011,
+      "input_cost_per_token": 0.000011,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000055
+    },
+    "us.openai.gpt-6-luna": {
+      "cache_creation_input_token_cost": 1.375e-7,
+      "cache_read_input_token_cost": 1.1e-8,
+      "input_cost_per_token": 1.1e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 5.5e-7
+    },
+    "us.openai.gpt-6-sol": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 2.2e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "us.openai.gpt-6.1-sol": {
+      "cache_creation_input_token_cost": 0.00000275,
+      "cache_read_input_token_cost": 1.1e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000011
+    },
+    "us.twelvelabs.marengo-embed-2-7-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "us.twelvelabs.marengo-embed-3-0-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "embedding",
+      "output_cost_per_token": 0
+    },
+    "us.twelvelabs.pegasus-1-2-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "us.twelvelabs.pegasus-1-5-v1:0": {
+      "litellm_provider": "bedrock",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000075
+    },
+    "us.writer.palmyra-x4-v1:0": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "us.writer.palmyra-x5-v1:0": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "us.xai.grok-4.6": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000066
+    },
+    "us.xai.grok-4.7": {
+      "cache_read_input_token_cost": 5.5e-7,
+      "input_cost_per_token": 0.0000022,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000066
+    },
+    "us.zai.glm-5.3": {
+      "cache_creation_input_token_cost": 0.00000231,
+      "cache_read_input_token_cost": 3.432e-7,
+      "input_cost_per_token": 0.000001848,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000005808
+    },
+    "writer.palmyra-vision-7b": {
+      "input_cost_per_token": 1.5e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 6e-7
+    },
+    "writer.palmyra-x4-v1:0": {
+      "input_cost_per_token": 0.0000025,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.00001
+    },
+    "writer.palmyra-x5-v1:0": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.000006
+    },
+    "zai.glm-4.7": {
+      "input_cost_per_token": 6e-7,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000022
+    },
+    "zai.glm-4.7-flash": {
+      "input_cost_per_token": 7e-8,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 4e-7
+    },
+    "zai.glm-5": {
+      "input_cost_per_token": 0.000001,
+      "litellm_provider": "bedrock_converse",
+      "mode": "chat",
+      "output_cost_per_token": 0.0000032
+    }
+  }
+}

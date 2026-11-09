@@ -1,0 +1,19 @@
+{
+	"name": "admin.shell",
+	"version": "1.0.0",
+	"description": "SAP UI5 Administration Shell",
+	"author": "SAP SE",
+	"license": "Apache-2.0",
+	"private": true,
+	"scripts": {
+		"build": "ui5 build --dest dist",
+		"build:docker": "ui5 build --all --clean-dest --dest dist",
+		"start": "ui5 serve --open /index.html"
+	},
+	"devDependencies": {
+		"@ui5/cli": "^4.0.69",
+		"ui5-tooling-transpile": "^3.13.1"
+	},
+	"main": "index.js",
+	"keywords": []
+}

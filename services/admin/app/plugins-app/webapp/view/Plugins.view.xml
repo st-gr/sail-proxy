@@ -1,0 +1,135 @@
+<mvc:View
+    controllerName="admin.plugins.controller.Plugins"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:form="sap.ui.layout.form"
+    xmlns:u="sap.ui.unified">
+    <Page id="pluginsPage" showHeader="false">
+        <content>
+            <VBox class="sapUiSmallMargin">
+                <MessageStrip id="loadErrorStrip" type="Error" showIcon="true" class="sapUiSmallMarginBottom"
+                    text="{view>/loadError}" visible="{= ${view>/loadError} !== '' }"/>
+                <MessageStrip id="settingOffStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+                    text="{i18n>settingOffBanner}" visible="{view>/settingOff}"/>
+                <MessageStrip id="statusUnavailableStrip" type="Information" showIcon="true" class="sapUiSmallMarginBottom"
+                    text="{i18n>statusUnavailableBanner}" visible="{= ${view>/loaded} &amp;&amp; ${view>/statusUnavailable} }"/>
+                <MessageStrip id="notRespondingStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+                    text="{i18n>notRespondingBanner}" visible="{= ${view>/loaded} &amp;&amp; ${view>/notResponding} }"/>
+                <MessageStrip id="unpackReasonStrip" type="Information" showIcon="true" class="sapUiSmallMarginBottom"
+                    text="{view>/unpackDisabledReason}" visible="{= ${view>/unpackDisabledReason} !== '' }"/>
+
+                <!-- Package text is bound as plain text from the model: never formatted, never HTML. -->
+                <Table id="pluginsTable" items="{view>/rows}" busy="{view>/busy}" noDataText="{i18n>pluginsEmpty}" ariaLabelledBy="pluginsTitle"
+                    mode="MultiSelect" rememberSelections="false" selectionChange=".onSelectionChange">
+                    <headerToolbar>
+                        <OverflowToolbar>
+                            <Title id="pluginsTitle" text="{i18n>pluginsTitle}" level="H2"/>
+                            <ToolbarSpacer/>
+                            <Select id="instanceSelect" visible="{view>/showInstances}" selectedKey="{view>/instance}"
+                                items="{view>/instanceOptions}" change=".onInstanceChange" tooltip="{i18n>instanceTooltip}">
+                                <core:Item key="{view>key}" text="{view>text}"/>
+                            </Select>
+                            <Button id="enableButton" text="{= ${view>/selection/enableText} || ${i18n>enableAction} }" type="Emphasized" enabled="{view>/selection/canEnable}" press=".onEnable"/>
+                            <Button id="disableButton" text="{i18n>disableAction}" enabled="{view>/selection/canDisable}" press=".onDisable"/>
+                            <Button id="removeButton" text="{i18n>removeAction}" enabled="{view>/selection/canRemove}" press=".onRemove"/>
+                            <Button id="addHooksButton" text="{i18n>addHooksAction}" enabled="{view>/selection/canAddHooks}" press=".onAddHooks"/>
+                            <ToolbarSeparator/>
+                            <Button id="refreshButton" icon="sap-icon://refresh" text="{i18n>refresh}" press=".onRefresh"/>
+                        </OverflowToolbar>
+                    </headerToolbar>
+                    <columns>
+                        <Column width="24%"><Text text="{i18n>columnPlugin}"/></Column>
+                        <Column width="11rem"><Text text="{i18n>columnVersion}"/></Column>
+                        <Column demandPopin="true" minScreenWidth="Tablet" popinDisplay="Inline"><Text text="{i18n>columnStatus}"/></Column>
+                        <Column demandPopin="true" minScreenWidth="Desktop" popinDisplay="Inline"><Text text="{i18n>columnRules}"/></Column>
+                        <Column demandPopin="true" minScreenWidth="Desktop" popinDisplay="Inline"><Text text="{i18n>columnUploaded}"/></Column>
+                    </columns>
+                    <items>
+                        <ColumnListItem vAlign="Top">
+                            <cells>
+                                <VBox>
+                                    <Text text="{view>id}" class="sapUiTinyMarginBottom"/>
+                                    <Text text="{view>summaryText}" visible="{= ${view>summaryText} !== '' }" class="pluginsWrap"/>
+                                    <Text text="{view>helpNoteText}" visible="{= ${view>helpNoteText} !== '' }" class="sapUiTinyMarginTop pluginsWrap"/>
+                                </VBox>
+                                <VBox>
+                                    <Select selectedKey="{view>selectedVersion}" change=".onVersionChange"
+                                        items="{path: 'view>versionOptions', templateShareable: false}">
+                                        <core:Item key="{view>key}" text="{view>text}"/>
+                                    </Select>
+                                    <Text text="{view>compatibilityText}" visible="{= ${view>compatibilityText} !== '' }" class="sapUiTinyMarginTop pluginsWrap"/>
+                                </VBox>
+                                <VBox>
+                                    <ObjectStatus text="{view>statusText}" state="{view>statusState}"/>
+                                    <Text text="{view>errorText}" visible="{= ${view>errorText} !== '' }" class="sapUiTinyMarginTop pluginsWrap"/>
+                                    <Text text="{view>detailText}" visible="{= ${view>detailText} !== '' }" class="sapUiTinyMarginTop pluginsWrap"/>
+                                </VBox>
+                                <Text text="{view>rulesText}" class="pluginsWrap"/>
+                                <VBox>
+                                    <Text text="{view>uploadedBy}" class="pluginsWrap"/>
+                                    <Text text="{view>uploadedAtText}"/>
+                                </VBox>
+                            </cells>
+                        </ColumnListItem>
+                    </items>
+                </Table>
+                <Text id="settingsHint" text="{i18n>jsonViewHint}" class="sapUiTinyMarginTop"/>
+
+                <Table id="builtinsTable" items="{view>/builtins}" noDataText="{i18n>builtinsEmpty}" ariaLabelledBy="builtinsTitle" class="sapUiMediumMarginTop">
+                    <headerToolbar>
+                        <OverflowToolbar>
+                            <Title id="builtinsTitle" text="{i18n>builtinsTitle}" level="H2"/>
+                        </OverflowToolbar>
+                    </headerToolbar>
+                    <columns>
+                        <Column width="24%"><Text text="{i18n>columnPlugin}"/></Column>
+                        <Column width="11rem"><Text text="{i18n>columnVersion}"/></Column>
+                        <Column demandPopin="true" minScreenWidth="Tablet" popinDisplay="Inline"><Text text="{i18n>columnStatus}"/></Column>
+                        <Column demandPopin="true" minScreenWidth="Tablet" popinDisplay="Inline"><Text text="{i18n>columnRules}"/></Column>
+                    </columns>
+                    <items>
+                        <ColumnListItem vAlign="Top">
+                            <cells>
+                                <Text text="{view>id}"/>
+                                <Text text="{view>versionText}"/>
+                                <VBox>
+                                    <Text text="{view>statusText}"/>
+                                    <Text text="{view>errorText}" visible="{= ${view>errorText} !== '' }" class="pluginsWrap"/>
+                                </VBox>
+                                <Text text="{view>rulesText}" class="pluginsWrap"/>
+                            </cells>
+                        </ColumnListItem>
+                    </items>
+                </Table>
+
+                <form:Form id="uploadForm" editable="true" class="sapUiMediumMarginTop">
+                    <form:title><core:Title text="{i18n>uploadTitle}"/></form:title>
+                    <form:layout>
+                        <form:ColumnLayout columnsM="2" columnsL="3" columnsXL="4"/>
+                    </form:layout>
+                    <form:formContainers>
+                        <form:FormContainer>
+                            <form:formElements>
+                                <form:FormElement label="{i18n>uploadFile}">
+                                    <form:fields>
+                                        <u:FileUploader id="packageUploader" name="package" fileType="zip" sameFilenameAllowed="true"
+                                            enabled="{view>/canUpload}" value="{view>/fileName}" placeholder="{i18n>uploadPlaceholder}"
+                                            buttonText="{i18n>uploadBrowse}" change=".onFileChosen" typeMissmatch=".onWrongFileType"/>
+                                    </form:fields>
+                                </form:FormElement>
+                                <form:FormElement>
+                                    <form:fields>
+                                        <Button id="uploadButton" text="{i18n>uploadAction}" icon="sap-icon://upload" type="Emphasized"
+                                            enabled="{= ${view>/canUpload} &amp;&amp; ${view>/hasFile} }" press=".onUpload"/>
+                                    </form:fields>
+                                </form:FormElement>
+                            </form:formElements>
+                        </form:FormContainer>
+                    </form:formContainers>
+                </form:Form>
+                <Text text="{i18n>uploadHint}" class="sapUiTinyMarginTop"/>
+            </VBox>
+        </content>
+    </Page>
+</mvc:View>

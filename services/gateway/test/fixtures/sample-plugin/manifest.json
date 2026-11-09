@@ -1,0 +1,38 @@
+{
+  "id": "samplePlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "hooks": {
+    "definitions": {
+      "header:sampleMarker": { "type": "header", "name": "x-sample-marker" }
+    },
+    "defaults": {
+      "anthropic": {
+        "invoke": [
+          { "request": { "callback": { "id": "samplePlugin" }, "match": ["header:sampleMarker"] } }
+        ]
+      }
+    }
+  },
+  "settings": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "greeting": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "defaults": { "greeting": "hello", "retries": 3 }
+  },
+  "help": {
+    "en": {
+      "summary": "A sample plugin that adds a note to the request",
+      "settings": { "greeting": "Text placed in front of the note", "retries": "How often to try" }
+    },
+    "de": {
+      "summary": "Ein Beispiel-Plugin, das der Anfrage eine Notiz hinzufügt",
+      "settings": { "greeting": "Text vor der Notiz", "retries": "Wie oft versucht wird" }
+    }
+  }
+}

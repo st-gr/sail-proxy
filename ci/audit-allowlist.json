@@ -1,0 +1,74 @@
+[
+  {
+    "id": "GHSA-w4pp-8pjf-rmxw",
+    "package": "pacote",
+    "reason": "Build tooling only (admin devDependency cds-plugin-ui5 > @ui5/project, not in any image or the npm package). The fix is pacote 21; the latest stable @ui5/project (4.0.17) still requires ^19 and a major override would risk the UI5 framework download the Docker build relies on.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-52v5-jr5w-gjxr",
+    "package": "sigstore",
+    "reason": "Same chain as pacote (pacote > sigstore 3, build tooling only); fixed only in sigstore 4, which pacote 19 does not accept.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-jmr9-qjv8-65gv",
+    "package": "extract-zip",
+    "reason": "No patched release exists. Root devDependency puppeteer > @puppeteer/browsers, which only extracts browser archives it downloads itself; not in any image or the npm package.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-7pqw-9j4j-h8q3",
+    "package": "extract-zip",
+    "reason": "Same package and path as GHSA-jmr9-qjv8-65gv; no patched release exists.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-c475-qrg2-pj4r",
+    "package": "basic-ftp",
+    "reason": "Root devDependency puppeteer > @puppeteer/browsers > proxy-agent > pac-proxy-agent > get-uri > basic-ftp 5, used only when a PAC file is fetched over ftp:// while puppeteer downloads a browser. The fix is basic-ftp 6.2.1; get-uri up to 8.0.1 still requires ^5.3.1. Not in docker/pnpm-lock.yaml or npm-dist/sail-proxy/pnpm-lock.yaml, so not in any image or the npm package.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-2g4f-4pwh-qvx6",
+    "package": "ajv",
+    "reason": "ajv 6 comes with eslint inside @sap/cds-dk, a devDependency. `pnpm audit --prod` still lists it because @cap-js/postgres declares @sap/cds-dk as an optional peer that pnpm links from the admin's devDependencies; a production install has no cds-dk and the admin image never installs it (Trivy: no ajv 6 finding).",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-ch52-4w7c-c8xp",
+    "package": "http-cache-semantics",
+    "reason": "No patched release exists (every version <=4.2.0 is affected). Reached only through download tooling that never runs at runtime: services/admin > sqlite3 > node-gyp > make-fetch-happen (builds the native addon at install time) and the admin devDependency cds-plugin-ui5 > @ui5/project > make-fetch-happen (UI5 build). No source file loads make-fetch-happen, node-gyp or http-cache-semantics; the max-stale disclosure needs a shared multi-user HTTP cache, which neither path is. It is in docker/pnpm-lock.yaml (sqlite3 dependency), so the reason is reachability, not absence.",
+    "reviewBy": "2026-11-30"
+  },
+  {
+    "id": "GHSA-vfj7-8cjw-p6xm",
+    "package": "braces",
+    "reason": "No patched release exists (every version <=3.0.3 is affected). braces ships in no image: the gateway image was Trivy-clean once the unused root dependency http-proxy-middleware went, and the admin image since its node_modules comes from a production-only install (docker/admin.Dockerfile runtime-deps stage) instead of the build stage, which had carried jest, cpy, ui5-tooling-modules and @sap/hdi-deploy (each via micromatch). It is not in docker/pnpm-lock.yaml or npm-dist/sail-proxy/pnpm-lock.yaml. It stays in the development tree: `pnpm audit` reaches it through nodemon > chokidar (dev), and `pnpm audit --prod` through @cap-js/postgres > @sap/cds-dk > @sap/hdi-deploy > micromatch, because the lockfile resolves @cap-js/postgres optional peer @sap/cds-dk against the dev install; neither runs in a shipped server. The stack-exhaustion also needs attacker-controlled glob patterns. Verified 2026-10-06 with Trivy on rebuilt images and both audit passes.",
+    "reviewBy": "2026-11-30"
+  },
+  {
+    "id": "GHSA-fx2h-pf6j-xcff",
+    "package": "vite",
+    "reason": "`server.fs.deny` bypass on Windows alternate paths. Docs-site build tooling only: docs > vitepress 1.6.4 > vite 5.4.21. The fix is only in vite >=6.4.4, which VitePress 1.x does not accept (it requires ^5.4.14). The issue concerns the vite dev server on Windows; the docs site is in no Docker image and not in the npm package's \"files\". Revisit when VitePress 2 is stable.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-587h-7wmj-h5pm",
+    "package": "vite",
+    "reason": "launch-editor existence check bypass on Windows. Same chain as GHSA-fx2h-pf6j-xcff. Docs-site build tooling only: docs > vitepress 1.6.4 > vite 5.4.21. The fix is only in vite >=6.4.4, which VitePress 1.x does not accept (it requires ^5.4.14). The issue concerns the vite dev server on Windows; the docs site is in no Docker image and not in the npm package's \"files\". Revisit when VitePress 2 is stable.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-mrhx-c7xc-m3w5",
+    "package": "zod",
+    "reason": "Root devDependency puppeteer 24 > chromium-bidi 14, which requires zod ^3.24.1; the fix exists only in zod 4.6.6 and no 3.x release is patched. Reaching it means puppeteer 25 (a major, under the UI journey tooling). puppeteer validates only its own browser protocol messages with it; not in any image or the npm package.",
+    "reviewBy": "2026-12-31"
+  },
+  {
+    "id": "GHSA-g3hv-75wg-m249",
+    "package": "minimatch",
+    "reason": "Moderate, fixed only in minimatch 11 (a major). The production audit's only path is services/admin > @cap-js/postgres > @sap/cds-dk > eslint > minimatch 10.2.6 (cds-dk is a peer of @cap-js/postgres); the admin production stage installs with auto-install-peers=false, so neither cds-dk nor eslint is installed, and the image's tooling guard fails the build if eslint is present (docker/admin.Dockerfile). The other root paths (nodemon, npm-run-all) are dev-only, and npm-dist/sail-proxy/pnpm-lock.yaml carries minimatch only through the package's devDependencies (eslint, @typescript-eslint, copyfiles, rimraf > glob), which a user's install does not get. Not in any image or in what the npm package installs.",
+    "reviewBy": "2026-12-31"
+  }
+]

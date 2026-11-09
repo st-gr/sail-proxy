@@ -1,0 +1,57 @@
+# Overrides for the documentation demo stack: every published host port moves off the ports the
+# maintainer's dev stack uses (3000, 4004, 6379, 5432) and binds loopback. Use with
+#   COMPOSE_PROJECT_NAME=sail-docs DOCKER_TAG=docs-demo docker compose -f docker/docker-compose.yml -f screencast/stack/compose.docs.yml …
+# nginx keeps 8080 and 443 because the Dex redirect URIs the setup script renders carry port 8080.
+services:
+  gateway:
+    ports: !override
+      - "127.0.0.1:13000:3000"
+  admin:
+    ports: !override
+      - "127.0.0.1:14004:4004"
+  valkey:
+    ports: !override
+      - "127.0.0.1:16379:6379"
+  postgres:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+  dex:
+    ports: !override
+      - "127.0.0.1:15556:5556"
+  oauth2-proxy:
+    ports: !override
+      - "127.0.0.1:14180:4180"
+  # Open WebUI for the clients video, only with --profile clients. It reaches the gateway on the compose network
+  # with a seeded user's key from SAIL_DOCS_OPENWEBUI_KEY; single-user mode (no sign-in), nothing persisted, and
+  # the extra model calls Open WebUI makes on its own (titles, tags, follow-ups) are switched off.
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    profiles: [clients]
+    ports: !override
+      - "127.0.0.1:4031:8080"
+    environment:
+      WEBUI_AUTH: "False"
+      ENABLE_OLLAMA_API: "False"
+      ENABLE_OPENAI_API: "True"
+      OPENAI_API_BASE_URL: http://gateway:3000/openai/v1
+      OPENAI_API_KEY: ${SAIL_DOCS_OPENWEBUI_KEY:?set SAIL_DOCS_OPENWEBUI_KEY to a seeded user's key}
+      DEFAULT_MODELS: gpt-5-mini
+      # Images through the gateway's OpenAI images endpoint, served by a deployed Gemini image model
+      # (Nano Banana); SAP AI Core's orchestration service has no image output, a deployment does.
+      ENABLE_IMAGE_GENERATION: "True"
+      IMAGE_GENERATION_ENGINE: openai
+      IMAGES_OPENAI_API_BASE_URL: http://gateway:3000/openai/v1
+      IMAGES_OPENAI_API_KEY: ${SAIL_DOCS_OPENWEBUI_KEY:?set SAIL_DOCS_OPENWEBUI_KEY to a seeded user's key}
+      IMAGE_GENERATION_MODEL: gemini-3.1-flash-image--deployed
+      IMAGE_SIZE: 1536x1024
+      ENABLE_IMAGE_PROMPT_GENERATION: "False"
+      ENABLE_TITLE_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+      ENABLE_AUTOCOMPLETE_GENERATION: "False"
+      OFFLINE_MODE: "True"
+      ANONYMIZED_TELEMETRY: "False"
+    networks:
+      - sap-llm-network
+    depends_on:
+      - gateway

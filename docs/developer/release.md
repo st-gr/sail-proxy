@@ -1,0 +1,250 @@
+---
+title: Release procedure
+description: Version bump, npm publish, image push, sync and checks.
+---
+
+# Release Procedure
+
+This page describes how to cut a release: bumping the version across the workspace, publishing the standalone `@st-gr/sail-proxy` CLI to npm, and building and pushing the Docker images. One orchestrator script runs the whole sequence; the individual steps are documented below for when you need to run (or debug) them separately.
+
+## TL;DR — One-Command Release
+
+```bash
+# Prerequisites (once per machine/session):
+npm login                     # npm publish auth
+docker login ghcr.io          # Docker registry auth
+
+# Verify everything is in order without executing:
+pnpm release:dry-run
+
+# Cut the release:
+pnpm release:patch            # or release:minor / release:major
+
+# Final manual step (printed by the script):
+git push origin <branch> && git push origin v<new-version>
+```
+
+`pnpm release:*` runs `cli-tools/release.js`, which executes, in order:
+
+1. **Preflight** — tracked working tree clean, npm authenticated, Docker daemon reachable. Aborts before touching anything if a check fails.
+2. **Test gate** — `pnpm test` (gateway suite). Skip with `--skip-tests` (not recommended).
+3. **Version bump** — `npm version <type>` on the root package. The root `"version"` lifecycle hook (`cli-tools/sync-version.js --stage`) propagates the new version to `libs/*`, `services/*` (including the `package.docker.json` manifests the gateway and admin images are built from), `docker/package.json`, `npm-dist/sail-proxy`, and the `info.version` of the four OpenAPI documents in `openapi/`, and stages them so the version commit + git tag include every synced manifest.
+4. **npm publish** — `cli-tools/publish-npm.js`, the hardened wrapper (see below). sail-proxy's `prepublishOnly` runs its full build, including `bundle:gateway`, so the published package always contains a freshly compiled gateway — the local `bundled/` directory (gitignored) is never shipped stale.
+5. **Docker build + push** — `docker/scripts/build-and-tag.js` (tags each image with both the new version and `latest`), then `docker/scripts/push-images.js`. These build for the **host architecture only**; published images must carry linux/amd64 and linux/arm64, so a public release uses `--skip-docker` and the multi-arch path below.
+
+The script never pushes git commits or tags — it prints the exact `git push` commands at the end so you stay in control of what reaches the remote.
+
+**Partial releases:** `--skip-npm` (Docker-only release), `--skip-docker` (npm-only release), `--skip-tests`.
+
+## Why the Order Matters
+
+- **Bump before publish/build:** both the npm tarball and the Docker image tags read the version from the (already-bumped) manifests. Publishing before bumping ships the old version number with new code.
+- **Test before bump:** `npm version` creates a commit and tag; gating tests first keeps broken states out of tagged history.
+- **Publish before announcing:** the git tag exists locally after step 3 — only push it once npm and the registry actually have the artifacts.
+
+## The Multi-Arch Release Path
+
+This is the sequence a public release follows, least reversible step last: image tags can be re-pushed, a pushed commit is permanent history, and an npm version number can never be reused (not even after an unpublish).
+
+1. **Bump and test only:** `node cli-tools/release.js <patch|minor|major> --skip-npm --skip-docker`. The test gate needs Valkey on `localhost:6379`. Before a minor or major bump, grep for the old `major.minor` outside lockfiles — a version hardcoded outside the synced manifests surfaces only in CI otherwise.
+2. **Prepare the clone you release from:** after pulling the release commit, `pnpm install --config.confirmModulesPurge=false` (a plain `pnpm install` can stop at an interactive purge prompt) and `pnpm build`; then `node cli-tools/publish-npm.js --dry-run` and `node cli-tools/test-sail-proxy-cli.js`.
+3. **CI image build:** pushes and pull requests skip the image build, so run it by hand against the release commit first: on GitHub, Actions → CI Pipeline → Run workflow → tick `build_images` (branch: the one holding the release commit). Require the run green — the image build and the Trivy scans — before pushing any image; an image that does not build, or a finding the scan blocks on, would otherwise surface only in the registry push.
+4. **Images:** `pnpm docker:buildx` (`docker/scripts/build-and-tag-multiarch.js`, buildx builder `sail-proxy-builder`) builds and pushes `:<version>` and `:latest` for both architectures — the build *is* the push. On an arm64 machine the amd64 admin image builds under emulation and takes long; `--service NAME` rebuilds one image. Verify with `docker manifest inspect ghcr.io/st-gr/sail-proxy-<svc>:<version>` and pull the images into a scratch compose project (`DOCKER_TAG=<version> docker compose -p <scratch> up -d --no-build`) before continuing.
+5. **npm:** `pnpm publish:npm` (add `--otp=<code>` on `EOTP`). A token supplied as `NPM_TOKEN` is used only if the active npm user config references it (`//registry.npmjs.org/:_authToken=${NPM_TOKEN}`); a literal token in `~/.npmrc` wins otherwise. After `+ @st-gr/sail-proxy@<version>` the registry can answer 404 for several minutes while npmjs.com lists the version as "Validating" — wait; never publish the same version again.
+6. **Git:** push the release branch and the single tag (`git push origin v<version>`, not `--tags`).
+
+## The Individual Steps (Manual / Debugging)
+
+### 1. Version Bump
+
+```bash
+pnpm version:bump:patch       # npm version patch + workspace sync + commit + tag
+pnpm version:check            # verify all manifests agree
+```
+
+`cli-tools/sync-version.js` keeps `libs/*`, `services/{gateway,admin,ollama}`, `services/{gateway,admin}/package.docker.json`, `docker/package.json`, `npm-dist/sail-proxy`, and the `info.version` of the four `openapi/` documents on the root version. It does **not** touch `workspace:*` dependency protocols — those are rewritten only at pack time (see below).
+
+### 2. Publish sail-proxy to npm
+
+```bash
+pnpm publish:npm              # from the repo root — ALWAYS use this, never raw npm publish
+```
+
+`cli-tools/publish-npm.js` exists because of a real npm bug: `npm publish` re-reads `package.json` from disk *after* packing and ships that manifest to the registry. A `postpack` hook that restores `workspace:*` therefore poisons the registry metadata (consumers get `EUNSUPPORTEDPROTOCOL`) while the tarball itself looks fine. The wrapper:
+
+- refuses to run if a `postpack` hook exists in `npm-dist/sail-proxy/package.json`,
+- pre-rewrites `workspace:*` to concrete versions and verifies the on-disk state before publishing,
+- restores `workspace:*` in a `finally` block whether publish succeeded, failed, or was interrupted.
+
+Consequence for manual testing: after a bare `npm pack` in `npm-dist/sail-proxy`, `package.json` is left with concrete versions — restore it yourself with `npm run restore-workspace`. See `npm-dist/sail-proxy/DEVELOPER.md` → Publishing.
+
+### 3. Docker Images
+
+```bash
+pnpm docker:build             # builds gateway/admin/ollama/nginx images, tags v<version> + latest
+pnpm docker:push              # pushes both tags (docker login required)
+```
+
+Registry and organization default to `ghcr.io` / `st-gr`; override with `DOCKER_REGISTRY`, `DOCKER_ORGANIZATION`, `DOCKER_TAG`. `--service NAME` limits either script to one image; `push-images.js --tag-only` skips the `latest` tag.
+
+### 4. Push Commit and Tag
+
+```bash
+git push origin <branch>
+git push origin v<new-version>
+```
+
+CI (`.github/workflows/ci.yml`) runs tests and Trivy scans on push — it does **not** publish to npm or push images. Releases are operator-driven by design.
+
+## What Reaches Users When
+
+Behaviour changes that users should know about go into the root `CHANGELOG.md`, under `## Unreleased`, as they land; at release time that section is renamed to the version and date (`## [<version>] - YYYY-MM-DD`) and a fresh, empty `## Unreleased` is added above it.
+
+| Artifact | Updated by | Users receive it |
+|---|---|---|
+| npm `@st-gr/sail-proxy` | `pnpm publish:npm` (step 4 of release) | `npm install -g @st-gr/sail-proxy@latest` |
+| Docker images (`ghcr.io/st-gr/sail-proxy-*`) | `pnpm docker:push` (step 5) | `pnpm docker:pull` / redeploy |
+| Bundled gateway inside the npm package | Rebuilt automatically by `prepublishOnly` → `bundle:gateway` | With the npm package |
+| `api_config.json` for **existing** standalone installs | **Never automatically** — the template is copied once at setup | User re-runs setup or hand-merges new keys (e.g. `supported_beta_headers`) |
+| `api_config.json` for **existing** distributed installs | **Never automatically** — the admin-activated configuration REPLACES the file config wholesale (no merge) | Admin activates a configuration containing the new keys |
+
+The last two rows matter after config-schema releases: existing installs keep their old `api_config.json`. Ship code that degrades gracefully when new keys are absent (the beta-header allowlist and runtime quarantine were designed this way) — or, where absent keys would silently disable a security control, fail closed.
+
+**Pseudonymization precision keys are the graceful-degradation case, deliberately.** `pseudonymization.min_confidence`, `.thresholds`, `.allowlist` and `.saturation_warn` are all optional, the shipped `api_config.json` sets none of them, and absent reproduces the built-in defaults exactly (0.5 for every category, no exemptions, saturation reported at 40 distinct values). An install that never re-runs setup therefore loses no masking — it only loses the ability to tune it, which is the correct direction to fail for a security control.
+
+**The standalone CLI loaded no plugins at all, from the initial commit until this release.** The gateway's plugin loader resolved its plugins directory against `process.cwd()`, and the three deployments do not share a working directory: local dev starts in `services/gateway` (where `./src/plugins` happens to be right), Docker starts in `/app` and compensated with a symlink (`docker/gateway.Dockerfile`, `ln -s .../dist/services/gateway/src/plugins /app/src/plugins`), and the npm CLI spawns the bundled gateway with `cwd = bundled/gateway` — where `src/plugins` does not exist, so the loader created it empty and logged `Registered 0 plugin rules`. Every hook plugin was silently inert in that deployment, pseudonymization included: masking never ran for standalone npm installs, on any endpoint, at any configuration. The loader now anchors the directory on its own module location (`DEFAULT_PLUGINS_DIR` in `services/gateway/src/services/pluginLoader.ts`), which is correct in all three layouts; the Docker symlink is now redundant but harmless and was left in place. Users get the fix by upgrading the npm package — no configuration change is involved, and nothing about the existing `api_config.json` needs re-merging. Verify a release with `cd npm-dist/sail-proxy && npm test`, which loads the bundled plugins in-process from the CLI's own spawn cwd and fails if the count is zero.
+
+**file_search deployment prerequisites.** Unlike the config-key upgrades above, `file_search` (the OpenAI-compatible `/v1/files` and `/v1/vector_stores` endpoints) depends on things outside `api_config.json` that Docker and Kyma deployments must provision explicitly — an existing install that pulls a new image does **not** get them for free:
+
+- **A Postgres image with the pgvector extension.** `docker/docker-compose.yml` and `kyma/templates/manifests/core/postgres.yaml` both pin `pgvector/pgvector:pg16-trixie` instead of plain `postgres:16`. The gateway runs `CREATE EXTENSION IF NOT EXISTS vector` at startup and only *logs* on failure — it never throws — so a deployment still running plain `postgres:16` silently reports the feature unavailable rather than crashing.
+- **`pandoc` and `pdftotext` (poppler-utils) in the gateway image.** The extractor registry spawns these to convert `.docx`/`.odt`/`.epub`/`.rst`/`.html`/`.tex` (pandoc) and `.pdf` (pdftotext) uploads. `docker/gateway.Dockerfile` installs both (`apk add --no-cache pandoc poppler-utils`) in the **production** stage. An older image built before this change lacks them and those upload types fail; plain-text uploads are unaffected.
+- **`tesseract` with English data in the gateway image.** OCR for PDF pages without a text layer (scans). The same production-stage `apk add` installs `tesseract-ocr tesseract-ocr-data-eng` (Alpine 3.23: tesseract 5.5.1, the standard `eng` model, 22 MiB; CI's Ubuntu `tesseract-ocr-eng` carries the same data). Measured on throwaway builds: the apk layer grows 284 → 335 MB (+51 MB unpacked, of which ~16 MB are glib/icu/pango libraries the Alpine package declares for its training tools), the compressed image 163 → 184 MB (+21 MB pull). Kyma runs the same image. The OCR languages are `capabilities.file_search.parsing.ocr.languages` (default `["eng"]`); the gateway checks them against `tesseract --list-langs` and skips a language without data with a warning (adding one: [OCR languages](/developer/file-search-tool#ocr-languages)). Without tesseract OCR is off with one warning and those pages stay empty, as in older images. `FILE_SEARCH_OCR=off` switches it off on purpose; the npm standalone CLI (the lite gateway) always starts the gateway with it, so OCR never runs there whatever the host has installed.
+- **`FILE_SEARCH_DATABASE_URL`.** The gateway reads this (falling back to `POSTGRES_URL`) to get a DSN for the pgvector database. Compose loads it from `docker/.env.filesearch-runtime` via `env_file` (`required: false`, so a fresh clone that hasn't run setup yet still starts the gateway) — that file is generated by `docker/setup-docker.js` from credentials it also gives the `postgres` service, the actual single source of truth (not a compose `${VAR}` substitution: those resolve only from the shell or `docker/.env`, never from another service's `environment:` block, so they cannot see the `postgres` service's password at all). The username and password segments are percent-encoded (`encodeURIComponent`) when written into the DSN, since a manually-entered password containing `/` produces an unparseable URL otherwise. Kyma's `setup-kyma.js` writes the same DSN, encoded the same way, into the `gateway-env` Secret alongside `ADMIN_SERVICE_URL`. Omitting the DSN entirely is a supported configuration, not a bug: `getPool()` returns `null` and every `file_search` endpoint answers `503 file_search_unavailable` — this is the intended, fail-closed behaviour for standalone npm installs, which have no database by default (see `services/gateway/.env.sample`).
+
+- **The gateway's runtime role is DML-only — DDL happens in a separate migration step, on a separate credential.** The role named by `FILE_SEARCH_DATABASE_URL` has exactly `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the five `file_search` tables (`file_blobs`, `fs_files`, `vector_stores`, `vector_store_files`, `vector_store_chunks`) — no `CREATE`, ever, even transiently. This matters because the gateway is the internet-facing component and shares this database with the admin service's CAP schema (API keys, usage records); before this, `FILE_SEARCH_DATABASE_URL` carried the Postgres image's bootstrap-superuser credential (`POSTGRES_USER`/`POSTGRES_PASSWORD`), so an RCE in the gateway could `CREATE`/`ALTER`/`DROP` anything in the database, admin's tables included.
+
+  DDL — `CREATE EXTENSION IF NOT EXISTS vector`, `CREATE TABLE IF NOT EXISTS` for the five tables, and provisioning the restricted role itself — now happens only via a separate, optional, privileged credential: `FILE_SEARCH_MIGRATION_DATABASE_URL`. When that env var is set, `runMigration()` (`services/gateway/src/fileSearch/db.ts`) uses it for the DDL and to `GRANT`/`REVOKE` the runtime role's privileges; the runtime pool (`getPool()`, used by every request handler) never reads it, not even transiently. When it is unset, behaviour is unchanged from before this release: DDL is attempted against `FILE_SEARCH_DATABASE_URL` itself — the still-supported path for local dev and any install that has not adopted the split. If the schema is already present, no DDL is attempted at all (a fast existence check short-circuits it); if the schema is absent *and* the configured role cannot create it, no DDL is attempted either — the feature just reports `503 file_search_unavailable`, exactly as with no database configured.
+
+  - **Docker**: `docker/.env.postgres` now carries `FILE_SEARCH_MIGRATION_DATABASE_URL` (the bootstrap-superuser DSN, what `FILE_SEARCH_DATABASE_URL` used to be) instead. It is loaded **only** by the new one-shot `gateway-migrate` compose service — never by the long-running `gateway` service, whose `env_file` list no longer includes `.env.postgres` at all. `gateway`'s `depends_on` requires `gateway-migrate: condition: service_completed_successfully`, so the schema (and the runtime role) always exist before the gateway's own boot-time migration attempt runs.
+  - **Kyma**: the privileged DSN lives in a new `gateway-migration-env` Secret, attached only to the `gateway` Deployment's new `migrate-file-search` initContainer (`kyma/templates/manifests/core/gateway.yaml`) — initContainers have their own independent environment, so it is never present in the long-running `gateway` container's env either.
+  - **Either way**, the migration is also runnable as a standalone deploy step, independent of the gateway process: `node cli-tools/file-search-migrate.js` (repo root; requires `pnpm build:gateway` first) drives the same code (`services/gateway/src/fileSearch/migrateCli.ts`) that both the Docker service and the Kyma initContainer invoke directly from the built image (`node services/gateway/dist/services/gateway/src/fileSearch/migrateCli.js`).
+  - **A migration failure never blocks the gateway from starting.** Both the compose `gateway-migrate` service and the Kyma `migrate-file-search` initContainer set `FILE_SEARCH_MIGRATE_NEVER_BLOCK=true`, which makes `migrateCli.ts` always exit `0` — even when migration genuinely failed — while still logging the failure loudly (`docker compose logs gateway-migrate` / `kubectl logs <pod> -c migrate-file-search`). This is deliberate: before this migration step existed, a broken migration cost `file_search` a `503` and nothing else; making this script's exit code a hard gate for the whole gateway container/pod would otherwise turn a migration failure into a total outage of all LLM proxying, a strictly larger blast radius than the defect the migration step exists to fix. Direct/manual/CI invocation via `cli-tools/file-search-migrate.js` does not set this flag, so it keeps a real, meaningful nonzero exit code for that use case. If `file_search` unexpectedly reports `503` after a deploy, check the migration step's own logs — the schema/role were probably never applied.
+
+  **Existing installs adopting the restricted role**: re-run `docker/setup-docker.js` (Docker) or `kyma/scripts/setup-kyma.js` (Kyma) for this release. Both now generate a `file_search_app` runtime credential in addition to the existing Postgres credential, and (Docker) split `.env.postgres` into that file plus the new `.env.filesearch-runtime`, or (Kyma) add the `gateway-migration-env` Secret and the `migrate-file-search` initContainer. The next `docker compose up` / `kubectl apply` then provisions the restricted role and switches the running gateway over to it automatically — there is no separate manual `GRANT`/`REVOKE` step. An install that skips this re-run keeps working exactly as before (unchanged single-DSN fallback, still using the superuser credential) since that path is deliberately preserved for backwards compatibility, but does not get the privilege reduction.
+
+- **The migration step's `embedding_dimensions` accuracy depends on when it runs.** `buildSchemaSql()` bakes `file_search.embedding_dimensions` into the `vector(N)` column at creation time, so the migration step needs the real admin-configured value, not the shipped default (1536). The Docker `gateway-migrate` service forces `GATEWAY_STANDALONE=true` and an absolute `CONFIG_FILE_PATH`, so it reads `api_config.json` directly off the same volume the gateway container mounts — accurate as of the last time that file was written. The Kyma `migrate-file-search` initContainer runs after `wait-for-admin`, so Admin/Valkey are already reachable, and `migrateCli.ts` proactively awaits the same async configuration fetch the gateway's own startup uses before migrating — also accurate, as long as Admin/Valkey are actually healthy at that point. Either way, if configuration truly cannot be resolved (Valkey/Admin down, file missing), migration still completes using the default rather than failing — verify `information_schema.columns` for `vector_store_chunks.embedding`'s dimension after upgrading a deployment with a non-default `embedding_dimensions` for the first time.
+
+- **Concurrent migrations are now safe; they were not before this release.** `runMigration()` used to run its `CREATE EXTENSION`/`CREATE TABLE ... IF NOT EXISTS` DDL unguarded. Postgres's `IF NOT EXISTS` is a check-then-act that is not safe against genuinely concurrent execution: with more than one gateway replica booting cold against a not-yet-migrated database, all but one lose a race for `duplicate key value violates unique constraint`, and — because a migration failure is deliberately logged-and-swallowed rather than crashing the process — the losing replicas used to boot healthy and answer `503 file_search_unavailable` forever, silently, while one replica in the fleet worked. `runMigration()` now serializes the whole migration behind `pg_advisory_xact_lock` (a well-known key shared with the test suite's own equivalent guard in `schemaFixture.ts`), so N concurrent callers against a fresh database all succeed and apply the schema exactly once. This does not require any deployment change to benefit from — it applies unconditionally, on both the single-DSN fallback path and the new privileged-migration-DSN path.
+
+An install upgrading from before `file_search` shipped needs to pull the new Postgres image and rebuild/pull the new gateway image; neither happens automatically from a version bump alone. Unlike most image bumps, an in-place upgrade of the Postgres image (same volume/PVC, image swap and restart, no data loss) **works** — but read the collation-version note below before doing it, if the image you're swapping to isn't `pgvector/pgvector:pg16-trixie` specifically.
+
+**It also needs `docker/setup-docker.js` re-run, and this is the step most likely to be missed.** `docker/.env.postgres` and `docker/.env.filesearch-runtime` are generated once and never regenerated by a version bump, so an install whose copy predates this release either has no `FILE_SEARCH_DATABASE_URL` at all, or (for an install already running `file_search` before the restricted-role release) still has the old single, superuser-backed `.env.postgres` and no `.env.filesearch-runtime`. The symptom is silent and looks like success either way: compose renders without error, the gateway starts normally, and either `file_search` reports `503 file_search_unavailable` forever (no DSN case — `env_file` is `required: false`), or it keeps working exactly as before on the unrestricted single-DSN fallback (stale-but-present case). Verify after upgrading with `docker compose -f docker/docker-compose.yml config | grep -A1 FILE_SEARCH` — expect to see both `FILE_SEARCH_MIGRATION_DATABASE_URL` (on the `gateway-migrate` service only) and `FILE_SEARCH_DATABASE_URL` (on `gateway`, pointing at `file_search_app`, not `POSTGRES_USER`'s value); if the gateway's own DSN still shows the same username as `POSTGRES_USER`, setup has not been re-run for this release. The same applies to Kyma: `setup-kyma.js` writes the runtime DSN into the `gateway-env` Secret and the privileged one into the new `gateway-migration-env` Secret.
+
+**Postgres collation version after an image swap (Docker volumes and Kyma PVCs alike).** `postgres:16` and `pgvector/pgvector:pg16` currently build on different Debian releases with different glibc versions (trixie/glibc 2.41 vs bookworm/glibc 2.36); that's exactly why the compose file and Kyma manifest pin `pgvector/pgvector:pg16-trixie` — it matches plain `postgres:16`'s base exactly, so the in-place upgrade path (existing install, same volume, image swap only) never crosses a glibc boundary and this problem cannot occur. If that pin is ever changed to a differently-based pgvector image (or to a plain `pgvector/pgvector:pg16` on an install that hasn't upgraded past that tag), the symptom on next startup is:
+
+```
+WARNING: database "sap_llm_gateway" has a collation version mismatch
+DETAIL: The database was created using collation version 2.41, but the
+        operating system provides version 2.36.
+```
+
+This is not a startup failure — Postgres starts and answers queries — but text btree indexes built under one glibc's collation rules are silently read under another's, on the *same* database `admin`'s CAP schema lives in. That's a wrong-results/index-corruption hazard, not a crash, so it won't surface as an error anywhere obvious. If you ever see that warning, run, once, against that database:
+
+```sql
+REINDEX DATABASE sap_llm_gateway;
+ALTER DATABASE sap_llm_gateway REFRESH COLLATION VERSION;
+```
+
+`REINDEX` rebuilds every index under the collation rules Postgres is *actually* running with now; `REFRESH COLLATION VERSION` clears the warning so it isn't repeated on every future startup for the same already-fixed database. Apply this exactly the same way whether the volume is a Docker named volume or a Kyma PVC — the mismatch is a property of the on-disk database files versus the glibc the container currently runs, not of the orchestrator.
+
+**Upgrade step for `/openai/v1/responses`:** the route's plugin hooks live under `hooks.defaults.openai.responses` / `.responses-stream`. A distributed install whose active configuration predates the route has neither key, so PII masking would be skipped on an endpoint that is force-enabled with `allow_user_bypass: false`. The route therefore answers HTTP 503 `pseudonymization_hook_missing` until an admin activates a configuration that includes them. Existing **standalone** installs are in the same position for the same reason (see the table above — their `api_config.json` is never updated automatically), so they must re-run setup or hand-merge the two keys. Fresh installs ship with them. No other endpoint is affected.
+
+**Later additions to those same two hook arrays.** Subsequent releases added two more plugin entries and two config keys. An install whose activated configuration predates them gets the endpoint without the corresponding feature — the route still answers, it just behaves as it did before:
+
+| Added | Effect if the activated configuration predates it |
+|---|---|
+| `responsesWebSearchPlugin` hook entries | a hosted `web_search` tool reaches the deployment unrewritten and is rejected with `400 … tools are not allowed for model` |
+| `responsesNamespaceToolsPlugin` hook entries | Codex's `namespace` sub-agent wrapper is rejected the same way, and clients need `--disable multi_agent` again |
+| `capabilities.web_search.max_searches_per_request` | none — absent falls back to the built-in default of 3 |
+| `capabilities.namespace_tools.mode` | none — absent falls back to the built-in default of `flatten` |
+
+The two plugin entries are what matter on upgrade; both config keys degrade safely.
+
+**`capabilities.file_search.rewrite_query` now defaults to `false` — and no existing install picks that up.** Query rewriting sends the search query to the tenant's orchestration deployment to be rewritten before embedding, at a cost of roughly 1.3 seconds per search. The shipped template now sets `rewrite_query: false`, and `FILE_SEARCH_DEFAULTS.rewriteQuery` became `false` too — the latter being what an install whose activated configuration predates the `file_search` block resolves to.
+
+This is a **new-installs-only** change, by the same rule the table above states for every other config key ("`api_config.json` for existing installs — never automatically"):
+
+| Deployment shape | What an existing install gets | How an operator changes it |
+|---|---|---|
+| Standalone (npm) | keeps `true` — the template is copied **once**, at first run, and never re-merged | edit `~/.sail-proxy/api_config.json` |
+| Docker | keeps `true` — the admin-activated configuration **replaces** the file configuration wholesale, with no merge, so a new template key is invisible until it is in an activated configuration | activate a configuration containing the new value, in the cockpit |
+| Kyma | keeps `true`, for the same reason | activate a configuration containing the new value, in the cockpit |
+| Any install predating the `file_search` block | gets `false`, from `FILE_SEARCH_DEFAULTS` | add the key to opt back in |
+
+Nothing degrades either way: rewriting is best-effort and a search works identically with it on or off, only slower. Note also that the hosted `file_search` **tool** passes `rewriteQuery: false` explicitly regardless of configuration — the model has already turned the user's turn into a search query — so this setting only affects the REST endpoint `POST /v1/vector_stores/{id}/search`. See [The hosted file_search tool](/developer/file-search-tool).
+
+**The order of those two plugin entries differs between the two arrays, deliberately.** `responses-stream` lists `responsesNamespaceToolsPlugin` *before* `responsesWebSearchPlugin`; `responses` lists it *after*. Write interceptors nest inside-out, while after-handlers chain in array order, so the two paths need opposite orders. When hand-merging, copy each array verbatim rather than normalising them to match — `test/responses-tool-plugin-layering.test.ts` fails by name if they agree.
+
+**Fresh-token usage and quota profiles (this release).** Two related changes land together.
+`UserUsageDaily.tokens` — the bucket the day/week/month usage windows and the Users & Quotas app
+read from — now sums only fresh tokens (input + output + cache *creation*; cache *reads* are still
+priced into `sapCost`, exactly as before, but no longer counted as tokens).
+`usageCounters.foldIncrements` and the rebuild's `TOKENS_SUM` SQL both changed the same way, so
+**token figures visibly drop after upgrading** — this is expected, not data loss. The two "tokens"
+the admin cockpit reports are deliberately different definitions now: per-user quota usage
+(`UserUsageDaily`, the Users & Quotas app, the gateway's quota checks) is fresh-tokens-only; the
+per-key and per-credential `totalTokens` the reporting endpoints return (`admin-service.ts`) stays
+all-inclusive, unchanged. `usageCounters.rebuild` — reachable as the `rebuildUsageCounters` admin
+action, and run automatically by the nightly cost recalculation — recomputes the buckets under the
+new definition; an install upgrading with an existing bucket table should run one rebuild after
+upgrading so historical figures read consistently, rather than waiting for the 62-day retention
+window to roll the old-definition buckets off on its own.
+
+Quota profiles are new in this release: `QuotaProfiles` seeds three starters (Light / Standard /
+Power) once, into an empty table, from the same startup hook that seeds the default entitlement
+catalog (`initializeModelLibrary`) — so an existing deployment gets the three starter profiles
+automatically on first start after upgrading, no admin action required. Nothing is auto-assigned:
+every `Users.quotaProfile` starts null, exactly as before this release, and the platform default
+continues to apply until an administrator assigns a profile. See "Quota profiles" in
+[Model library and entitlements internals](/developer/model-library-entitlements) for the resolution order and write
+paths. Postgres deployments need nothing further; on a local SQLite `db/admin.db` the admin's boot-time
+self-heal creates the new table and column before the seed runs.
+
+**The `#catalogs` shell route is now titled "Entitlements & Quotas" (this release).** The route is
+not new: the catalogs screen has been served by `admin.modellibrary.Component` under both
+`#model-library` and `#catalogs` since before this release, the latter titled "Entitlement
+Catalogs". Only the title changed, to cover the quota profiles the screen gained. Both routes work
+after upgrading; this is a title change only, with no deployment step and no breakage of a
+bookmarked `#model-library` or `#catalogs` URL.
+
+## Documentation site
+
+The documentation site lives in `docs/` and is built with VitePress. `pnpm docs:dev` serves a live preview, `pnpm docs:build` builds it into `docs/.vitepress/dist`, and `pnpm docs:check` is the gate the `code-quality` job of the CI workflow runs: the node tests of the scripts in `docs/scripts/`, the README link sweep, the unique-title check, the prose mustache check, the VitePress build with dead links fatal, the base-path check and the required-anchor check.
+
+The three anchors in [`docs/scripts/required-anchors.json`](https://github.com/st-gr/sail-proxy/blob/main/docs/scripts/required-anchors.json) are linked from the configuration schema ([`services/admin/src/schemas/api-config-schema.json`](https://github.com/st-gr/sail-proxy/blob/main/services/admin/src/schemas/api-config-schema.json), its browser copy `services/admin/app/config-app/webapp/model/apiConfigSchema.ts` and the eight i18n bundles of the config app). Renaming the headings "Log level resolution" ([Debugging](/developer/debugging)), "Matcher semantics: `equals` and `regex`" ([Plugins](/developer/plugins)) or "Provider configuration keys" ([Gateway](/developer/gateway)) requires changing those files too; `pnpm docs:check` fails until they agree.
+
+[`.github/workflows/docs.yml`](https://github.com/st-gr/sail-proxy/blob/main/.github/workflows/docs.yml) builds the site on every push to `main` that touches the documentation, and deploys it to GitHub Pages only from the public repository `st-gr/sail-proxy`; any other repository runs the build job only. In the repository settings, the Pages source must be set to "GitHub Actions" once.
+
+The cockpit's "Open the full help ↗" links point at `https://st-gr.github.io/sail-proxy/…`, so an admin image carrying the current schema should not reach users before the site is live.
+
+## Release Checklist
+
+- [ ] `git status` clean (tracked files), on the intended branch
+- [ ] `npm whoami` succeeds; `docker login ghcr.io` done
+- [ ] `pnpm release:dry-run` passes preflight
+- [ ] Deployment parity — the bundled gateway registers its plugins: `cd npm-dist/sail-proxy && npm run build:local && npm run bundle && npm test` (expects `Registered N plugin rules` with N > 0, never 0)
+- [ ] Valkey reachable on `localhost:6379` (test gate)
+- [ ] `node ci/audit-gate.js` passes: no high/critical advisory (and, in the production dependencies it audits separately with `pnpm audit --prod`, no moderate one) outside `ci/audit-allowlist.json`, no expired allowlist entry; the repository's open Dependabot alerts show nothing critical/high that is not fixed or allowlisted
+- [ ] `node cli-tools/check-test-models.js` against the running dev gateway (`GATEWAY_API_KEY` set; the gateway needs `SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES=true`): every live-model name `ok`. For a `FAIL` with a successor, run it again with `--apply`, rebuild `libs/test-utils`, and re-run `services/ollama` integration suites; for a `FAIL` without a successor, look the replacement up in SAP's model availability note and edit `libs/test-utils/src/live-models.ts` by hand. `note` lines (mocked tests) are decided case by case, never in the release commit.
+- [ ] The CI workflow run by hand with `build_images` ticked (Actions → CI Pipeline → Run workflow) is green on the release commit: image build and Trivy
+- [ ] `trivy image --scanners vuln` on each built image: no CRITICAL, and no HIGH with a fixed version left unaddressed
+- [ ] No hardcoded old version outside the synced manifests (`git grep` the old `major.minor`)
+- [ ] `cli-tools/upgrade-policy.json` reviewed: `minUpgradeFrom`, `postgresImage` (the image in the Kyma postgres manifest and in `docker/docker-compose.yml`) and `storageLayoutChange` (true when this release changes how file storage or Valkey data is laid out)
+- [ ] The upgrade rehearsed from the packed tarball on a test namespace with release-candidate images, before images and npm are published: `npx ./st-gr-sail-proxy-<version>.tgz upgrade kyma --namespace <test-namespace> --registry <registry> --organization <organization> --tag <rc-tag>`; once more with `SAIL_PROXY_UPGRADE_FAIL_AT=migrate` to see the rollback
+- [ ] `CHANGELOG.md`: rename `## Unreleased` to the new version and date, add an empty `## Unreleased` above it, and commit before the version bump
+- [ ] The documentation site workflow is green and `https://st-gr.github.io/sail-proxy/` is live before the admin image with the current help links is published
+- [ ] `pnpm release:patch|minor|major` — for a public release with `--skip-npm --skip-docker`, then the multi-arch path above
+- [ ] `docker manifest inspect` lists amd64 and arm64 for every image; `:latest` has the same digest as `:<version>`
+- [ ] Pulled images start and report the new version
+- [ ] Push the version commit and tag
+- [ ] Spot-check: `npm view @st-gr/sail-proxy version` (allow for the "Validating" delay) and the registry image tags match the new version

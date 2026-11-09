@@ -1,0 +1,10 @@
+{
+  "global": [
+    { "pattern": "^sap-icon://", "reason": "icon URIs" }
+  ],
+  "files": {
+    "webapp/controller/Sample.controller.ts": [
+      { "pattern": "^sapUi", "reason": "a CSS class in the MessageBox options" }
+    ]
+  }
+}

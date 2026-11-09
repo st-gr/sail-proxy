@@ -1,0 +1,73 @@
+# DestinationRules for non-mesh services
+# Disables mTLS for services without Istio sidecars
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: postgres-plaintext
+  namespace: sail-proxy
+spec:
+  host: postgres.sail-proxy.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: valkey-plaintext
+  namespace: sail-proxy
+spec:
+  host: valkey.sail-proxy.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+---
+# DestinationRules for services with sidecars - use ISTIO_MUTUAL
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: gateway
+  namespace: sail-proxy
+spec:
+  host: gateway.sail-proxy.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: admin
+  namespace: sail-proxy
+spec:
+  host: admin.sail-proxy.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+# Streaming-optimized DestinationRule for nginx
+# Forces HTTP/1.1 connection to reduce complexity and improve Claude Code compatibility
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: nginx-streaming
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy
+    purpose: streaming-optimization
+    issue: claude-code-timeouts
+spec:
+  host: nginx.sail-proxy.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      http:
+        h2UpgradePolicy: DO_NOT_UPGRADE  # Keep nginx hop on HTTP/1.1
+        idleTimeout: 300s
+        maxRequestsPerConnection: 1000
+      tcp:
+        maxConnections: 1000
+        tcpKeepalive:
+          time: 600s
+          interval: 75s
+          probes: 9

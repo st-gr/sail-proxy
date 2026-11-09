@@ -1,0 +1,8 @@
+[
+  { "page": "developer/debugging", "anchor": "log-level-resolution" },
+  { "page": "developer/plugins", "anchor": "matcher-semantics-equals-and-regex" },
+  { "page": "developer/gateway", "anchor": "provider-configuration-keys" },
+  { "page": "guide/videos", "anchor": "deploy-with-the-cli" },
+  { "page": "guide/videos", "anchor": "deploy-with-docker-compose" },
+  { "page": "guide/videos", "anchor": "deploy-on-sap-btp-kyma" }
+]

@@ -1,0 +1,229 @@
+<mvc:View
+    controllerName="admin.grounding.controller.StoreDetail"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:u="sap.ui.unified"
+    xmlns:f="sap.ui.layout.form"
+    xmlns="sap.m">
+    <Page id="storeDetailPage" title="{view>/store/name}" showNavButton="true" navButtonPress=".onBack">
+        <headerContent>
+            <Button id="shareStoreButton" text="{i18n>shareStore}" icon="sap-icon://share-2" press=".onShare"
+                visible="{= ${viewModel>/isAdmin} === true &amp;&amp; ${view>/store/owned} === true &amp;&amp; !${view>/store/shared} }"/>
+            <Button id="unshareStoreButton" text="{i18n>unshareStore}" press=".onUnshare"
+                visible="{= ${viewModel>/isAdmin} === true &amp;&amp; ${view>/store/owned} === true &amp;&amp; ${view>/store/shared} === true }"/>
+            <Button id="shareTeamButton" text="{i18n>shareWithTeam}" icon="sap-icon://group" press=".onShareWithTeam"
+                visible="{= ${view>/store/owned} === true &amp;&amp; ${view>/shareableTeams}.length > 0 }"/>
+            <Button id="reembedStoreButton" text="{i18n>reembed}" icon="sap-icon://synchronize" press=".onReembed" visible="{= ${view>/store/canReembed} === true }"/>
+            <Button id="changeChunkingButton" text="{i18n>changeChunking}" icon="sap-icon://dimension" press=".onChangeChunking" visible="{= ${view>/store/canChangeChunking} === true }"/>
+            <Button id="reextractButton" text="{i18n>reextract}" icon="sap-icon://refresh" press=".onReextract" visible="{= ${view>/reextractOffered} === true &amp;&amp; ${view>/store/canChangeChunking} === true }"/>
+            <Button id="renameStoreButton" text="{i18n>rename}" press=".onRename" visible="{= ${view>/store/owned} === true }"/>
+            <Button id="setExpiryButton" text="{i18n>setExpiry}" press=".onSetExpiry" visible="{= ${view>/store/owned} === true }"/>
+            <Button id="deleteStoreButton" text="{i18n>deleteStore}" type="Reject" press=".onDelete" visible="{= ${view>/store/owned} === true }"/>
+        </headerContent>
+        <content>
+            <MessageStrip id="sharedReadOnlyStrip" text="{view>/readOnlyHint}" visible="{view>/store/readOnly}" type="Information"
+                showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop"/>
+            <MessageStrip id="embeddingStateStrip" text="{view>/embeddingReason}" showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop"
+                type="{= ${view>/store/embeddingState} === 'dimension_mismatch' ? 'Error' : 'Warning' }"
+                visible="{= ${view>/store/embeddingAttention} === true &amp;&amp; !${view>/store/reembedding} }"/>
+            <MessageStrip id="reembedRunningStrip" text="{i18n>reembedRunningHint}" visible="{= ${view>/store/reembedding} === true &amp;&amp; !${view>/rechunkHint} }" type="Information"
+                showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop">
+                <link><Link id="viewReembedJobLink" text="{i18n>viewJob}" press=".onViewReembedJob"/></link>
+            </MessageStrip>
+            <MessageStrip id="rechunkRunningStrip" text="{view>/rechunkHint}" visible="{= ${view>/store/reembedding} === true &amp;&amp; !!${view>/rechunkHint} }" type="Information"
+                showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop">
+                <link><Link id="viewRechunkJobLink" text="{i18n>viewJob}" press=".onViewReembedJob"/></link>
+            </MessageStrip>
+            <MessageStrip id="reembedFailedStrip" text="{i18n>reembedFailedHint}" type="Warning" showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop"
+                visible="{= !!${view>/reembedFailedJobId} &amp;&amp; !${view>/store/reembedding} }">
+                <link><Link id="viewFailedReembedJobLink" text="{i18n>viewJob}" press=".onViewFailedReembedJob"/></link>
+            </MessageStrip>
+            <IconTabBar id="storeTabs" selectedKey="{view>/tab}" expandable="false" stretchContentHeight="false">
+                <items>
+                    <IconTabFilter id="filesTab" key="files" text="{i18n>tabFiles}" count="{view>/store/files}" visible="{= ${view>/store/readOnly} !== true }">
+                        <MessageStrip id="storeFilesHint" text="{i18n>storeFilesHint}" type="Information" showIcon="true" class="sapUiSmallMarginBottom"/>
+                        <MessageStrip id="jobStartedStrip" text="{view>/jobStarted/text}" visible="{view>/jobStarted/visible}" type="Success"
+                            showIcon="true" showCloseButton="true" close=".onJobStripClose" class="sapUiSmallMarginBottom">
+                            <link><Link id="viewJobLink" text="{i18n>viewJob}" press=".onViewJob"/></link>
+                        </MessageStrip>
+                        <Table id="storeFilesTable" items="{view>/files}" noDataText="{i18n>noStoreFiles}" busy="{view>/busy}" busyIndicatorDelay="0">
+                            <headerToolbar>
+                                <OverflowToolbar>
+                                    <ToolbarSpacer/>
+                                    <Button id="attachFileButton" text="{i18n>attachFile}" icon="sap-icon://attachment" press=".onAttach"/>
+                                    <u:FileUploader id="storeUploader" buttonOnly="true" buttonText="{i18n>uploadAndAttach}"
+                                        icon="sap-icon://upload" multiple="true" sameFilenameAllowed="true" change=".onUploadChange"/>
+                                </OverflowToolbar>
+                            </headerToolbar>
+                            <columns>
+                                <Column><Text text="{i18n>columnFile}"/></Column>
+                                <Column><Text text="{i18n>columnStatus}"/></Column>
+                                <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                                <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnError}"/></Column>
+                                <Column hAlign="End" width="11rem"><Text text="{i18n>columnActions}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <Text text="{view>filename}"/>
+                                        <VBox>
+                                            <ObjectStatus text="{view>statusText}" state="{view>statusState}"/>
+                                            <ObjectStatus text="{i18n>fileContextIncomplete}" state="Warning" icon="sap-icon://message-warning"
+                                                tooltip="{view>contextIncompleteTooltip}" visible="{= ${view>contextIncomplete} === true }"/>
+                                        </VBox>
+                                        <Text text="{view>size}"/>
+                                        <Text text="{view>error}" class="groundingFileError"/>
+                                        <HBox justifyContent="End">
+                                            <Button text="{i18n>retryFile}" type="Transparent" visible="{= ${view>status} === 'failed' }" press=".onRetryFile"/>
+                                            <Button text="{i18n>detach}" type="Transparent" press=".onDetach"/>
+                                        </HBox>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                    </IconTabFilter>
+                    <IconTabFilter id="detailsTab" key="details" text="{i18n>tabDetails}">
+                        <f:Form editable="false">
+                            <f:layout><f:ColumnLayout/></f:layout>
+                            <f:formContainers>
+                                <f:FormContainer>
+                                    <f:formElements>
+                                        <f:FormElement label="{i18n>detailId}">
+                                            <f:fields><Text text="{view>/store/id}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>columnOwner}">
+                                            <f:fields><Text text="{view>/store/ownerEmail}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailSharing}" visible="{= ${view>/store/shared} === true }">
+                                            <f:fields><ObjectStatus text="{view>/store/sharedText}" state="Information" inverted="true"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>columnFiles}">
+                                            <f:fields><Text text="{view>/store/files}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>columnStatus}">
+                                            <f:fields><ObjectStatus text="{view>/store/statusText}" state="{view>/store/statusState}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailSize}">
+                                            <f:fields><Text text="{view>/store/size}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailFailed}">
+                                            <f:fields><Text text="{view>/store/failedFiles}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailCreated}">
+                                            <f:fields><Text text="{view>/store/created}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailLastActive}">
+                                            <f:fields><Text text="{view>/store/lastActive}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailExpires}">
+                                            <f:fields><Text text="{view>/store/expires}"/></f:fields>
+                                        </f:FormElement>
+                                    </f:formElements>
+                                </f:FormContainer>
+                                <f:FormContainer id="embeddingDetails" title="{i18n>detailEmbedding}">
+                                    <f:formElements>
+                                        <f:FormElement label="{i18n>detailEmbeddingModel}">
+                                            <f:fields><Text id="detailEmbeddingModelText" text="{view>/store/embeddingModel}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailEmbeddingDim}">
+                                            <f:fields><Text text="{view>/store/embeddingDim}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailGeneration}">
+                                            <f:fields><Text text="{view>/store/generation}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailEmbeddingState}">
+                                            <f:fields>
+                                                <ObjectStatus id="detailEmbeddingState" text="{view>/store/embeddingStateText}" state="{view>/store/embeddingStateColor}"/>
+                                                <Text id="detailEmbeddingReason" text="{view>/embeddingReason}"/>
+                                            </f:fields>
+                                        </f:FormElement>
+                                    </f:formElements>
+                                </f:FormContainer>
+                                <f:FormContainer id="chunkingDetails" title="{i18n>detailChunking}">
+                                    <f:formElements>
+                                        <f:FormElement label="{i18n>chunkingCurrent}">
+                                            <f:fields><Text id="detailChunkingText" text="{view>/store/chunkingText}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>detailRechunkTarget}" visible="{= ${view>/store/reembedding} === true &amp;&amp; !!${view>/rechunkTarget} }">
+                                            <f:fields><Text id="detailRechunkTargetText" text="{view>/rechunkTarget}"/></f:fields>
+                                        </f:FormElement>
+                                    </f:formElements>
+                                </f:FormContainer>
+                            </f:formContainers>
+                        </f:Form>
+                        <!-- A List is no valid Form content (ColumnLayout throws), so the team shares sit below the Form. -->
+                        <List id="teamSharesList" headerText="{i18n>detailTeamShares}" items="{view>/store/teamShares}" showNoData="false"
+                            visible="{= ${view>/store/teamShares}.length > 0 }" class="sapUiSmallMarginTop">
+                            <CustomListItem>
+                                <HBox justifyContent="SpaceBetween" alignItems="Center" class="sapUiSmallMarginBeginEnd">
+                                    <Text text="{view>name}"/>
+                                    <Button icon="sap-icon://decline" type="Transparent" tooltip="{i18n>unshareTeam}" visible="{view>canRemove}" press=".onUnshareTeam"/>
+                                </HBox>
+                            </CustomListItem>
+                        </List>
+                    </IconTabFilter>
+                    <IconTabFilter id="testTab" key="test" text="{i18n>tabTest}">
+                        <MessageStrip id="searchHint" text="{i18n>searchHint}" type="Information" showIcon="true" class="sapUiSmallMarginBottom"/>
+                        <MessageStrip id="searchIngestingNote" text="{i18n>searchIngestingNote}" type="Warning" showIcon="true"
+                            visible="{view>/ingesting}" class="sapUiSmallMarginBottom"/>
+                        <f:Form id="searchForm" editable="true">
+                            <f:layout><f:ColumnLayout columnsM="1" columnsL="1" columnsXL="1"/></f:layout>
+                            <f:formContainers>
+                                <f:FormContainer>
+                                    <f:formElements>
+                                        <f:FormElement label="{i18n>searchQuery}">
+                                            <f:fields>
+                                                <TextArea id="searchQueryInput" value="{view>/search/query}" valueLiveUpdate="true" liveChange=".onSearchQueryChange"
+                                                    rows="3" width="100%" growing="true" growingMaxLines="10" placeholder="{i18n>searchQueryPlaceholder}"/>
+                                            </f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>searchMaxResults}">
+                                            <f:fields><StepInput id="searchMaxResultsInput" value="{view>/search/maxResults}" min="1" max="50" step="1" width="10rem"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement label="{i18n>searchThreshold}">
+                                            <f:fields><Input id="searchThresholdInput" value="{view>/search/threshold}" width="10rem"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement>
+                                            <f:fields><CheckBox id="searchRewriteCheckBox" text="{i18n>searchRewrite}" selected="{view>/search/rewrite}"/></f:fields>
+                                        </f:FormElement>
+                                        <f:FormElement>
+                                            <f:fields>
+                                                <Button id="searchButton" text="{i18n>search}" type="Emphasized" icon="sap-icon://search"
+                                                    enabled="{= ${view>/search/canSearch} &amp;&amp; !${view>/search/busy} }" press=".onSearch"/>
+                                            </f:fields>
+                                        </f:FormElement>
+                                    </f:formElements>
+                                </f:FormContainer>
+                            </f:formContainers>
+                        </f:Form>
+                        <MessageStrip id="searchMessage" text="{view>/search/message}" visible="{= !!${view>/search/message} }" type="Error"
+                            showIcon="true" class="sapUiSmallMarginTopBottom"/>
+                        <Table id="searchResultsTable" items="{view>/search/rows}" noDataText="{i18n>noSearchResults}" visible="{view>/search/searched}"
+                            busy="{view>/search/busy}" busyIndicatorDelay="0">
+                            <columns>
+                                <Column hAlign="End" width="4rem"><Text text="{i18n>searchRank}"/></Column>
+                                <Column width="14rem" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>searchFile}"/></Column>
+                                <Column hAlign="End" width="5rem" minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>searchPages}"/></Column>
+                                <Column hAlign="End" width="6rem"><Text text="{i18n>searchScore}"/></Column>
+                                <Column><Text text="{i18n>searchPassage}"/></Column>
+                            </columns>
+                            <items>
+                                <ColumnListItem>
+                                    <cells>
+                                        <Text text="{view>rank}"/>
+                                        <Text text="{view>filename}"/>
+                                        <Text text="{view>pages}"/>
+                                        <Text text="{view>score}"/>
+                                        <VBox>
+                                            <Text text="{view>text}" maxLines="{= ${view>expanded} ? 0 : 6 }" class="groundingPassage"/>
+                                            <Link text="{= ${view>expanded} ? ${i18n>searchLess} : ${i18n>searchMore} }" visible="{view>long}" press=".onTogglePassage"/>
+                                        </VBox>
+                                    </cells>
+                                </ColumnListItem>
+                            </items>
+                        </Table>
+                    </IconTabFilter>
+                </items>
+            </IconTabBar>
+        </content>
+    </Page>
+</mvc:View>

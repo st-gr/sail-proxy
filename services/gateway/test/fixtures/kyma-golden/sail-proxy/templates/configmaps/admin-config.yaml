@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-config
+  namespace: sail-proxy
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  DEPLOY_TARGET: "docker"
+  GATEWAY_URL: "http://gateway:8080"
+  CDS_ENV: "pg"
+
+  # CAP Database Configuration
+  cds.requires.db.kind: "postgres"
+  cds.requires.db.credentials.user: "gw_admin"

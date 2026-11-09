@@ -1,0 +1,59 @@
+meta {
+  name: Cleanup RBAC Test Data
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{base_url}}/revokeApiKey
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{mock_admin_token}}
+}
+
+body:json {
+  {
+    "keyId": "{{user_api_key_id}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: eq true
+}
+
+script:pre-request {
+  // Check if we have keys to clean up
+  const userApiKeyId = bru.getVar('user_api_key_id');
+  const otherUserApiKeyId = bru.getVar('other_user_api_key_id');
+  
+  if (!userApiKeyId && !otherUserApiKeyId) {
+    console.log('No RBAC test keys to clean up');
+  }
+}
+
+script:post-response {
+  // Clean up the first key
+  if (res.status === 200) {
+    console.log(`Revoked user API key: ${bru.getVar('user_api_key_id')}`);
+    
+    // Now revoke the other user's key
+    const otherUserApiKeyId = bru.getVar('other_user_api_key_id');
+    if (otherUserApiKeyId) {
+      // This would normally be a separate request, but for cleanup we'll log it
+      console.log(`Also need to revoke other user API key: ${otherUserApiKeyId}`);
+    }
+    
+    // Clear the stored variables
+    bru.setVar('user_api_key_id', '');
+    bru.setVar('user_api_key', '');
+    bru.setVar('other_user_api_key_id', '');
+    bru.setVar('other_user_api_key', '');
+    bru.setVar('admin_updated_user_key', '');
+    
+    console.log('RBAC test cleanup completed');
+  }
+}

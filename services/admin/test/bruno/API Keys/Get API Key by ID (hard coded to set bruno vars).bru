@@ -1,0 +1,23 @@
+meta {
+  name: Get API Key by ID (hard coded to set bruno vars)
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{base_url}}/ApiKeys(4570dd94-3d47-4a85-8ba0-057796105b2a)
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar('created_api_key_id', res.body.key);
+    bru.setVar('api_key_set_by_collection_script', res.body.key);  
+  }
+}

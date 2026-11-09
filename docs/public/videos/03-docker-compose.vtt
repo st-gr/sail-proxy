@@ -1,0 +1,49 @@
+WEBVTT
+
+00:00:08.000 --> 00:00:30.300
+The Docker Compose deployment is the one for a team on one host. You get the gateway, the Admin Cockpit, nginx in front, single sign-on through oauth2-proxy and Dex, PostgreSQL and Valkey. Every user signs in to the cockpit and manages their own API keys; the SAP AI Core service key never leaves the server.
+
+00:00:30.974 --> 00:00:39.262
+The page you are looking at is the Docker Compose chapter of the documentation. It lists what the setup asks and what each service does.
+
+00:00:43.362 --> 00:00:57.843
+First the service key. In the SAP BTP cockpit, open the service key of your SAP AI Core instance, switch to JSON and copy it. Keep it in a file only you can read; the setup script takes it from an environment variable.
+
+00:00:58.511 --> 00:01:02.742
+On the server you need a Docker runtime with Compose and Node 20.
+
+00:01:08.511 --> 00:01:13.343
+In the repository folder, put the service key into the environment and run the setup script.
+
+00:01:20.511 --> 00:01:39.409
+The c-i flag is only here to keep the video short: the script takes its defaults and asks nothing, so local test accounts, localhost and locally built images. For a real deployment leave the flag out; the script then asks for the database credentials, the sign-in provider, your domain and where the images come from.
+
+00:01:40.092 --> 00:01:46.109
+Then one compose command starts the stack. The images are already built here, so the services come up in seconds.
+
+00:01:53.092 --> 00:02:00.208
+Compose ps lists the seven services, and the health endpoint behind nginx answers as soon as the gateway is ready.
+
+00:02:13.092 --> 00:02:25.151
+Open the cockpit on port 8080. nginx sends you to the sign-in page. With the local provider this is a Dex page with an e-mail and a password; in production you connect GitHub, LDAP or Okta instead.
+
+00:02:28.251 --> 00:02:37.864
+After the sign-in the cockpit opens. The side navigation on the left has the sections every user sees, and below them Settings, with more for administrators.
+
+00:02:43.964 --> 00:03:00.346
+Under API Keys, Create opens the page for a new key. Give it a name and the user's email; an administrator picks any user, everyone else gets their own. Create saves it. The full key stays on its page for the owner and administrators; Copy API Key puts it on the clipboard.
+
+00:03:04.246 --> 00:03:16.108
+The key goes into the Authorization header of an ordinary OpenAI-style request. Through nginx the gateway lives under slash gateway. The model is one of the models your SAP AI Core instance serves.
+
+00:03:19.246 --> 00:03:27.763
+The answer comes back in the OpenAI format, so any OpenAI client works unchanged; Anthropic and Bedrock clients have endpoints of their own.
+
+00:03:46.246 --> 00:04:01.626
+Back in the cockpit, Usage Analytics shows the call we just made, for the current month unless you pick a longer period. Further down are the requests per provider, each model's response time against its cost, and a table per provider with tokens, response time and errors.
+
+00:04:05.017 --> 00:04:15.491
+From here, connect your coding tools, set quotas and tool policies, or move the same stack to SAP BTP Kyma. The documentation site has a chapter for each.
+
+00:04:17.423 --> 00:04:30.688
+You ran the setup script, started the stack with one command, signed in through Dex, created a key and made a call that the cockpit accounted for. The same services run on SAP BTP Kyma; that deployment is the next video.

@@ -1,0 +1,47 @@
+{
+  "apiVersion": "security.istio.io/v1",
+  "kind": "AuthorizationPolicy",
+  "metadata": {
+    "name": "allowlist-sail-proxy",
+    "namespace": "istio-system"
+  },
+  "spec": {
+    "action": "ALLOW",
+    "rules": [
+      {
+        "to": [
+          {
+            "operation": {
+              "hosts": [
+                "sail-proxy.c-abc123.kyma.ondemand.com"
+              ],
+              "methods": [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS"
+              ]
+            }
+          }
+        ],
+        "when": [
+          {
+            "key": "source.ip",
+            "values": [
+              "198.51.100.0/24",
+              "203.0.113.12/32"
+            ]
+          }
+        ]
+      }
+    ],
+    "selector": {
+      "matchLabels": {
+        "istio": "ingressgateway"
+      }
+    }
+  }
+}

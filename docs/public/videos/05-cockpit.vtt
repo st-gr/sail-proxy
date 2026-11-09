@@ -1,0 +1,106 @@
+WEBVTT
+
+00:00:10.000 --> 00:00:20.872
+The Admin Cockpit is where a team runs sail-proxy day to day. We start with API keys. Every user sees their own keys; an administrator sees all of them with their owner.
+
+00:00:23.375 --> 00:00:46.469
+A key gets a name and its user's email; an administrator picks any user, everyone else gets their own. The owner can rotate it; only an administrator disables it or changes its expiry date, and without a date a key expires after ninety days. The list shows each key's active flag and expiry date, and the gateway refuses a disabled or expired key at once.
+
+00:00:50.569 --> 00:01:04.241
+Usage Analytics is the view you will open most; it opens on the current month. The overview has the key figures, the requests per provider, each model's response time against its cost, and a table per provider with tokens and errors.
+
+00:01:04.917 --> 00:01:14.166
+The Cost tab breaks the cost down: per model, the SAP billing per API key in capacity units, and the cost per user and per team.
+
+00:01:19.297 --> 00:01:23.162
+The Performance tab shows response times and error rates.
+
+00:01:23.848 --> 00:01:26.631
+The Models tab breaks the usage down by model.
+
+00:01:28.221 --> 00:01:40.542
+The figures come from the gateway's own records. The SAP Cost tile prices them with SAP's capacity-unit rates and the price you maintain here, so it can be reconciled with your SAP invoice.
+
+00:01:43.443 --> 00:02:04.305
+Entitlements and Quotas say who may use what. A quota profile sets requests per minute, and tokens and spend per day, week and month. The Standard team profile here allows sixty requests a minute and five dollars a day, and its assignments list the users it applies to. The gateway enforces it, and the cockpit shows how much of each limit is used.
+
+00:02:04.998 --> 00:02:10.940
+Users and Quotas lists every user with their status, their spend and their tokens this month.
+
+00:02:15.241 --> 00:02:32.210
+Teams group users. A team has a pool, one shared budget for the whole team, and can have a member profile: default limits for each member who has none of their own. A team can also carry an entitlement and a tool policy, and a team administrator manages its members.
+
+00:02:33.822 --> 00:02:44.883
+The members table shows each member's role, here one team administrator and two members. A new key follows its owner's primary team, and Usage Analytics can show the usage of a single team.
+
+00:02:51.167 --> 00:03:04.881
+Tool Governance holds the tool policies. The tool inventory lists every tool the clients sent through the gateway, who sent it, and how often it was allowed, monitored, stripped or rejected; here, the tools Claude Code declares.
+
+00:03:05.581 --> 00:03:17.931
+A policy allows or denies hosted tools, function tools and MCP servers by pattern. The developer policy here allows three named tools, denies one MCP tool, and only records what it would block.
+
+00:03:18.640 --> 00:03:27.895
+It applies to a user, a key or a team, and records, strips or refuses the denied tools; users without a policy get the Default policy.
+
+00:03:32.598 --> 00:03:45.705
+Grounding gives the gateway a hosted file search. A vector store holds files; the files are chunked and embedded, and a client calls the file search tool like any other tool. A store can be shared with a team.
+
+00:03:48.181 --> 00:03:59.929
+The Team handbook store here has three documents. Test Retrieval runs a question against the store and shows the passages an agent would receive, ranked by score, with the file each comes from.
+
+00:04:04.134 --> 00:04:11.835
+The Files view lists every file with its size and the stores it is in; a store's own Files tab shows each file's status.
+
+00:04:19.696 --> 00:04:36.147
+Configuration Management holds the gateway's configuration as versions: providers, model substitutions, streaming emulation. The active version is read-only; to change it you duplicate it, edit the copy and activate that, and the gateway picks it up without a redeploy.
+
+00:04:39.266 --> 00:04:51.818
+The Observability tab starts with pseudonymization: names, email addresses, phone numbers and the other categories, each with its own switch, are replaced with placeholders before a request leaves for the model, and restored in the answer.
+
+00:04:54.454 --> 00:05:10.867
+Below it is the SIEM export: security, audit and, if you opt in, usage events go to a webhook, OpenTelemetry, Datadog, Azure Sentinel, Google Cloud Pub/Sub or S3. Logging, rate-limit handling and hooks are configured in the same place.
+
+00:05:13.454 --> 00:05:22.094
+Security Notifications record failed authentications with keys and credentials, rate-limit hits, rotations and other security events.
+
+00:05:23.991 --> 00:05:26.844
+Settings holds each user's theme and language.
+
+00:05:27.991 --> 00:05:34.288
+The theme is light, dark or the system default; the dark theme applies at once, without a reload.
+
+00:05:37.957 --> 00:05:45.608
+The cockpit speaks seven languages: English, German, Spanish, French, Italian, Dutch and Portuguese.
+
+00:05:46.957 --> 00:05:48.453
+Here it is in German.
+
+00:06:01.938 --> 00:06:18.913
+Connections bring your own provider accounts next to SAP AI Core: Azure OpenAI, the OpenAI API, the Anthropic API and AWS Bedrock. The list shows each connection with its provider, the last test result and how many models it publishes.
+
+00:06:19.268 --> 00:06:29.753
+A connection's page holds only the settings its provider needs: here the Azure endpoint and the authentication mode. The credential is stored encrypted and never shown again, only a masked hint.
+
+00:06:32.069 --> 00:06:37.831
+Test Connection makes the gateway call the provider with the stored credential and reports whether it works.
+
+00:06:38.537 --> 00:06:45.289
+Add Model opens a picker filled from the provider's own model list; for Azure, those are your deployments.
+
+00:06:47.920 --> 00:07:04.944
+A model gets a list price per thousand tokens in the installation's currency, and only a priced model can be published. Published, it appears in the gateway's model list as the model name, two dashes and the connection, for the users entitled to it; the default catalog never grants it.
+
+00:07:05.290 --> 00:07:14.801
+Requests to it pass the same plugins as SAP traffic, so pseudonymization and tool policies still apply, and spend quotas and team pools count its cost.
+
+00:07:15.150 --> 00:07:21.764
+Usage Analytics shows the Connections cost beside the SAP cost, and the Cost tab breaks it down per connection.
+
+00:07:35.920 --> 00:07:44.502
+SAP AI Core tenants are connections too: upload a service key, test it and activate it, and every gateway switches to that tenant without a restart.
+
+00:07:55.320 --> 00:07:57.645
+SAP cost is reported per tenant.
+
+00:08:06.553 --> 00:08:28.834
+Keys per user, usage with SAP cost, quotas and entitlements, teams with a shared pool, tool policies, grounding, versioned configuration and your own provider connections: that is the cockpit. The clients video connects Claude Code, Codex, Copilot, Gemini CLI, pi and Open WebUI to all of this.

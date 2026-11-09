@@ -1,0 +1,11 @@
+{
+  "id": "responsesFileSearchPlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Runs the hosted file_search tool against this gateway's vector stores on the Responses route."
+    }
+  }
+}

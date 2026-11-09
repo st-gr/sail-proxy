@@ -1,0 +1,46 @@
+<mvc:View
+    controllerName="admin.grounding.controller.Stores"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m">
+    <Page id="storesPage" title="{i18n>storesTitle}">
+        <headerContent>
+            <Button id="createStoreButton" text="{i18n>createStore}" icon="sap-icon://add" type="Emphasized" press=".onCreate"/>
+            <Button id="refreshStoresButton" icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefresh"/>
+        </headerContent>
+        <content>
+            <Table id="storesTable" items="{view>/stores}" noDataText="{i18n>noStores}" busy="{view>/busy}" busyIndicatorDelay="0">
+                <columns>
+                    <Column><Text text="{i18n>columnName}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnOwner}"/></Column>
+                    <Column><Text text="{i18n>columnStatus}"/></Column>
+                    <Column hAlign="End"><Text text="{i18n>columnFiles}"/></Column>
+                    <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnEmbeddingModel}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnLastActive}"/></Column>
+                    <Column minScreenWidth="Desktop" demandPopin="true"><Text text="{i18n>columnExpires}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem type="Navigation" press=".onOpen">
+                        <cells>
+                            <VBox>
+                                <Text text="{view>name}"/>
+                                <ObjectStatus text="{view>sharedText}" state="Information" inverted="true" visible="{view>shared}"/>
+                                <ObjectStatus text="{view>teamSharedText}" state="Information" inverted="true" visible="{= ${view>teamIds}.length > 0 }"/>
+                            </VBox>
+                            <Text text="{= ${view>readOnly} ? ${view>ownerEmail} : '' }"/>
+                            <ObjectStatus text="{view>statusText}" state="{view>statusState}"/>
+                            <Text text="{view>files}"/>
+                            <Text text="{view>size}"/>
+                            <VBox>
+                                <Text text="{view>embeddingModel}"/>
+                                <ObjectStatus text="{view>embeddingStateText}" state="{view>embeddingStateColor}" visible="{view>embeddingAttention}"/>
+                            </VBox>
+                            <Text text="{view>lastActive}"/>
+                            <Text text="{view>expires}"/>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+        </content>
+    </Page>
+</mvc:View>

@@ -1,0 +1,35 @@
+meta {
+  name: Error Handling - Activate Non-Existent Config
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{base_url}}/activateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configId": "00000000-0000-0000-0000-000000000000"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+  res.body.success: eq false
+  res.body.error: isDefined
+  res.body.error: eq "Configuration not found"
+}
+
+script:post-response {
+  console.log('✅ Error handling for non-existent config working correctly');
+  console.log('Error message:', res.body.error);
+}

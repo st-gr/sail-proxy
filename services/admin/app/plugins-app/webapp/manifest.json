@@ -1,0 +1,41 @@
+{
+  "_version": "1.12.0",
+  "sap.app": {
+    "id": "admin.plugins",
+    "type": "application",
+    "i18n": { "bundleUrl": "i18n/i18n.properties", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en" },
+    "title": "{{appTitle}}",
+    "description": "{{appDescription}}",
+    "applicationVersion": { "version": "1.0.0" }
+  },
+  "sap.ui": { "technology": "UI5", "icons": {}, "deviceTypes": { "desktop": true, "tablet": true, "phone": true } },
+  "sap.ui5": {
+    "flexEnabled": false,
+    "resources": { "css": [{ "uri": "css/style.css" }] },
+    "rootView": { "viewName": "admin.plugins.view.App", "type": "XML", "id": "app" },
+    "dependencies": {
+      "minUI5Version": "1.136.0",
+      "libs": { "sap.ui.core": {}, "sap.m": {}, "sap.ui.unified": {}, "sap.ui.layout": {} }
+    },
+    "routing": {
+      "config": {
+        "routerClass": "sap.m.routing.Router",
+        "viewType": "XML",
+        "async": true,
+        "viewPath": "admin.plugins.view",
+        "controlAggregation": "pages",
+        "controlId": "app",
+        "bypassed": { "target": ["plugins"] }
+      },
+      "routes": [
+        { "name": "pluginsList", "pattern": "", "target": ["plugins"] }
+      ],
+      "targets": {
+        "plugins": { "viewType": "XML", "viewName": "Plugins", "viewId": "plugins", "viewLevel": 1 }
+      }
+    },
+    "models": {
+      "i18n": { "type": "sap.ui.model.resource.ResourceModel", "settings": { "bundleName": "admin.plugins.i18n.i18n", "supportedLocales": ["", "en", "de", "es", "fr", "it", "nl", "pt"], "fallbackLocale": "en", "async": true } }
+    }
+  }
+}

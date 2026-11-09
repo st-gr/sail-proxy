@@ -1,0 +1,11 @@
+{
+  "id": "repairToolBlocks",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Restores fields missing from tool_use and tool_result blocks after a client compressed its context."
+    }
+  }
+}

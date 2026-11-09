@@ -1,0 +1,31 @@
+WEBVTT
+
+00:00:08.000 --> 00:00:17.918
+The standalone CLI runs the gateway on your own machine, for one person. No cockpit, no database: keys and settings are files in a configuration directory.
+
+00:00:18.825 --> 00:00:36.709
+Install it globally from npm. The package brings the gateway and the sail-proxy command. The same command is also a launcher: it starts coding harnesses such as Claude Code and Codex, against this gateway or against a Docker Compose or SAP Kyma deployment.
+
+00:00:40.220 --> 00:00:53.094
+The first sail-proxy call finds no configuration and starts the setup. Paste the service key of your SAP AI Core instance, confirm the resource group and the port, and say whether the Ollama service should start with the gateway.
+
+00:00:53.774 --> 00:01:02.067
+The setup writes the dot env and the gateway configuration into the configuration directory; the service key never shows on screen.
+
+00:01:06.171 --> 00:01:16.806
+sail-proxy run starts the gateway in the background. status tells you whether it runs, where it listens and whether it is healthy, and the health endpoint answers directly.
+
+00:01:23.171 --> 00:01:33.697
+The command apikey create prints a new key and saves it in the configuration directory. Give it a name you will recognise; list shows only its first characters.
+
+00:01:37.799 --> 00:01:52.000
+The launchers configure a coding tool for the gateway and start it. sail-proxy claude sets the Anthropic base URL and the key for the session, so Claude Code talks to the models of your SAP AI Core instance.
+
+00:01:52.682 --> 00:02:00.495
+Here Claude Code answers one prompt in headless mode; the gateway turned the Anthropic request into a SAP AI Core request and back.
+
+00:02:04.604 --> 00:02:18.945
+status shows that the gateway is still healthy after the call, logs gateway shows what it did, and stop ends it. The same gateway runs for a team on Docker Compose, and for the company on SAP BTP Kyma.
+
+00:02:22.834 --> 00:02:35.778
+Install, set up with the service key, run, create a key, call it from Claude Code: the whole standalone path in five commands. The Docker Compose video shows the team version with the cockpit.

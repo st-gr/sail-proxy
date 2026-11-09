@@ -1,0 +1,275 @@
+import { Request, Response, NextFunction } from 'express';
+import apiKeyService from '../services/apiKeyService';
+import securityEventEmitter from '../services/securityEventEmitter';
+import { credentialIdentity, resolvedCredentialIdentity } from '../utils/credentialIdentity';
+import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
+import { getClientIp } from '../utils/clientIp';
+import { getTrustForwardedFor } from '../services/configService';
+import { extractApiKey, API_KEY_HEADERS } from '../utils/extractApiKey';
+import { redactUrl } from '../utils/redactUrl';
+import { isStandaloneMode, STANDALONE_OWNER_EMAIL } from '../config/unifiedAuthConfig';
+const logger = getDefaultLogger();
+
+interface AuthenticatedRequest extends Request {
+  apiKey?: {
+    key: string;
+    [key: string]: any;
+  };
+  apiKeyInfo?: {
+    active: boolean;
+    [key: string]: any;
+  };
+}
+
+/**
+ * Middleware to authenticate requests using API keys
+ */
+const apiKeyAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    // The key sources and their order are shared with the unified path (utils/extractApiKey.ts);
+    // a non-string value counts as no key.
+    const apiKey: string | null = extractApiKey(req);
+    
+    // Debug mode: show more extensive header information for troubleshooting
+    if (process.env.DEBUG === 'true') {
+      // Log all headers with safe values (hide sensitive info)
+      const safeHeaders: Record<string, any> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (key === 'authorization') {
+          // Only show type and format of auth header, not the value
+          const authType = (value as string)?.split(' ')[0] || 'unknown';
+          safeHeaders[key] = `${authType} ...`;
+        } else if ((API_KEY_HEADERS as readonly string[]).includes(key)) {
+          // Show part of API key if present
+          if (typeof value === 'string') {
+            safeHeaders[key] = value ? `${value.substring(0, 3)}...${value.substring(value.length - 3)}` : undefined;
+          } else if (Array.isArray(value) && value.length > 0) {
+            const firstValue = value[0];
+            safeHeaders[key] = firstValue ? `${firstValue.substring(0, 3)}...${firstValue.substring(firstValue.length - 3)} (array)` : undefined;
+          } else {
+            safeHeaders[key] = value;
+          }
+        } else if (key === 'referer' || key === 'referrer') {
+          safeHeaders[key] = typeof value === 'string' ? redactUrl(value) : value;
+        } else {
+          // Format array values for better readability
+          if (Array.isArray(value)) {
+            safeHeaders[key] = value.map(v => String(v)).join(', ');
+          } else {
+            // Include other headers as-is
+            safeHeaders[key] = value;
+          }
+        }
+      }
+      
+      // Ensure headers are properly formatted for logging
+      logger.debug('ApiKeyAuth', 'DEBUG - Request headers:', { headers: safeHeaders });
+      logger.debug('ApiKeyAuth', `DEBUG - URL: ${req.method} ${redactUrl(req.originalUrl)}`);
+      
+      // Log body sample for debugging payload format
+      if (req.body && Object.keys(req.body).length > 0) {
+        const sanitizedBody = { ...req.body };
+        
+        // Sanitize sensitive content
+        if (sanitizedBody.messages && Array.isArray(sanitizedBody.messages)) {
+          sanitizedBody.messages = sanitizedBody.messages.map((m: any) => ({
+            ...m,
+            content: '[CONTENT REDACTED]'
+          }));
+        } else if (sanitizedBody.messages && !Array.isArray(sanitizedBody.messages)) {
+          // Handle non-array messages without using map
+          sanitizedBody.messages = { content: '[CONTENT REDACTED]' };
+        }
+        if (sanitizedBody.prompt) {
+          sanitizedBody.prompt = '[CONTENT REDACTED]';
+        }
+        
+        logger.debug('ApiKeyAuth', 'DEBUG - Request body sample:', { body: sanitizedBody });
+      }
+    }
+
+    // Minimal logging for OpenRouter endpoints - only log the URL path
+    if (req.originalUrl && req.originalUrl.startsWith('/openrouter/')) {
+      logger.info('ApiKeyAuth', `OpenRouter request: ${req.method} ${redactUrl(req.originalUrl)}`);
+    }
+      
+    // Check if API key is provided
+    if (!apiKey) {
+      // Special handling for OpenRouter models endpoint - no authentication required
+      if (req.method === 'GET' && req.originalUrl && req.originalUrl.startsWith('/openrouter/api/v1/models')) {
+        logger.info('ApiKeyAuth', `Allowing unauthenticated access to models endpoint: ${req.method} ${redactUrl(req.originalUrl)}`);
+        
+        // Create a temporary API key object for this request
+        req.apiKey = { 
+          key: 'public-models-access',
+          name: 'Public Models Access',
+          active: true
+        };
+        req.apiKeyInfo = { active: true };
+        return next();
+      }
+      
+      // Special handling for GitHub Copilot Chat requests
+      if (req.originalUrl && req.originalUrl.startsWith('/openrouter/') && 
+          req.headers['user-agent'] && (req.headers['user-agent'] as string).includes('GitHubCopilot')) {
+        
+        logger.info('ApiKeyAuth', `GitHub Copilot Chat request detected: ${req.method} ${redactUrl(req.originalUrl)}`);
+        
+        // For endpoints like model endpoints, allow unauthenticated access
+        if (req.method === 'GET' && req.originalUrl.includes('/endpoints')) {
+          logger.info('ApiKeyAuth', 'Allowing unauthenticated access for GitHub Copilot Chat read operation');
+          
+          // Create a temporary API key object for this request
+          req.apiKey = { 
+            key: 'github-copilot',
+            name: 'GitHub Copilot Chat',
+            active: true
+          };
+          req.apiKeyInfo = { active: true };
+          return next();
+        }
+      }
+      
+      // Log additional info for other OpenRouter endpoints with missing auth
+      if (req.originalUrl && req.originalUrl.startsWith('/openrouter/')) {
+        logger.warn('ApiKeyAuth', `Authentication failed for OpenRouter request: ${req.method} ${redactUrl(req.originalUrl)}`);
+        logger.warn('ApiKeyAuth', 'OpenRouter requires proper authentication. Please provide a valid API key.');
+      }
+      
+      if (process.env.DEBUG === 'true') {
+        logger.error('ApiKeyAuth', 'Authentication failed: No API key provided');
+        
+        if (req.headers['authorization']) {
+          const authHeader = req.headers['authorization'] as string;
+          logger.debug('ApiKeyAuth', `DEBUG - Authorization header type: ${authHeader.split(' ')[0]}`);
+          
+          // If it's AWS SigV4, show helpful message
+          if (req.headers['x-amz-date'] && req.headers['x-amz-content-sha256']) {
+            logger.debug('ApiKeyAuth', 'DEBUG - Client is using AWS SigV4 authentication format');
+            logger.debug('ApiKeyAuth', 'DEBUG - This proxy requires a simple API key in x-api-key header!');
+            logger.debug('ApiKeyAuth', `DEBUG - Client appears to be: ${req.headers['user-agent'] || 'Unknown'}`);
+            
+            // If using Claude CLI, show how to fix
+            if ((req.headers['user-agent'] as string)?.includes('claude-cli')) {
+              logger.info('ApiKeyAuth', 'HINT - For claude-cli, use: claude api <command> --api-key YOUR_API_KEY');
+            }
+          }
+        }
+      }
+      
+      // Emit security event for missing API key
+      await securityEventEmitter.emitFailedAuth({
+        credentialId: 'missing',
+        authType: 'api_key',
+        reason: 'No API key provided',
+        clientIP: getClientIp(req, getTrustForwardedFor()),
+        userAgent: req.get('User-Agent'),
+        endpoint: redactUrl(req.originalUrl),
+        method: req.method,
+        requestId: (req as any).debugRequestId,
+        statusCode: 401
+      });
+
+      res.status(401).json({
+        error: {
+          message: 'API key is required. Please provide it in the x-api-key header.',
+          type: 'authentication_error',
+          help: 'This proxy requires an API key in the x-api-key header.'
+        }
+      });
+      return;
+    }
+
+    // Validate API key
+    const validKey = await apiKeyService.validateApiKey(apiKey as string);
+    
+    if (!validKey) {
+      if (process.env.DEBUG === 'true') {
+        logger.error('ApiKeyAuth', 'Authentication failed: Invalid API key provided');
+        if ((req.headers['user-agent'] as string)?.includes('GitHubCopilot')) {
+          // There is an issue with GitHub Copilot Chat where it sends an old API key
+          logger.debug('ApiKeyAuth', `DEBUG - GitHub Copilot Chat detected, but invalid API key provided: ${secretLabel(apiKey as string)} - use PATCH /api/admin/api-keys/{{id}} to set it`);
+        }
+        logger.debug('ApiKeyAuth', `DEBUG - API key label: ${secretLabel(apiKey as string)}`);
+
+        // Log all registered keys (just labels) for debugging
+        const allKeys = await apiKeyService.listApiKeys();
+        if (allKeys.length === 0) {
+          logger.debug('ApiKeyAuth', 'DEBUG - No API keys registered in the system!');
+          logger.debug('ApiKeyAuth', 'DEBUG - Create an API key first with: POST /api/admin/api-keys');
+        } else {
+          logger.debug('ApiKeyAuth', `DEBUG - ${allKeys.length} registered API keys:`);
+          const keyFormats = allKeys.map(k => ({
+            label: secretLabel(k.key),
+            active: k.isActive,
+            created: k.createdAt
+          }));
+          logger.debug('ApiKeyAuth', 'Registered API keys:', keyFormats);
+        }
+      }
+
+      // Emit security event for invalid API key (only if not already emitted by unified auth)
+      if (!(req as any).unifiedAuthAttempted) {
+        // A stored but inactive key is named by its ID; any other key did not resolve to a
+        // stored row, so never ship it as-is — hash + hint it (see utils/credentialIdentity.ts).
+        // The local store's IDs are the gateway's own, not admin rows: named only in standalone
+        // mode, where no admin receives the event; elsewhere they would link nothing.
+        const inactiveKeyId = isStandaloneMode() ? await apiKeyService.findInactiveApiKeyId(apiKey as string) : null;
+        await securityEventEmitter.emitFailedAuth({
+          ...(inactiveKeyId ? resolvedCredentialIdentity(apiKey as string, inactiveKeyId) : credentialIdentity(apiKey as string)),
+          authType: 'api_key',
+          reason: 'Invalid API key provided',
+          clientIP: getClientIp(req, getTrustForwardedFor()),
+          userAgent: req.get('User-Agent'),
+          endpoint: redactUrl(req.originalUrl),
+          method: req.method,
+          requestId: (req as any).debugRequestId,
+          statusCode: 401
+        });
+      }
+      
+      res.status(401).json({
+        error: {
+          message: 'Invalid API key',
+          type: 'authentication_error'
+        }
+      });
+      return;
+    }
+
+    // A standalone gateway (the npm-dist CLI) gives its keys the one owner the unified local
+    // path uses, so files, vector stores and file_search find an owner e-mail.
+    const keyInfo = process.env.GATEWAY_STANDALONE === 'true' ? { ...validKey, email: STANDALONE_OWNER_EMAIL } : validKey;
+
+    // Store API key info in request object for later use
+    req.apiKey = {
+      key: apiKey as string,  // Store the actual key string
+      ...keyInfo   // Include the rest of the validation info
+    };
+
+    // Also keep the original property for backward compatibility
+    req.apiKeyInfo = keyInfo;
+    
+    // Continue to next middleware
+    next();
+  } catch (error: any) {
+    logger.error('ApiKeyAuth', 'Error during authentication:', error);
+    
+    if (process.env.DEBUG === 'true') {
+      logger.debug('ApiKeyAuth', 'Error details:', {
+        message: error.message,
+        stack: error.stack
+      });
+    }
+    
+    res.status(500).json({
+      error: {
+        message: 'Authentication error',
+        type: 'server_error'
+      }
+    });
+  }
+};
+
+export default apiKeyAuth;

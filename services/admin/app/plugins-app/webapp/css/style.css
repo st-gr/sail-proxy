@@ -1,0 +1,5 @@
+/* Plugins app. An error text from a plugin wraps instead of widening the table. */
+.pluginsWrap {
+    white-space: normal;
+    word-break: break-word;
+}

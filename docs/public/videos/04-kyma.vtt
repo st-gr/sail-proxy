@@ -1,0 +1,43 @@
+WEBVTT
+
+00:00:09.181 --> 00:00:28.154
+The Kyma deployment runs the same services as Docker Compose on an SAP BTP Kyma cluster, in one namespace: nginx and oauth2-proxy with an Istio sidecar at the edge, and behind them, without one, Dex, the gateway, the admin with the cockpit, PostgreSQL and Valkey.
+
+00:00:33.454 --> 00:00:49.306
+You need kubectl with the oidc-login plugin and the cluster's kubeconfig, the Istio and api-gateway modules enabled in the Kyma dashboard, and a registry that holds the images. The published images on GitHub are the default.
+
+00:00:56.454 --> 00:01:16.517
+The setup script asks for everything once, the namespace too if you leave the flag out. Here we pass a test namespace, so the output folder, a host of its own and every cluster-wide object are named after it, next to production. It generates new keys and asks for the sign-in provider, the registry, the IP allowlist and the database.
+
+00:01:24.454 --> 00:01:45.571
+deploy-kyma applies the manifests in order: the namespace, the pull secret, the mesh settings, the Istio policies, the secrets and config maps, then PostgreSQL, Valkey, Dex, oauth2-proxy, the admin, the gateway and nginx, waiting for each before the next.
+
+00:02:06.454 --> 00:02:21.126
+When the rollout is done, every pod is running, and a VirtualService on the cluster's gateway routes the host to nginx. The health endpoint under slash gateway answers over HTTPS, through the Istio ingress.
+
+00:02:39.454 --> 00:02:53.172
+The cockpit is at slash admin on that host. The sign-in page and the cockpit are the ones you saw on Docker; only the address changed. In production you connect your own identity provider instead, such as Okta or a GitHub OAuth App.
+
+00:02:58.472 --> 00:03:05.029
+A fresh namespace has no keys and no usage yet; the cockpit video shows what a team's usage looks like after a week.
+
+00:03:09.050 --> 00:03:14.643
+With a GitHub OAuth App, the sign-in page offers GitHub next to the local accounts.
+
+00:03:16.050 --> 00:03:21.422
+GitHub asks once to authorize the app; it reads the organization's teams and the e-mail address.
+
+00:03:23.523 --> 00:03:34.826
+Members of the admin team land in the cockpit as administrators. The setup only needs the OAuth App's client id and secret, with the host's slash dex slash callback as its callback.
+
+00:03:41.326 --> 00:03:56.568
+Removing a test deployment is one namespace and a handful of prefixed cluster-wide objects: the Dex cluster role, the Istio policies with the namespace label, the health-check policy and the streaming filter. Production's own objects stay untouched.
+
+00:04:05.326 --> 00:04:14.617
+Deleting the namespace takes the pods, the secrets and the database's volume claim with it. The last command checks the result: the namespace is not found.
+
+00:04:24.326 --> 00:04:42.777
+That is the full round trip: setup, deploy, sign in, tear down. The documentation's Kyma chapter goes further. It has the production checklist with the identity provider, the IP allowlist, storage and backups, the internal-only variant through the SAP Cloud Connector, and the upgrade path between releases.
+
+00:04:44.583 --> 00:05:00.718
+You checked the prerequisites, answered the setup once, deployed with one script, opened the public cockpit on your cluster and removed the test namespace again. Next, the cockpit deep dive: keys, usage, quotas, governance and grounding.

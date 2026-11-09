@@ -1,0 +1,11 @@
+{
+  "id": "awsBedrockResponseCache",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Caches LLM responses in memory, with configurable thresholds and least-recently-used eviction."
+    }
+  }
+}

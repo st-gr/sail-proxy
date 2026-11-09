@@ -1,0 +1,11 @@
+{
+  "id": "removeEmptyAssistantMessages",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Removes assistant messages with empty content, which SAP AI Core rejects."
+    }
+  }
+}

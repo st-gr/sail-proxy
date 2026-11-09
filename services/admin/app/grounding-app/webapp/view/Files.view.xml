@@ -1,0 +1,44 @@
+<mvc:View
+    controllerName="admin.grounding.controller.Files"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns:u="sap.ui.unified"
+    xmlns="sap.m">
+    <Page id="filesPage" title="{i18n>filesTitle}">
+        <headerContent>
+            <u:FileUploader id="fileUploader" buttonOnly="true" buttonText="{i18n>upload}" icon="sap-icon://upload"
+                multiple="true" sameFilenameAllowed="true" change=".onUploadChange"/>
+            <Button id="refreshFilesButton" icon="sap-icon://refresh" tooltip="{i18n>refresh}" press=".onRefresh"/>
+        </headerContent>
+        <content>
+            <MessageStrip id="filesHint" text="{i18n>filesHint}" type="Information" showIcon="true" class="sapUiSmallMarginBeginEnd sapUiSmallMarginTop"/>
+            <Table id="filesTable" items="{view>/files}" noDataText="{i18n>noFiles}" busy="{view>/busy}" busyIndicatorDelay="0">
+                <headerToolbar>
+                    <OverflowToolbar visible="{= !!${view>/storageText} }">
+                        <Title id="storageSummary" text="{view>/storageText}" level="H2"/>
+                    </OverflowToolbar>
+                </headerToolbar>
+                <columns>
+                    <Column><Text text="{i18n>columnFile}"/></Column>
+                    <Column hAlign="End"><Text text="{i18n>columnSize}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnCreated}"/></Column>
+                    <Column minScreenWidth="Tablet" demandPopin="true"><Text text="{i18n>columnStores}"/></Column>
+                    <Column hAlign="End" width="13rem"><Text text="{i18n>columnActions}"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem>
+                        <cells>
+                            <Text text="{view>filename}"/>
+                            <Text text="{view>size}"/>
+                            <Text text="{view>created}"/>
+                            <Text text="{view>stores}"/>
+                            <HBox justifyContent="End">
+                                <Button text="{i18n>download}" type="Transparent" press=".onDownload"/>
+                                <Button text="{i18n>deleteFile}" type="Transparent" press=".onDelete"/>
+                            </HBox>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+        </content>
+    </Page>
+</mvc:View>

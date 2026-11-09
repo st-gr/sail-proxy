@@ -1,0 +1,1 @@
+A note read from a file inside the plugin folder.

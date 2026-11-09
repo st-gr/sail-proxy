@@ -1,0 +1,13 @@
+src/
+*.ts
+!*.d.ts
+tsconfig.json
+.eslintrc.json
+.gitignore
+*.log
+.DS_Store
+node_modules/
+*.tgz
+.env
+.env.*
+!templates/.env.template

@@ -1,0 +1,26 @@
+meta {
+  name: List API Keys
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/ApiKeys
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isArray
+}
+
+script:post-response {
+  console.log('Found', res.body.value.length, 'API keys');
+}

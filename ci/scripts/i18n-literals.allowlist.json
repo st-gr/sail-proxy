@@ -1,0 +1,28 @@
+{
+  "global": [
+    { "pattern": "^sap-icon://", "reason": "icon URIs" },
+    { "pattern": "^(sapUi|sapM|sapF)[A-Za-z]+( (sapUi|sapM|sapF)[A-Za-z]+)*$", "reason": "UI5 CSS classes" },
+    { "pattern": "^(USD|EUR|ms|s|min|%|k|M)$", "reason": "currency codes and units, the same in every language" }
+  ],
+  "files": {
+    "services/admin/app/api-keys-app/webapp/ext/SetApiKey.ts": [
+      { "pattern": "^sk-\\.\\.\\.$", "reason": "input placeholder showing the literal API-key prefix format (sk-...), a technical token identical in every language" }
+    ],
+    "services/admin/app/config-app/webapp/model/apiConfigSchema.ts": [
+      { "pattern": "[\\s\\S]*", "reason": "the whole file: byte-equal browser copy of services/admin/src/schemas/api-config-schema.json (the gateway file is the origin), so its JSON-schema titles and descriptions stay English (Ruling R5)" }
+    ],
+    "services/admin/app/shell/webapp/fragments/UserSettingsDialog.fragment.xml": [
+      { "pattern": "^(English|Deutsch|Español|Français|Italiano|Nederlands|Português)$", "reason": "native language names: each language is offered in its own name (Task 2)" }
+    ],
+    "services/admin/app/model-library-app/webapp/model/formatter.ts": [
+      { "pattern": "^text-generation$", "reason": "capability id (the flag CAPABILITY_INPUT_ICONS keys on), data not UI text" }
+    ],
+    "services/admin/app/model-library-app/webapp/view/Catalogs.view.xml": [
+      { "pattern": "^profiles$", "reason": "the catalogs|profiles mode identifier compared with === inside a text expression binding, not UI text" },
+      { "pattern": "^(add|remove)$", "reason": "the pending-state identifier (viewModel>pending) compared with === inside a text expression binding, not UI text" }
+    ],
+    "services/admin/app/model-library-app/webapp/view/Detail.view.xml": [
+      { "pattern": "^CU$", "reason": "Capacity Unit, a unit symbol, identical in every language" }
+    ]
+  }
+}

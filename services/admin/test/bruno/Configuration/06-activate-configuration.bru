@@ -1,0 +1,47 @@
+meta {
+  name: Activate Configuration
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{base_url}}/activateConfiguration
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "configId": "{{new_config_id}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+}
+
+script:post-response {
+  if (res.body.success) {
+    console.log('✅ Configuration activated successfully');
+    console.log('Version:', res.body.version);
+    console.log('Checksum:', res.body.checksum);
+    console.log('Activated at:', res.body.activatedAt);
+    
+    // Store activated config details
+    bru.setVar('activated_config_version', res.body.version);
+    bru.setVar('activated_config_checksum', res.body.checksum);
+  } else {
+    console.log('❌ Configuration activation failed');
+    console.log('Error:', res.body.error);
+    
+    if (res.body.errors && res.body.errors.length > 0) {
+      console.log('Validation errors:', res.body.errors);
+    }
+  }
+}

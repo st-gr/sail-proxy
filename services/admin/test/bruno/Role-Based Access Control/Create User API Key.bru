@@ -1,0 +1,50 @@
+meta {
+  name: Create User API Key
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/createApiKey
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "name": "User Test Key",
+    "email": "{{user_email}}",
+    "permissions": ["models:read", "chat:create"],
+    "rateLimits": {
+      "requestsPerMinute": 100,
+      "requestsPerHour": 2000,
+      "requestsPerDay": 10000
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: isDefined
+  res.body.key: isDefined
+  res.body.email: eq {{user_email}}
+  res.body.name: eq "User Test Key"
+  res.body.isActive: eq true
+}
+
+script:post-response {
+  // Store the created user API key for RBAC tests
+  if (res.body && res.body.id) {
+    bru.setVar('user_api_key_id', res.body.id);
+    bru.setVar('user_api_key', res.body.key);
+    bru.setVar('user_api_key_masked', res.body.maskedKey);
+    console.log(`Created user API key: ${res.body.id} for ${res.body.email}`);
+  } else {
+    throw new Error('Failed to create user API key');
+  }
+}

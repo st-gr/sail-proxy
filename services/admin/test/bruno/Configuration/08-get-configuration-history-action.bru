@@ -1,0 +1,50 @@
+meta {
+  name: Get Configuration History (Action)
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/getConfigurationHistory
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "limit": 10
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: isDefined
+  res.body.success: eq true
+  res.body.history: isDefined
+  res.body.total: isDefined
+  res.body.history: isType array
+}
+
+script:post-response {
+  console.log('✅ Configuration history retrieved');
+  console.log('Total entries:', res.body.total);
+  console.log('History entries returned:', res.body.history.length);
+  
+  // Verify history entries have required fields
+  res.body.history.forEach((entry, index) => {
+    console.log(`${index + 1}. ${entry.version} - ${entry.isActive ? 'Active' : 'Inactive'} - ${entry.createdAt}`);
+  });
+  
+  // Store oldest config ID for rollback test
+  if (res.body.history.length > 1) {
+    const previousConfig = res.body.history.find(h => !h.isActive);
+    if (previousConfig) {
+      bru.setVar('rollback_target_version', previousConfig.version);
+    }
+  }
+}

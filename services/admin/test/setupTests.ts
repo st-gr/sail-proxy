@@ -1,0 +1,34 @@
+// Test setup file for Admin service
+import { getAdminServiceUrl, getGatewayUrl, pinEphemeralServersToLoopback } from '@libs/test-utils';
+
+// Ephemeral test servers bind 127.0.0.1, where their clients dial (libs/test-utils/src/loopback-listen.ts).
+pinEphemeralServersToLoopback();
+
+// Increase timeout for CAP operations
+jest.setTimeout(30000);
+
+// Global test setup
+beforeAll(() => {
+  // Set up test environment variables
+  process.env.NODE_ENV = 'test';
+  
+  // Set service URLs for integration tests
+  // This assignment MUST stay inside beforeAll: describeLive (libs/test-utils/src/test-config.ts)
+  // reads ADMIN_SERVICE_URL at module-collection time, so hoisting it to module scope would
+  // silently re-enable all 19 live-server suites against a developer's running admin on :4004.
+  process.env.ADMIN_SERVICE_URL = process.env.ADMIN_SERVICE_URL || getAdminServiceUrl();
+  process.env.GATEWAY_URL = process.env.GATEWAY_URL || getGatewayUrl();
+});
+
+// Mock console methods to reduce test noise
+global.console = {
+  ...console,
+  // Uncomment to suppress console outputs during tests
+  // log: jest.fn(),
+  // debug: jest.fn(),
+  // info: jest.fn(),
+  // warn: jest.fn(),
+  error: console.error, // Keep errors visible
+};
+
+// No global mocks here to avoid circular dependencies

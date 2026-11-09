@@ -1,0 +1,41 @@
+meta {
+  name: Get Active Configuration
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/ActiveConfiguration
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isType array
+}
+
+script:post-response {
+  console.log('✅ All assertions passed');
+  
+  if (res.body.value.length > 0) {
+    const activeConfig = res.body.value[0];
+    
+    console.log('Active configuration version:', activeConfig.version);
+    console.log('Deployed at:', activeConfig.deployedAt);
+    console.log('Deployed by:', activeConfig.deployedBy);
+    
+    // Store active config details for later tests
+    bru.setVar('active_config_id', activeConfig.ID);
+    bru.setVar('active_config_version', activeConfig.version);
+    bru.setVar('active_config_checksum', activeConfig.checksum);
+  } else {
+    console.log('No active configuration found');
+  }
+}

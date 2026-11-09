@@ -1,0 +1,12 @@
+{
+  "version": "<version>",
+  "answers": {
+    "LOGOUT_REDIRECT_URL": "auto-shell",
+    "POSTGRES_USER": "admin_user",
+    "baseUrl": "http://localhost:8080",
+    "imageMode": "local",
+    "provider": "local"
+  },
+  "recordedAt": "<timestamp>",
+  "recordedBy": "setup"
+}

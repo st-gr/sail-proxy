@@ -1,0 +1,121 @@
+# Database migrations as explicit Jobs. `sail-proxy upgrade kyma` runs them while the gateway and
+# admin Deployments are held at zero replicas, so a failed migration stops the upgrade before the
+# new version serves traffic. Rendered into manifests/upgrade/ (deploy-kyma.js never applies this
+# folder). Same image, env sources and command as the admin container's schema step
+# (core/admin.yaml) and the gateway's migrate-file-search initContainer (core/gateway.yaml); the
+# start-time migrations stay.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sail-proxy-migrate-admin
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy-migrate
+    # selects this Job when only one is applied (kubectl apply -l)
+    sail-proxy/migration-job: admin
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: sail-proxy-migrate-admin
+        # the label core/network-policies.yaml admits to Postgres, Valkey and Admin
+        sail-proxy/migration: "true"
+        # A sidecar would keep the Job's pod running after the migration finished
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+      - name: registry-secret
+      volumes:
+      - name: api-config
+        configMap:
+          name: admin-api-config
+      containers:
+      - name: migrate-admin
+        image: ghcr.io/example-org/sail-proxy-admin@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        imagePullPolicy: Always
+        command:
+        - sh
+        - -c
+        - |
+          echo 'Waiting for PostgreSQL to be ready...'
+          while ! nc -z ${POSTGRES_SERVICE_HOST} ${POSTGRES_SERVICE_PORT}; do 
+            echo "Waiting for PostgreSQL at ${POSTGRES_SERVICE_HOST}:${POSTGRES_SERVICE_PORT}..."
+            sleep 1
+          done
+          echo 'PostgreSQL is ready!'
+          echo 'Deploying schema using cds-deploy (required for @cap-js/postgres)...'
+          cd /app/services/admin && /app/node_modules/.bin/cds-deploy --profile pg || { echo 'ERROR: cds-deploy failed; refusing to start with unmigrated schema'; exit 1; }
+        envFrom:
+        - secretRef:
+            name: admin-env
+        - configMapRef:
+            name: admin-config
+        volumeMounts:
+        - name: api-config
+          mountPath: /app/services/admin/api_config.json
+          subPath: api_config.json
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: DEPLOY_TARGET
+          value: "docker"
+        - name: DISABLE_FILE_LOGGING
+          value: "true"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sail-proxy-migrate-file-search
+  namespace: sail-proxy
+  labels:
+    app: sail-proxy-migrate
+    sail-proxy/migration-job: file-search
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: sail-proxy-migrate-file-search
+        # the label core/network-policies.yaml admits to Postgres, Valkey and Admin
+        sail-proxy/migration: "true"
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+      - name: registry-secret
+      containers:
+      - name: migrate-file-search
+        image: ghcr.io/example-org/sail-proxy-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        imagePullPolicy: Always
+        command: ["node", "services/gateway/dist/services/gateway/src/fileSearch/migrateCli.js"]
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        envFrom:
+        - secretRef:
+            name: gateway-migration-env
+            optional: true
+        - secretRef:
+            name: gateway-env
+        - configMapRef:
+            name: gateway-config
+        # No FILE_SEARCH_MIGRATE_NEVER_BLOCK here (the initContainer sets it so a failed
+        # migration never wedges the gateway pod): as a Job, a failed migration must fail the
+        # Job, so the upgrade stops and rolls back.

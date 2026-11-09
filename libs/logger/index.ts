@@ -1,0 +1,732 @@
+import { LogEntry, RequestContext } from '../types';
+import * as fs from 'fs';
+import * as path from 'path';
+import { createHash } from 'crypto';
+
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+
+// Define log levels with their numerical values (lower = higher priority)
+const LOG_LEVELS = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+  trace: 4
+} as const;
+
+// ANSI color codes for console output
+const COLORS = {
+  ERROR: '\x1b[31m', // Red
+  WARN: '\x1b[33m',  // Yellow
+  INFO: '\x1b[32m',  // Green
+  DEBUG: '\x1b[36m', // Cyan
+  TRACE: '\x1b[35m', // Magenta
+  RESET: '\x1b[0m'   // Reset
+} as const;
+
+export interface Logger {
+  // Original interface (admin service compatibility)
+  trace(component: string, message: string, metadata?: any): void;
+  debug(component: string, message: string, metadata?: any): void;
+  info(component: string, message: string, metadata?: any): void;
+  warn(component: string, message: string, metadata?: any): void;
+  error(component: string, message: string, error?: Error, metadata?: any): void;
+  
+  // Gateway interface compatibility (component is first parameter)
+  trace(component: string, message: string, metadata?: any): void;
+  debug(component: string, message: string, metadata?: any): void;
+  info(component: string, message: string, metadata?: any): void;
+  warn(component: string, message: string, metadata?: any): void;
+  error(component: string, message: string, error?: Error, metadata?: any): void;
+  
+  // Generic log method
+  log(level: LogLevel, component: string, message: string, metadata?: any, error?: Error): void;
+  
+  // Utility methods
+  setRequestContext(context: RequestContext): void;
+  clearRequestContext(): void;
+  isLevelEnabled(component: string, level: LogLevel): boolean;
+  reinitialize(): void;
+  close(): void;
+  
+  // Morgan HTTP integration
+  stream: { write: (message: string) => void };
+}
+
+export interface LogConfig {
+  level: LogLevel;
+  format: 'json' | 'simple' | 'combined';
+  transports: LogTransport[];
+  enableColors: boolean;
+  enableTimestamp: boolean;
+  enableRequestId: boolean;
+  
+  // Enhanced configuration options
+  componentLevels?: Record<string, LogLevel>;
+  logFolderPath?: string;
+  configFilePath?: string;
+  enableFileLogging?: boolean;
+  maxFileSize?: number;
+  maxFiles?: number;
+}
+
+export interface LogTransport {
+  type: 'console' | 'file' | 'http';
+  level?: LogLevel;
+  config?: {
+    filename?: string;
+    maxsize?: number;
+    maxFiles?: number;
+    url?: string;
+    headers?: Record<string, string>;
+  };
+}
+
+// Configuration interface for api_config.json compatibility
+interface LoggingSection {
+  defaultLevel?: string;
+  components?: Record<string, string>;
+  log_folder_path?: string;
+  payload_logging_enabled?: boolean;
+}
+
+interface ApiLogConfig {
+  api_config?: {
+    platform?: { logging?: LoggingSection };
+    /** Pre-restructure location; still honoured, with a one-time deprecation warning. */
+    logging?: LoggingSection;
+  };
+}
+
+// One-time warnings (the logger reloads its configuration on every config change)
+let warnedLegacyLogging = false;
+let warnedIgnoredLegacyLogging = false;
+
+class EnhancedServiceLogger implements Logger {
+  private config: LogConfig;
+  private requestContext?: RequestContext;
+  private componentLevels: Record<string, LogLevel> = {};
+  private logDir: string = '';
+  private logFiles: Set<fs.WriteStream> = new Set();
+  private baseLevel: LogLevel = 'info';
+
+  constructor(config: Partial<LogConfig> = {}) {
+    // Check if file logging should be disabled
+    const disableFileLogging = 
+      process.env.DISABLE_FILE_LOGGING === 'true' ||
+      process.env.LOG_TO_STDOUT === 'true' ||
+      !!process.env.KUBERNETES_SERVICE_HOST; // Auto-detect Kubernetes
+
+    this.config = {
+      level: 'info',
+      format: 'simple',
+      transports: [{ type: 'console' }],
+      enableColors: true,
+      enableTimestamp: true,
+      enableRequestId: true,
+      logFolderPath: './logs',
+      configFilePath: process.env.CONFIG_FILE_PATH || './api_config.json',
+      enableFileLogging: !disableFileLogging,
+      maxFileSize: 5242880, // 5MB
+      maxFiles: 5,
+      ...config
+    };
+
+    // Override with explicit config if provided
+    if (config.enableFileLogging !== undefined) {
+      this.config.enableFileLogging = config.enableFileLogging;
+    }
+
+    this.baseLevel = this.config.level;
+
+    // Load dynamic configuration from file
+    this.loadConfigurationFromFile();
+    
+    // Initialize log directory only if file logging is enabled
+    if (this.config.enableFileLogging && this.config.logFolderPath) {
+      try {
+        this.logDir = this.ensureLogDirectory(path.resolve(this.config.logFolderPath));
+      } catch (error) {
+        // Disable file logging if directory creation fails
+        console.warn(`Failed to create log directory, falling back to console only: ${error}`);
+        this.config.enableFileLogging = false;
+        // Ensure console transport is present
+        if (!this.config.transports.some(t => t.type === 'console')) {
+          this.config.transports.push({ type: 'console' });
+        }
+      }
+    }
+
+    // Set up process cleanup handlers
+    this.setupCleanupHandlers();
+  }
+
+  private loadConfigurationFromFile(): void {
+    // LOG_LEVEL (when recognized) outranks defaultLevel from the file
+    const envLevel = process.env.LOG_LEVEL?.toLowerCase() as LogLevel;
+    const envLevelValid = !!envLevel && Object.keys(LOG_LEVELS).includes(envLevel);
+    // Without LOG_LEVEL, a reload starts from the constructed level (info by default), so a removed defaultLevel does not linger
+    this.config.level = envLevelValid ? envLevel : this.baseLevel;
+    try {
+      if (this.config.configFilePath && fs.existsSync(this.config.configFilePath)) {
+        const fileConfig: ApiLogConfig = JSON.parse(fs.readFileSync(this.config.configFilePath, 'utf8'));
+        const platformLogging = fileConfig.api_config?.platform?.logging;
+        const legacyLogging = fileConfig.api_config?.logging;
+
+        if (platformLogging && legacyLogging && !warnedIgnoredLegacyLogging) {
+          warnedIgnoredLegacyLogging = true;
+          console.warn('api_config.logging is deprecated and ignored because api_config.platform.logging is present; remove the top-level logging block.');
+        } else if (!platformLogging && legacyLogging && !warnedLegacyLogging) {
+          warnedLegacyLogging = true;
+          console.warn('api_config.logging is deprecated; move it to api_config.platform.logging.');
+        }
+
+        const loggingConfig = platformLogging ?? legacyLogging;
+        // A reload replaces the overrides rather than accumulating them
+        this.componentLevels = {};
+
+        if (loggingConfig) {
+          const configLevel = loggingConfig.defaultLevel?.toLowerCase() as LogLevel;
+          if (!envLevelValid && configLevel && Object.keys(LOG_LEVELS).includes(configLevel)) {
+            this.config.level = configLevel;
+          }
+
+          // Set component-specific levels
+          if (loggingConfig.components) {
+            Object.entries(loggingConfig.components).forEach(([component, level]) => {
+              const normalizedLevel = String(level).toLowerCase() as LogLevel;
+              if (Object.keys(LOG_LEVELS).includes(normalizedLevel)) {
+                this.componentLevels[component] = normalizedLevel;
+              }
+            });
+          }
+
+          // Set log folder path
+          if (loggingConfig.log_folder_path) {
+            this.config.logFolderPath = loggingConfig.log_folder_path;
+          }
+        }
+      }
+    } catch (error) {
+      // Unreadable or malformed config: keep the environment level and defaults
+    }
+  }
+
+  private ensureLogDirectory(logDir: string): string {
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    return logDir;
+  }
+
+  private setupCleanupHandlers(): void {
+    const cleanup = () => {
+      this.close();
+    };
+
+    process.on('exit', cleanup);
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+  }
+
+  setRequestContext(context: RequestContext): void {
+    this.requestContext = context;
+  }
+
+  clearRequestContext(): void {
+    this.requestContext = undefined;
+  }
+
+  isLevelEnabled(component: string, level: LogLevel): boolean {
+    const componentLevel = this.componentLevels[component] || this.config.level;
+    const componentLevelValue = LOG_LEVELS[componentLevel];
+    const requestedLevelValue = LOG_LEVELS[level];
+    
+    return requestedLevelValue <= componentLevelValue;
+  }
+
+  reinitialize(): void {
+    this.close();
+    this.loadConfigurationFromFile();
+    
+    if (this.config.enableFileLogging && this.config.logFolderPath) {
+      this.logDir = this.ensureLogDirectory(path.resolve(this.config.logFolderPath));
+    }
+  }
+
+  close(): void {
+    for (const stream of this.logFiles) {
+      try {
+        stream.end();
+      } catch (error) {
+        // Ignore cleanup errors
+      }
+    }
+    this.logFiles.clear();
+  }
+
+  trace(component: string, message: string, metadata?: any): void {
+    this.log('trace', component, message, metadata);
+  }
+
+  debug(component: string, message: string, metadata?: any): void {
+    this.log('debug', component, message, metadata);
+  }
+
+  info(component: string, message: string, metadata?: any): void {
+    this.log('info', component, message, metadata);
+  }
+
+  warn(component: string, message: string, metadata?: any): void {
+    this.log('warn', component, message, metadata);
+  }
+
+  error(component: string, message: string, error?: Error, metadata?: any): void {
+    this.log('error', component, message, metadata, error);
+  }
+
+  log(level: LogLevel, component: string, message: string, metadata?: any, error?: Error): void {
+    // Check if this level is enabled for this component
+    if (!this.isLevelEnabled(component, level)) {
+      return;
+    }
+
+    const logEntry: LogEntry = {
+      level,
+      message,
+      component,
+      timestamp: new Date().toISOString(),
+      requestId: this.requestContext?.requestId,
+      metadata: this.formatMetadata(level, metadata),
+      error: error ? {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      } : undefined
+    };
+
+    this.writeLog(logEntry);
+  }
+
+  private formatMetadata(level: LogLevel, metadata?: any): any {
+    if (!metadata) return undefined;
+
+    // Redact credential headers wherever they appear in metadata (top-level
+    // `headers` and nested), and make the result cycle-safe so it can never
+    // throw when serialized below.
+    const sanitized = this.sanitizeMetadata(metadata, new Set());
+
+    // Special formatting for TRACE level
+    if (level === 'trace') {
+      return this.formatMetaForTrace(sanitized);
+    }
+
+    return sanitized;
+  }
+
+  // Walks metadata recursively, replacing any `headers` object (at any depth)
+  // with its redacted form, and replacing a revisited ancestor object with
+  // '[Circular]' instead of following the cycle. `ancestors` tracks the
+  // current path only (not every object seen), so a value referenced twice
+  // without a cycle is not mistaken for one.
+  //
+  // Only plain objects (`{}` / `Object.create(null)`) and arrays are walked.
+  // Anything else - Error, Date, RegExp, Map, Set, Buffer, a custom class
+  // instance, etc. - passes through unchanged, so JSON.stringify's own
+  // handling (e.g. Date#toJSON) applies later instead of the value being
+  // flattened to `{}` by Object.entries.
+  private sanitizeMetadata(value: any, ancestors: Set<any>): any {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+
+    const isArray = Array.isArray(value);
+    const proto = isArray ? null : Object.getPrototypeOf(value);
+    const isPlainObject = !isArray && (proto === Object.prototype || proto === null);
+
+    if (!isArray && !isPlainObject) {
+      return value;
+    }
+
+    if (ancestors.has(value)) {
+      return '[Circular]';
+    }
+
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(value);
+
+    if (isArray) {
+      return value.map(item => this.sanitizeMetadata(item, nextAncestors));
+    }
+
+    const result: any = {};
+    Object.entries(value).forEach(([key, val]) => {
+      if (key.toLowerCase() === 'headers' && val && typeof val === 'object' && !Array.isArray(val)) {
+        result[key] = this.formatHeaders(val);
+      } else {
+        result[key] = this.sanitizeMetadata(val, nextAncestors);
+      }
+    });
+    return result;
+  }
+
+  private formatMetaForTrace(meta: any): any {
+    if (!meta || typeof meta !== 'object') {
+      return meta;
+    }
+    
+    const formatted: any = {};
+    
+    Object.entries(meta).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        try {
+          formatted[key] = JSON.stringify(value, null, 2);
+        } catch (err) {
+          formatted[key] = `[Array of length ${value.length}]`;
+        }
+      } else if (value && typeof value === 'object' && !(value instanceof Error)) {
+        try {
+          formatted[key] = JSON.stringify(value, null, 2);
+        } catch (err) {
+          formatted[key] = '[Object]';
+        }
+      } else {
+        formatted[key] = value;
+      }
+    });
+    
+    return formatted;
+  }
+
+  // Redact credential header values by name (case-insensitive), same
+  // deny-list and hashing scheme as `createHeadersPreview`. Keys are kept,
+  // non-sensitive values pass through unchanged (arrays joined for display).
+  private formatHeaders(headers: any): any {
+    if (!headers || typeof headers !== 'object') return headers;
+    
+    const formatted: any = {};
+    Object.entries(headers).forEach(([key, value]) => {
+      const lowerKey = key.toLowerCase();
+      if (isSensitiveHeaderName(lowerKey)) {
+        const preserveScheme = lowerKey === 'authorization' || lowerKey === 'proxy-authorization';
+        formatted[key] = redactHeaderValue(value, preserveScheme);
+      } else if (Array.isArray(value)) {
+        formatted[key] = value.map(v => String(v)).join(', ');
+      } else {
+        formatted[key] = value;
+      }
+    });
+    return formatted;
+  }
+
+  private writeLog(entry: LogEntry): void {
+    this.config.transports.forEach(transport => {
+      if (transport.level && !this.shouldLogForTransport(entry.level, transport.level)) {
+        return;
+      }
+
+      switch (transport.type) {
+        case 'console':
+          this.writeToConsole(entry);
+          break;
+        case 'file':
+          this.writeToFile(entry, transport);
+          break;
+        case 'http':
+          this.writeToHttp(entry, transport);
+          break;
+      }
+    });
+  }
+
+  private shouldLogForTransport(messageLevel: LogLevel, transportLevel: LogLevel): boolean {
+    const transportLevelValue = LOG_LEVELS[transportLevel];
+    const messageLevelValue = LOG_LEVELS[messageLevel];
+    return messageLevelValue <= transportLevelValue;
+  }
+
+  private writeToConsole(entry: LogEntry): void {
+    const formatted = this.formatLogEntry(entry);
+    
+    switch (entry.level) {
+      case 'trace':
+        console.debug(formatted);
+        break;
+      case 'debug':
+        console.debug(formatted);
+        break;
+      case 'info':
+        console.info(formatted);
+        break;
+      case 'warn':
+        console.warn(formatted);
+        break;
+      case 'error':
+        console.error(formatted);
+        break;
+    }
+  }
+
+  private writeToFile(entry: LogEntry, transport: LogTransport): void {
+    if (!this.config.enableFileLogging || !this.logDir) {
+      this.writeToConsole(entry);
+      return;
+    }
+
+    try {
+      const filename = transport.config?.filename || 'app.log';
+      const filepath = path.join(this.logDir, filename);
+      const formatted = JSON.stringify(entry) + '\n';
+
+      // Simple file append (in production, consider using rotating file streams)
+      fs.appendFileSync(filepath, formatted);
+    } catch (error) {
+      // Fallback to console on file write error
+      this.writeToConsole(entry);
+    }
+  }
+
+  private writeToHttp(entry: LogEntry, transport: LogTransport): void {
+    // HTTP logging would require HTTP client
+    // For now, fallback to console
+    this.writeToConsole(entry);
+  }
+
+  private formatLogEntry(entry: LogEntry): string {
+    switch (this.config.format) {
+      case 'json':
+        return JSON.stringify(entry);
+      case 'combined':
+        return this.formatCombined(entry);
+      case 'simple':
+      default:
+        return this.formatSimple(entry);
+    }
+  }
+
+  private formatSimple(entry: LogEntry): string {
+    const timestamp = this.config.enableTimestamp ? `${entry.timestamp} ` : '';
+    const requestId = this.config.enableRequestId && entry.requestId ? `[${entry.requestId}] ` : '';
+    const level = entry.level.toUpperCase().padEnd(5);
+    
+    // Apply colors if enabled
+    const levelColor = this.config.enableColors ? this.getLevelColor(entry.level) : '';
+    const resetColor = this.config.enableColors ? COLORS.RESET : '';
+    const componentColor = this.config.enableColors ? levelColor : '';
+    
+    const component = `${componentColor}[${entry.component}]${resetColor}`;
+    
+    let formatted = `${timestamp}${requestId}${level} ${component} ${entry.message}`;
+    
+    if (entry.metadata) {
+      formatted += ` ${JSON.stringify(entry.metadata)}`;
+    }
+    
+    if (entry.error) {
+      formatted += `\nError: ${entry.error.name}: ${entry.error.message}`;
+      if (entry.error.stack) {
+        formatted += `\nStack: ${entry.error.stack}`;
+      }
+    }
+    
+    return formatted;
+  }
+
+  private formatCombined(entry: LogEntry): string {
+    const timestamp = entry.timestamp;
+    const level = entry.level.toUpperCase();
+    const component = entry.component;
+    const message = entry.message;
+    const requestId = entry.requestId || '-';
+    
+    let formatted = `${timestamp} [${requestId}] ${level} [${component}] ${message}`;
+    
+    if (entry.metadata) {
+      formatted += ` meta=${JSON.stringify(entry.metadata)}`;
+    }
+    
+    if (entry.error) {
+      formatted += ` error="${entry.error.name}: ${entry.error.message}"`;
+    }
+    
+    return formatted;
+  }
+
+  private getLevelColor(level: LogLevel): string {
+    switch (level) {
+      case 'error': return COLORS.ERROR;
+      case 'warn': return COLORS.WARN;
+      case 'info': return COLORS.INFO;
+      case 'debug': return COLORS.DEBUG;
+      case 'trace': return COLORS.TRACE;
+      default: return '';
+    }
+  }
+
+  // Morgan HTTP integration
+  get stream() {
+    return {
+      write: (message: string) => {
+        this.info('HTTP', message.trim());
+      }
+    };
+  }
+}
+
+// Utility functions for safe logging (Gateway compatibility)
+export function createSafePreview(data: any, maxLength: number = 1000): string {
+  try {
+    if (data == null) {
+      return String(data);
+    }
+
+    if (typeof data === 'string') {
+      if ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))) {
+        try {
+          const parsed = JSON.parse(data);
+          const formatted = JSON.stringify(parsed, null, 2);
+          return formatted.length > maxLength ? formatted.substring(0, maxLength) + '... [truncated]' : formatted;
+        } catch (e) {
+          return data.length > maxLength ? data.substring(0, maxLength) + '... [truncated]' : data;
+        }
+      }
+      return data.length > maxLength ? data.substring(0, maxLength) + '... [truncated]' : data;
+    } 
+    
+    if (Buffer.isBuffer(data)) {
+      const previewLength = Math.min(200, data.length);
+      return `[Buffer ${data.length} bytes]: ${data.toString('utf8', 0, previewLength)}${data.length > previewLength ? '... [truncated]' : ''}`;
+    } 
+    
+    const jsonStr = JSON.stringify(data, null, 2);
+    return jsonStr.length > maxLength ? jsonStr.substring(0, maxLength) + '... [truncated]' : jsonStr;
+  } catch (e: any) {
+    return `[Object - failed to serialize: ${e.message}]`;
+  }
+}
+
+// Header names that carry credential material and must never be logged raw.
+// Exact-match set of well-known sensitive headers, checked case-insensitively.
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'api-key',
+  'x-amz-security-token',
+  'x-amz-credential',
+  'cookie',
+  'set-cookie',
+  'x-goog-api-key',
+  'x-auth-token'
+]);
+
+// Beyond the exact-match set above, any header whose name *contains* one of
+// these tokens is also treated as sensitive, so callers passing headers this
+// library has never seen (custom proxy/session headers, etc.) still get
+// redacted. Prefer over-redaction to under-redaction here: a header wrongly
+// labelled costs a little debuggability, one wrongly printed costs a
+// credential.
+const SENSITIVE_HEADER_NAME_TOKENS = [
+  'authorization',
+  'api-key',
+  'apikey',
+  'token',
+  'secret',
+  'cookie',
+  'credential',
+  'password',
+  'session'
+];
+
+function isSensitiveHeaderName(lowerName: string): boolean {
+  if (SENSITIVE_HEADER_NAMES.has(lowerName)) return true;
+  return SENSITIVE_HEADER_NAME_TOKENS.some(token => lowerName.includes(token));
+}
+
+// Short, stable, non-reversible label for a secret value, for use in log
+// lines. Never returns any substring of the input.
+//
+// This intentionally duplicates services/gateway/src/utils/secretLabel.ts:
+// libs/ must not import from a service, so this (tiny) hashing helper is
+// kept here rather than shared across the boundary.
+function hashForLabel(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 8);
+}
+
+function stringifyHeaderValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+/**
+ * Redact a single (non-array) header value to a non-reversible label.
+ *
+ * When `preserveScheme` is set (Authorization / Proxy-Authorization), the
+ * auth scheme (e.g. "Bearer", "Basic", "AWS4-HMAC-SHA256") is kept, since it
+ * is diagnostically useful and is not secret; only the credential portion
+ * after it is hashed. Every other sensitive header is redacted in full.
+ */
+function redactHeaderValueScalar(value: unknown, preserveScheme: boolean): unknown {
+  if (value == null) return value;
+
+  const stringValue = stringifyHeaderValue(value);
+
+  if (preserveScheme) {
+    const schemeMatch = stringValue.match(/^([A-Za-z][A-Za-z0-9-]*)\s+(.+)$/s);
+    if (schemeMatch) {
+      const [, scheme, rest] = schemeMatch;
+      return `${scheme} [redacted:${hashForLabel(rest)}]`;
+    }
+  }
+
+  return `[redacted:${hashForLabel(stringValue)}]`;
+}
+
+function redactHeaderValue(value: unknown, preserveScheme: boolean): unknown {
+  if (Array.isArray(value)) {
+    return value.map(v => redactHeaderValueScalar(v, preserveScheme));
+  }
+  return redactHeaderValueScalar(value, preserveScheme);
+}
+
+export function createHeadersPreview(headers: Record<string, any> | null | undefined): string {
+  if (!headers) return '[No headers]';
+
+  const sanitizedHeaders: Record<string, any> = { ...headers };
+
+  for (const key of Object.keys(sanitizedHeaders)) {
+    const lowerKey = key.toLowerCase();
+    if (!isSensitiveHeaderName(lowerKey)) continue;
+
+    const preserveScheme = lowerKey === 'authorization' || lowerKey === 'proxy-authorization';
+    sanitizedHeaders[key] = redactHeaderValue(sanitizedHeaders[key], preserveScheme);
+  }
+
+  return createSafePreview(sanitizedHeaders, 500);
+}
+
+// Default logger instance
+let defaultLogger: EnhancedServiceLogger;
+
+export function createLogger(config?: Partial<LogConfig>): Logger {
+  return new EnhancedServiceLogger(config);
+}
+
+export function getDefaultLogger(): Logger {
+  if (!defaultLogger) {
+    defaultLogger = new EnhancedServiceLogger();
+  }
+  return defaultLogger;
+}
+
+export function setDefaultLogger(logger: Logger): void {
+  defaultLogger = logger as EnhancedServiceLogger;
+}
+
+// Convenience exports
+export const logger = getDefaultLogger();
+export default logger;

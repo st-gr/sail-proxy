@@ -1,0 +1,2 @@
+POSTGRES_USER=admin_user
+POSTGRES_PASSWORD=golden-postgres-password

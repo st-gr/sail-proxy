@@ -1,0 +1,49 @@
+WEBVTT
+
+00:00:08.000 --> 00:00:34.084
+sail-proxy is the LLM gateway for SAP AI Core, made for the tools your teams already use. Claude Code, Codex, GitHub Copilot, Gemini CLI, Open WebUI, and any client that speaks the OpenAI, Anthropic, Bedrock or Ollama API reach the models of your SAP AI Core instance through one gateway. The service key stays on the server, and every user gets a key of their own.
+
+00:00:34.787 --> 00:00:50.352
+It is open source, and the enterprise features come with it: single sign-on with your own identity provider, deployment on Kubernetes and SAP BTP Kyma, quotas, tool governance, and usage and cost per key, user and team.
+
+00:00:51.042 --> 00:01:05.725
+And it goes beyond the harmonized orchestration API. Models you deploy are served through their native APIs, so realtime voice with GPT Realtime, image generation with Nano Banana, and table predictions with SAP RPT-1 work through the same gateway.
+
+00:01:08.225 --> 00:01:25.274
+There are three ways to run it. The standalone CLI from npm, for one developer on a laptop. Docker Compose, for a team on one host, with the Admin Cockpit and single sign-on. And SAP BTP Kyma, the same services on your cluster, for the company.
+
+00:01:25.974 --> 00:01:32.717
+In every case the gateway is the same program: it translates, signs, forwards and records each request.
+
+00:01:38.017 --> 00:01:45.389
+The Admin Cockpit is a Fiori application. Users sign in and manage their own API keys; admins see everyone's.
+
+00:01:48.292 --> 00:01:56.982
+Usage Analytics shows requests, tokens, cost and response times for the current month, by provider, model, key and user.
+
+00:02:00.271 --> 00:02:10.056
+The Model Library lists what your instance serves and its cost factors. A model that needs a deployment is deployed straight from here, without a detour through SAP AI Launchpad.
+
+00:02:19.471 --> 00:02:23.968
+Entitlements and quotas say who may use what, and how much.
+
+00:02:30.652 --> 00:02:36.191
+Tool Governance starts with the tool inventory: every tool your clients send through the gateway.
+
+00:02:40.899 --> 00:02:44.970
+A tool policy then allows or denies tools and MCP servers by pattern.
+
+00:02:45.627 --> 00:02:49.244
+Grounding adds a hosted file search over your own documents.
+
+00:02:54.547 --> 00:03:04.167
+One request shows the whole loop. An OpenAI-style chat completion with a user's key goes to the gateway, the gateway answers in the OpenAI format.
+
+00:03:27.547 --> 00:03:39.582
+A moment later the call is in Usage Analytics. The Cost tab shows what it cost: per model, as SAP billing per key in capacity units turned into money, and per user and team.
+
+00:03:53.147 --> 00:04:01.747
+From here, the quick start gets you a first call in ten minutes, the deployment chapter compares the three options, and the clients chapter has one page per tool.
+
+00:04:07.647 --> 00:04:18.236
+sail-proxy puts one gateway between your tools and SAP AI Core, with a key per user and the usage in a cockpit. The next video installs it from npm in under three minutes.

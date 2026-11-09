@@ -1,0 +1,56 @@
+issuer: BASE_URL/dex
+
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: sap_llm_gateway
+    user: admin_user
+    password: admin_password
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+  # Allow nginx and direct access for development
+  allowedOrigins: ["BASE_URL", "http://localhost:5556"]
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  skipApprovalScreen: false
+  responseTypes: ["code"]
+  grantTypes: ["authorization_code", "refresh_token"]
+
+enablePasswordDB: true
+
+staticClients:
+- id: oauth2-proxy
+  redirectURIs:
+  - 'BASE_URL/auth/callback'
+  name: 'SAP LLM Gateway OAuth2 Proxy'
+  secret: __OAUTH2_PROXY_CLIENT_SECRET__
+  trustedPeers:
+  - oauth2-proxy
+
+# Demo users for SAP LLM Gateway
+staticPasswords:
+- email: "admin@example.com"
+  # Password: admin123 (bcrypt hash)
+  hash: "$2b$10$u22sNtBUq9moy3S61/JtBeBljT396lPFR27D2A0QJZiwWEyKk6G9O"
+  username: "admin"
+  userID: "admin"
+  groups:
+  - "sap-llm-gateway-admin"
+
+- email: "user@example.com"
+  # Password: user123 (bcrypt hash)  
+  hash: "$2b$10$ZV82PwPQoYRA21hvAOY6peaE0mL1zrmJAXG8kXQlUG.dUKBddFzBy"
+  username: "user"
+  userID: "user"
+  groups:
+  - "sap-llm-gateway-user"
+

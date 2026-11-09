@@ -1,0 +1,1522 @@
+{
+  "version": 1,
+  "corpusManifestSha256": "ade8b6a766f42d4b39fde50535df1afb6eca1cfee1998954dfbb2e18d8abf33d",
+  "generatedWith": {
+    "model": "gpt-4.1",
+    "date": "2026-10-08"
+  },
+  "questions": [
+    {
+      "id": "q001",
+      "question": "What is the file location for configuring the Winston logger in the SAIL-PROXY gateway service?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "// services/gateway/src/utils/logger.ts\nimport winston from 'winston';\nimport { ElasticsearchTransport } from 'winston-elasticsearch';"
+      ]
+    },
+    {
+      "id": "q002",
+      "question": "What happens if a client tries to use a file_search tool with a non-existent vector_store_id in SAIL-PROXY?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "An unknown store id and someone else's store produce the **same** 400 on purpose. A distinct status would make the response an oracle for which store ids exist, which is also why `searchVectorStores` answers 404 and never 403."
+      ]
+    },
+    {
+      "id": "q003",
+      "question": "What port does the optional Ollama service use for SAIL-PROXY's Ollama compatibility feature?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "Optional Ollama service on port 11434"
+      ]
+    },
+    {
+      "id": "q004",
+      "question": "What is the default role assigned to the first user who logs into SAIL-PROXY via OAuth2?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "markdown",
+      "quotes": [
+        "User: admin@company.com logs in via OAuth2\n   → Automatically assigned Administrator role\n   → Can now manage the system and assign roles"
+      ]
+    },
+    {
+      "id": "q005",
+      "question": "Which environment variable must be exported for manual Codex configuration to authenticate with SAIL-PROXY?",
+      "file": "markdown/user-chapter-5-codex.md",
+      "kind": "markdown",
+      "quotes": [
+        "export OPENAI_API_KEY=\"<your-gateway-api-key>\"\ncodex \"explain what this service does\""
+      ]
+    },
+    {
+      "id": "q006",
+      "question": "What environment variable must be set to prevent proxying local SAIL-PROXY gateway calls when http_proxy or https_proxy are exported in the shell?",
+      "file": "markdown/user-chapter-6-opencode.md",
+      "kind": "markdown",
+      "quotes": [
+        "if your shell exports `http_proxy`/`https_proxy`, set `NO_PROXY=localhost,127.0.0.1` so local-gateway calls are not routed through the proxy."
+      ]
+    },
+    {
+      "id": "q007",
+      "question": "How does the SAIL-PROXY request correlation middleware assign a correlation ID when the header is missing?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "req.correlationId = req.headers['x-correlation-id'] as string || crypto.randomUUID();"
+      ]
+    },
+    {
+      "id": "q008",
+      "question": "What are the requirements for the weights used in 'ranking_options.hybrid_search' for file search, and what happens if they do not meet these criteria?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "Each weight must be a finite number >= 0, and they must not both be 0. On the REST route anything else is a 400 with code `invalid_hybrid_search`. On the Responses tool an invalid `hybrid_search` is dropped and the search runs unweighted, the same way an invalid `score_threshold` is dropped there."
+      ]
+    },
+    {
+      "id": "q009",
+      "question": "Which image sizes are accepted for the Gemini image generation model when accessed through the OpenAI Images API in SAIL-PROXY?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "`size` | `1024x1024`, `1536x1024`, `1024x1536`, `auto` | any other size (including DALL-E sizes) is refused with 400"
+      ]
+    },
+    {
+      "id": "q010",
+      "question": "In SAIL-PROXY's permission matrix, who can create or edit user accounts?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "markdown",
+      "quotes": [
+        "| Function | Admin | API Key Mgr | Power User | Regular User | Read-Only | Monitor |\n|----------|-------|-------------|------------|--------------|-----------|---------|\n| **User Management** |\n| Create/Edit Users | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |"
+      ]
+    },
+    {
+      "id": "q011",
+      "question": "What model provider name should be set in the Codex configuration to connect to SAIL-PROXY?",
+      "file": "markdown/user-chapter-5-codex.md",
+      "kind": "markdown",
+      "quotes": [
+        "model_provider = \"sail-proxy\"\nweb_search = \"live\"            # enable Codex's hosted web_search tool (routed through the gateway)\n\n[model_providers.sail-proxy]\nname = \"sail-proxy\""
+      ]
+    },
+    {
+      "id": "q012",
+      "question": "Which recognized log levels can be set for SAIL-PROXY's logger?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "- **Recognized levels** are `trace`, `debug`, `info`, `warn`, `error`. Both `LOG_LEVEL` and\n  `defaultLevel` are matched **case-insensitively**."
+      ]
+    },
+    {
+      "id": "q013",
+      "question": "What header should be checked if every search in file search returns nothing?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "check the store is not empty *before* suspecting the query path; then check the masked/raw asymmetry above"
+      ]
+    },
+    {
+      "id": "q014",
+      "question": "How does SAIL-PROXY handle pseudonymization for the OpenAI Responses API endpoint if a required hook is missing in the activated configuration?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "Because pseudonymization is force-enabled for the `openai` endpoint, the route then refuses requests with HTTP 503 `pseudonymization_hook_missing` rather than sending unmasked data upstream. Activate a configuration containing those keys before using the route."
+      ]
+    },
+    {
+      "id": "q015",
+      "question": "How many Administrators does SAIL-PROXY recommend for assignment based on security best practices?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "markdown",
+      "quotes": [
+        "- Limit number of Administrators (recommend 2-3 maximum)"
+      ]
+    },
+    {
+      "id": "q016",
+      "question": "Which header fields are explicitly removed in the sanitizeHeaders method of the RequestResponseLogger class?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "delete sanitized.authorization;\n    delete sanitized.cookie;"
+      ]
+    },
+    {
+      "id": "q017",
+      "question": "Why would a store return `409 store_model_unavailable` during a search in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "the store's `embedding_model` is no longer served upstream. Nothing falls back to another model: configure a served model and re-embed the store — see *Embedding models, generations and re-embedding* |"
+      ]
+    },
+    {
+      "id": "q018",
+      "question": "Which model name suffix is required to use Codex CLI with SAIL-PROXY's Responses API endpoint?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "The `--deployed` suffix matters: this route serves direct SAP AI Core deployments only. Orchestration-served models (`gpt-5.4`, `gpt-5.3-codex`, …) and Anthropic deployments are rejected with an HTTP 400 naming what is supported — use `/openai/v1/chat/completions` for those."
+      ]
+    },
+    {
+      "id": "q019",
+      "question": "Which SAIL-PROXY user role in Docker deployments can configure which AI models users can access?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "markdown",
+      "quotes": [
+        "**Model Access Control**: Configure which models users can access"
+      ]
+    },
+    {
+      "id": "q020",
+      "question": "What memory usage threshold triggers a heap dump in development mode according to the memory leak detection example?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "if (heapUsedMB > 512) { // Alert if heap usage exceeds 512MB\n    logger.warn('High memory usage detected', {\n      heapUsedMB: Math.round(heapUsedMB),\n      timestamp: new Date().toISOString()\n    });"
+      ]
+    },
+    {
+      "id": "q021",
+      "question": "What response code and error does the file search tool return when a user tries to retry a job with no failed files or for a cancelled batch?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "| `nothing_to_retry` | 409 | no failed file, or the batch was cancelled (a cancel is the user's decision; cancelled files are never re-opened) |"
+      ]
+    },
+    {
+      "id": "q022",
+      "question": "What is the default and clamped range for the maximum number of web searches per request when using a model tool of type 'web_search' with SAIL-PROXY?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "The number of searches per request is capped by `api_config.capabilities.web_search.max_searches_per_request` (default 3, clamped to 1–10)."
+      ]
+    },
+    {
+      "id": "q023",
+      "question": "Which Docker Compose service image is used for Kibana in the ELK Stack configuration for production log aggregation?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "kibana:\n    image: docker.elastic.co/kibana/kibana:8.11.0\n    environment:\n      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200\n    ports:\n      - \"5601:5601\"\n    depends_on:\n      - elasticsearch"
+      ]
+    },
+    {
+      "id": "q024",
+      "question": "What is the only route that allows an administrator to share their own store with all users in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "| `POST /admin/stores/:id/share`, `/unshare` | shares an admin's **own** store with all users, or stops sharing it |"
+      ]
+    },
+    {
+      "id": "q025",
+      "question": "Which storage encryption standard is used for API keys in SAIL-PROXY?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "Keys are encrypted at rest with AES-256"
+      ]
+    },
+    {
+      "id": "q026",
+      "question": "Which endpoint is set up to expose the Prometheus metrics registry in the production monitoring and alerting section?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "app.get('/metrics', async (req, res) => {\n  res.set('Content-Type', register.contentType);\n  res.end(await register.metrics());\n});"
+      ]
+    },
+    {
+      "id": "q027",
+      "question": "What response code and error does an admin route return if the acting role is not 'admin' in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "Anything else is `403 grounding_admin_required`, before a handler runs."
+      ]
+    },
+    {
+      "id": "q028",
+      "question": "What does SAIL-PROXY do when a request exceeds a user's constraint limit, such as requests per minute or tokens per month?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "markdown",
+      "quotes": [
+        "When a limit is reached the gateway answers `429` with a body that names the scope (`user` or `key`), the dimension (`requests`, `tokens` or `spend`), the window, the limit, the usage and when the window resets, plus `Retry-After` and `X-RateLimit-*` headers."
+      ]
+    },
+    {
+      "id": "q029",
+      "question": "What transport does the SAIL-PROXY logger add for log aggregation when running in production with ELASTICSEARCH_URL set?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "markdown",
+      "quotes": [
+        "// Add Elasticsearch transport for production\nif (nodeEnv === 'production' && process.env.ELASTICSEARCH_URL) {\n  logger.add(new ElasticsearchTransport({\n    level: 'info',\n    clientOpts: {\n      node: process.env.ELASTICSEARCH_URL\n    },\n    index: 'sail-proxy-logs'\n  }));\n}"
+      ]
+    },
+    {
+      "id": "q030",
+      "question": "What is the sweep window used for backfilling batches created before the jobs table existed in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "Batches created before the table existed are backfilled by an idempotent `INSERT … WHERE NOT EXISTS` in the schema script, for the last 29 days only (see the sweeper below)."
+      ]
+    },
+    {
+      "id": "q031",
+      "question": "Which setting is adjusted to maintain exact distance order for ROW_NUMBER and LIMIT during recall in pgvector 0.8 or later?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "and, on pgvector 0.8 or later (the installed version is probed once and cached), `SET LOCAL hnsw.iterative_scan = 'strict_order'` (ruling R5: strict keeps exact distance order for `ROW_NUMBER` and `LIMIT`)."
+      ]
+    },
+    {
+      "id": "q032",
+      "question": "What error code and status does the file search tool return when you try to start a re-embed job on a store that uses the configured model?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "| Code | Status | When |\n|---|---|---|\n| `store_current` | 409 | start on a store that already uses the configured model |"
+      ]
+    },
+    {
+      "id": "q033",
+      "question": "How does the failures route respond to a malformed 'after' cursor when listing re-embed failures in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "a malformed `after` (not `<job_id>/<file_id>`, too long, or holding a NUL byte) answers\n`400 invalid_parameter`. Both are read with `queryString()`, so a bracketed parameter\n(`?limit[a]=1`) counts as absent."
+      ]
+    },
+    {
+      "id": "q034",
+      "question": "What port does the development gateway use to connect to the local pgvector container for a file search database?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "Port 55431 keeps the container clear of the\npipeline's own (55434) and of the Docker stack's Postgres (5432). The admin service and its SQLite\ndatabase are not involved."
+      ]
+    },
+    {
+      "id": "q035",
+      "question": "In SAIL-PROXY, what database does file_search use for compiling attribute filters, and where is the filter compiler located?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "`filters` supports `eq ne gt gte lt lte in nin` plus nested `and`/`or`, compiled to parameterised SQL in `src/fileSearch/filterCompiler.ts`."
+      ]
+    },
+    {
+      "id": "q036",
+      "question": "For SAIL-PROXY's file_search tool, what happens if the caller is unauthenticated when making a request?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "| no authenticated caller identity (e.g. an AWS SigV4 request, which carries no email) | 400 |"
+      ]
+    },
+    {
+      "id": "q037",
+      "question": "Which route in the file search tool returns the caller's jobs, supporting parameters for limit, after, and state, and what response is given for a bad value?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "| `GET /jobs?limit=&after=&state=` | the caller's jobs, newest first; `limit` 1–100 (default 20), `state` one of the derived states; a bad value is `400 invalid_limit` / `invalid_state` |"
+      ]
+    },
+    {
+      "id": "q038",
+      "question": "What is the batch size used by the embedder when splitting inputs for embedding in the file search tool?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "and splits inputs into requests of `EMBED_BATCH_SIZE` (256), so a large file no longer depends on one 30 s request."
+      ]
+    },
+    {
+      "id": "q039",
+      "question": "Which error code is returned on search and attach for a store where the embedding dimension differs from the configured dimension in the file search system?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "A `dimension_mismatch` store keeps the old behaviour — `409 embedding_dimension_mismatch` on search and attach — and needs an operator migration; the cockpit offers no action for it."
+      ]
+    },
+    {
+      "id": "q040",
+      "question": "In the file search tool's re-embedding workflow, for how long can a re-embed item claim lease last before it expires?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "markdown",
+      "quotes": [
+        "the 15-minute lease (`LEASE_MINUTES`) and the retry budget `ingestion.maxRetries`; items whose budget ran out while their lease expired are reaped `failed`, like ingestion's zombies."
+      ]
+    },
+    {
+      "id": "q041",
+      "question": "What is the file path for the Plugin Loader component in SAIL-PROXY's plugin system implementation?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Plugin Loader (services/gateway/src/services/pluginLoader.ts): Discovers and loads plugins\nfrom the filesystem"
+      ]
+    },
+    {
+      "id": "q042",
+      "question": "What programming languages and frameworks are used in the backend services of SAIL-PROXY?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Backend Services\nRuntime Environment:\nNode.js 20+: Native ESM support, performance improvements\nTypeScript: Type safety and developer experience\nExpress.js: Web framework for Gateway service\nSAP CAP: Framework for Admin service"
+      ]
+    },
+    {
+      "id": "q043",
+      "question": "Which directory contains the integration tests for the SAIL-PROXY gateway?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Gateway test organization:\nservices/gateway/test/\n├── setupTests.ts\n├── clients/\n├── config/\n├── integration/\n└── usage-tracking*.test.ts"
+      ]
+    },
+    {
+      "id": "q044",
+      "question": "Which SQLite migration adds support for audio token fields in SAP capacity calculations?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "SQLite migration:\ndocs/developer/sqlite-migrations/audio-tokens-sqlite-migration.sql."
+      ]
+    },
+    {
+      "id": "q045",
+      "question": "What command launches the Gemini CLI using the SAIL-PROXY CLI for a headless single prompt?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "sail-proxy gemini --skip-trust -p \"summarize this repo\" # headless, one prompt\nsail-proxy gemini sets Gemini CLI's base URL and API key for the session, selects the API-key sign-in\ntype in ~/.gemini/settings.json"
+      ]
+    },
+    {
+      "id": "q046",
+      "question": "What is the POST endpoint and authentication header required to request a tabular prediction using a SAP-RPT model via SAIL-PROXY?",
+      "file": "pdf/user-chapter-15-tabular-prediction.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "POST /sap/v1/rpt/{model}/predict\n{model} is the model's bare name (e.g. sap-rpt-1.6) or its --deployed id — both resolve to the same\ndeployment. Send the key as x-api-key: <gateway API key> (or Authorization: Bearer <gateway API\nkey>, as the other routes accept)."
+      ]
+    },
+    {
+      "id": "q047",
+      "question": "Which plugin example in SAIL-PROXY is used to resize images in multi-image requests?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "resizeOversizedImages.ts - Resizes images exceeding per-model dimension limits in multi-image\nrequests"
+      ]
+    },
+    {
+      "id": "q048",
+      "question": "How does SAIL-PROXY translate requests from the OpenAI API format to SAP AI Core format?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "// Translation process\nconst sapModel = modelMappings[\"gpt-4o\"]; // \"gpt-4o-azure\"\nconst orchestrationRequest = {\n\norchestration_config: {\nmodel_name: sapModel,\nmodel_params: { ... },\ntemplate_id: \"chat-completion\"\n},\ninput_params: {\nmessages: translatedMessages\n}\n};"
+      ]
+    },
+    {
+      "id": "q049",
+      "question": "What is the Jest preset value used in the SAIL-PROXY gateway's jest.config.js file?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "preset: 'ts-jest/presets/default-esm',"
+      ]
+    },
+    {
+      "id": "q050",
+      "question": "What happens when a model catalog's parent creates a cycle, according to ModelCatalogs UPDATE handler?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "pruneChildren carries a visited set: the parent\nchain is data, and a cycle would otherwise never terminate — the ModelCatalogs UPDATE handler\nadditionally refuses any parent that is not an admin catalog or the default."
+      ]
+    },
+    {
+      "id": "q051",
+      "question": "Which environment variables must be set for manually configuring Gemini CLI to connect to the SAIL-PROXY gateway?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "export GOOGLE_GEMINI_BASE_URL=\"https://<your-gateway>/google\"\nexport GEMINI_API_KEY=\"<your-sail-proxy-api-key>\"\ngemini\n\n# choose \"Gemini API key\" when the sign-in dialog appears"
+      ]
+    },
+    {
+      "id": "q052",
+      "question": "How does the SAP-RPT model process context and query rows in a prediction request for tabular prediction on SAIL-PROXY?",
+      "file": "pdf/user-chapter-15-tabular-prediction.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "rows carries every row: the ones with real values (context) come first, and the ones to predict (query\nrows, carrying the placeholder in every target column) come after. index_column names the column\n\nthat identifies a row."
+      ]
+    },
+    {
+      "id": "q053",
+      "question": "Which property must be empty in a PluginRule definition for SAIL-PROXY's plugin system?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "match: string[]; // MUST be empty - matching in api_config.json"
+      ]
+    },
+    {
+      "id": "q054",
+      "question": "What are the steps in the authentication flow for SAIL-PROXY?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Authentication Flow\n1. Token Extraction: Parse Authorization header or x-api-key\n2. Token Validation: Verify signature and expiration\n3. Permission Check: Validate access to requested resource\n4. Rate Limiting: Apply usage limits and throttling\n5. Audit Logging: Record authentication events"
+      ]
+    },
+    {
+      "id": "q055",
+      "question": "Which command is used to start the SAIL-PROXY gateway in development mode from the project root?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "# Start gateway in development mode\npnpm run dev:gateway"
+      ]
+    },
+    {
+      "id": "q056",
+      "question": "How are model entitlement catalog assignments migrated at startup?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "ModelCatalogAssignments is legacy — usersService.migrateCatalogAssignments drains it\ninto Users.entitlementCatalog once at startup and it is never repopulated."
+      ]
+    },
+    {
+      "id": "q057",
+      "question": "What baseUrl should be used when configuring @google/genai SDK to work with SAIL-PROXY?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "httpOptions: { baseUrl: 'https://<your-gateway>/google' },\n});\nconst response = await ai.models.generateContent({\nmodel: 'gemini-2.5-pro',\ncontents: 'Say OK',"
+      ]
+    },
+    {
+      "id": "q058",
+      "question": "What happens if a plugin handler with the 'before' strategy detects a cache hit in SAIL-PROXY?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "const cachedResponse = await cache.get(cacheKey);\nif (cachedResponse) {\nutils.logger.info('Serving from cache');\n// Send cached response directly\nawait utils.sseWriter(res, cachedResponse.events);\nreturn { stop: true }; // Short-circuit\n}\nreturn { stop: false };"
+      ]
+    },
+    {
+      "id": "q059",
+      "question": "Which database systems are used in SAIL-PROXY, and what are their purposes?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Database Layer:\nPostgreSQL: Production database for Admin service\nSQLite: Development and CLI deployment database\nValkey/Redis: Caching, session storage, pub/sub messaging"
+      ]
+    },
+    {
+      "id": "q060",
+      "question": "Which shared test utility function is used to set up the test environment before each SAIL-PROXY gateway API test?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "await setupTestEnvironment();"
+      ]
+    },
+    {
+      "id": "q061",
+      "question": "What is the ValKey key prefix for unified validation cache entries?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "unified-cache: is the ValKey key prefix only; the in-process map holds the same\nentries un-prefixed (unified:apikey:<hash>)"
+      ]
+    },
+    {
+      "id": "q062",
+      "question": "How are image outputs requested from a Gemini model deployed on SAP AI Core using @google/genai SDK?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "const response = await ai.models.generateContent({\nmodel: 'gemini-3.1-flash-image',\ncontents: 'A watercolor painting of a lighthouse at sunset',\nconfig: {\nresponseModalities: ['IMAGE', 'TEXT'],\nimageConfig: { aspectRatio: '1:1' },\n},\n});"
+      ]
+    },
+    {
+      "id": "q063",
+      "question": "What response is provided by an error handler plugin in SAIL-PROXY when the error code is 'RATE_LIMIT_EXCEEDED'?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "if (error.code === 'RATE_LIMIT_EXCEEDED') {\nreturn {\nstop: true,\nresponse: {\nerror: {\ntype: 'rate_limit_error',\nmessage: 'Please try again in a moment'\n}\n}"
+      ]
+    },
+    {
+      "id": "q064",
+      "question": "What mechanisms does SAIL-PROXY use for distributed caching and pub/sub messaging?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Redis/Valkey Integration:\n// Distributed caching and pub/sub\nclass CacheManager {\nasync get(key: string): Promise<any> {\nreturn await this.redis.get(key);\n}\nasync publishUsageEvent(event: UsageEvent): Promise<void> {\nawait this.redis.publish('usage-events', JSON.stringify(event));\n}\n}"
+      ]
+    },
+    {
+      "id": "q065",
+      "question": "What is the header name for passing the API key when testing the Anthropic endpoint of SAIL-PROXY?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "-H \"x-api-key: sp-proj-your-api-key\" \\"
+      ]
+    },
+    {
+      "id": "q066",
+      "question": "Which route is used by the deployment management service for admin operations?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "services/gateway/src/services/deploymentManagementService.ts ports the CLI's calls\nbehind /api/admin/deployments (service key ADMIN_TO_GATEWAY, deployments:read/write)."
+      ]
+    },
+    {
+      "id": "q067",
+      "question": "Which deprecated Gemini image model is scheduled for shutdown, and when?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "gemini-2.5-flash-image is deprecated by Google and scheduled for shutdown on 2\nOctober 2026 — use gemini-3.1-flash-image for new work."
+      ]
+    },
+    {
+      "id": "q068",
+      "question": "Where should you create a custom plugin file for SAIL-PROXY?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Create a JavaScript/TypeScript file in the services/gateway/src/plugins/ directory:\n// services/gateway/src/plugins/myPlugin.ts"
+      ]
+    },
+    {
+      "id": "q069",
+      "question": "What is the configuration hierarchy and the order of configuration sources in SAIL-PROXY?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Configuration Sources (priority order):\n1. Runtime updates: Admin Cockpit configuration changes\n2. Service configuration: JSON files in /config directories\n3. Environment variables: .env files and system environment\n4. Base configuration: Default values in source code"
+      ]
+    },
+    {
+      "id": "q070",
+      "question": "Which command is given in the guide to run a load test on the SAIL-PROXY gateway using artillery?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "artillery run artillery-config.yml"
+      ]
+    },
+    {
+      "id": "q071",
+      "question": "What result code is returned when model inference fails the entitlement check?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "A refusal is 403 model_not_entitled plus a security event; the call-site count per controller is pinned by\ntest/entitlement-guard-wiring.test.ts."
+      ]
+    },
+    {
+      "id": "q072",
+      "question": "What happens if you request image output from a Gemini model without its own deployment?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Model <model> has no deployment; image output (responseModalities IMAGE) needs a deployment o\nf the\nmodel on SAP AI Core."
+      ]
+    },
+    {
+      "id": "q073",
+      "question": "What utility must be used to write streaming responses in SAIL-PROXY plugins?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "SSE Writer\nFor streaming responses, use the sseWriter utility:\nawait utils.sseWriter(res, [\n{\nevent: \"message_start\",\ndata: {"
+      ]
+    },
+    {
+      "id": "q074",
+      "question": "Which API protocols does the frontend Admin Cockpit of SAIL-PROXY use for data access?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Frontend (Admin Cockpit)\nUI Framework:\nSAP Fiori Elements: Enterprise UI components\nSAP UI5: Base UI library\nOData V4: API protocol for data access\nWebComponents: Custom UI elements"
+      ]
+    },
+    {
+      "id": "q075",
+      "question": "How do you trigger SAIL-PROXY gateway unit tests automatically for changed files in the pre-commit hook?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "if echo \"$changed_files\" | grep -q \"services/gateway/\"; then\necho \"Running Gateway tests...\"\npnpm test:gateway:unit\nfi"
+      ]
+    },
+    {
+      "id": "q076",
+      "question": "How is the default catalog initially seeded?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "The default catalog is seeded on the first entitlement lookup\n(ensureDefaultCatalog), and refreshModelLibrary fills the snapshot on demand."
+      ]
+    },
+    {
+      "id": "q077",
+      "question": "How does SAIL-PROXY estimate usage for embedContent with embedding models that exist only as a deployment?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "an embedding model that exists only as a deployment (for example geminiembedding-2) reports no usage at all for embedContent, so the gateway estimates the input token count\nfrom the request text instead of billing an exact figure."
+      ]
+    },
+    {
+      "id": "q078",
+      "question": "What is the timeout duration used in the example for performant plugin handlers?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "new Promise((_, reject) =>\nsetTimeout(() => reject(new Error('Timeout')), 5000)\n)"
+      ]
+    },
+    {
+      "id": "q079",
+      "question": "How does SAIL-PROXY enable response streaming for real-time chat completions?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "Response Streaming:\n// Server-Sent Events for real-time streaming\napp.post('/chat/completions', async (req, res) => {\nif (req.body.stream) {\nres.writeHead(200, {\n'Content-Type': 'text/event-stream',\n'Cache-Control': 'no-cache',\n'Connection': 'keep-alive',"
+      ]
+    },
+    {
+      "id": "q080",
+      "question": "What is rendered by defaultText() for an emptied quota field with a standard profile?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "pdf",
+      "quotes": [
+        "defaultText() renders what an emptied field would fall back to\n(\"1,000,000 (Standard profile)\", \"25.00 USD (platform)\", \"unlimited\"), leaving the user's own\nvalue out of the resolution on purpose"
+      ]
+    },
+    {
+      "id": "q081",
+      "question": "Which file contains the 'stripTools' function that returns a new body without mutating the original?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "stripTools (returns a new body, never mutates),"
+      ]
+    },
+    {
+      "id": "q082",
+      "question": "What is the role of 'toolGovernance' in 'middleware.ts'?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "toolGovernance(adapter), mounted per route; policyBlocksFromRequest (NO admin exemption tool policy is a security control and binds the holder of account or key, unlike the model entitlement check)"
+      ]
+    },
+    {
+      "id": "q083",
+      "question": "How are declared tool entries ordered for an event in 'record.ts'?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "toolsForEvent (declared entries first, then invoked, each carrying the identity's decision)"
+      ]
+    },
+    {
+      "id": "q084",
+      "question": "Which type of message in 'OpenAI chat' is associated with a tool result and has a 'tool_call_id'?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "role:\"tool\" message, tool_call_id; a legacy role:\"function\" message names its own tool"
+      ]
+    },
+    {
+      "id": "q085",
+      "question": "How does the Responses adapter handle stripTools for an MCP tool with denied tools?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "The Responses adapter's stripTools narrows an MCP tool's allowed_tools rather than dropping the whole mcp entry when only so of its tools are denied"
+      ]
+    },
+    {
+      "id": "q086",
+      "question": "What command is used to publish the npm package for SAIL-PROXY?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "pnpm publish:npm (step 4 of release)"
+      ]
+    },
+    {
+      "id": "q087",
+      "question": "How does a user receive the latest version of the npm package @st-gr/sail-proxy?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "npm install -g @st-gr/sailproxy@latest"
+      ]
+    },
+    {
+      "id": "q088",
+      "question": "Which file acts as the primary key referenced by reranker_candidate_labels.event_id in the reranker_search_events table?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "rse_… primary key; reranker_candidate_labels.event_id references it ON DELETE CASCADE."
+      ]
+    },
+    {
+      "id": "q089",
+      "question": "What is the effect if the key 'capabilities.web_search.max_searches_per_request' is absent in a configuration?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "none — absent falls back to the built-in default of 3"
+      ]
+    },
+    {
+      "id": "q090",
+      "question": "Which retrieval configuration parameter records the fused RRF score in the reranker_candidate_labels table?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "The fused RRF score: the sum of 1/(rrf_k + rank) over the arms that recalled this chunk. Not a similarity and not calibrated."
+      ]
+    },
+    {
+      "id": "q091",
+      "question": "What command is used to push Docker images for SAIL-PROXY?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "pnpm docker:push (step 5)"
+      ]
+    },
+    {
+      "id": "q092",
+      "question": "What role does routes/googleRoutes.ts have in the Google Gemini API route?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "mounts /google/v1beta and /google/v1; auth, service auth, quota middleware"
+      ]
+    },
+    {
+      "id": "q093",
+      "question": "In the SAP-RPT tabular prediction route, which file reshapes 401 and 429 errors into SAP shape?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "sapRpt/shapeMiddlewareErrors.ts reshapes createUnifiedTokenAuth()'s 401 and quotaEnforcement's 429 from the OpenAI {error:{...}} envelope into the SAP shape above, so a client of this route parses one error shape throughout"
+      ]
+    },
+    {
+      "id": "q094",
+      "question": "What is the effect when 'store_chunk_text' is set to false in enabling collection for file search events?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "Whether chunk_text is persisted verbatim. chunk_hash is written either way."
+      ]
+    },
+    {
+      "id": "q095",
+      "question": "Where can an operator edit the configuration for standalone npm installations of SAIL-PROXY?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "edit ~/.sailproxy/api_config.json"
+      ]
+    },
+    {
+      "id": "q096",
+      "question": "What is the reserved field in reranker_candidate_labels that is always NULL and not carried through recall?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "Reserved; always NULL today. Nothing on the write path populates it — the chunk's token count is not carried through recall. Do not filter or aggregate on it."
+      ]
+    },
+    {
+      "id": "q097",
+      "question": "How does an install predating the file_search block get its value for file_search?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "gets false, from FILE_SEARCH_DEFAULTS"
+      ]
+    },
+    {
+      "id": "q098",
+      "question": "What is the default tag written to every event for collection separation?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "\"production\" Tag written to every event, for separating collection runs."
+      ]
+    },
+    {
+      "id": "q099",
+      "question": "What is the maximum validated range for 'max_concurrent_writes' in enabling collection?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "Ceiling on in-flight label writes. Beyond it, writes are dropped, not queued — see §5. Validated range 1–10."
+      ]
+    },
+    {
+      "id": "q100",
+      "question": "What happens when a 'reject' mode is triggered in the tool governance decision model?",
+      "file": "table/developer-tables.pdf",
+      "kind": "table",
+      "quotes": [
+        "mcp:S pushed onto denied, the whole request refused"
+      ]
+    },
+    {
+      "id": "q101",
+      "question": "What is the maximum number of tokens that can be specified in the Ollama chat API request options?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "options?: { temperature?: number; top_p?: number; max_tokens?: number; };"
+      ]
+    },
+    {
+      "id": "q102",
+      "question": "What is the role of the plugin system in SAIL-PROXY?",
+      "file": "scanned/user-chapter-1-introduction.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "A plugin system enables instrumentation and manipulation of requests and responses"
+      ]
+    },
+    {
+      "id": "q103",
+      "question": "Where in the Admin Cockpit does the token usage from each model response appear?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "The tokens of each response are recorded when it completes and show up in the Admin Cockpit like any other usage."
+      ]
+    },
+    {
+      "id": "q104",
+      "question": "What is the SAP AI Core request destination port for the Gateway service when using the Ollama service in SAIL-PROXY?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Ollama Client → Ollama Service (11434) → Gateway Service (3000) → SAP AI Core"
+      ]
+    },
+    {
+      "id": "q105",
+      "question": "What is the primary interaction method between SAIL-PROXY and SAP AI Core?",
+      "file": "scanned/user-chapter-1-introduction.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "SAIL-PROXY translates these requests to SAP AI Core's Orchestration API or direct deployment endpoints"
+      ]
+    },
+    {
+      "id": "q106",
+      "question": "Before SAP publishes audio token prices, how are audio tokens billed in the Admin Cockpit for the realtime feature?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Until then, audio tokens are priced at the text rates, which understates the cost of voice sessions."
+      ]
+    },
+    {
+      "id": "q107",
+      "question": "How does the SAIL-PROXY Ollama service handle the size field for models listed from SAP AI Core?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "size: 0, // Size not available from SAP AI Core"
+      ]
+    },
+    {
+      "id": "q108",
+      "question": "Which SAP AI Core interface does SAIL-PROXY use for routing requests from AI tools?",
+      "file": "scanned/user-chapter-1-introduction.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "All requests are routed through SAP AI Core's Orchestration API or deployment endpoints, ensuring enterprise compliance and governance."
+      ]
+    },
+    {
+      "id": "q109",
+      "question": "Does SAIL-PROXY apply data masking to sessions using the OpenAI Realtime API?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Data masking (pseudonymization) is not applied to realtime sessions."
+      ]
+    },
+    {
+      "id": "q110",
+      "question": "Which digest value is used in the Ollama model tags response for models retrieved from SAP AI Core via SAIL-PROXY?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "digest: 'sha256:placeholder',"
+      ]
+    },
+    {
+      "id": "q111",
+      "question": "What deployment option should be considered for teams needing centralized management of SAIL-PROXY?",
+      "file": "scanned/user-chapter-1-introduction.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "For production deployments or team usage, consider the Docker setup with Admin Cockpit for centralized management."
+      ]
+    },
+    {
+      "id": "q112",
+      "question": "What is the Python package used in the example for connecting to the SAIL-PROXY OpenAI Realtime API using websockets?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "import asyncio, json, os, websockets"
+      ]
+    },
+    {
+      "id": "q113",
+      "question": "What API endpoint does the Ollama service use to retrieve the available models from the Gateway service?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "const response = await fetch('http://localhost:3000/v1/models', {"
+      ]
+    },
+    {
+      "id": "q114",
+      "question": "How does SAIL-PROXY treat cached input tokens for pricing in the OpenAI Realtime API?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Cached input tokens, whether text or audio, are priced at the model's cache-read rate (or its input rate when no cache-read rate is maintained), so a voice session that replays earlier audio is priced below the audio rate for that share until SAP confirms how cached audio is billed."
+      ]
+    },
+    {
+      "id": "q115",
+      "question": "What command is used to test the chat functionality of the SAIL-PROXY Ollama service using the Ollama CLI?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "ollama run gpt-4o \"Hello, how are you?\""
+      ]
+    },
+    {
+      "id": "q116",
+      "question": "How can audio token prices for OpenAI Realtime API usage be obtained once SAP has set them?",
+      "file": "scanned/user-chapter-14-realtime.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Audio tokens are counted separately from text tokens and priced at the model's audio rates once an administrator has entered them in the Model Library — SAP publishes them in SAP Note 3437766, not through the catalogue."
+      ]
+    },
+    {
+      "id": "q117",
+      "question": "Where does the Ollama service bind its network interface for security in SAIL-PROXY?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "Ollama service binds only to localhost (127.0.0.1)"
+      ]
+    },
+    {
+      "id": "q118",
+      "question": "What configuration value must be set for Continue.dev to integrate with the SAIL-PROXY Ollama service?",
+      "file": "scanned/developer-chapter-6-ollama.pdf",
+      "kind": "scanned",
+      "quotes": [
+        "\"apiBase\": \"http://localhost:11434\""
+      ]
+    },
+    {
+      "id": "q119",
+      "question": "Which middleware assigns a correlation ID to requests, and which command is suggested to kill all Node.js processes if a port conflict is detected?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "multihop",
+      "quotes": [
+        "// Request correlation middleware\nexport const correlationMiddleware = (req: Request, res: Response, next: NextFunction) => {\n  req.correlationId = req.headers['x-correlation-id'] as string || crypto.randomUUID();\n  res.setHeader('x-correlation-id', req.correlationId);",
+        "# Or kill all Node.js processes (use with caution)\npkill -f node"
+      ]
+    },
+    {
+      "id": "q120",
+      "question": "On which database column is the partial index `idx_vsf_failed` created for attachment counts, and which primary key does the `vector_store_chunks` table use after upgrading to support generations?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "`CREATE INDEX IF NOT EXISTS`: `idx_vector_stores_created (created_at, id)`,\n`idx_fs_files_created (created_at, id)`, `idx_vsf_file (file_id)` (attachment counts) and the partial\n`idx_vsf_failed (created_at, store_id, file_id) WHERE status = 'failed'`.",
+        "`vector_store_chunks` has a `generation int NOT NULL DEFAULT 0` column in its primary key\n`(store_id, file_id, generation, ord)`, and `vector_stores.active_generation` names the one readers\nsee."
+      ]
+    },
+    {
+      "id": "q121",
+      "question": "What is the recommended provider npm package for deployed GPT-5+/o-series models in opencode configuration, and how does opencode send the gateway API key during authentication?",
+      "file": "markdown/user-chapter-6-opencode.md",
+      "kind": "multihop",
+      "quotes": [
+        "**Responses API (`@ai-sdk/openai`) — recommended for deployed GPT-5+/o-series models:**\n\n```json\n{\n  \"provider\": {\n    \"sail-proxy\": {\n      \"npm\": \"@ai-sdk/openai\",",
+        "- **The gateway key** — opencode sends it as the `Authorization: Bearer` token; use a valid gateway API key, not an upstream provider key."
+      ]
+    },
+    {
+      "id": "q122",
+      "question": "Which role in SAIL-PROXY is automatically assigned to the first user to log in, and what is the recommended maximum number of users with this role?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "multihop",
+      "quotes": [
+        "First user to log in automatically becomes Administrator",
+        "Limit number of Administrators (recommend 2-3 maximum)"
+      ]
+    },
+    {
+      "id": "q123",
+      "question": "What cryptographic algorithms are used for JWT signing and metadata encryption in SAIL-PROXY, and what library provides password hashing if local authentication is enabled?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "// JWT Signing Keys (256-bit)\nconst jwtSecret = crypto.randomBytes(32);\n// Metadata Encryption (AES-256)\nconst metadataKey = crypto.randomBytes(32);",
+        "bcrypt: Password hashing (if local auth enabled)\ncrypto: AES-256 encryption for sensitive data"
+      ]
+    },
+    {
+      "id": "q124",
+      "question": "What is the maximum number of target columns allowed per request when using SAP-RPT tabular prediction, and what error response will you get if this limit is exceeded?",
+      "file": "pdf/user-chapter-15-tabular-prediction.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "Measured limits: at most 10 target columns and 128 query rows\nper request; the context rows before the query rows cap out at 2,048 or 65,536 depending on the\nmodel, and columns at 100 or 256.",
+        "And SAP's own errors, such as eleven target columns:\n{\n\"detail\": [\n{ \"loc\": [\"prediction_config\", \"target_columns\"],\n\"msg\": \"Value error, target_columns may not contain more than 10 entries\",\n\"type\": \"value_error\" }\n],\n\"id\": \"…\",\n\"status\": { \"code\": 2, \"message\": \"Invalid input\" }\n}"
+      ]
+    },
+    {
+      "id": "q125",
+      "question": "What fields and values must be used in OpenAI images generation requests to ensure correct format delivery in SAIL-PROXY, and what warning is provided about data masking for image prompts?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "multihop",
+      "quotes": [
+        "| `response_format` | `b64_json` only | `url` is refused with 400 — the gateway stores no images |\n| `output_format` | `png` only | `jpeg`/`webp` refused",
+        "**Data masking does not apply to images.** Pseudonymization rewrites text prompts; it is not applied to image prompts or to uploaded images, which reach SAP AI Core as you sent them."
+      ]
+    },
+    {
+      "id": "q126",
+      "question": "How do you enable debug logging for troubleshooting SAIL-PROXY plugins and where can you find logs indicating plugin execution?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "Enable debug logging to troubleshoot plugins:\nDEBUG=true pnpm run dev",
+        "tail -f logs/gateway.log | grep Plugin"
+      ]
+    },
+    {
+      "id": "q127",
+      "question": "Which directories are set as roots for Jest tests in the SAIL-PROXY gateway, and what environment variable is used for integration testing with real SAP AI Core?",
+      "file": "pdf/developer-chapter-4-gateway-testing.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "roots: ['<rootDir>/src', '<rootDir>/test'],",
+        "# Use separate test environment\nNODE_ENV=integration \\\nSAP_TEST_CLIENT_ID=your-test-client \\\nSAP_TEST_CLIENT_SECRET=your-test-secret \\\npnpm test:gateway:integration"
+      ]
+    },
+    {
+      "id": "q128",
+      "question": "What is the calculation used for displaying capacity units per million tokens, and how does live capture handle cache billing factors for a missing or negative value?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "capacityUnitsPerMillion(cost, cuFactor) = cost × 1000 × cuFactor, i.e. capacity units per 1M tokens from a per-1K cost, five decimals (SAP shows 1.50404 for 0.00079 at 1.90385).",
+        "sapCapacityService.cacheBillingFactorsByProvider() is the one place that decides which rows a factor applies to: a map keyed by the lower-cased provider key, a missing or negative value read as 1."
+      ]
+    },
+    {
+      "id": "q129",
+      "question": "For running Codex accessing a GPT-5+ or o-series model via SAIL-PROXY, what shell variable must be set with the gateway API key, and what troubleshooting advice is given if calls to localhost fail due to proxy settings?",
+      "file": "markdown/user-chapter-5-codex.md",
+      "kind": "multihop",
+      "quotes": [
+        "export OPENAI_API_KEY=\"<your-gateway-api-key>\"\ncodex \"explain what this service does\"",
+        "**`502` on every gateway call** — if your shell has `http_proxy`/`https_proxy` set (e.g. for a debugging proxy), add `NO_PROXY=localhost,127.0.0.1` so calls to the local gateway are not routed through it."
+      ]
+    },
+    {
+      "id": "q130",
+      "question": "For SAIL-PROXY's Gemini integration, what is the command to run a headless Gemini CLI prompt and what is the consequence if the folder is not trusted?",
+      "file": "pdf/user-chapter-12-google-gemini.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "sail-proxy gemini --skip-trust -p \"summarize this repo\" # headless, one prompt",
+        "Headless runs (-p) require a trusted folder: pass --skip-trust, or trust the directory once in an interactive session."
+      ]
+    },
+    {
+      "id": "q131",
+      "question": "What logging transport is conditionally added for production in the SAIL-PROXY logger, and what monitoring tool's metrics are exported at '/metrics'?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "multihop",
+      "quotes": [
+        "// Add Elasticsearch transport for production\nif (nodeEnv === 'production' && process.env.ELASTICSEARCH_URL) {\n  logger.add(new ElasticsearchTransport({\n    level: 'info',\n    clientOpts: {\n      node: process.env.ELASTICSEARCH_URL\n    },\n    index: 'sail-proxy-logs'\n  }));\n}",
+        "app.get('/metrics', async (req, res) => {\n  res.set('Content-Type', register.contentType);\n  res.end(await register.metrics());\n});"
+      ]
+    },
+    {
+      "id": "q132",
+      "question": "Which metrics are provided by the route `GET /admin/overview`, and which are estimated in the output of `GET /stores/:id/reembed/estimate` for the active chunk generation of a store?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "| `GET /admin/overview` | stores, files, `logical_bytes`, `physical_bytes`, `savings_bytes`, `failed_ingestions`, `outdated_stores` (expired stores are not counted: the bulk re-embed skips them, ruling R9) |",
+        "| `GET /stores/:id/reembed/estimate` | `{files, chunks, estimated_tokens, state}` of the active generation (`estimated_tokens` is `SUM(tokens)`, the chunker's estimate; no money in the gateway) |"
+      ]
+    },
+    {
+      "id": "q133",
+      "question": "What method provides auditability for user role changes in SAIL-PROXY, and what notification is sent to affected users when their role changes?",
+      "file": "markdown/user-chapter-9-roles.md",
+      "kind": "multihop",
+      "quotes": [
+        "- Email notification to affected user\n- Audit log entry created\n- Existing API keys maintain current permissions until next use",
+        "- Use audit logs to track role change history\n- Implement approval workflow for sensitive role assignments"
+      ]
+    },
+    {
+      "id": "q134",
+      "question": "Which technologies are used for distributed caching and pub/sub messaging, and what are the two levels of caching implemented for hot data and distributed caching in SAIL-PROXY?",
+      "file": "pdf/developer-chapter-2-architecture.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "Valkey/Redis: Caching, session storage, pub/sub messaging",
+        "L1 Cache: In-memory LRU for hot data\nL2 Cache: Redis for distributed caching"
+      ]
+    },
+    {
+      "id": "q135",
+      "question": "When integrating Claude Code with SAIL-PROXY, which environment variable allows disabling nonessential traffic, and what configuration file is used by Codex CLI for specifying model and provider information for the Responses API?",
+      "file": "markdown/user-chapter-2-features.md",
+      "kind": "multihop",
+      "quotes": [
+        "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+        "Create or edit `~/.codex/config.toml`:"
+      ]
+    },
+    {
+      "id": "q136",
+      "question": "What directory should new plugins for the SAIL-PROXY gateway be placed in, and where are unit test files for plugins located?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "Create a JavaScript/TypeScript file in the services/gateway/src/plugins/ directory:",
+        "Create test files in services/gateway/tests/plugins/:"
+      ]
+    },
+    {
+      "id": "q137",
+      "question": "What Postgres database mechanism automatically adds entitlement catalog and quota profile tables during deployment, and how is seeding triggered for starter quota profiles in fresh or upgraded deployments?",
+      "file": "pdf/developer-model-library-entitlements.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "Postgres (Docker/Kyma) gets all of it from schema_evolution: auto on deploy. The default catalog is seeded on the first entitlement lookup (ensureDefaultCatalog), and refreshModelLibrary fills the snapshot on demand.",
+        "The three starter profiles are then seeded on the next start, same as a fresh Postgres deployment (ensureStarterProfiles, called from the same startup hook as the default catalog)."
+      ]
+    },
+    {
+      "id": "q138",
+      "question": "What environment variables are set for 'Debug Gateway Service' in VS Code's launch configuration, and how does the CAP service enable debugging for the 'db' component?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "multihop",
+      "quotes": [
+        "\"env\": {\n        \"NODE_ENV\": \"development\",\n        \"DEBUG\": \"sail-proxy:*\",\n        \"LOG_LEVEL\": \"debug\"\n      },",
+        "// Enable CDS debugging\nif (process.env.NODE_ENV === 'development') {\n  cds.env.log.levels = {\n    'cds': 'debug',\n    'db': 'debug',\n    'http': 'debug',\n    'odata': 'debug'\n  };\n}"
+      ]
+    },
+    {
+      "id": "q139",
+      "question": "For which users are the file search storage statistics paged by owner e-mail, and what are the attachment list visibility rules for shared stores?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "| `GET /admin/storage` | files and logical bytes per owner, paged on the owner e-mail (`first_id`/`last_id` are e-mails) |",
+        "The **list** of a shared store's files stays with the owner and admins (every store-file route is owner-only)."
+      ]
+    },
+    {
+      "id": "q140",
+      "question": "What is the utility called in SAIL-PROXY gateway plugins for sending streaming responses, and how can a plugin use it to send a series of events to the client?",
+      "file": "pdf/developer-chapter-13-plugin-system.pdf",
+      "kind": "multihop",
+      "quotes": [
+        "sseWriter: (res: Response, events: SSEEvent[]) => Promise<void>;",
+        "For streaming responses, use the sseWriter utility:\nawait utils.sseWriter(res, [\n{\nevent: \"message_start\",\ndata: {\nmessage: {\nid: messageId,\ntype: \"message\","
+      ]
+    },
+    {
+      "id": "q141",
+      "question": "In SAIL-PROXY debugging, what value for 'LOG_LEVEL' is set in the Docker admin image, and what default output format is used for console logging in development?",
+      "file": "markdown/developer-chapter-11-debugging.md",
+      "kind": "multihop",
+      "quotes": [
+        "- **The Docker admin image sets `LOG_LEVEL=info`** (`docker/admin.Dockerfile`). Its earlier `debug` never took effect, because the logger only applied `LOG_LEVEL` inside a top-level `logging` block; it now applies it whenever it is recognized.",
+        "new winston.transports.Console({\n      format: nodeEnv === 'development' \n        ? winston.format.combine(\n            winston.format.colorize(),\n            winston.format.simple()\n          )\n        : winston.format.json()\n    }),"
+      ]
+    },
+    {
+      "id": "q142",
+      "question": "What REST endpoint in SAIL-PROXY allows attaching multiple files at once to a vector store, and which error code is returned if batch creation would exceed the file limit?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "`POST /vector_stores/{id}/file_batches` | Attaches every id in `file_ids` (required, non-empty) to the store in one call, with one shared `attributes` and `chunking_strategy`. Returns the batch object.",
+        "and a 400 `vector_store_file_limit_exceeded` when the batch would push the store past `capabilities.file_search.limits.max_files_per_store`."
+      ]
+    },
+    {
+      "id": "q143",
+      "question": "Where does the SAIL-PROXY file_search tool store information about batch status and file counts, and which database index is used for the aggregate query computation?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "`vector_store_batches` holds four columns — `id`, `store_id`, `cancel_requested`, `created_at` — and nothing else. A batch is a **label** over `vector_store_files` rows, and membership is the `batch_id` column on those rows; there is no join table and no stored status.",
+        "The cost is one aggregate over `idx_vsf_batch` per read."
+      ]
+    },
+    {
+      "id": "q144",
+      "question": "When creating a file batch through SAIL-PROXY, how does the system handle partial attachment failures and what log should be searched if a batch's file_counts do not match the client's submission?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "A cleanup that itself fails is therefore *logged*, not surfaced, and leaves an **orphaned batch holding some of its files**.",
+        "If you are looking at a batch whose `file_counts` do not match what a client says it submitted, search the logs for `Failed to roll back a partially created file batch`."
+      ]
+    },
+    {
+      "id": "q145",
+      "question": "When re-embedding file search stores, what model selection rule ensures consistency during ingestion and search, and how does dual-write handle a simultaneous file attach during a running re-embed job?",
+      "file": "markdown/developer-chapter-16-file-search-tool.md",
+      "kind": "multihop",
+      "quotes": [
+        "`embeddingState(store, config)` (`embeddingState.ts`) is the one rule everything shares: `dimension_mismatch` when `embedding_dim` differs from the configured dimension (it wins: a re-embed cannot change a store's width), else `outdated` when the model differs, else `current`.",
+        "**Dual-write.** A file attached while its store re-embeds is ingested by the normal worker, and `commitChunks` reads the running job **under the store lock**: it writes the active generation with the store's model and the target generation with the job's model, and records the file's item completed."
+      ]
+    },
+    {
+      "id": "q146",
+      "question": "How many temperature excursions did the reefer units at Kestrel Yard log, and how long did they last?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Reefer units at Kestrel Yard logged 14 excursions above 8 °C this cycle, all of them shorter than 20 minutes."
+      ]
+    },
+    {
+      "id": "q147",
+      "question": "How often is the temperature probe recalibrated after the second cold-room audit?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "The probe recalibration interval moved from 90 to 45 days after the second cold-room audit."
+      ]
+    },
+    {
+      "id": "q148",
+      "question": "How many dock doors does Feldspar Depot have and what is its peak throughput?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "| Feldspar Depot | 11 | 150 |"
+      ]
+    },
+    {
+      "id": "q149",
+      "question": "Why does Marrow Point close its night shift in winter?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Marrow Point closes its night shift during the winter thaw because the access road floods."
+      ]
+    },
+    {
+      "id": "q150",
+      "question": "How many tractor units run on battery packs, and where are they charged?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Six of the forty-two tractor units now run on battery packs charged overnight at Feldspar Depot."
+      ]
+    },
+    {
+      "id": "q151",
+      "question": "Why was the canal barge pilot paused?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "The canal barge pilot was paused because the lock schedule allowed only two crossings per day."
+      ]
+    },
+    {
+      "id": "q152",
+      "question": "What replaced the polystyrene boxes on the pharmacy routes?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Insulated totes made from pressed straw replaced polystyrene boxes on the pharmacy routes."
+      ]
+    },
+    {
+      "id": "q153",
+      "question": "When does a cold-room door alarm escalate to the duty phone and to the regional desk?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Every cold-room door alarm escalates to the duty phone after 4 minutes and to the regional desk after 12 minutes."
+      ]
+    },
+    {
+      "id": "q154",
+      "question": "What on-time delivery and temperature compliance did the grocery routes reach?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "| Grocery | 94.1% | 98.9% |"
+      ]
+    },
+    {
+      "id": "q155",
+      "question": "When are the alarm tests run?",
+      "file": "pptx/quillmere-operations-review.pptx",
+      "kind": "pptx",
+      "quotes": [
+        "Alarm tests run every second Tuesday at 05:40, before the first outbound wave."
+      ]
+    },
+    {
+      "id": "q156",
+      "question": "Which work order replaced the door gasket on cold room 3, and when was it opened?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "| WO-2205 | CR-03 | Replace door gasket on cold room 3 after frost build-up on the hinge side | 2026-03-14 |"
+      ]
+    },
+    {
+      "id": "q157",
+      "question": "What was done to the dock door 6 seal bladder?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "Re-inflate and patch the dock door 6 seal bladder"
+      ]
+    },
+    {
+      "id": "q158",
+      "question": "How long was the standby generator load-tested, and at what load?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "Load-test the standby generator for ninety minutes at seventy percent"
+      ]
+    },
+    {
+      "id": "q159",
+      "question": "Where did moisture enter the ceiling panel above cold room 5?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "Seal the conduit gap above cold room 5 where moisture entered the ceiling panel"
+      ]
+    },
+    {
+      "id": "q160",
+      "question": "What is logged after topping up the glycol in chiller 2?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "Top up glycol in chiller 2 and log the refractometer reading"
+      ]
+    },
+    {
+      "id": "q161",
+      "question": "In which bin are the magnetic door gaskets kept, and how many are on hand?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "| SP-131 | Door gasket, magnetic, 2.1 m, food-safe grey | K-11 | 6 | 4 |"
+      ]
+    },
+    {
+      "id": "q162",
+      "question": "To what accuracy is the reference temperature probe certified, and where is it stored?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "Reference temperature probe, certified to 0.1 °C | Safe"
+      ]
+    },
+    {
+      "id": "q163",
+      "question": "What fuel surcharge applies to the island ferry region?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "| Island ferry | 11.20% | 9.00% |"
+      ]
+    },
+    {
+      "id": "q164",
+      "question": "What happened to the old ammonia plant at Marrow Point?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "The old ammonia plant at Marrow Point was decommissioned and its machine room now stores pallet wrap."
+      ]
+    },
+    {
+      "id": "q165",
+      "question": "Which work order calibrated a trailer data logger, and against what?",
+      "file": "xlsx/quillmere-maintenance-ledger.xlsx",
+      "kind": "xlsx",
+      "quotes": [
+        "| WO-2207 | TR-09 | Calibrate the trailer 9 data logger against the reference probe |"
+      ]
+    }
+  ]
+}

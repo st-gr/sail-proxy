@@ -1,0 +1,248 @@
+/* Configuration Management App Styles */
+
+.sapUiSizeCompact .sapMText {
+    line-height: 1.4;
+}
+
+.sapMTextMonospace {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+    background-color: #f5f5f5;
+    padding: 0.25rem 0.5rem;
+    border-radius: 3px;
+}
+
+.sapMTextSmall {
+    font-size: 0.875rem;
+    color: #666;
+}
+
+/* JSON Editor Container */
+.jsonEditorContainer {
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
+}
+
+/* Flexible Column Layout adjustments */
+.sapFFCL .sapFDynamicPageTitle {
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+/* Configuration status indicators */
+.configStatusActive {
+    color: #107e3e;
+    font-weight: 600;
+}
+
+.configStatusInactive {
+    color: #666;
+}
+
+.configStatusValid {
+    color: #107e3e;
+}
+
+.configStatusInvalid {
+    color: #b00;
+}
+
+/* Table row hover effect */
+.sapMListTblRow:hover {
+    background-color: #f5f5f5;
+}
+
+/* Empty state styling */
+.emptyStateContainer {
+    min-height: 400px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+
+/* Keep only essential table styling without interfering with UI5 defaults */
+.sapMListTblRow:hover {
+    background-color: #f8f9fa;
+    transition: background-color 0.15s ease-in-out;
+}
+
+.sapMTextMuted {
+    color: #666;
+    opacity: 0.8;
+}
+
+.sapMTextWrap {
+    white-space: normal;
+    word-wrap: break-word;
+}
+
+/* Improved ObjectStatus spacing */
+.sapMObjStatus {
+    margin: 0.25rem 0;
+}
+
+/* Version text styling */
+.sapMTextMonospace {
+    font-family: 'Monaco', 'Consolas', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+    background-color: #f5f5f5;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid #e0e0e0;
+}
+
+/* Dark theme (Settings > Theme): the hard-coded colours above are light-only. UI5 sets
+   sapUiTheme-<id> on <html> at boot and on every Theming.setTheme, so these follow live. */
+html.sapUiTheme-sap_horizon_dark .sapMTextMonospace {
+    background-color: var(--sapBackgroundColor);
+    border-color: var(--sapList_BorderColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .sapMTextSmall,
+html.sapUiTheme-sap_horizon_dark .sapMTextMuted,
+html.sapUiTheme-sap_horizon_dark .configStatusInactive {
+    color: var(--sapContent_LabelColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .jsonEditorContainer {
+    border-color: var(--sapList_BorderColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .configStatusActive,
+html.sapUiTheme-sap_horizon_dark .configStatusValid {
+    color: var(--sapPositiveTextColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .configStatusInvalid {
+    color: var(--sapNegativeTextColor);
+}
+
+html.sapUiTheme-sap_horizon_dark .sapMListTblRow:hover {
+    background-color: var(--sapList_Hover_Background);
+}
+
+/* Dialog layout fixes for create/duplicate configuration dialogs */
+
+/* Turn the panel into a column flexbox so header + content stack,
+   and content gets the remaining height. */
+.fullHeightPanel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Content must flex to fill (NOT height:100%). */
+.fullHeightPanel > .sapMPanelContent {
+  flex: 1 1 auto;
+  min-height: 0;               /* critical: allow shrinking */
+  display: flex;
+  flex-direction: column;
+  padding: 0;                   /* keep no padding to avoid overflow */
+  box-sizing: border-box;
+  overflow: hidden;             /* prevents inner double scrollbars */
+}
+
+/* Inner column filler stays flex. */
+.columnFill {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* Allow the editor container to flex, not just the editor div */
+.columnFill .sapUiCodeEditor,
+.columnFill .sapUiCodeEditorContainer {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Height will be set dynamically via JavaScript using height probe */
+}
+
+/* Ensure ACE editor inside CodeEditor gets proper height */
+.columnFill .sapUiCodeEditor .ace_editor {
+  /* Height will be set dynamically via JavaScript */
+}
+
+/* Fix flex chain: make VBox containers in dialog grow to fill space */
+.cfgDialog .sapMFlexItem {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Ensure the Panel grows to fill available space in dialog */
+.cfgDialog .fullHeightPanel {
+  flex: 1 1 auto !important;
+  min-height: 0;
+}
+
+/* good hygiene for nested flex */
+.createDialogRow, .createDialogCol { min-height: 0; }
+.padInner { padding: .75rem; box-sizing: border-box; }
+
+/* Make the dialog's content area expose a real height regardless of scroll mode */
+.cfgDialog .sapMDialogSection,
+.cfgDialog .sapMDialogCont,            /* when verticalScrolling=false */
+.cfgDialog .sapMDialogContent,         /* older/some themes */
+.cfgDialog .sapMDialogScroll,          /* when verticalScrolling=true */
+.cfgDialog .sapMDialogScrollCont {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Let the HBox body occupy the dialog's available height */
+.cfgDialog .dialogBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;              /* ensures children see a real cross-axis height */
+}
+
+/* Field-help popover text: a long unbroken token (a doc URL, a JSON snippet) must
+   wrap inside the popover rather than force a horizontal scrollbar. `wrapping: true`
+   on sap.m.Text breaks on whitespace only, so an unbroken run needs this too. */
+.configFormHelpText {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* Detail title: the stored validation messages. The title does not scroll with the page, so an
+   uncapped list would push the form (or the JSON editor) below it off the screen; past this height
+   the list scrolls on its own. About three strips: the form's own scrolling region needs 240 px
+   below the title (model/formViewport.ts) and a 700 px window has little more to give. */
+.cfgDetailValidation {
+    max-height: min(20vh, 9rem);
+    overflow-y: auto;
+}
+
+/* Detail title: the checksum is one unbroken hex run; on a narrow column it has to wrap rather than
+   run out of the title. */
+.cfgDetailChecksum,
+.cfgDetailChecksum .sapMObjectAttributeText {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    white-space: normal;
+}
+
+/* Detail header in the JSON view: it stays visible (so DynamicPage re-measures it) but holds nothing
+   on screen then - the form panel inside is hidden - so it gives back its own padding too. The
+   selector out-ranks the theme's `.sapFDynamicPage-Std-Desktop .sapFDynamicPageHeader.sapFDynamicPageHeaderWithContent`. */
+.sapFDynamicPage .sapFDynamicPageHeader.sapFDynamicPageHeaderWithContent.cfgDetailHeaderIdle {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+/* Responsive design */
+@media (max-width: 1024px) {
+    .sapFFCL .sapFFlexibleColumnLayout {
+        --_sap_f_FlexibleColumnLayout_OneColumnMaxWidth: 100%;
+    }
+    
+    .sapMListTblRow .sapMListTblCell {
+        padding: 0.5rem 0.75rem;
+    }
+}

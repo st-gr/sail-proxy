@@ -1,0 +1,22 @@
+{
+  "name": "docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The sail-proxy documentation site (VitePress). Built and deployed to GitHub Pages.",
+  "type": "module",
+  "scripts": {
+    "prepare-assets": "node scripts/copy-fonts.mjs && node scripts/sync-root-files.mjs && node scripts/sync-openapi.mjs && node scripts/gen-endpoints.mjs",
+    "dev": "pnpm run prepare-assets && vitepress dev",
+    "build": "pnpm run prepare-assets && vitepress build && node scripts/check-base.mjs && node scripts/check-styles.mjs && node scripts/check-anchors.mjs",
+    "preview": "vitepress preview",
+    "test": "node --test scripts/*.test.mjs",
+    "check": "pnpm run test && node scripts/check-links.mjs && node scripts/check-titles.mjs && node scripts/check-mustache.mjs && node scripts/check-videos.mjs && node ../screencast/check.js && node ../screencast/lib/narration-check.mjs && pnpm run build"
+  },
+  "devDependencies": {
+    "@sap-theming/theming-base-content": "^11.36.5",
+    "asciinema-player": "3.17.0",
+    "swagger-ui-dist": "5.33.1",
+    "vitepress": "^1.6.4",
+    "yaml": "^2.9.1"
+  }
+}

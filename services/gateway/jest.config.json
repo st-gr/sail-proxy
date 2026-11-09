@@ -1,0 +1,42 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "roots": ["<rootDir>/test", "<rootDir>/src"],
+  "testMatch": [
+    "**/__tests__/**/*.ts",
+    "**/?(*.)+(spec|test).ts"
+  ],
+  "transform": {
+    "^.+\\.ts$": "ts-jest"
+  },
+  "collectCoverageFrom": [
+    "src/**/*.ts",
+    "!src/**/*.d.ts",
+    "!src/**/index.ts"
+  ],
+  "coverageDirectory": "coverage",
+  "coverageReporters": [
+    "text",
+    "lcov",
+    "html"
+  ],
+  "setupFilesAfterEnv": ["<rootDir>/test/setupTests.ts"],
+  "testTimeout": 30000,
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/src/$1",
+    "^@libs/(.*)$": "<rootDir>/../../libs/$1",
+    "^@sap-llm-gateway/libs/(.*)$": "<rootDir>/../../libs/$1"
+  },
+  "moduleDirectories": ["node_modules", "<rootDir>"],
+  "modulePaths": ["<rootDir>/src"],
+  "verbose": true,
+  "collectCoverage": false,
+  "clearMocks": true,
+  "restoreMocks": true,
+  "testPathIgnorePatterns": [
+    "/node_modules/",
+    "/dist/",
+    "test/integration/gateway-startup.test.ts"
+  ],
+  "forceExit": true
+}

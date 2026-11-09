@@ -1,0 +1,18 @@
+{
+  "apps": [
+    "api-keys-app",
+    "aws-credentials-app",
+    "config-app",
+    "connections-app",
+    "grounding-app",
+    "model-library-app",
+    "plugins-app",
+    "sap-rates-app",
+    "security-notifications-app",
+    "shell",
+    "teams-app",
+    "tool-policies-app",
+    "usage-analytics-app",
+    "users-app"
+  ]
+}

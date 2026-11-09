@@ -1,0 +1,11 @@
+{
+  "id": "responsesNamespaceToolsPlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Supports Codex sub-agent namespace tools on the Responses route."
+    }
+  }
+}

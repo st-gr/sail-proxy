@@ -1,0 +1,89 @@
+{
+  "config": {
+    "modules": {
+      "prompt_templating": {
+        "prompt": {
+          "template": [
+            {
+              "role": "system",
+              "content": "S1\nS2"
+            },
+            {
+              "role": "user",
+              "content": "a\nb"
+            },
+            {
+              "role": "assistant",
+              "content": "calling",
+              "tool_calls": [
+                {
+                  "id": "tu1",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"X\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "tu1",
+              "content": "sunny"
+            },
+            {
+              "role": "user",
+              "content": "thanks"
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "image_url",
+                  "image_url": {
+                    "url": "data:image/png;base64,AA=="
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": "look"
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": "plain"
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "description": "Weather",
+                "strict": true,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "model": {
+          "name": "anthropic--claude-4.5-sonnet",
+          "version": "latest",
+          "params": {
+            "max_tokens": 64
+          }
+        }
+      }
+    }
+  },
+  "placeholder_values": {},
+  "messages_history": []
+}

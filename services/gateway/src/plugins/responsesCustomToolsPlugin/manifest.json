@@ -1,0 +1,11 @@
+{
+  "id": "responsesCustomToolsPlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Supports Codex freeform custom tools such as apply_patch on the Responses route."
+    }
+  }
+}

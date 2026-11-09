@@ -1,0 +1,270 @@
+{
+  "files": [
+    {
+      "path": "kyma/scripts/setup-kyma.js",
+      "reason": "Kyma setup: collects answers and renders manifests"
+    },
+    {
+      "path": "kyma/scripts/deploy-kyma.js",
+      "reason": "spawned by setup-kyma.js to apply the rendered manifests"
+    },
+    {
+      "path": "kyma/scripts/deploy-error.js",
+      "reason": "required by deploy-kyma.js and migration-jobs.js"
+    },
+    {
+      "path": "kyma/scripts/migration-jobs.js",
+      "reason": "runs the database migration Jobs of an upgrade (rendered into manifests/upgrade/)"
+    },
+    {
+      "path": "kyma/scripts/install-record.js",
+      "reason": "install record ConfigMap: rendered by setup-kyma.js, applied by deploy-kyma.js, read back by upgrade"
+    },
+    {
+      "path": "kyma/scripts/live-values.js",
+      "reason": "reads setup answers and the OAuth2 proxy secrets back from the live namespace (no rendered files in the kit)"
+    },
+    {
+      "path": "kyma/scripts/kubectl-read.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
+      "path": "kyma/scripts/kyma-namespace.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
+      "path": "kyma/scripts/local-config-snapshot.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
+      "path": "kyma/scripts/registry-secret.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
+      "path": "kyma/scripts/secrets-checksum.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
+      "path": "kyma/templates/configmaps/.gitkeep",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/auth/dex-rbac.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/auth/dex.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/auth/oauth2-proxy.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/admin.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/gateway.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/migrate-jobs.yaml",
+      "reason": "the database migration Jobs setup-kyma.js renders into manifests/upgrade/ and upgrade runs"
+    },
+    {
+      "path": "kyma/templates/manifests/core/namespace.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/network-policies.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/nginx.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/postgres.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/core/valkey.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/apirule-examples.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/apirule.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/destination-rules.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/health-check-protection.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/peer-authentication.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/streaming-envoyfilter.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/manifests/networking/streaming-virtualservice.yaml",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/secrets/.gitkeep",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/secrets/gateway-s3-env.yaml.template",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "kyma/templates/secrets/registry-secret.yaml.template",
+      "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
+    },
+    {
+      "path": "docker/setup-docker.js",
+      "reason": "Docker setup (also spawned by setup-kyma.js with --config)"
+    },
+    {
+      "path": "docker/setup-flow/billing.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/docker-config.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/pluginInstall.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/prompts.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/secrets.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/session.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/install-record.js",
+      "reason": "Docker install record (docker/.sail-proxy-install.json): written by setup-docker.js and upgrade, read back by upgrade"
+    },
+    {
+      "path": "docker/setup-flow/onlyNew.js",
+      "reason": "the upgrade's prompt wrapper: answers what the installation holds, asks only the rest"
+    },
+    {
+      "path": "docker/configs/providers/github/.env.auth",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/github/dex.config.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/.env.auth",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/dex.config.external.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/dex.config.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/docker-compose.override.yml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/ldap-server/Dockerfile",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ldap/ldap-server/bootstrap/01-test-data.ldif",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/local/.env.auth",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/local/dex.config.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/okta/.env.auth",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/okta/dex.config.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/shared/.env.filesearch-runtime",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/shared/.env.postgres",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/docker-compose.yml",
+      "reason": "compose file setup-docker.js reads volume names from and patches"
+    },
+    {
+      "path": "cli-tools/kyma-db-manager.js",
+      "reason": "Postgres backup/restore helpers for Kyma"
+    },
+    {
+      "path": "cli-tools/kyma-pod-files.js",
+      "reason": "Postgres backup/restore helpers for Kyma"
+    },
+    {
+      "path": "services/gateway/.env.sample",
+      "reason": "env templates setup-docker.js copies and fills"
+    },
+    {
+      "path": "services/admin/.env.sample",
+      "reason": "env templates setup-docker.js copies and fills"
+    },
+    {
+      "path": "services/ollama/.env.sample",
+      "reason": "env templates setup-docker.js copies and fills"
+    },
+    {
+      "path": "services/gateway/api_config.json",
+      "reason": "api_config read back by setup-kyma.js and bind-mounted by compose"
+    },
+    {
+      "path": "services/admin/api_config.json",
+      "reason": "api_config read back by setup-kyma.js and bind-mounted by compose"
+    },
+    {
+      "path": "package.json",
+      "reason": "version source for setup-docker.js and kyma-db-manager.js",
+      "transform": "name-version"
+    },
+    {
+      "path": "upgrade-policy.json",
+      "from": "cli-tools/upgrade-policy.json",
+      "reason": "release-owned upgrade guard rails read by the upgrade command"
+    }
+  ]
+}

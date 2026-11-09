@@ -1,0 +1,11 @@
+{
+  "id": "responsesWebSearchPlugin",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": {
+      "summary": "Runs the hosted web_search tool on the Responses route."
+    }
+  }
+}

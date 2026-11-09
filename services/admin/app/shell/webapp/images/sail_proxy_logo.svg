@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 5 180 160" width="220" height="168">
+  <defs>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#33B1FF"/>
+      <stop offset="100%" stop-color="#0A6ED1"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(8,72)">
+    <!-- First line: SAIL -->
+    <text x="0" y="0"
+          font-family="'JetBrains Mono', Menlo, Consolas, monospace"
+          font-size="72" font-weight="700"
+          fill="url(#textGrad)" letter-spacing="1">
+      SAIL
+    </text>
+    <!-- A underline -->
+    <rect x="40" y="9" width="40" height="8" rx="0" fill="url(#textGrad)"/>
+    <!-- I underline -->
+    <rect x="86" y="9" width="29" height="8" rx="0" fill="url(#textGrad)"/>
+
+    <!-- PROXY with gradient background -->
+    <!-- Rectangle aligned to PROXY text with padding -->
+    <rect x="0" y="30" width="166" height="54" rx="6" fill="url(#textGrad)"/>
+    <text x="8" y="72"
+          font-family="'JetBrains Mono', Menlo, Consolas, monospace"
+          font-size="52" font-weight="700"
+          fill="#FFFFFF" letter-spacing="1">
+      PROXY
+    </text>
+  </g>
+</svg>

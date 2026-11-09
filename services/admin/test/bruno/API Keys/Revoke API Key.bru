@@ -1,0 +1,46 @@
+meta {
+  name: Disable API Key
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{base_url}}/disableApiKey
+  body: json
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+body:json {
+  {
+    "keyId": "{{created_api_key_id}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.hasOwnProperty('success'): isTruthy
+  res.body.hasOwnProperty('message'): isTruthy
+  res.body.success: isTruthy
+}
+
+script:pre-request {
+  if (!bru.getVar('created_api_key_id')) {
+    throw new Error('No API key ID available. Run "Create API Key" first.');
+  }
+}
+
+script:post-response {
+  if (bru.getVar('created_api_key_id')) {
+    console.log('Disabled API key:', bru.getVar('created_api_key_id'));
+    
+    // Store disabled key ID for enable test
+    bru.setVar('disabled_api_key_id', bru.getVar('created_api_key_id'));
+  } else {
+    console.log('Skipping test - no API key ID available');
+  }
+}

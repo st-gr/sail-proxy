@@ -1,0 +1,9 @@
+{
+  "id": "stripCacheControlScope",
+  "version": "1.0.0",
+  "runtime": "node",
+  "gateway": "*",
+  "help": {
+    "en": { "summary": "Removes the scope field from cache_control objects, which SAP AI Core rejects." }
+  }
+}

@@ -1,0 +1,718 @@
+/**
+ * Service for loading and managing plugins
+ */
+import * as fs from 'fs';
+import * as path from 'path';
+import { getDefaultLogger } from '@libs/logger';
+const logger = getDefaultLogger();
+import { Request } from 'express';
+// configService imports this module statically (for loadAll/reloadAll), so this
+// is a real circular import. It's safe: both sides only touch each other's
+// exports inside function bodies (matchAll here, loadAll/reloadAll there), never
+// at module top level, so by the time either runs, both modules have finished
+// initializing. Was a require('./configService') inside matchAll for the same
+// reason; static here now so the type carries through instead of being `any`.
+import configService from './configService';
+import type { PluginManifest } from '@libs/plugin-package';
+import { INSTALLED_MARKER } from '../pluginInstall/marker';
+import { clearPluginSettingsCache } from '../pluginInstall/settings';
+
+interface PluginRule {
+  id: string;
+  match: any[];
+  strategy: 'before' | 'after' | 'stream' | 'error';
+  handler: (context: any) => Promise<any>;
+}
+
+interface HookDefinition {
+  type: 'header' | 'json-path' | 'json-path-regex' | 'url-regex';
+  name?: string;
+  path?: string;
+  equals?: any;
+  from?: number;
+  to?: number;
+  regex?: string;
+  flags?: string;
+}
+
+// Global plugin registry with performance caching
+declare global {
+  var pluginRegistry: Record<string, PluginRule>;
+  var matcherCache: Map<string, HookDefinition>;
+  var compiledRegexCache: Map<string, RegExp>;
+}
+
+global.pluginRegistry = global.pluginRegistry || {};
+global.matcherCache = global.matcherCache || new Map();
+global.compiledRegexCache = global.compiledRegexCache || new Map();
+
+/**
+ * Validates a plugin rule object structure
+ * @param rule - Plugin rule object to validate
+ * @returns Whether the rule is valid
+ */
+function validateRule(rule: any): rule is PluginRule {
+  if (!rule || typeof rule !== 'object') {
+    logger.error('PluginLoader', `Invalid rule: not an object`);
+    return false;
+  }
+
+  // Check required fields
+  if (!rule.id || typeof rule.id !== 'string') {
+    logger.error('PluginLoader', `Invalid rule: missing or invalid 'id'`);
+    return false;
+  }
+
+  if (!Array.isArray(rule.match)) {
+    logger.error('PluginLoader', `Invalid rule '${rule.id}': 'match' must be an array`);
+    return false;
+  }
+
+  if (!['before', 'after', 'stream', 'error'].includes(rule.strategy)) {
+    logger.error('PluginLoader', `Invalid rule '${rule.id}': 'strategy' must be 'before', 'after', 'stream', or 'error'`);
+    return false;
+  }
+
+  if (typeof rule.handler !== 'function') {
+    logger.error('PluginLoader', `Invalid rule '${rule.id}': 'handler' must be a function`);
+    return false;
+  }
+
+  return true;
+}
+
+export { INSTALLED_MARKER };
+
+interface LoadedModule {
+  rules: PluginRule[];
+  error?: string;
+}
+
+export interface PluginLoadReportEntry {
+  source: string;
+  id?: string;
+  version?: string;
+  kind: 'shipped' | 'installed';
+  rules: { id: string; strategy: string }[];
+  error?: string;
+}
+
+let loadReport: PluginLoadReportEntry[] = [];
+
+/** Per-plugin result of the most recent loadAll. */
+export const getLoadReport = (): PluginLoadReportEntry[] => loadReport.map(e => ({ ...e, rules: [...e.rules] }));
+
+let loadedOnce = false;
+
+/** Whether a plugin load has run in this process; until one has, a new plugin folder needs no reload. */
+export const hasLoadedPlugins = (): boolean => loadedOnce;
+
+/**
+ * The text of anything a plugin threw. A plugin can throw a string, null or an object
+ * that refuses to print, and the result must still be a non-empty error: an empty one
+ * would report a healthy row, and a throw from a catch here would lose every plugin.
+ */
+function errorText(error: any): string {
+  try {
+    return String(error?.message ?? error) || 'threw an empty error';
+  } catch {
+    return 'threw an error that cannot be printed';
+  }
+}
+
+const ruleKey = (rule: { id: string; strategy: string }): string => `${rule.id}\u0000${rule.strategy}`;
+
+/**
+ * Load a plugin's entry file
+ * @param filePath - Full path to the entry file
+ * @returns The valid rules, plus `error` when the module could not be used
+ */
+function loadPlugin(filePath: string): LoadedModule {
+  try {
+    logger.info('PluginLoader', `Loading plugin from ${filePath}`);
+    
+    const ext = path.extname(filePath);
+
+    // Clear require cache to ensure fresh load
+    delete require.cache[require.resolve(filePath)];
+    
+    // Load the plugin (handle both .js and .ts files)
+    let plugin;
+    if (ext === '.ts') {
+      // Use ts-node to load TypeScript files directly
+      try {
+        // Check if ts-node is available
+        try {
+          require.resolve('ts-node/register');
+        } catch (resolveError) {
+          logger.warn('PluginLoader', `ts-node not available, cannot load TypeScript plugin: ${filePath}`);
+          return { rules: [], error: 'ts-node is not available to load TypeScript' };
+        }
+        
+        // Register ts-node if not already registered
+        if (!process.env.TS_NODE_DEV && !require.extensions['.ts']) {
+          process.env.TS_NODE_TRANSPILE_ONLY = 'true';
+          require('ts-node/register');
+          logger.debug('PluginLoader', 'Registered ts-node for TypeScript plugin loading');
+        }
+        
+        plugin = require(filePath);
+        logger.debug('PluginLoader', `Successfully loaded TypeScript plugin: ${filePath}`);
+      } catch (tsError: any) {
+        logger.warn('PluginLoader', `Failed to load TypeScript plugin ${filePath}: ${errorText(tsError)}`);
+        return { rules: [], error: errorText(tsError) };
+      }
+    } else {
+      plugin = require(filePath);
+    }
+    
+    // Validate plugin exports array of rules
+    if (!Array.isArray(plugin)) {
+      logger.error('PluginLoader', `Plugin must export an array of rules: ${filePath} (got ${typeof plugin})`);
+      return { rules: [], error: `Plugin must export an array of rules (got ${typeof plugin})` };
+    }
+    
+    // Validate each rule and filter out invalid ones
+    const validRules = plugin.filter((rule: any) => validateRule(rule));
+    
+    logger.info('PluginLoader', `Loaded ${validRules.length} valid rules from ${filePath}`);
+    return { rules: validRules };
+  } catch (error: any) {
+    logger.error('PluginLoader', `Error loading plugin ${filePath}: ${errorText(error)}`);
+    return { rules: [], error: errorText(error) };
+  }
+}
+
+/**
+ * Load one plugin folder. Returns null for a folder without a manifest, so no
+ * report row is made for it.
+ */
+function loadPluginFolder(folderPath: string, name: string): { entry: PluginLoadReportEntry; rules: PluginRule[] } | null {
+  const manifestPath = path.join(folderPath, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    logger.debug('PluginLoader', `Skipping folder without manifest: ${folderPath}`);
+    return null;
+  }
+  const kind = fs.existsSync(path.join(folderPath, INSTALLED_MARKER)) ? 'installed' : 'shipped';
+  const entry: PluginLoadReportEntry = { source: name, kind, rules: [] };
+  const fail = (message: string) => {
+    logger.error('PluginLoader', `Plugin folder ${name}: ${message}`);
+    entry.error = message;
+    return { entry, rules: [] as PluginRule[] };
+  };
+
+  let manifest: Partial<PluginManifest>;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error: any) {
+    return fail(`manifest.json is unreadable: ${error.message}`);
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    return fail('manifest.json is not an object');
+  }
+  if (typeof manifest.id === 'string') entry.id = manifest.id;
+  if (typeof manifest.version === 'string') entry.version = manifest.version;
+  if (manifest.runtime !== 'node') {
+    return fail(`runtime must be "node" (got ${JSON.stringify(manifest.runtime)})`);
+  }
+
+  // .ts in development, .js in production
+  const isProduction = process.env.NODE_ENV === 'production' || folderPath.includes('/dist/');
+  const tsEntry = path.join(folderPath, 'index.ts');
+  const jsEntry = path.join(folderPath, 'index.js');
+  const entryFile = !isProduction && fs.existsSync(tsEntry) ? tsEntry : fs.existsSync(jsEntry) ? jsEntry : null;
+  if (!entryFile) {
+    return fail('no index.js (or index.ts in development) in the plugin folder');
+  }
+
+  const loaded = loadPlugin(entryFile);
+  if (loaded.error) entry.error = loaded.error;
+  entry.rules = loaded.rules.map(r => ({ id: r.id, strategy: r.strategy }));
+  return { entry, rules: loaded.rules };
+}
+
+/**
+ * Drop installed rules whose id and strategy duplicate a shipped rule, or an
+ * earlier installed plugin (by source name, so directory order
+ * never decides). Non-installed rules are never dropped.
+ */
+function resolveConflicts(loaded: { entry: PluginLoadReportEntry; rules: PluginRule[] }[]): void {
+  const claimed = new Set<string>();
+  for (const l of loaded) {
+    if (l.entry.kind !== 'installed') l.rules.forEach(r => claimed.add(ruleKey(r)));
+  }
+  const installed = loaded
+    .filter(l => l.entry.kind === 'installed')
+    .sort((a, b) => (a.entry.source < b.entry.source ? -1 : a.entry.source > b.entry.source ? 1 : 0));
+  for (const l of installed) {
+    const dropped = l.rules.filter(r => claimed.has(ruleKey(r)));
+    if (dropped.length > 0) {
+      const names = [...new Set(dropped.map(r => `${r.id} (${r.strategy})`))].join(', ');
+      const message = `Rule id conflict, dropped: ${names}`;
+      logger.error('PluginLoader', `Plugin ${l.entry.source}: ${message}`);
+      l.entry.error = l.entry.error ? `${l.entry.error}; ${message}` : message;
+      l.rules = l.rules.filter(r => !claimed.has(ruleKey(r)));
+      l.entry.rules = l.rules.map(r => ({ id: r.id, strategy: r.strategy }));
+    }
+    l.rules.forEach(r => claimed.add(ruleKey(r)));
+  }
+}
+
+/**
+ * The plugins directory that ships alongside this module.
+ *
+ * Anchored on `__dirname`, never on `process.cwd()`. This file always sits in
+ * `<gateway-src>/services/`, so its sibling `<gateway-src>/plugins/` is the
+ * right answer in every layout we ship:
+ *
+ *   local dev (ts-node)  services/gateway/src/services            -> services/gateway/src/plugins            (.ts)
+ *   docker               /app/services/gateway/dist/services/gateway/src/services
+ *                                                                 -> …/dist/services/gateway/src/plugins     (.js)
+ *   npm-dist CLI         bundled/gateway/services/gateway/src/services
+ *                                                                 -> bundled/gateway/services/gateway/src/plugins (.js)
+ *
+ * cwd is NOT any of those consistently: docker starts in `/app` and the
+ * standalone CLI starts in `bundled/gateway` (it spawns the gateway with that
+ * cwd - npm-dist/sail-proxy/src/commands/server.ts). Against cwd the old
+ * relative `./src/plugins` pointed at a directory that does not exist there,
+ * which `loadAll` then happily created empty, so the CLI registered 0 rules and
+ * every hook plugin - pseudonymization included - silently never ran.
+ */
+export const DEFAULT_PLUGINS_DIR = path.resolve(__dirname, '..', 'plugins');
+
+/**
+ * Load all plugins from a directory
+ * @param pluginsDir - Path to plugins directory. Absolute paths are used as
+ *   given (that is the explicit override); a relative path is resolved against
+ *   THIS module's directory, not the process working directory. Defaults to the
+ *   shipped plugins directory.
+ * @returns Map of rule IDs to rule objects
+ */
+export const loadAll = function(pluginsDir: string = DEFAULT_PLUGINS_DIR): Record<string, PluginRule> {
+  loadedOnce = true;
+  clearPluginSettingsCache();
+  try {
+    // Ensure absolute path - resolved against this module, see DEFAULT_PLUGINS_DIR
+    const absolutePluginsDir = path.isAbsolute(pluginsDir)
+      ? pluginsDir
+      : path.resolve(__dirname, pluginsDir);
+
+    logger.info('PluginLoader', `Loading plugins from ${absolutePluginsDir}`);
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(absolutePluginsDir)) {
+      logger.info('PluginLoader', `Creating plugins directory: ${absolutePluginsDir}`);
+      fs.mkdirSync(absolutePluginsDir, { recursive: true });
+    }
+    
+    // Reset global caches for fresh load
+    global.pluginRegistry = {};
+    global.matcherCache.clear();
+    global.compiledRegexCache.clear();
+    loadReport = [];
+
+    // Read all files in the directory
+    const files = fs.readdirSync(absolutePluginsDir);
+    
+    // Load each plugin folder. A plugin is a folder with a manifest; a script here is not one.
+    const loaded: { entry: PluginLoadReportEntry; rules: PluginRule[] }[] = [];
+    files.forEach(file => {
+      const filePath = path.join(absolutePluginsDir, file);
+      let isDirectory = false;
+      try {
+        isDirectory = fs.statSync(filePath).isDirectory();
+      } catch {
+        return;
+      }
+      if (isDirectory) {
+        if (file.startsWith('.')) return; // .tmp and other working folders
+        const folder = loadPluginFolder(filePath, file);
+        if (folder) loaded.push(folder);
+        return;
+      }
+      if (/\.(js|ts)$/.test(file) && !file.endsWith('.d.ts')) {
+        logger.warn('PluginLoader', `Ignoring ${file}: a plugin must be a folder with a manifest.json and an index file`);
+      }
+    });
+
+    resolveConflicts(loaded);
+    loadReport = loaded.map(l => l.entry);
+    const allRules: PluginRule[] = loaded.flatMap(l => l.rules);
+
+    // Register rules in the global registry, allowing multiple rules with same ID but different strategies
+    allRules.forEach((rule, index) => {
+      const uniqueKey = `${rule.id}_${rule.strategy}_${index}`;
+      global.pluginRegistry[uniqueKey] = rule;
+    });
+
+    logger.info('PluginLoader', `Registered ${Object.keys(global.pluginRegistry).length} plugin rules`);
+    return global.pluginRegistry;
+  } catch (error: any) {
+    logger.error('PluginLoader', `Error loading plugins: ${error.message}`);
+    return {};
+  }
+};
+
+/**
+ * Get a plugin rule by ID and strategy
+ * @param ruleId - Rule ID to look up
+ * @param strategy - Strategy to filter by (optional)
+ * @returns Rule object or null if not found
+ */
+export const getRule = function(ruleId: string, strategy: string | null = null): PluginRule | null {
+  const rules = Object.values(global.pluginRegistry).filter(rule => rule.id === ruleId);
+  
+  if (rules.length === 0) {
+    return null;
+  }
+  
+  if (strategy) {
+    const filteredRules = rules.filter(rule => rule.strategy === strategy);
+    return filteredRules.length > 0 ? filteredRules[0] || null : null;
+  }
+  
+  // If no strategy specified, return the first rule (backward compatibility)
+  return rules[0] || null;
+};
+
+/**
+ * Get all plugin rules by ID (for debugging/inspection)
+ * @param ruleId - Rule ID to look up
+ * @returns Array of rule objects with that ID
+ */
+export const getAllRulesById = function(ruleId: string): PluginRule[] {
+  return Object.values(global.pluginRegistry).filter(rule => rule.id === ruleId);
+};
+
+/**
+ * The rule a hook selects for this request: the hook's callback id and its registered rule for
+ * `strategy`, provided the hook is well formed and every matcher in its `match` fits the request.
+ * Null when the hook is malformed or does not match; `rule` is null when nothing is registered
+ * under that id and strategy. The plugin executor runs exactly what this selects, so a caller that
+ * must know whether a plugin will run (pseudonymization/forcedRun.ts) asks the same question here.
+ */
+export const selectRule = function(
+  req: Request,
+  hook: any,
+  strategy: string,
+): { ruleId: string; rule: PluginRule | null } | null {
+  if (!hook || !hook.request || !hook.request.match || !hook.request.callback) {
+    return null;
+  }
+  const { match, callback } = hook.request;
+  if (!matchAll(req, match)) {
+    return null;
+  }
+  const ruleId = callback.id;
+  return { ruleId, rule: getRule(ruleId, strategy) };
+};
+
+/**
+ * Match all rule IDs against the request with performance optimizations
+ * @param req - Express request object
+ * @param ruleIds - Array of rule IDs to match
+ * @returns Whether all rules match
+ */
+export const matchAll = function(req: Request, ruleIds: string[] | any): boolean {
+  if (!Array.isArray(ruleIds) || ruleIds.length === 0) {
+    return false;
+  }
+  
+  try {
+    const config = configService.getConfig();
+    // HooksConfig.definitions is Record<string, unknown> (its internal shape
+    // is deliberately untyped on ApiConfig itself — see configService.ts's
+    // DefaultHookEntry/FileSearchRawConfig comments); this file already has the
+    // real per-entry shape as HookDefinition, matching api-config-schema.json's
+    // hooks.definitions patternProperties, so cast once here at the point of use.
+    const hookDefinitions = (config?.api_config?.hooks?.definitions || {}) as Record<string, HookDefinition>;
+    
+    // All rules must match for success - early exit optimization
+    for (const ruleId of ruleIds) {
+      // Check cache first
+      let hookDef = global.matcherCache.get(ruleId);
+      
+      if (!hookDef) {
+        hookDef = hookDefinitions[ruleId];
+        if (!hookDef) {
+          logger.warn('PluginLoader', `Rule '${ruleId}' not found in hooks.definitions`);
+          return false;
+        }
+        // Cache the hook definition
+        global.matcherCache.set(ruleId, hookDef);
+      }
+      
+      const matched = matchRuleOptimized(req, hookDef, ruleId);
+      if (!matched) {
+        return false; // Early exit on first non-match
+      }
+    }
+    
+    return true;
+  } catch (error: any) {
+    logger.error('PluginLoader', `Error matching rules: ${error.message}`);
+    return false;
+  }
+};
+
+/**
+ * Match a single rule against the request with caching
+ * @param req - Express request object
+ * @param hookDef - Hook definition from config
+ * @param ruleId - Rule ID for caching purposes
+ * @returns Whether the rule matches
+ */
+function matchRuleOptimized(req: Request, hookDef: HookDefinition, ruleId: string): boolean {
+  try {
+    switch (hookDef.type) {
+      case 'header':
+        return matchHeader(req, hookDef);
+      case 'json-path':
+        return matchJsonPath(req, hookDef);
+      case 'json-path-regex':
+        return matchJsonPathRegexOptimized(req, hookDef, ruleId);
+      case 'url-regex':
+        return matchUrlRegexOptimized(req, hookDef, ruleId);
+      default:
+        logger.warn('PluginLoader', `Unknown hook type: ${hookDef.type}`);
+        return false;
+    }
+  } catch (error: any) {
+    logger.error('PluginLoader', `Error matching rule: ${error.message}`);
+    return false;
+  }
+}
+
+
+/** Media type of a header value: everything before the first `;`, trimmed, lowercased. */
+function mediaType(value: string): string {
+  const semi = value.indexOf(';');
+  return (semi === -1 ? value : value.slice(0, semi)).trim().toLowerCase();
+}
+
+/**
+ * Compare a request header against a hook definition's `equals`.
+ *
+ * An expected value carrying no parameters compares on media type alone: clients
+ * routinely append `; charset=utf-8` (OkHttp, .NET JsonContent, older axios), and the
+ * strict equality this replaces silently excluded them — which, for
+ * `header:contentTypeJson`, meant those requests bypassed pseudonymization on every
+ * endpoint. An expected value that deliberately spells out parameters keeps exact-match
+ * semantics, so a definition can still pin a charset when it means to.
+ */
+export function headerValueMatches(actual: string, expected: string): boolean {
+  if (expected.includes(';')) return actual === expected;
+  return mediaType(actual) === mediaType(expected);
+}
+
+/**
+ * Match header rule
+ * @param req - Express request object
+ * @param hookDef - Hook definition
+ * @returns Whether the rule matches
+ */
+function matchHeader(req: Request, hookDef: HookDefinition): boolean {
+  if (!hookDef.name) return false;
+
+  const headerName = hookDef.name.toLowerCase();
+  const headerValue = req.headers[headerName];
+
+  if (headerValue === undefined) {
+    return false;
+  }
+
+  if (hookDef.equals !== undefined) {
+    return headerValueMatches(String(headerValue), String(hookDef.equals));
+  }
+  
+  if (hookDef.from !== undefined && hookDef.to !== undefined) {
+    const numValue = parseInt(String(headerValue), 10);
+    return !isNaN(numValue) && numValue >= hookDef.from && numValue <= hookDef.to;
+  }
+  
+  return true;
+}
+
+/**
+ * Match JSON path rule
+ * @param req - Express request object
+ * @param hookDef - Hook definition
+ * @returns Whether the rule matches
+ */
+function matchJsonPath(req: Request, hookDef: HookDefinition): boolean {
+  if (!req.body || !hookDef.path) {
+    return false;
+  }
+  
+  const path = hookDef.path;
+  let value: any = req.body;
+  
+  // Simple dot notation path resolution
+  const segments = path.replace(/^\$\./, '').split('.');
+  for (const segment of segments) {
+    if (value === undefined) {
+      return false;
+    }
+    value = value[segment];
+  }
+  
+  if (value === undefined) {
+    return false;
+  }
+  
+  if (hookDef.equals !== undefined) {
+    return value === hookDef.equals;
+  }
+  
+  return true;
+}
+
+/**
+ * Match JSON path regex rule with regex caching
+ * @param req - Express request object
+ * @param hookDef - Hook definition
+ * @param ruleId - Rule ID for caching
+ * @returns Whether the rule matches
+ */
+function matchJsonPathRegexOptimized(req: Request, hookDef: HookDefinition, ruleId: string): boolean {
+  if (!req.body || !hookDef.path || !hookDef.regex) {
+    return false;
+  }
+  
+  const path = hookDef.path;
+  let value: any = req.body;
+  
+  // Simple dot notation path resolution
+  const segments = path.replace(/^\$\./, '').split('.');
+  for (const segment of segments) {
+    if (value === undefined) {
+      return false;
+    }
+    
+    if (Array.isArray(value)) {
+      // If we encounter an array and the next segment is numeric, use it as index
+      if (!isNaN(parseInt(segment, 10))) {
+        value = value[parseInt(segment, 10)];
+      } else {
+        // Otherwise check each array element
+        for (let i = 0; i < value.length; i++) {
+          const element = value[i];
+          if (element && element[segment] !== undefined) {
+            value = element[segment];
+            break;
+          }
+        }
+      }
+    } else if (typeof value === 'object') {
+      value = value[segment];
+    } else {
+      return false;
+    }
+  }
+  
+  // Use cached regex for performance
+  const regexKey = `${ruleId}_${hookDef.regex}_${hookDef.flags || ''}`;
+  let regex = global.compiledRegexCache.get(regexKey);
+
+  if (!regex) {
+    regex = new RegExp(hookDef.regex, hookDef.flags || '');
+    global.compiledRegexCache.set(regexKey, regex);
+  }
+
+  // Handle different value types
+  if (typeof value === 'string') {
+    return regex.test(value);
+  }
+
+  // For arrays, check each element individually (early exit on first match)
+  // This avoids stringifying the entire array which would be slow for large arrays
+  if (Array.isArray(value)) {
+    for (const element of value) {
+      if (element === null || element === undefined) continue;
+
+      // For objects in the array, stringify just this one element
+      if (typeof element === 'object') {
+        try {
+          if (regex.test(JSON.stringify(element))) {
+            return true;
+          }
+        } catch (e) {
+          continue;
+        }
+      } else if (typeof element === 'string') {
+        if (regex.test(element)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // For single objects, stringify just that object
+  if (typeof value === 'object' && value !== null) {
+    try {
+      return regex.test(JSON.stringify(value));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+
+/**
+ * Match URL regex rule with regex caching
+ * @param req - Express request object
+ * @param hookDef - Hook definition
+ * @param ruleId - Rule ID for caching
+ * @returns Whether the rule matches
+ */
+function matchUrlRegexOptimized(req: Request, hookDef: HookDefinition, ruleId: string): boolean {
+  if (!hookDef.regex) {
+    return false;
+  }
+  
+  const url = req.url || '';
+  
+  // Use cached regex for performance
+  const regexKey = `${ruleId}_url_${hookDef.regex}_${hookDef.flags || ''}`;
+  let regex = global.compiledRegexCache.get(regexKey);
+  
+  if (!regex) {
+    regex = new RegExp(hookDef.regex, hookDef.flags || '');
+    global.compiledRegexCache.set(regexKey, regex);
+  }
+  
+  return regex.test(url);
+}
+
+/**
+ * Reload all plugins - clears caches and loads fresh
+ * Used when configuration is updated to ensure fresh plugin rules
+ * @param pluginsDir - Directory to load plugins from
+ */
+export const reloadAll = function(pluginsDir: string = DEFAULT_PLUGINS_DIR): void {
+  logger.info('PluginLoader', 'Reloading plugins due to config update');
+  
+  // Clear all global caches for fresh load
+  global.pluginRegistry = {};
+  global.matcherCache.clear();
+  global.compiledRegexCache.clear();
+  
+  // Load fresh plugins with updated configuration
+  loadAll(pluginsDir);
+  
+  const ruleCount = Object.keys(global.pluginRegistry).length;
+  logger.info('PluginLoader', `Plugins reloaded successfully: ${ruleCount} rules loaded`);
+};
+
+export default {
+  loadAll,
+  getRule,
+  getAllRulesById,
+  matchAll,
+  selectRule,
+  validateRule,
+  reloadAll
+};

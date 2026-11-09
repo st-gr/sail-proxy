@@ -1,0 +1,153 @@
+# Web IDE, App Studio
+.che/
+.gen/
+.claude/
+.mcp.json
+
+# MTA
+*_mta_build_tmp
+*.mtar
+mta_archives/
+
+# CAP
+libs/dist/
+services/gateway/dist/
+services/admin/dist/
+services/admin/gen/
+*.db*
+
+# NPM
+npm-dist/*/services/
+
+_out
+*.db
+*.sqlite
+connection.properties
+default-*.json
+.cdsrc-private.json
+gen/
+target/
+
+# Other
+.DS_Store
+*.orig
+*.log
+
+*.iml
+*.flattened-pom.xml
+
+# IDEs
+# .vscode
+# .idea
+
+# @cap-js/cds-typer
+@cds-models
+
+# Reference implementations and drafts
+draft/
+example_payloads/
+
+# Logs
+logs/
+logs/payloads/
+services/gateway/logs/
+services/admin/logs/
+ci-logs/
+
+# CI backup and temp files
+ci/.ci-backup-*
+ci/.ci-backup-location
+# UI journey reports (HTML, JUnit, screenshots, fixtures.json) written by ci/scripts/ui-journeys
+ci/reports/
+# file_search evaluation results (services/gateway/scripts/file-search-eval.ts)
+ci/file-search-eval/results/
+
+# Admin service Postgres database backups (local docker or Kyma —
+# dumps contain real API keys/credentials, never commit)
+/db-backups/
+
+# Workspace sub-lockfiles (root pnpm-lock.yaml is the source of truth)
+# Keep only: pnpm-lock.yaml (root), docker/pnpm-lock.yaml, npm-dist/sail-proxy/pnpm-lock.yaml
+libs/pnpm-lock.yaml
+libs/*/pnpm-lock.yaml
+services/*/pnpm-lock.yaml
+services/*/app/*/pnpm-lock.yaml
+kyma/scripts/pnpm-lock.yaml
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+dist/
+*.backup
+
+# IDE / OS specific
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+.env
+services/admin/.env
+services/gateway/.env
+# Standalone connections file beside the dev api_config.json: it holds provider secrets
+services/gateway/connections.json
+test/.env
+ollama-adapter/.env
+.claude
+.claude/settings.local.json
+services/admin/db/*
+!services/admin/db/.gitkeep
+services/admin/db/admin.db
+admin-db-export/
+
+# Kubernetes & Kyma - Generated manifests and secrets (created by setup-kyma.js)
+kyma/manifests/
+# Renders for any namespace other than sail-proxy (setup-kyma.js --namespace <ns>)
+kyma/deployments/
+kyma/templates/secrets/*.yaml
+kyma/templates/configmaps/*.yaml
+!kyma/templates/secrets/.gitkeep
+!kyma/templates/configmaps/.gitkeep
+
+# SAP relay for private CI: rendered manifests carry the relay host and its path key
+ci/sap-relay/.rendered/
+
+# Docker configuration (user-specific and generated)
+docker/.env.auth
+docker/.env.docker
+docker/.env.nginx
+docker/.env.postgres
+docker/.env.filesearch-runtime
+docker/docker-compose.override.yml
+docker/docker-compose.override.yml.backup.*
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages.
+.superpowers/
+
+# Superpowers plans, specs and working notes: written to be executed or read on a
+# specific machine (absolute paths, private hostnames, local DSNs), and internal by
+# nature. Never tracked; the public repo carries none of them.
+docs/superpowers/
+
+# Competitive analysis and positioning notes. Fully ignored: this repo is public,
+# so even a tracked stub naming the analysis would disclose internal strategy.
+docs/competitive/
+
+# VitePress site
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.vitepress/theme/fonts/
+docs/.generated/
+docs/public/generated/
+docs/public/openapi/
+.superpowers/
+
+# Screencast toolkit: recordings, keys and the redaction map never leave this machine
+screencast/out/
+screencast/redact.local.json
+screencast/redact.extra.local.json
+screencast/videos/*/clips/

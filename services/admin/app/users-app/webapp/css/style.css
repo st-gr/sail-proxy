@@ -1,0 +1,6 @@
+/* Usage charts section: the bullet charts show the bar, target line and colour only. The exact
+   used and limit figures (with currency) sit in the Usage form above, and the charts' own labels
+   would repeat them unformatted (a Decimal(12,6) prints six decimals) — same convention as the
+   shell's My quota card, which shows its figures as text beside the chart. */
+.adminUsersUsageCharts .sapSuiteBMCTopLabel,
+.adminUsersUsageCharts .sapSuiteBMCBottomLabel { display: none; }

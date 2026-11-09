@@ -1,0 +1,6 @@
+<core:FragmentDefinition xmlns="sap.m" xmlns:core="sap.ui.core">
+	<!-- A team that was never saved has no row the member actions could act on (they answer 404), so
+	     their buttons are disabled and this says why. The section itself is shown only for such a team
+	     (manifest.json "visible"): a lazily loaded block gets its binding context late. -->
+	<MessageStrip text="{i18n>saveTeamFirst}" type="Information" showIcon="true"/>
+</core:FragmentDefinition>

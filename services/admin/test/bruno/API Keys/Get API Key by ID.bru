@@ -1,0 +1,36 @@
+meta {
+  name: Get API Key by ID
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{base_url}}/ApiKeys({{created_api_key_id}})
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: isDefined
+  res.body.email: isDefined
+}
+
+script:pre-request {
+  if (!bru.getVar('created_api_key_id')) {
+    throw new Error('No API key ID available. Run "Create API Key" first.');
+  }
+}
+
+script:post-response {
+  if (bru.getVar('created_api_key_id')) {
+    console.log('Retrieved API key:', res.body.name);
+  } else {
+    console.log('Skipping test - no API key ID available');
+  }
+}

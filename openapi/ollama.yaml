@@ -1,0 +1,1067 @@
+openapi: 3.1.0
+info:
+  title: sail-proxy Ollama service
+  version: 0.12.1
+  summary: The Ollama-compatible service that forwards Ollama and OpenAI requests to the sail-proxy gateway.
+  description: |-
+    Every route of the Ollama-compatible service (`services/ollama`), a separate process on port 11434, the standard Ollama port. It turns each Ollama request into an OpenAI request, sends it to the gateway's `/openai/v1/chat/completions`, `/openai/v1/embeddings` or `/v1/models` with its own gateway API key, and turns the answer back into Ollama's format.
+
+    The routes follow [Ollama's API](https://github.com/ollama/ollama/blob/main/docs/api.md); each operation says in its description what the service does differently: the fields it maps, drops or fills in, and the answers it makes up because no model is run here.
+
+    **No client authentication.** The service checks no credential and allows requests from any origin (CORS `*`); an `Authorization` header is ignored. Every request reaches the gateway with the key in `MAIN_PROXY_API_KEY` (or `OPENAI_API_KEY`), sent as `x-api-key`, and its usage is recorded against that key. Expose the port only where every caller may use that key.
+
+    **Models** are the gateway's models (`/v1/models`); there is no local model store. The management routes (`create`, `pull`, `push`, `copy`, `delete`, blob upload) answer 501.
+
+    **Errors** are `{error: {message, type, code}}`. A gateway refusal (a 4xx such as 400, 401, 403, 404 or 429) is answered with the gateway's own status and message. A gateway that cannot be reached, times out or fails with a 5xx is answered 502. Any other failure is 500. An error before the first streamed chunk is a JSON error status; after it the stream is cut off.
+
+    **Request size:** a JSON or form body is accepted up to 50 MB.
+servers:
+  - url: http://localhost:11434
+    description: Docker (the optional `ollama` Compose service publishes the port on the host) or npm (`sail-proxy ollama start`); `OLLAMA_HOST` and `OLLAMA_PORT` change the address of an npm or local run
+externalDocs:
+  description: Ollama's own API documentation
+  url: https://github.com/ollama/ollama/blob/main/docs/api.md
+tags:
+  - name: Ollama API
+    description: The routes under `/api`.
+    externalDocs:
+      description: Ollama's API documentation
+      url: https://github.com/ollama/ollama/blob/main/docs/api.md
+  - name: OpenAI-compatible
+    description: The routes under `/v1`, in OpenAI's format, mapped through the Ollama routes.
+    externalDocs:
+      description: Ollama's OpenAI compatibility
+      url: https://github.com/ollama/ollama/blob/main/docs/openai.md
+  - name: Health and information
+paths:
+  /api/chat:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaChat
+      summary: Chat
+      description: |-
+        Forwarded to the gateway's `/openai/v1/chat/completions` as a chat completion.
+
+        **What changes in the request:**
+
+        - `stream` defaults to `true`. With `"stream": false` the answer is one JSON object.
+        - `options` are mapped: `temperature`, `top_p`, `top_k` (passed on as is), `num_predict` to `max_tokens`, `stop` (always sent as an array), `presence_penalty`, `frequency_penalty`, `seed`. Every other option is dropped.
+        - `format: "json"` becomes `response_format: {type: json_object}`; a `format` object with a `type` becomes `response_format: {type: json_schema}` carrying the object as the schema.
+        - `tools` are passed on. `messages` are passed on unchanged, including an `images` field, which is not turned into image content (use `/api/generate` for images).
+        - `think`, `keep_alive` and any other field have no effect.
+        - Without `model` the service asks for `gpt-3.5-turbo`, which a gateway usually does not offer.
+
+        **What changes in the response:** a streamed answer is one JSON object per line (`Content-Type: text/plain`), the last with `done: true` and zero counts; a gateway answer that is not streamed is sent as a single line. All duration fields are `0`; a non-streamed answer carries the gateway's token counts as `prompt_eval_count` and `eval_count`.
+
+        **Errors:** the gateway's refusals (authentication, entitlement, quota, unknown model, a bad request) come back with the gateway's own status (400, 401, 403, 404, 429) and message, as `chat_error`, or `streaming_error` before the first chunk of a streamed answer. A gateway that cannot be reached or fails with a 5xx is answered 502.
+      externalDocs:
+        description: Ollama's reference for the request and response bodies
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
+      x-sail-upstream: The gateway, POST /openai/v1/chat/completions
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: One chat object, or with streaming a sequence of them, one per line.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+            text/plain:
+              schema:
+                type: string
+                description: Newline-delimited chat objects.
+        "400":
+          $ref: "#/components/responses/GatewayRefused"
+        "401":
+          $ref: "#/components/responses/GatewayRefused"
+        "403":
+          $ref: "#/components/responses/GatewayRefused"
+        "404":
+          $ref: "#/components/responses/GatewayRefused"
+        "429":
+          $ref: "#/components/responses/GatewayRefused"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/generate:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaGenerate
+      summary: Generate a completion
+      description: |-
+        Turned into a chat request and forwarded to the gateway's `/openai/v1/chat/completions`.
+
+        **What changes in the request:**
+
+        - `system` becomes a system message and `prompt` a user message. `images` (base64) become `image_url` parts of the user message, each sent as `data:image/jpeg;base64,…` whatever the real type. A `suffix` is added as a second system message asking for a completion that fits before it.
+        - `stream` defaults to `true`; `options` and `format` are mapped as for `/api/chat`.
+        - `raw`, `template`, `context`, `keep_alive` and `think` have no effect.
+        - An empty or missing `prompt` is answered as a model load (`done_reason: "load"`, empty `response`) without a call to the gateway.
+        - Without `model` the service asks for `gpt-3.5-turbo`.
+
+        **What changes in the response:** the text is in `response`; the final streamed object and the non-streamed answer carry `context: []`; durations are `0`.
+
+        **Errors:** as `/api/chat`, with code `generate_error`.
+      externalDocs:
+        description: Ollama's reference for the request and response bodies
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-completion
+      x-sail-upstream: The gateway, POST /openai/v1/chat/completions
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+      responses:
+        "200":
+          description: One generate object, or with streaming a sequence of them, one per line.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateResponse"
+            text/plain:
+              schema:
+                type: string
+                description: Newline-delimited generate objects.
+        "400":
+          $ref: "#/components/responses/GatewayRefused"
+        "401":
+          $ref: "#/components/responses/GatewayRefused"
+        "403":
+          $ref: "#/components/responses/GatewayRefused"
+        "404":
+          $ref: "#/components/responses/GatewayRefused"
+        "429":
+          $ref: "#/components/responses/GatewayRefused"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/embed:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaEmbed
+      summary: Create embeddings
+      description: |-
+        Forwarded to the gateway's `/openai/v1/embeddings`. `model` and `input` are sent as they are; the gateway embeds only the first element of an array `input`, so the answer holds one embedding. `truncate`, `options` and `keep_alive` have no effect. Without `model` the service asks for `text-embedding-ada-002`, which a gateway usually does not offer.
+
+        The answer has `model` (as requested), `embeddings` (one vector per returned item), `prompt_eval_count` (the gateway's prompt tokens) and zero durations.
+
+        **Errors:** a gateway refusal comes back with the gateway's own status and message as `embeddings_error`: 400 for an input the gateway rejects (for example one that is too long), 401, 403, 404 or 429. A gateway that cannot be reached or fails with a 5xx is answered 502.
+      externalDocs:
+        description: Ollama's reference for the request and response bodies
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings
+      x-sail-upstream: The gateway, POST /openai/v1/embeddings
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbedRequest"
+      responses:
+        "200":
+          description: The embeddings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbedResponse"
+        "400":
+          $ref: "#/components/responses/GatewayRefused"
+        "401":
+          $ref: "#/components/responses/GatewayRefused"
+        "403":
+          $ref: "#/components/responses/GatewayRefused"
+        "404":
+          $ref: "#/components/responses/GatewayRefused"
+        "429":
+          $ref: "#/components/responses/GatewayRefused"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/tags:
+    get:
+      tags:
+        - Ollama API
+      operationId: ollamaListModels
+      summary: List models
+      description: |-
+        The gateway's models (`GET /v1/models`, with the service's key), in Ollama's format, sorted by name. Each entry has `name` and `model` (both the gateway's model id), `digest` (the SHA-256 of the id), `size: 0`, `modified_at` (the time of the request) and `details` filled with defaults (`format: gguf`, `family: llama`, `parameter_size: unknown`, `quantization_level: Q4_0`). No capabilities are listed here; `/api/show` has them.
+
+        **Errors:** when the gateway cannot be reached or fails, the service answers 502 `models_error`; it never makes up a model.
+      externalDocs:
+        description: Ollama's reference for the response body
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models
+      x-sail-upstream: The gateway, GET /v1/models
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      responses:
+        "200":
+          description: The model list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagsResponse"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/show:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaShowModel
+      summary: Show a model
+      description: |-
+        Describes one model. `model` is required (400 `missing_model`); `verbose` has no effect. The model's capabilities come from the gateway's model list (`completion`, plus `vision` for image models) when the gateway answers the lookup (with `MAIN_PROXY_API_KEY`, or `OPENAI_API_KEY` when that is not set) and the model is found there; otherwise they are guessed from the model name. The context length is the gateway's, or 4096. The template, parameters and Modelfile are generated text, not a real model's, and `model_info` is made up (`general.parameter_count` is always 1000000000).
+      externalDocs:
+        description: Ollama's reference for the request and response bodies
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#show-model-information
+      x-sail-upstream: The gateway, GET /v1/models, for the capabilities and context length
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShowRequest"
+      responses:
+        "200":
+          description: The model's details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShowResponse"
+        "400":
+          description: "`model` is missing (`missing_model`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceError"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /api/ps:
+    get:
+      tags:
+        - Ollama API
+      operationId: ollamaListRunningModels
+      summary: List running models
+      description: "Always an empty list: no model is loaded here."
+      externalDocs:
+        description: Ollama's reference for the response body
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#list-running-models
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "200":
+          description: An empty model list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunningModels"
+  /api/version:
+    get:
+      tags:
+        - Ollama API
+      operationId: ollamaGetVersion
+      summary: Version
+      description: A fixed version object (`1.0.0-proxy`), not an Ollama release number.
+      externalDocs:
+        description: Ollama's reference for the response body
+        url: https://github.com/ollama/ollama/blob/main/docs/api.md#version
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "200":
+          description: The version object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+  /api/create:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaCreateModel
+      summary: Create a model (not supported)
+      description: Always answers 501 `create_not_supported`; models are the gateway's.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/pull:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaPullModel
+      summary: Pull a model (not supported)
+      description: Always answers 501 `pull_not_supported`.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/push:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaPushModel
+      summary: Push a model (not supported)
+      description: Always answers 501 `push_not_supported`.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/copy:
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaCopyModel
+      summary: Copy a model (not supported)
+      description: Always answers 501 `copy_not_supported`.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/delete:
+    delete:
+      tags:
+        - Ollama API
+      operationId: ollamaDeleteModel
+      summary: Delete a model (not supported)
+      description: Always answers 501 `delete_not_supported`.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/blobs/{digest}:
+    parameters:
+      - name: digest
+        in: path
+        required: true
+        description: The blob's digest. Not read.
+        schema:
+          type: string
+    head:
+      tags:
+        - Ollama API
+      operationId: ollamaCheckBlob
+      summary: Check a blob (always absent)
+      description: Always answers 404 with no body; no blobs are stored.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "404":
+          description: The blob does not exist.
+    post:
+      tags:
+        - Ollama API
+      operationId: ollamaPushBlob
+      summary: Upload a blob (not supported)
+      description: Always answers 501 `blob_not_supported`.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /v1/chat/completions:
+    post:
+      tags:
+        - OpenAI-compatible
+      operationId: ollamaOpenaiChatCompletions
+      summary: Create a chat completion in OpenAI's format
+      description: |-
+        The request is turned into an Ollama chat request and handled as `/api/chat`, and the answer is turned back, so the gateway is called once and OpenAI's format is produced twice over.
+
+        **What changes in the request:** `stream` defaults to `true` (only `false` turns it off). Carried over: `model`, `messages`, `temperature`, `top_p`, `max_tokens`, `stop`, `presence_penalty`, `frequency_penalty`, `seed`, `tools`, and `response_format` of type `json_object` or `json_schema`. Everything else (`tool_choice`, `n`, `max_completion_tokens`, `stream_options`, `user`) is dropped; `top_k` cannot be sent.
+
+        **What changes in the response:** a streamed answer is `text/event-stream` with `chat.completion.chunk` events and a final `data: [DONE]`; chunks carry no `usage`. A non-streamed answer has the gateway's token counts as `usage`. Ids are made up (`chatcmpl-<time>`).
+
+        **Errors:** as for `/api/chat`: the gateway's own 4xx status and message, 502 when the gateway cannot be reached or fails, otherwise 500. The code is `openai_chat_error` or, before the first chunk of a streamed answer, `streaming_error`.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/chat/create
+      x-sail-upstream: The gateway, POST /openai/v1/chat/completions
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenAIChatRequest"
+      responses:
+        "200":
+          description: A chat completion, or with streaming a server-sent event stream of chunks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAIChatResponse"
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/GatewayRefused"
+        "401":
+          $ref: "#/components/responses/GatewayRefused"
+        "403":
+          $ref: "#/components/responses/GatewayRefused"
+        "404":
+          $ref: "#/components/responses/GatewayRefused"
+        "429":
+          $ref: "#/components/responses/GatewayRefused"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /v1/models:
+    get:
+      tags:
+        - OpenAI-compatible
+      operationId: ollamaOpenaiListModels
+      summary: List models in OpenAI's format
+      description: The `/api/tags` list as an OpenAI model list. `created` is the time of the request, `owned_by` is always `ollama`, and `permission` is empty. As for `/api/tags`, a gateway that cannot be reached or fails is answered 502 `models_error`, never a made-up model.
+      externalDocs:
+        description: The vendor's API reference for the response body
+        url: https://platform.openai.com/docs/api-reference/models/list
+      x-sail-upstream: The gateway, GET /v1/models
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      responses:
+        "200":
+          description: The model list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAIModelList"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /v1/embeddings:
+    post:
+      tags:
+        - OpenAI-compatible
+      operationId: ollamaOpenaiEmbeddings
+      summary: Create embeddings in OpenAI's format
+      description: |-
+        Handled as `/api/embed` with `model` and `input`; `encoding_format`, `dimensions` and `user` are dropped. `usage.prompt_tokens` and `total_tokens` both hold the gateway's prompt tokens. The gateway embeds only the first element of an array `input`.
+
+        **Errors:** as for `/api/embed`: the gateway's own 4xx status and message (400 for an input it rejects), 502 when the gateway cannot be reached or fails.
+      externalDocs:
+        description: The vendor's API reference for the request and response bodies
+        url: https://platform.openai.com/docs/api-reference/embeddings/create
+      x-sail-upstream: The gateway, POST /openai/v1/embeddings
+      x-sail-credential: None from the caller; the service sends its own gateway API key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbedRequest"
+      responses:
+        "200":
+          description: The embeddings list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAIEmbeddingsResponse"
+        "400":
+          $ref: "#/components/responses/GatewayRefused"
+        "401":
+          $ref: "#/components/responses/GatewayRefused"
+        "403":
+          $ref: "#/components/responses/GatewayRefused"
+        "404":
+          $ref: "#/components/responses/GatewayRefused"
+        "429":
+          $ref: "#/components/responses/GatewayRefused"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /health:
+    get:
+      tags:
+        - Health and information
+      operationId: ollamaGetHealth
+      summary: Health check
+      description: The service's liveness probe. It does not call the gateway; `mainProxy` is only the configured gateway address.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "200":
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /:
+    get:
+      tags:
+        - Health and information
+      operationId: ollamaGetServiceInfo
+      summary: Service information
+      description: Static service information, with the main routes and the link to Ollama's API documentation.
+      x-sail-upstream: The service
+      x-sail-credential: None
+      security: []
+      responses:
+        "200":
+          description: The service information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+components:
+  responses:
+    ServiceError:
+      description: "The request failed inside the service, in the service's error shape."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceError"
+    GatewayRefused:
+      description: "The gateway refused the request (a 400 for a request it rejects, 401, 403, 404 or 429); the status and message are the gateway's, in the service's error shape."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceError"
+    BadGateway:
+      description: "The gateway could not be reached, timed out or failed with a 5xx, in the service's error shape."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceError"
+    NotImplemented:
+      description: Model management is not available through the gateway.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceError"
+  schemas:
+    ServiceError:
+      type: object
+      description: "The service's error shape. An unknown path is answered 404 with type `not_found` and code `endpoint_not_found`; a body the parser rejects (malformed JSON, above 50 MB) is answered with the parser's 4xx status in the same shape."
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - type
+            - code
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              description: "`api_error`, `invalid_request`, `not_implemented` or `not_found`."
+            code:
+              type: string
+              description: For example `chat_error`, `streaming_error`, `generate_error`, `embeddings_error`, `models_error`, `missing_model`, `create_not_supported`.
+    Options:
+      type: object
+      description: The Ollama options the service maps. Others are dropped.
+      properties:
+        temperature:
+          type: number
+        top_p:
+          type: number
+        top_k:
+          type: integer
+          description: Passed to the gateway as `top_k`.
+        num_predict:
+          type: integer
+          description: Sent as `max_tokens`.
+        stop:
+          description: Always sent to the gateway as an array.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        seed:
+          type: integer
+        presence_penalty:
+          type: number
+        frequency_penalty:
+          type: number
+    Format:
+      description: "`json` for JSON mode, or a JSON schema object (it needs a `type`) for structured output."
+      oneOf:
+        - type: string
+          const: json
+        - type: object
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        tool_calls:
+          type:
+            - array
+            - "null"
+          items:
+            type: object
+    ChatRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: A gateway model id. Without it the service asks for `gpt-3.5-turbo`.
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: true
+        options:
+          $ref: "#/components/schemas/Options"
+        format:
+          $ref: "#/components/schemas/Format"
+        tools:
+          type: array
+          items:
+            type: object
+    ChatResponse:
+      type: object
+      required:
+        - model
+        - created_at
+        - message
+        - done
+      properties:
+        model:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        done_reason:
+          type: string
+          description: The gateway's finish reason. Absent from the final streamed object.
+        done:
+          type: boolean
+        total_duration:
+          type: integer
+          description: Always 0.
+        load_duration:
+          type: integer
+          description: Always 0.
+        prompt_eval_count:
+          type: integer
+        prompt_eval_duration:
+          type: integer
+          description: Always 0.
+        eval_count:
+          type: integer
+        eval_duration:
+          type: integer
+          description: Always 0.
+    GenerateRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: A gateway model id. Without it the service asks for `gpt-3.5-turbo`.
+        prompt:
+          type: string
+          description: An empty prompt is answered as a model load.
+        system:
+          type: string
+        suffix:
+          type: string
+        images:
+          type: array
+          description: Base64 images, sent as `data:image/jpeg;base64,…`.
+          items:
+            type: string
+        stream:
+          type: boolean
+          default: true
+        options:
+          $ref: "#/components/schemas/Options"
+        format:
+          $ref: "#/components/schemas/Format"
+    GenerateResponse:
+      type: object
+      required:
+        - model
+        - created_at
+        - response
+        - done
+      properties:
+        model:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        response:
+          type: string
+        done_reason:
+          type: string
+          description: The gateway's finish reason, or `load` for an empty prompt.
+        done:
+          type: boolean
+        total_duration:
+          type: integer
+        load_duration:
+          type: integer
+        prompt_eval_count:
+          type: integer
+        prompt_eval_duration:
+          type: integer
+        eval_count:
+          type: integer
+        eval_duration:
+          type: integer
+        context:
+          type: array
+          description: Always empty.
+          items:
+            type: integer
+    EmbedRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: A gateway embedding model. Without it the service asks for `text-embedding-ada-002`.
+        input:
+          description: Text to embed. The gateway embeds only the first element of an array.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+    EmbedResponse:
+      type: object
+      required:
+        - embeddings
+      properties:
+        model:
+          type: string
+        embeddings:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+        total_duration:
+          type: integer
+        load_duration:
+          type: integer
+        prompt_eval_count:
+          type: integer
+    ModelDetails:
+      type: object
+      properties:
+        parent_model:
+          type: string
+        format:
+          type: string
+        family:
+          type: string
+        families:
+          type: array
+          items:
+            type: string
+        parameter_size:
+          type: string
+        quantization_level:
+          type: string
+    TagsResponse:
+      type: object
+      required:
+        - models
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - model
+            properties:
+              name:
+                type: string
+              model:
+                type: string
+              modified_at:
+                type: string
+                format: date-time
+              size:
+                type: integer
+              digest:
+                type: string
+              details:
+                $ref: "#/components/schemas/ModelDetails"
+    ShowRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+    ShowResponse:
+      type: object
+      properties:
+        capabilities:
+          type: array
+          items:
+            type: string
+        license:
+          type: string
+        parameters:
+          type: string
+        template:
+          type: string
+        modelfile:
+          type: string
+        system:
+          type: string
+        details:
+          $ref: "#/components/schemas/ModelDetails"
+        model_info:
+          type: object
+          additionalProperties: true
+        modified_at:
+          type: string
+          format: date-time
+    RunningModels:
+      type: object
+      required:
+        - models
+      properties:
+        models:
+          type: array
+          maxItems: 0
+          items: {}
+    VersionResponse:
+      type: object
+      required:
+        - version
+      properties:
+        version:
+          type: string
+        build:
+          type: string
+        built_at:
+          type: string
+          format: date-time
+    OpenAIChatRequest:
+      type: object
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: true
+        temperature:
+          type: number
+        top_p:
+          type: number
+        max_tokens:
+          type: integer
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        presence_penalty:
+          type: number
+        frequency_penalty:
+          type: number
+        seed:
+          type: integer
+        response_format:
+          type: object
+        tools:
+          type: array
+          items:
+            type: object
+    OpenAIChatResponse:
+      type: object
+      required:
+        - id
+        - object
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+    OpenAIModelList:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - object
+            properties:
+              id:
+                type: string
+              object:
+                type: string
+                const: model
+              created:
+                type: integer
+              owned_by:
+                type: string
+                const: ollama
+              permission:
+                type: array
+                items: {}
+              root:
+                type: string
+              parent:
+                type:
+                  - string
+                  - "null"
+    OpenAIEmbeddingsResponse:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object:
+                type: string
+                const: embedding
+              embedding:
+                type: array
+                items:
+                  type: number
+              index:
+                type: integer
+        model:
+          type: string
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - service
+        - version
+        - timestamp
+        - mainProxy
+      properties:
+        status:
+          type: string
+          const: healthy
+        service:
+          type: string
+          const: ollama-compatibility-server
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        mainProxy:
+          type: string
+          description: The configured gateway address (`MAIN_PROXY_URL`).
+    ServiceInfo:
+      type: object
+      required:
+        - message
+        - version
+        - mainProxy
+        - endpoints
+        - documentation
+      properties:
+        message:
+          type: string
+        version:
+          type: string
+        mainProxy:
+          type: string
+        endpoints:
+          type: object
+          additionalProperties:
+            type: string
+        documentation:
+          type: string

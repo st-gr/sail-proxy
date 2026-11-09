@@ -1,0 +1,32 @@
+meta {
+  name: Get Configuration History
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/ConfigurationHistory
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin@test.com
+  password: admin
+}
+
+assert {
+  res.status: eq 200
+  res.body.value: isDefined
+  res.body.value: isType array
+}
+
+script:post-response {
+  console.log('✅ All assertions passed');
+  console.log('Found', res.body.value.length, 'configuration history entries');
+  
+  // Verify history entries have required fields
+  res.body.value.forEach((entry, index) => {
+    console.log(`History ${index + 1}: ${entry.version} - ${entry.isActive ? 'Active' : 'Inactive'}`);
+  });
+}

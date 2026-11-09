@@ -1,0 +1,244 @@
+{
+  "generated": "2026-10-12",
+  "corpusManifestSha256": "cd5937875a8dd6ede99abcdc9905f74ad3b634f631517c23f79ce054a204cb88",
+  "questions": 165,
+  "note": "Search-at-scale evaluation (W4, 2026-10-12) on the 165-question corpus, static 800/400 baseline store (99 chunks). baseline: defaults, unchanged from W3 (0.830/0.855/0.746/0.792 R@5/R@10/MRR/nDCG@10). bounded-lexical and ann lower exact_max_chunks to 10 and min_fraction to 0.01 so the small corpus takes the new paths: the full-text bound (words in more than 5 % of chunks dropped from the OR query, at most 5,000 matches ranked) and, in ann, the HNSW halfvec index (idx_chunks_hnsw scanned for all 165 questions). Both: 0.830/0.861/0.746/0.794 — one multihop question gains a top-10 hit; nothing is lost. One rerank call in bounded-lexical failed upstream (SAP 500 forwarding to Cohere); the ann run, error-free, gives identical numbers. Approximate search stays off by default: on synthetic clustered data it can return a full but wrong list (task-0 bench), so operators measure with the recall probe first. Costs: about $0.83 per run, nearly all rerank.",
+  "runs": {
+    "baseline": {
+      "file": "2026-10-12T18-45-36Z-baseline.json",
+      "complete": true,
+      "costUsd": 0.8403,
+      "overall": {
+        "recall5": 0.83,
+        "recall10": 0.855,
+        "recall20": 0.873,
+        "mrr": 0.746,
+        "ndcg10": 0.792
+      },
+      "byKindRecall5": {
+        "markdown": 0.95,
+        "pdf": 0.925,
+        "table": 1,
+        "scanned": 0,
+        "multihop": 0.815,
+        "pptx": 1,
+        "xlsx": 1
+      },
+      "latencyMs": {
+        "p50": 2131,
+        "p95": 2391
+      },
+      "storeChunks": 99,
+      "rerankSearchUnits": 330,
+      "returnedTokensMeanTop5": 5220
+    },
+    "bounded-lexical": {
+      "file": "2026-10-12T18-53-22Z-bounded-lexical.json",
+      "complete": true,
+      "costUsd": 0.8205,
+      "overall": {
+        "recall5": 0.83,
+        "recall10": 0.861,
+        "recall20": 0.873,
+        "mrr": 0.746,
+        "ndcg10": 0.794
+      },
+      "byKindRecall5": {
+        "markdown": 0.95,
+        "pdf": 0.925,
+        "table": 1,
+        "scanned": 0,
+        "multihop": 0.815,
+        "pptx": 1,
+        "xlsx": 1
+      },
+      "latencyMs": {
+        "p50": 2103,
+        "p95": 2349
+      },
+      "storeChunks": 99,
+      "rerankSearchUnits": 328,
+      "returnedTokensMeanTop5": 5226
+    },
+    "ann": {
+      "file": "2026-10-12T18-59-29Z-ann.json",
+      "complete": true,
+      "costUsd": 0.8255,
+      "overall": {
+        "recall5": 0.83,
+        "recall10": 0.861,
+        "recall20": 0.873,
+        "mrr": 0.746,
+        "ndcg10": 0.794
+      },
+      "byKindRecall5": {
+        "markdown": 0.95,
+        "pdf": 0.925,
+        "table": 1,
+        "scanned": 0,
+        "multihop": 0.815,
+        "pptx": 1,
+        "xlsx": 1
+      },
+      "latencyMs": {
+        "p50": 2119,
+        "p95": 2419
+      },
+      "storeChunks": 99,
+      "rerankSearchUnits": 330,
+      "returnedTokensMeanTop5": 5225
+    }
+  },
+  "previous": {
+    "note": "Parsing evaluation (W3, 2026-10-09) on the 165-question corpus (the 145 earlier questions plus 20 hand-written ones on a synthetic deck and workbook, kinds pptx and xlsx). Every configuration runs on the static 800/400 baseline store, so only how PDFs are read differs. OCR (tesseract, eng) lifts the 18 scanned questions from 0 to R@5 0.833 and the overall run from 0.830/0.855/0.746/0.792 (R@5/R@10/MRR/nDCG@10) to 0.921/0.945/0.827/0.876, at no model cost. Vision no_text (gemini-3.5-flash-lite, the 12 scanned pages) is the best run: 0.933/0.958/0.844/0.892, scanned R@5 0.944, for about $0.02 of vision tokens. Vision auto (17 pages: the scans and the table PDF's 5 pages) reads the scans as well but drops the table set's R@5 from 1.000 to 0.550: it replaces table pages whose text layer already read correctly with the model's transcription, so the verbatim (pdftotext) quotes no longer match; partly a grading artifact, partly a real rewrite of good pages. Decision: recommend 'pages without text' (no_text) for scanned documents; auto stays available, documented as rewriting table and text-poor pages and measured worse on the table set; the default vision mode stays off. pptx and xlsx score 1.000 in every run; markdown, pdf and multihop are unchanged (within 0.007 MRR). Costs at the meter's prices: about $0.84 per run, nearly all rerank (330 search units); vision added $0.02 (no_text) and $0.04 (auto). Summary only; per-question results stay in the gitignored results/ directory.",
+    "generated": "2026-10-09",
+    "corpusManifestSha256": "cd5937875a8dd6ede99abcdc9905f74ad3b634f631517c23f79ce054a204cb88",
+    "questions": 165,
+    "runs": {
+      "baseline": {
+        "file": "2026-10-09T23-27-04Z-baseline.json",
+        "complete": true,
+        "costUsd": 0.8403,
+        "overall": {
+          "recall5": 0.83,
+          "recall10": 0.855,
+          "recall20": 0.873,
+          "mrr": 0.746,
+          "ndcg10": 0.792
+        },
+        "byKindRecall5": {
+          "markdown": 0.95,
+          "pdf": 0.925,
+          "table": 1,
+          "scanned": 0,
+          "multihop": 0.815,
+          "pptx": 1,
+          "xlsx": 1
+        },
+        "latencyMs": {
+          "p50": 2125,
+          "p95": 2320
+        },
+        "storeChunks": 99,
+        "rerankSearchUnits": 330,
+        "returnedTokensMeanTop5": 5224
+      },
+      "ocr": {
+        "file": "2026-10-09T23-33-16Z-ocr.json",
+        "complete": true,
+        "costUsd": 0.8412,
+        "overall": {
+          "recall5": 0.921,
+          "recall10": 0.945,
+          "recall20": 0.964,
+          "mrr": 0.827,
+          "ndcg10": 0.876
+        },
+        "byKindRecall5": {
+          "markdown": 0.95,
+          "pdf": 0.925,
+          "table": 1,
+          "scanned": 0.833,
+          "multihop": 0.815,
+          "pptx": 1,
+          "xlsx": 1
+        },
+        "latencyMs": {
+          "p50": 2142,
+          "p95": 2371
+        },
+        "storeChunks": 105,
+        "rerankSearchUnits": 330,
+        "returnedTokensMeanTop5": 5195,
+        "parsing": {
+          "ocrPages": 12,
+          "ocrSkippedPages": 0,
+          "visionPages": 0,
+          "visionSkippedPages": 0
+        }
+      },
+      "vision-no_text": {
+        "file": "2026-10-09T23-40-10Z-vision-no_text.json",
+        "complete": true,
+        "costUsd": 0.8643,
+        "overall": {
+          "recall5": 0.933,
+          "recall10": 0.958,
+          "recall20": 0.976,
+          "mrr": 0.844,
+          "ndcg10": 0.892
+        },
+        "byKindRecall5": {
+          "markdown": 0.95,
+          "pdf": 0.925,
+          "table": 1,
+          "scanned": 0.944,
+          "multihop": 0.815,
+          "pptx": 1,
+          "xlsx": 1
+        },
+        "latencyMs": {
+          "p50": 2154,
+          "p95": 2419
+        },
+        "storeChunks": 105,
+        "rerankSearchUnits": 330,
+        "returnedTokensMeanTop5": 5209,
+        "parsing": {
+          "ocrPages": 0,
+          "ocrSkippedPages": 0,
+          "visionPages": 12,
+          "visionSkippedPages": 0
+        },
+        "vision": {
+          "gemini-3.5-flash-lite": {
+            "inputTokens": 14820,
+            "cachedTokens": 0,
+            "outputTokens": 5218
+          }
+        }
+      },
+      "vision-auto": {
+        "file": "2026-10-09T23-46-54Z-vision-auto.json",
+        "complete": true,
+        "costUsd": 0.8801,
+        "overall": {
+          "recall5": 0.879,
+          "recall10": 0.903,
+          "recall20": 0.921,
+          "mrr": 0.789,
+          "ndcg10": 0.837
+        },
+        "byKindRecall5": {
+          "markdown": 0.95,
+          "pdf": 0.925,
+          "table": 0.55,
+          "scanned": 0.944,
+          "multihop": 0.815,
+          "pptx": 1,
+          "xlsx": 1
+        },
+        "latencyMs": {
+          "p50": 2154,
+          "p95": 2437
+        },
+        "storeChunks": 107,
+        "rerankSearchUnits": 330,
+        "returnedTokensMeanTop5": 5220,
+        "parsing": {
+          "ocrPages": 0,
+          "ocrSkippedPages": 0,
+          "visionPages": 17,
+          "visionSkippedPages": 0
+        },
+        "vision": {
+          "gemini-3.5-flash-lite": {
+            "inputTokens": 20995,
+            "cachedTokens": 0,
+            "outputTokens": 9336
+          }
+        }
+      }
+    }
+  }
+}

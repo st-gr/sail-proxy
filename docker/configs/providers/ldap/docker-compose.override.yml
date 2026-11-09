@@ -1,0 +1,57 @@
+# Docker Compose override for LDAP provider
+# Adds LDAP server and optional LDAP admin interface
+
+volumes:
+  ldap_data:
+  ldap_config:
+
+services:
+  # LDAP Server (OpenLDAP)
+  ldap-server:
+    build: ./configs/providers/ldap/ldap-server
+    ports:
+      # Loopback only (A5): this override is rendered straight into
+      # docker-compose.override.yml by setup-docker.js; the directory holds
+      # the demo credentials nginx/dex authenticate against, so it must not
+      # be reachable from the network any more than admin/valkey/postgres are.
+      - "127.0.0.1:389:389"
+      - "127.0.0.1:636:636"
+    environment:
+      # LDAP configuration
+      - LDAP_LOG_LEVEL=256
+      - LDAP_ORGANISATION=SAP LLM Gateway Demo
+      - LDAP_DOMAIN=example.com
+      - LDAP_BASE_DN=dc=example,dc=com
+      - LDAP_ADMIN_PASSWORD=admin
+      - LDAP_CONFIG_PASSWORD=config
+      - LDAP_READONLY_USER=false
+      - LDAP_RFC2307BIS_SCHEMA=false
+      - LDAP_BACKEND=mdb
+      - LDAP_TLS=true
+      - LDAP_TLS_ENFORCE=false
+      - LDAP_REPLICATION=false
+      - KEEP_EXISTING_CONFIG=false
+      - LDAP_REMOVE_CONFIG_AFTER_SETUP=true
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+    networks:
+      - sap-llm-network
+    restart: unless-stopped
+    
+  # Optional: phpLDAPadmin for LDAP management
+  ldap-admin:
+    image: osixia/phpldapadmin:0.9.0
+    ports:
+      # Loopback only (A5): a management UI over the same directory, same reasoning as ldap-server above.
+      - "127.0.0.1:6443:443"
+    environment:
+      - PHPLDAPADMIN_LDAP_HOSTS=ldap-server
+      - PHPLDAPADMIN_HTTPS=false
+    depends_on:
+      - ldap-server
+    networks:
+      - sap-llm-network
+    restart: unless-stopped
+    profiles:
+      - ldap-admin  # Optional service, start with: docker-compose --profile ldap-admin up

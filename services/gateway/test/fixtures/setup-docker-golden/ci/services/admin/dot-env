@@ -1,0 +1,167 @@
+# Token-Based Validation System - Admin Service
+# Generated on: 2025-07-25T19:10:00.000Z
+
+# CAP Database Configuration using dot notation (supported in .env files)
+cds.requires.db.kind=postgres
+cds.requires.db.impl=@cap-js/postgres
+cds.requires.db.credentials.host=postgres
+cds.requires.db.credentials.port=5432
+cds.requires.db.credentials.user=admin_user
+cds.requires.db.credentials.password=<hex16>
+cds.requires.db.credentials.database=sap_llm_gateway
+cds.requires.db.schema_evolution=auto
+cds.sql.dialect=postgres
+
+## SQLite configuration (development)
+#cds.requires.db.kind=sqlite
+#cds.requires.db.credentials.database=db/admin.db
+
+# Gateway connection
+GATEWAY_URL=http://localhost:3000
+
+# Valkey Configuration (Optional - for distributed cache)
+VALKEY_URL=redis://localhost:6379
+
+# Security Configuration (MUST match Gateway service)
+# VALIDATION_TOKEN_SECRET also signs the gateway's service JWT: AWS SigV4 signing keys go only to a
+# request carrying it, and outside NODE_ENV=development never while it is unset or the built-in default.
+# AWS SigV4 needs the same generated value here and in the gateway's .env
+# (generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+VALIDATION_TOKEN_SECRET=<hex64>
+METADATA_ENCRYPTION_KEY=<hex64>
+AWS_SECRET_ENCRYPTION_KEY=<hex64>
+
+# Development Settings
+NODE_ENV=development
+
+# Deployment Configuration
+# Options: development, docker, xsuaa, btp, xsa
+DEPLOY_TARGET=development
+
+# Authentication & Authorization Configuration
+# Role mapping for JWT groups to application roles (JSON format)
+# Maps external identity provider groups to internal application roles
+ROLE_MAPPING={"admin@example.com":"admin","user@example.com":"user"}
+
+# OAuth2/OIDC Configuration (for Docker deployment with Dex)
+# OIDC issuer URL for JWT validation (matches oauth2-proxy configuration)
+OAUTH2_PROXY_OIDC_ISSUER_URL=http://dex:5556/dex
+
+# Which identity provider shaped the incoming request. Only the value 'local'
+# changes behaviour: with 'local' AND no groups on the request, roles are
+# resolved from LOCAL_USER_MAPPING below instead of from ROLE_MAPPING. Any
+# other value (or groups being present) takes the group-mapping path.
+# Default: local
+# IDENTITY_PROVIDER=local
+
+# Email-to-role map, as JSON, used only on the local-provider path above.
+# Unset, or an email that is not a key, yields the role 'user' — so a missing
+# entry silently degrades an intended admin to a normal user rather than
+# failing. Invalid JSON is caught and also falls back to 'user'.
+# Example: {"admin@example.com":"admin","dev@example.com":"user"}
+# LOCAL_USER_MAPPING=
+
+# Public base URL of the admin service, used to build the post-logout redirect.
+# Unset, it is reconstructed from the request's own protocol and Host header —
+# which is wrong behind a proxy that rewrites either, sending users to an
+# internal hostname after logout. Set it for any deployment that is not
+# reached directly.
+# Example: https://gateway.example.com
+# BASE_URL=
+
+# Where to send the browser after logout. Defaults to
+# ${BASE_URL}/admin/shell/index.html, so setting BASE_URL alone is usually
+# enough; set this only to leave the admin UI entirely.
+# LOGOUT_REDIRECT_URL=
+
+# Session signing secret for the DEVELOPMENT session middleware. Read ONLY when
+# DEPLOY_TARGET=development — for docker, xsuaa, btp and xsa the session
+# middleware is never mounted and this value is unused.
+#
+# Its fallback is the literal string 'dev-unsafe-secret'. That is acceptable for
+# a local run and unacceptable for anything reachable by others: set it if a
+# development-target instance is exposed to a network.
+# DEV_SESSION_SECRET=
+
+# Set to any non-empty value to log the decoded JWT metadata on the docker-jwt
+# auth path. Debugging aid only. It prints token contents, so leave it unset
+# anywhere those would be sensitive.
+# DEBUG_METADATA=
+
+# SAP AI Core region, recorded on generated AWS credentials and mapped to the
+# corresponding AWS region. Default: us-east-1
+# SAP_AI_REGION=us-east-1
+
+# Database Configuration - PostgreSQL (not SQLite)
+# DB_PATH=./db/admin.db  # Commented out - this forces SQLite
+
+# Audit Configuration
+AUDIT_RETENTION_DAYS=90
+ENABLE_AUDIT_ENCRYPTION=true
+
+# Master key for encrypting SIEM sink credentials (SiemCredentials table). Rotating
+# this value makes existing stored credentials undecryptable - they must be re-entered.
+SIEM_CREDENTIAL_KEY=<hex64>
+
+# Master key for encrypting Connection credentials (ConnectionCredentials table: the API keys
+# and secrets of external provider connections). There is no default: without it the admin
+# refuses to store a connection credential. Rotating it makes stored connection credentials
+# undecryptable - they must be re-entered. setup-docker.js and setup-kyma.js generate one.
+CONNECTION_CREDENTIAL_KEY=<hex64>
+
+# Installing gateway plugins from the cockpit (Plugins app). An admin upload runs code inside the
+# gateway, which holds the SAP keys, so this switch exists. Default: on. Set to false to refuse
+# uploads and enabling, to stop serving installed plugins to the gateway (it removes them) and to
+# keep only the plugins shipped with the image. Disabling and removing stay available.
+# INSTALLED_PLUGINS_ENABLED=true
+# Valkey channel the admin announces plugin changes on. The gateway must use the same value; change it only
+# for a test that must stay off the production channel.
+# PLUGINS_CHANGE_CHANNEL=sap-llm-gateway:plugins-changed
+
+# Security Notifications Configuration
+# Minimum age in days before a notification can be deleted (default: 30)
+SECURITY_NOTIFICATION_MIN_DELETE_AGE_DAYS=30
+# Maximum days in the future a notification can be snoozed (default: 30)
+SECURITY_NOTIFICATION_MAX_SNOOZE_DAYS=30
+
+# The cockpit shows a banner when a newer release exists (it asks GitHub's public release list from
+# the browser, at most once a day). false, 0, no or off turns the banner off. Default: true.
+UPDATE_CHECK_ENABLED=true
+
+# Logging Configuration
+# Options: ERROR, WARN, INFO, DEBUG, TRACE
+LOG_LEVEL=info
+PORT=4004
+
+# Multi-Environment Authentication Notes:
+# 
+# LOCAL DEVELOPMENT (pnpm run dev:ts:mock):
+#   - DEPLOY_TARGET=development
+#   - NODE_ENV=development  
+#   - Uses CAP mocked authentication from package.json
+#   - Test users: admin@test.com (admin), user@test.com (user)
+#
+# DOCKER DEPLOYMENT (docker-compose):
+#   - DEPLOY_TARGET=docker
+#   - NODE_ENV=production
+#   - Uses JWT authentication via oauth2-proxy + Dex
+#   - Role mapping via ROLE_MAPPING environment variable
+#   - Dex users: admin@example.com, user@example.com
+#
+# SAP BTP XSUAA DEPLOYMENT:
+#   - DEPLOY_TARGET=xsuaa or btp
+#   - Uses CAP native XSUAA JWT authentication
+#   - Role mapping optional (XSUAA provides scopes/roles directly)
+#
+# HANA XSA DEPLOYMENT:
+#   - DEPLOY_TARGET=xsa
+#   - Uses CAP native XSA authentication
+#   - Role mapping optional (XSA provides roles directly)
+
+# SAP capacity-unit billing (written by the setup scripts)
+# Currency the SAP capacity-unit prices are billed in (three letters). Default: USD
+# SAP_BILLING_CURRENCY=USD
+# Price per capacity unit for productive usage, in that currency. With USD the built-in price list applies
+# SAP_CU_PRICE_PRODUCTIVE=
+# Price per capacity unit for non-productive usage, in that currency. With USD the built-in price list applies
+# SAP_CU_PRICE_NON_PRODUCTIVE=
