@@ -52,6 +52,8 @@ export interface LogEntry {
     name: string;
     message: string;
     stack?: string;
+    /** What a stored copy of the log may show instead of `message` (an error carrying an upstream's own text). */
+    logText?: string;
   };
 }
 

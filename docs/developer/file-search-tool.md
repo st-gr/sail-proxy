@@ -109,6 +109,8 @@ Implemented backwards, this searches a raw corpus for `MASKED_PERSON_3` and retu
 
 `capabilities.file_search.tool.max_searches_per_request` (default 3, valid range 1..10) bounds how many searches one request may run. A configured value outside that range — or a non-integer, or a string — does **not** clamp to the nearer bound; it falls back to the default of 3, with a warning (`resolveMaxSearchesPerRequest`). Garbage config is treated as "not configured" rather than silently coerced into something the operator never asked for. `capabilities.web_search.max_searches_per_request` bounds `web_search` independently — two unrelated config accessors, two budgets, and a request that has exhausted one may still spend the other. They happen to ship with the same number; nothing shares it, and a shared counter would silently collapse the two.
 
+**At the cap the model still gets to answer.** A call over its tool's budget is answered with a failed `function_call_output` that names the budget as the reason, and the next continuation is the *answering call*: the same turn POSTed without that tool (`answeringCall.ts`), so the model writes its answer from the results it has. Only the tool that ran out is taken off the list; another hosted tool with budget left, and the client's own tools, stay. A reply that asks for the removed tool again is not given another round, and a failed answering call is not retried: the turn then ends with the result dumps, as it did at the cap before the answering call existed. The loop is therefore bounded by the sum of the caps plus one answering call per tool.
+
 **These exist so the continuation loop terminates.** Each round the model may answer with more tool calls, and each round costs a deployment call; without a bound, a model that keeps calling the tool keeps the request open forever. Turning the cap up to make retrieval "better" does not make it better — it makes the worst case longer and more expensive. If searches are coming back unhelpful, the fix is in `max_num_results`, `ranking_options.score_threshold`, the chunking configuration, or the reranker, none of which change how long a pathological turn can run.
 
 Two more bounds guard the same property and are equally not knobs: `MAX_PENDING_CALLS_PER_TURN` (4) caps the before-handler's drain of calls replayed from a previous turn, and the continuation loop as a whole shares one wall-clock budget with `responsesController`'s idle timeout.
@@ -755,12 +757,13 @@ mode the key gets `:vision-<mode>`. A file with its own static strategy keeps th
   and says to add a price for it in the Model Library (`visionCostText` in the grounding app's
   `model/chunking.ts`); there is no link into the Model Library app (the shell has no cross-app navigation
   for it). Only the vision row can be unpriced: the context row shows tokens, no cost.
-- **Pseudonymization**: masking works on text, so page images reach the model unmasked. When pseudonymization is
+- **Pseudonymization**: masking works on text, so page images reach the model unmasked. When the global switch
+  (`observability.pseudonymization.enabled`) is `true` and pseudonymization is
   force-enabled for file_search content (`hooks.defaults.openai.pseudonymization.enabled`, or any
   `models.overrides.*.pseudonymization.enabled`; `isPseudonymizationForcedForFileSearch`), the estimate sets
   `vision_unmasked_warning`, `GET /status` sets `vision.unmaskedWarning`, the cockpit shows a warning strip, and the
-  gateway logs `VISION_UNMASKED_WARNING`. The shipped configuration forces it for `openai`, so the warning shows on a
-  default installation whenever a mode is chosen. Masking asked for by one request (a trigger word, a `masking`
+  gateway logs `VISION_UNMASKED_WARNING`. The shipped configuration sets the `openai` flag but ships the global switch `false`, so on a
+  default installation there is no warning until the switch is switched on. Masking asked for by one request (a trigger word, a `masking`
   field) cannot be foreseen and is not warned about.
 
 Configuration, `file_search.parsing.vision`: `model`, `default_mode` (`off`; the mode new stores get),

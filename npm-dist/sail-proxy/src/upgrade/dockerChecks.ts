@@ -109,7 +109,7 @@ export async function preflightDocker(o: {
   try {
     await docker(composeArgs(t, ['pull', 'gateway', 'admin', 'nginx']), { env });
   } catch (error) {
-    throw new Refusal(`The target images cannot be pulled (${firstLine(error)}). Log in to the registry (docker login), then run the upgrade again. Nothing was changed.`);
+    throw new Refusal(`The target images cannot be pulled (${firstLine(error)}). Log in to the registry (docker login), then run the upgrade again. Nothing was changed.`, { registry: true });
   }
   const oneoffs = (await projectContainers(docker, t.project, true)).filter((c) => c.state === 'running');
   if (oneoffs.length > 0) {

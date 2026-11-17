@@ -220,8 +220,8 @@ PDFs whose figures or tables read badly.
 - **A page whose call fails** keeps its own text, or is read by text recognition if it has none. The file
   is ingested all the same.
 - **Pseudonymization.** Pseudonymization masks text, not images: page images reach the vision model
-  unmasked. Where the installation switches pseudonymization on for file search content, the dialog
-  shows a warning when you choose a mode other than **Off**. Masking that a single request asks for
+  unmasked. Where the installation's global pseudonymization switch is on and enforces masking for file search
+  content, the dialog shows a warning when you choose a mode other than **Off**. Masking that a single request asks for
   cannot be foreseen and is not warned about. Choose **Off** for documents whose pages must not reach a
   model unmasked.
 - When vision transcription is not available (switched off for the installation, or the configured model

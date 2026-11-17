@@ -206,15 +206,22 @@ export function responsesInputToMessages(input: any, instructions?: string): Sap
     }
 
     if (type === 'function_call') {
-      messages.push({
-        role: 'assistant',
-        content: '',
-        tool_calls: [{
-          id: item.call_id,
-          type: 'function',
-          function: { name: item.name, arguments: item.arguments },
-        }],
-      } as SapV2Message);
+      const toolCall = {
+        id: item.call_id,
+        type: 'function',
+        function: { name: item.name, arguments: item.arguments },
+      };
+      // Calls a model made in ONE step arrive as consecutive items and belong in one
+      // assistant message. One message per call is refused by SAP's LLM module for the
+      // OpenAI family (400 "An assistant message with 'tool_calls' must be followed by tool
+      // messages responding to each 'tool_call_id'", gpt-5.5, measured live 2026-11-12):
+      // the second assistant message stands where the first call's tool message is expected.
+      const previous = messages[messages.length - 1] as any;
+      if (previous?.role === 'assistant' && Array.isArray(previous.tool_calls)) {
+        previous.tool_calls.push(toolCall);
+        continue;
+      }
+      messages.push({ role: 'assistant', content: '', tool_calls: [toolCall] } as SapV2Message);
       continue;
     }
 

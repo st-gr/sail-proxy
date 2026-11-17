@@ -26,6 +26,7 @@
  * is DML-only and is refused in the preflight.
  */
 import { Client } from 'pg';
+import { connectionOptions } from './dbTls';
 import {
   VECTOR_INDEX_NAME, VECTOR_INDEX_BUILD_NAME, HNSW_M, HNSW_EF_CONSTRUCTION, HALFVEC_MIN_PGVECTOR,
   MAX_EMBEDDING_DIMENSIONS, halfvecIndexDefinition, readVectorIndex, pgvectorVersionAtLeast,
@@ -308,13 +309,22 @@ async function prepareSession(client: Client): Promise<void> {
   await client.query("SET client_connection_check_interval = '10s'").catch(() => {});
 }
 
+/**
+ * A connection of this tool. Through connectionOptions like every other file-search connection:
+ * with a CA configured (an external database) the server certificate is checked against it, also
+ * where the connection string itself only asks for encryption.
+ */
+function connectionTo(dsn: string, applicationName: string): Client {
+  return new Client({ ...connectionOptions(dsn), application_name: applicationName });
+}
+
 async function dropBuildIndex(dsn: string, client: Client, qualified: string): Promise<void> {
   const sql = `DROP INDEX CONCURRENTLY IF EXISTS ${qualified}`;
   try {
     await client.query(sql);
   } catch {
     // the build's own connection may be gone (a lost connection is how some builds fail)
-    const fresh = new Client({ connectionString: dsn, application_name: 'file-search-rebuild-index' });
+    const fresh = connectionTo(dsn, 'file-search-rebuild-index');
     await fresh.connect();
     try {
       await prepareSession(fresh);
@@ -332,7 +342,7 @@ async function build(
   if (opts.maintenanceWorkMemMb !== null) await client.query(`SET maintenance_work_mem = '${opts.maintenanceWorkMemMb}MB'`);
   const pid: number = (await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
 
-  const monitor = new Client({ connectionString: dsn, application_name: 'file-search-rebuild-index-progress' });
+  const monitor = connectionTo(dsn, 'file-search-rebuild-index-progress');
   await monitor.connect();
   const started = Date.now();
   const progress = setInterval(() => {
@@ -414,7 +424,7 @@ export async function rebuildVectorIndex(
   dsn: string, opts: RebuildIndexOptions, deps: RebuildIndexDeps,
 ): Promise<RebuildIndexOutcome> {
   const { write } = deps;
-  const client = new Client({ connectionString: dsn, application_name: 'file-search-rebuild-index' });
+  const client = connectionTo(dsn, 'file-search-rebuild-index');
   await client.connect();
   try {
     // The preflight (all a dry run does) is short catalog reads: bounded, whatever the role's own settings are.

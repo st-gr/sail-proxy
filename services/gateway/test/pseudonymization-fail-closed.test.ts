@@ -120,7 +120,7 @@ describe('a pseudonymization error when masking is forced', () => {
     mockConfig.api_config = {
       hooks: JSON.parse(JSON.stringify(shippedHooks)),
       models: { overrides: {} },
-      observability: {},
+      observability: { pseudonymization: { enabled: true } },
     };
     (global as any).matcherCache?.clear?.();
     mockDetectorThrows = false;
@@ -251,7 +251,7 @@ describe('a pseudonymization error when masking is not forced', () => {
     for (const entry of Object.values(hooks.defaults) as any[]) {
       if (entry?.pseudonymization) entry.pseudonymization.enabled = false;
     }
-    mockConfig.api_config = { hooks, models: { overrides: {} }, observability: {} };
+    mockConfig.api_config = { hooks, models: { overrides: {} }, observability: { pseudonymization: { enabled: true } } };
     (global as any).matcherCache?.clear?.();
     mockDetectorThrows = false;
     mockNerThrows = false;
@@ -306,7 +306,7 @@ describe('another plugin throwing', () => {
     mockConfig.api_config = {
       hooks: JSON.parse(JSON.stringify(shippedHooks)),
       models: { overrides: {} },
-      observability: {},
+      observability: { pseudonymization: { enabled: true } },
     };
     (global as any).matcherCache?.clear?.();
     mockDetectorThrows = false;
@@ -342,7 +342,7 @@ describe('a detector tier that cannot run', () => {
     mockConfig.api_config = {
       hooks: JSON.parse(JSON.stringify(shippedHooks)),
       models: { overrides: {} },
-      observability: {},
+      observability: { pseudonymization: { enabled: true } },
     };
     (global as any).matcherCache?.clear?.();
     mockDetectorThrows = false;

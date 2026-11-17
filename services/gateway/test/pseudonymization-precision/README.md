@@ -1,9 +1,5 @@
 # Pseudonymization precision/recall harness
 
-Spec: `docs/superpowers/specs/2026-08-25-pseudonymization-precision-design.md`, "Evaluation
-harness" row. Task brief:
-`.superpowers/sdd/2026-08-25-pseudonymization-precision/task-4-brief.md`.
-
 This is the regression gate for the pseudonymization detectors. It answers one question on
 every change: did this make masking *worse* — either by masking machinery that isn't PII
 (precision), or by missing PII that used to be caught (recall)? CI runs it via
@@ -169,6 +165,4 @@ why it went red:
 - **The corpus itself grows** (more cases, more coverage): re-run the baseline procedure
   above against `30747f6` on the *new* corpus, and replace the `BASELINE_*` constants with
   the new run's numbers, updating the comment's date. Do not compare a bigger HEAD corpus
-  against baseline numbers measured on a smaller one — the ratio is meaningless. Then also
-  regenerate the numbers in `.superpowers/sdd/2026-08-25-pseudonymization-precision/task-4-report.md` describing this task's work — or wherever this project's task-4 report next records
-  them, if it's been moved.
+  against baseline numbers measured on a smaller one — the ratio is meaningless.

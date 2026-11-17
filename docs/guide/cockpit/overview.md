@@ -5,7 +5,7 @@ description: Where the cockpit runs, how to open it, its applications, language 
 
 # Admin Cockpit
 
-The Admin Cockpit is the web interface of a sail-proxy deployment. It covers API keys, gateway-issued AWS SigV4 credentials, usage analytics, security notifications, the model library with entitlements and quotas, grounding data, users, tool governance, external provider connections and the gateway configuration.
+The Admin Cockpit is the web interface of a sail-proxy deployment. It covers API keys, gateway-issued AWS SigV4 credentials, usage analytics, security notifications, the model library with entitlements and quotas, grounding data, users, tool governance, external provider connections, the gateway configuration and the gateway's log.
 
 The cockpit runs in the Docker and Kyma deployments. The npm standalone CLI has no cockpit.
 
@@ -44,6 +44,7 @@ The side navigation groups the applications. Entries marked *admin* appear only 
 | Settings | [Connections](/guide/cockpit/connections) (*admin*) | External provider accounts (Azure OpenAI, AWS Bedrock, OpenAI, Anthropic): credentials, tests, models and prices |
 | Settings | [Tool Governance](/guide/cockpit/tool-governance) (*admin*) | Which tools a user or an API key may declare and invoke, and an inventory of every tool seen |
 | Settings | [Plugins](/guide/cockpit/plugins) (*admin*) | Install, enable and remove gateway plugins from a zip package, with their status and settings |
+| Settings | [Logs](/guide/cockpit/logs) (*admin*) | Follow, search, download and delete the gateway's log, and change its log levels for a while |
 
 Service operations without a page of their own, backups and the audit trail are described in [Operations and audit trail](/guide/cockpit/operations).
 
@@ -109,4 +110,4 @@ These are commonly expected but are not part of the cockpit:
 - **Alerting**: no alert rules, thresholds or notification routing for error rates, traffic anomalies or downtime. Security and audit events can be exported to an external SIEM; see [Gateway configuration](/guide/cockpit/configuration#siem-event-export).
 - **Automated incident response**: no automatic account lockout, automatic key suspension or IP blocking.
 - **Scheduled reporting**: usage is exported manually as CSV; there are no scheduled or emailed reports and no PDF output.
-- **Log and database administration**: no log search or download, no backup, restore or maintenance queries. Log levels are set in the gateway configuration.
+- **Database administration**: no backup, restore or maintenance queries. The cockpit shows the gateway's log on the [Logs](/guide/cockpit/logs) page; the admin service's own log is not shown.

@@ -48,6 +48,10 @@ function valuesFromDexConfig(dex) {
     });
   } else if (config && connector.type === 'saml') {
     values.OKTA_SSO_URL = config.ssoURL;
+  } else if (config && connector.type === 'oidc') {
+    values.IAS_ISSUER_URL = config.issuer;
+    values.IAS_CLIENT_ID = config.clientID;
+    values.IAS_CLIENT_SECRET = config.clientSecret;
   }
   return values;
 }

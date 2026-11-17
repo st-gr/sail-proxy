@@ -16,7 +16,8 @@ Settings that can change at runtime, such as model substitutions or logging leve
 | Variable | Sample value | Description |
 |---|---|---|
 | `NODE_ENV` | `development` | Runtime environment: `development`, `production` or `test` |
-| `LOG_LEVEL` | `INFO` | Log level: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE` |
+| `LOG_LEVEL` | not set | Log level: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE`. When set, it overrules the configuration (`platform.logging.defaultLevel`) |
+| `GATEWAY_LOG_SHIPPING` | not set | `off` keeps the gateway's log from being stored for the cockpit's Logs page, whatever the configuration and the Logs page say. The standalone CLI sets `off` |
 | `PORT` | `3000` | Port the gateway listens on |
 
 ### Reverse proxy and client IP
@@ -115,8 +116,12 @@ Converting documents also needs `pandoc` and `pdftotext` on `PATH`. Reranker tea
 | `TEST_AWS_ACCESS_KEY_ID` | | Access key id of the test AWS credentials (only with `DEBUG=true`) |
 | `TEST_AWS_SECRET_ACCESS_KEY` | | Secret key of the test AWS credentials (only with `DEBUG=true`) |
 | `TEST_AWS_SALT` | | Salt of the test AWS credentials (only with `DEBUG=true`) |
-| `PAYLOAD_LOGGING_ENABLED` | `false` | `true` or `false` overrides the configuration key `platform.logging.payload_logging_enabled` in either direction. Payload logs contain full request and response bodies |
-| `LOG_FOLDER_PATH` | `./logs` | Fallback folder for payload logs, used only when the configured `platform.logging.log_folder_path` cannot be read |
+| `PAYLOAD_LOGGING_ENABLED` | not set | Not set by default. When set, `true` or `false` overrules the configuration (`platform.logging.payload_logging_enabled`) in either direction. Payload logs contain full request and response bodies |
+| `PAYLOAD_LOG_DIR` | not set | The folder payload logs are written to; it wins over the configured folder. A relative path is relative to the gateway's working directory. The Docker image sets `/app/payloads` inside the container; the standalone `sail-proxy` command sets `logs/payloads` in its configuration directory |
+| `LOG_FOLDER_PATH` | `./logs` | Fallback folder for payload logs, used only when the configured `platform.logging.log_folder_path` cannot be read. Payload logs go to its `payloads` subfolder |
+| `PAYLOAD_LOG_RETENTION_HOURS` | `48` | Payload log files older than this many hours are deleted. Only the payload files in the payload folder (`*.json` and the `*_04_client_native_stream_response.txt` stream copies) are ever deleted. `0` never deletes by age. The standalone `sail-proxy` command uses `0` unless you set it: it does not delete payload files unless you set a limit |
+| `PAYLOAD_LOG_MAX_MB` | `1024` | When the payload log folder holds more than this many MB, the oldest files are deleted until it fits. `0` sets no size limit. The standalone `sail-proxy` command uses `0` unless you set it |
+| `PAYLOAD_LOG_SWEEP_MINUTES` | `15` | How often, in minutes, the payload log folder is checked. A value below `1` gives the default |
 | `WEBSEARCH_FORCE_ORCHESTRATION` | `false` | `true` sends web search through SAP orchestration instead of a direct Perplexity deployment; citations are then of lower quality |
 | `SAP_INCLUDE_EXTENDED_MODEL_ATTRIBUTES` | `true` | Include extended model attributes in model responses |
 | `SAP_MODEL_CACHE_DURATION_SECONDS` | `3600` | How long model information is cached, in seconds |

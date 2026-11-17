@@ -5,6 +5,8 @@
  * builds when an earlier commit changed an image-relevant file.
  */
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { decideDockerBuild } = require('./docker-build-decision');
 
 const MARKER = 'a'.repeat(40);
@@ -185,6 +187,21 @@ async function check(name, fn) {
   await check('GitHub Actions still compares the push before-commit', async () => {
     const exec = fakeExec({ 'git rev-parse --is-inside-work-tree': 'true\n', [`git diff --name-only ${OTHER}...HEAD`]: 'libs/x/index.ts\n' });
     const r = await decide(exec, { env: { GITHUB_ACTIONS: 'true', CI: 'true', GITHUB_EVENT_BEFORE: OTHER }, marker: enoent() });
+    assert.strictEqual(r.required, true);
+  });
+
+  // 2026-11-16: a manual run with build_images ticked on a commit that changed only tests skipped
+  // Phases 7-9: SKIP_DOCKER_BUILD=false only stops the skip, the change check still compared HEAD~1.
+  await check('ci.yml: a manual run with build_images forces the build', async () => {
+    const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+    const force = workflow.match(/^\s*FORCE_DOCKER_BUILD:\s*(.+)$/m);
+    assert.ok(force, 'ci.yml sets FORCE_DOCKER_BUILD');
+    assert.match(force[1], /github\.event_name == 'workflow_dispatch' && inputs\.build_images\) && 'true'/);
+  });
+
+  await check('GitHub Actions: FORCE_DOCKER_BUILD builds although only tests changed since HEAD~1', async () => {
+    const exec = fakeExec({ 'git rev-parse --is-inside-work-tree': 'true\n', 'git diff --name-only HEAD~1...HEAD': 'npm-dist/sail-proxy/test/upgrade-kyma.test.js\n' });
+    const r = await decide(exec, { env: { GITHUB_ACTIONS: 'true', CI: 'true', SKIP_DOCKER_BUILD: 'false', FORCE_DOCKER_BUILD: 'true' }, marker: enoent() });
     assert.strictEqual(r.required, true);
   });
 

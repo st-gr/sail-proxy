@@ -10,14 +10,28 @@ import BedrockStreamParser, { OutputFormat, TerminalUsageMetrics } from '../util
 import { parseConverseEventData } from '../utils/converseEventData';
 import { getDefaultLogger, createSafePreview, createHeadersPreview } from '@libs/logger';
 const logger = getDefaultLogger();
+
+/**
+ * Failed streaming calls a streaming handler has logged and answered to the client. It throws
+ * them all the same, so that the callers count the failure (the rate limit here, the usage event
+ * in the controller) and do not take the request for a success; nobody logs or answers it again.
+ */
+const answeredStreamFailures = new WeakSet<object>();
+
+/** Hand a failure the client already has its answer for back to the callers. */
+function answeredStreamFailure(failure: any): any {
+  if (failure && typeof failure === 'object') answeredStreamFailures.add(failure);
+  return failure;
+}
 import rateLimitManager from './rateLimitManager';
 import { emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { foldExclusiveUsage } from '../utils/usageFolding';
-import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures } from '../utils/betaFeatureFilter';
+import { parseAnthropicBetaHeader, mergeBetaFeatures, filterBetaFeatures, renameBetaFeatures } from '../utils/betaFeatureFilter';
 import * as betaFlagQuarantine from './betaFlagQuarantine';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
 import { secretLabel } from '../utils/secretLabel';
-import { httpStatusOr } from '../utils/streamStart';
+import { httpStatusOr, upstreamCallError } from '../utils/streamStart';
+import { loggableErrorText, upstreamTextMeta } from '../utils/upstreamErrorLogText';
 import { truncateUpstreamMessage } from '../utils/upstreamErrorEnvelope';
 import { anthropicErrorBody, sendAnthropicHttpError } from '../utils/anthropicErrors';
 import {
@@ -193,7 +207,11 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
         ? modelDetails.inject_beta_features.map(String)
         : [];
 
-      const candidates = mergeBetaFeatures(headerFeatures, bodyFeatures, injectedFeatures);
+      // Renamed first (beta_header_renames): both lists then see the names the deployment knows.
+      const candidates = renameBetaFeatures(
+        mergeBetaFeatures(headerFeatures, bodyFeatures, injectedFeatures),
+        configService.getBetaHeaderRenames()
+      );
       const filterOptions = {
         supported: configService.getSupportedBetaHeaders(),
         // Config denylist plus flags quarantined at runtime after upstream
@@ -333,7 +351,7 @@ export async function processBedrockRequest(options: ProcessBedrockRequestOption
   } catch (error: any) {
     // Check if this is a rate limit error and record it
     if (rateLimitManager.isRateLimitError(error)) {
-      logger.warn('AwsBedrockService', `Rate limit detected for ${modelId}:${subpath}: ${error.message}`);
+      logger.warn('AwsBedrockService', `Rate limit detected for ${modelId}:${subpath}: ${loggableErrorText(error)}`, upstreamTextMeta(error));
       await rateLimitManager.recordRateLimit(modelId, subpath, error);
     }
     
@@ -432,7 +450,8 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
       return finalResponse;
     }
   } catch (error: any) {
-    logger.error('AwsBedrockService', `Error in native request: ${error.message}`);
+    if (answeredStreamFailures.has(error)) throw error;
+    logger.error('AwsBedrockService', `Error in native request: ${loggableErrorText(error)}`, undefined, upstreamTextMeta(error));
     if (error.response) {
       logger.error('AwsBedrockService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: error.response.data });
       if (debugRequestId) {
@@ -449,7 +468,7 @@ async function handleNativeSubpath(options: NativeSubpathOptions): Promise<any> 
         betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
       }
     }
-    throw error;
+    throw upstreamCallError(error);
   }
 }
 
@@ -545,6 +564,7 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
       return finalResponse;
     }
   } catch (error: any) {
+    if (answeredStreamFailures.has(error)) throw error;
     logger.error('AwsBedrockService', `Error in emulated request: ${error.message}`, error, {
       code: error.code,
       isTimeout: error.isAxiosError && error.code === 'ECONNABORTED'
@@ -566,7 +586,7 @@ async function handleEmulatedSubpath(options: EmulatedSubpathOptions): Promise<a
         betaFlagQuarantine.recordBetaFlagRejection(modelId, error.response.data, sentBetaFlags);
       }
     }
-    throw error;
+    throw upstreamCallError(error);
   }
 }
 
@@ -809,7 +829,7 @@ function transformAnthropicToBedrockConverse(anthropicRequest: AnthropicRequest,
           }
           
           // Log warning for unhandled content types
-          logger.warn('AwsBedrockService', `Unhandled content type in message: ${JSON.stringify(item)}`);
+          logger.warn('AwsBedrockService', 'Unhandled content type in message', { item: JSON.stringify(item) });
           
           // If we can't map it properly, return a minimal valid block to avoid errors
           return { text: "" };
@@ -1059,6 +1079,8 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
   
   // Initialize response capture for payload logging
   let capturedResponseChunks: string[] = [];
+  // False until the upstream has accepted the call: a failure before that is the request's outcome.
+  let upstreamAccepted = false;
   
   try {
     logger.info('AwsBedrockService', `Making native streaming request to: ${targetUrl}`);
@@ -1082,6 +1104,7 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
       responseType: 'stream',
       timeout: timeout
     });
+    upstreamAccepted = true;
     
     logger.info('AwsBedrockService', 'Got native streaming response, processing chunks');
 
@@ -1485,15 +1508,13 @@ export async function handleNativeStreamingRequest(options: StreamingRequestOpti
       }
     }
 
+    // A client reads the reason off the message ("prompt is too long: …"), so it gets the
+    // upstream body's message, not axios's "Request failed with status code 400".
+    const failure = upstreamCallError(error, upstreamErrorBody);
     if (!res.writableEnded) {
-      // An Anthropic client reads the reason off the message ("prompt is too long: …"), so it
-      // gets the upstream body's message, not axios's "Request failed with status code 400".
-      const upstreamMessage = upstreamErrorBody?.error?.message || upstreamErrorBody?.message;
-      const errToSend = outputFormat === 'anthropic' && typeof upstreamMessage === 'string' && upstreamMessage
-        ? Object.assign(new Error(upstreamMessage), { status: error.response?.status })
-        : error;
-      writeStreamError(res, errToSend, outputFormat);
+      writeStreamError(res, Object.assign(new Error(failure.message), { status: failure.status }), outputFormat);
     }
+    if (!upstreamAccepted) throw answeredStreamFailure(failure);
   }
 }
 
@@ -1511,6 +1532,9 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
   // Initialize response capture for payload logging
   let capturedResponseChunks: string[] = [];
   
+  // False until the upstream has accepted the call: a failure before that is the request's outcome.
+  let upstreamAccepted = false;
+
   try {
     // Set SSE headers
     if (!res.headersSent) {
@@ -1542,6 +1566,7 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
       responseType: 'stream',
       timeout: timeout 
     });
+    upstreamAccepted = true;
 
     logger.info('AwsBedrockService', 'Got streaming response, processing chunks');
     
@@ -1953,14 +1978,11 @@ export async function handleEmulatedStreamingRequest(options: EmulatedStreamingR
       }
     }
 
+    const failure = upstreamCallError(error, upstreamErrorBody);
     if (!res.writableEnded) {
-      const message = upstreamErrorBody?.error?.message || upstreamErrorBody?.message
-        || error.message || "Failed to establish stream";
-      const status = error.response?.status || 500;
-      const errToSend = new Error(message) as any;
-      errToSend.status = status;
-      writeStreamError(res, errToSend, outputFormat);
+      writeStreamError(res, Object.assign(new Error(failure.message || 'Failed to establish stream'), { status: failure.status || 500 }), outputFormat);
     }
+    if (!upstreamAccepted) throw answeredStreamFailure(failure);
   }
 }
 

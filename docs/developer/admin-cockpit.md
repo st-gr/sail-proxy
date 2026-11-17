@@ -9,7 +9,7 @@ The Admin service is built using SAP Cloud Application Programming Model (CAP) a
 
 ## Prerequisites
 
-- Node.js 20+ and pnpm 10 (see [Development setup](/developer/setup)); `@sap/cds-dk` is a dev dependency of the service, so `npx cds` works without a global install
+- Node.js 24+ and pnpm 10 (see [Development setup](/developer/setup)); `@sap/cds-dk` is a dev dependency of the service, so `npx cds` works without a global install
 - `services/admin/.env` (from `.env.sample` or `pnpm run setup:dev`)
 
 **Valkey Required**:

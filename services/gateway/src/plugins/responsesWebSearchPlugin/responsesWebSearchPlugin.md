@@ -4,7 +4,7 @@
 
 The `responsesWebSearchPlugin` emulates OpenAI's hosted `web_search` tool on the `/openai/v1/responses` route. It rewrites the hosted tool into a plain function tool that SAP AI Core deployments accept, executes the search itself via Perplexity's sonar-pro model, and hands the client back the hosted-tool response shape it expects (`web_search_call` + a message with `url_citation` annotations).
 
-It is the Responses-wire-format sibling of [`webSearchPlugin`](../webSearch/webSearchPlugin.md), which does the equivalent job for the Anthropic Messages format. Both share the Perplexity search core in [`webSearch/searchExecutor.ts`](./webSearch/searchExecutor.ts); this plugin's request/response shaping lives in [`webSearch/responsesAdapter.ts`](./webSearch/responsesAdapter.ts), which contains all the pure Responses-format helpers.
+It is the Responses-wire-format sibling of [`webSearchPlugin`](../webSearch/webSearchPlugin.md), which does the equivalent job for the Anthropic Messages format. Both share the Perplexity search core in [`webSearch/searchExecutor.ts`](../../pluginSupport/webSearch/searchExecutor.ts); this plugin's request/response shaping lives in [`webSearch/responsesAdapter.ts`](../../pluginSupport/webSearch/responsesAdapter.ts), which contains all the pure Responses-format helpers.
 
 ## Where the code lives
 
@@ -12,13 +12,13 @@ It is the Responses-wire-format sibling of [`webSearchPlugin`](../webSearch/webS
 
 | Concern | File |
 |---|---|
-| The `res.write` interceptor, the continuation loop, the pending drain, the caps, usage accounting | [`hostedTool/engine.ts`](./hostedTool/engine.ts) |
-| What a hosted tool has to implement (`HostedToolDescriptor`) | [`hostedTool/descriptor.ts`](./hostedTool/descriptor.ts) |
-| Lookup by hosted `type` (request side) and function `name` (response side) | [`hostedTool/registry.ts`](./hostedTool/registry.ts) |
-| Everything web-search-specific: the rewritten tool, query parsing and re-masking, the `web_search_call` and result-`message` items | [`webSearch/descriptor.ts`](./webSearch/descriptor.ts) |
+| The `res.write` interceptor, the continuation loop, the pending drain, the caps, usage accounting | [`hostedTool/engine.ts`](../../pluginSupport/hostedTool/engine.ts) |
+| What a hosted tool has to implement (`HostedToolDescriptor`) | [`hostedTool/descriptor.ts`](../../pluginSupport/hostedTool/descriptor.ts) |
+| Lookup by hosted `type` (request side) and function `name` (response side) | [`hostedTool/registry.ts`](../../pluginSupport/hostedTool/registry.ts) |
+| Everything web-search-specific: the rewritten tool, query parsing and re-masking, the `web_search_call` and result-`message` items | [`webSearch/descriptor.ts`](../../pluginSupport/webSearch/descriptor.ts) |
 | Registering `web_search` onto the engine, and the two hook rules | `responsesWebSearchPlugin.ts` |
 
-The behaviour below is unchanged by that extraction, and deliberately so: [`test/responses-websearch-characterization.test.ts`](../../test/responses-websearch-characterization.test.ts) pins the exact bytes written to `res` and the exact continuation POST bodies, and had to stay byte-identical across it.
+The behaviour below is unchanged by that extraction, and deliberately so: [`test/responses-websearch-characterization.test.ts`](../../../test/responses-websearch-characterization.test.ts) pins the exact bytes written to `res` and the exact continuation POST bodies, and had to stay byte-identical across it.
 
 Names used below that moved: `hasResponsesWebSearchTool` / `transformResponsesWebSearchTool` are now the engine's `rewriteHostedTools` driving `descriptor.rewriteTool`; `findPendingResponsesSearch` is `findPendingHostedToolCall`; `isWebSearchFunctionCall` is `isHostedToolCall` (a registry lookup on the item's `name`); `MAX_PENDING_SEARCHES_PER_TURN` is `MAX_PENDING_CALLS_PER_TURN`; `installResponsesWebSearchInterceptor` is `installHostedToolInterceptor`; `replaceWebSearchCalls` is `replaceHostedToolCalls`. The pure helpers in `responsesAdapter.ts` and `continuation.ts` did not move — the descriptor composes them.
 
@@ -269,5 +269,5 @@ Inherited from the shared `searchExecutor` module (see [`webSearchPlugin.md`](..
 ## Related Documentation
 
 - [`webSearchPlugin.md`](../webSearch/webSearchPlugin.md) — the Anthropic sibling; shares the Perplexity integration, environment variables, and error-handling strategy documented there
-- [Plugin System](../../../docs/chapter-13-plugin-system.md)
-- [SAP AI Core Orchestration](../../../docs/sap-ai-core.md)
+- [Plugin System](../../../../../docs/developer/plugins.md)
+- [The gateway and SAP AI Core orchestration](../../../../../docs/developer/gateway.md)

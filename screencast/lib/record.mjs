@@ -67,8 +67,8 @@ export async function pageMisses(read, map, retryMs = 250) {
   return redactionMisses(text, map);
 }
 
-export function transcode(input, mp4, extra = [], before = []) {
-  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', ...before, '-i', input, ...ENCODE, ...extra, mp4], { stdio: ['ignore', 'inherit', 'inherit'] });
+export function transcode(input, mp4, extra = [], before = [], encode = ENCODE) {
+  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', ...before, '-i', input, ...encode, ...extra, mp4], { stdio: ['ignore', 'inherit', 'inherit'] });
   if (r.status !== 0) throw new Error(`ffmpeg failed for ${input}`);
 }
 // A section whose page never repaints leaves page.screencast with no frames: an empty or unreadable webm.

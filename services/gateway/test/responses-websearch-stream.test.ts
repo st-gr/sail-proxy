@@ -737,41 +737,145 @@ describe('responsesWebSearchPlugin — streaming continuation', () => {
     });
   });
 
-  it('stops at the configured cap and hands the client the results instead of a further call', async () => {
+  /**
+   * The request of a client with tools of its own next to web_search, as Codex sends it: the
+   * payload the controller stashed carries the rewritten web_search function tool and one
+   * client function tool.
+   */
+  function cappedReq(): any {
+    const req = continuationReq();
+    req.__responsesUpstream.payload = {
+      model: 'm', input: 'node lts?', stream: true, tool_choice: 'auto',
+      tools: [
+        { type: 'function', name: 'web_search', parameters: {} },
+        { type: 'function', name: 'shell', parameters: {} },
+      ],
+    };
+    return req;
+  }
+  const fcAgain = { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'web_search', arguments: '{"query":"again"}' };
+  const asksAgain = () => upstreamStream([
+    { type: 'response.output_item.added', output_index: 0, item: fcAgain },
+    { type: 'response.output_item.done', output_index: 0, item: fcAgain },
+    { type: 'response.completed', response: { id: 'resp_2', output: [], usage: { input_tokens: 40, output_tokens: 7 } } },
+  ]);
+  const answers = () => upstreamStream([
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_3' } },
+    { type: 'response.output_text.delta', output_index: 0, item_id: 'msg_3', delta: 'Node 22.' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_3' } },
+    { type: 'response.completed', response: { id: 'resp_3', output: [{ type: 'message', id: 'msg_3' }], usage: { input_tokens: 60, output_tokens: 5 } } },
+  ]);
+  const deltas = (written: string[]): string[] => frames(written)
+    .filter(x => x.type === 'response.output_text.delta').map(x => String(x.delta));
+
+  it('at the configured cap asks the model once more, without the tool, so the turn ends with an answer', async () => {
+    // Seen in a real Codex session: three searches ran, two more were refused, and the turn
+    // ended there with the result dumps and the budget notice but no answer. The Anthropic
+    // route has always given the model one answering turn at this point.
     mockMaxSearches.mockReturnValue(1);
     const res = mockRes();
-    const req = continuationReq();
-    const fc2 = { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'web_search', arguments: '{"query":"again"}' };
-    mockPost.mockResolvedValue(upstreamStream([
-      { type: 'response.output_item.added', output_index: 0, item: fc2 },
-      { type: 'response.output_item.done', output_index: 0, item: fc2 },
-      { type: 'response.completed', response: { id: 'resp_2', output: [], usage: {} } },
-    ]));
+    const req = cappedReq();
+    mockPost.mockResolvedValueOnce(asksAgain()).mockResolvedValueOnce(answers());
 
     await before({ req, res, utils });
     writeFirstCall(res);
     await settleAll();
 
-    expect(mockPost).toHaveBeenCalledTimes(1);               // no second continuation past the cap
-    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);   // and no second search either
+    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);   // the refused call is never run
+    expect(mockPost).toHaveBeenCalledTimes(2);               // the continuation, then the answering call
+
+    // The ordinary continuation still offers the tool; the answering call does not, and keeps
+    // the client's own tools.
+    expect((mockPost.mock.calls[0] as any[])[1].tools.map((t: any) => t.name)).toEqual(['web_search', 'shell']);
+    const answering = (mockPost.mock.calls[1] as any[])[1];
+    expect(answering.tools.map((t: any) => t.name)).toEqual(['shell']);
+    // Every call is answered in what the model reads, the refused one with the reason.
+    const outputs = answering.input.filter((i: any) => i.type === 'function_call_output');
+    expect(outputs.map((i: any) => i.call_id)).toEqual(['call_1', 'call_2']);
+    expect(String(outputs[1].output)).toContain('budget for this turn is used up');
+    // The stashed payload is shared by reference and must keep its tools.
+    expect(req.__responsesUpstream.payload.tools).toHaveLength(2);
 
     const f = frames(res.written);
     expect(f.filter(x => x.type === 'response.completed')).toHaveLength(1);
-    // The capped call still gets client-facing items, so it is never an item with no events.
     expect(f.filter(x => x.type === 'response.output_item.added').map(x => x.item.type))
       .toEqual(['web_search_call', 'web_search_call', 'message']);
     const capped = f.filter(x => x.type === 'response.output_item.done' && x.item.type === 'web_search_call').pop();
     expect(capped.item.status).toBe('failed');
-    // Task 2 fix round 2: the capped call's dump must name the budget as the reason, never
-    // read as though the search ran and found nothing. Fix round 4: this dump is USER-facing
-    // (rendered verbatim as the assistant's message on this no-continuation path), so its
-    // text is the plain statement `FAILURE_MESSAGES.cap_reached.user` in
-    // webSearch/descriptor.ts, not the model-facing instruction `renderOutput` sends.
-    expect(frames(res.written).some(x => x.type === 'response.output_text.delta'
-      && String(x.delta).startsWith("This turn's web-search budget was used up"))).toBe(true);
+    // The client reads the model's answer, not a result dump and not the budget notice.
+    expect(deltas(res.written)).toEqual(['Node 22.']);
+    expect(f[f.length - 1].response.output.map((i: any) => i.type)).toEqual(['web_search_call', 'web_search_call', 'message']);
+    expect(f[f.length - 1].response.usage.input_tokens).toBe(110);          // 10 + 40 + 60
+  });
+
+  it('gives the answering call when the first response already asks for more searches than the cap allows', async () => {
+    mockMaxSearches.mockReturnValue(1);
+    const res = mockRes();
+    const req = cappedReq();
+    mockPost.mockResolvedValueOnce(answers());
+
+    await before({ req, res, utils });
+    res.write(sse({ type: 'response.created', response: { id: 'resp_1' } }));
+    res.write(sse({ type: 'response.output_item.added', output_index: 0, item: FC }));
+    res.write(sse({ type: 'response.output_item.done', output_index: 0, item: FC }));
+    res.write(sse({ type: 'response.output_item.added', output_index: 1, item: fcAgain }));
+    res.write(sse({ type: 'response.output_item.done', output_index: 1, item: fcAgain }));
+    res.write(sse({ type: 'response.completed', response: { id: 'resp_1', output: [], usage: { input_tokens: 10, output_tokens: 2 } } }));
+    await settleAll();
+
+    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    const answering = (mockPost.mock.calls[0] as any[])[1];
+    expect(answering.tools.map((t: any) => t.name)).toEqual(['shell']);
+    // Both calls are answered. The first response's calls resolve as they complete, so the
+    // refused one, which needs no search, comes first; the pairing is by call_id.
+    expect(answering.input.filter((i: any) => i.type === 'function_call_output').map((i: any) => i.call_id).sort())
+      .toEqual(['call_1', 'call_2']);
+    expect(deltas(res.written)).toEqual(['Node 22.']);
+  });
+
+  it('removes the tool list altogether when web_search was the only tool', async () => {
+    mockMaxSearches.mockReturnValue(1);
+    const res = mockRes();
+    const req = cappedReq();
+    req.__responsesUpstream.payload.tools = [{ type: 'function', name: 'web_search', parameters: {} }];
+    mockPost.mockResolvedValueOnce(asksAgain()).mockResolvedValueOnce(answers());
+
+    await before({ req, res, utils });
+    writeFirstCall(res);
+    await settleAll();
+
+    const answering = (mockPost.mock.calls[1] as any[])[1];
+    expect(answering).not.toHaveProperty('tools');           // some deployments reject "tools": []
+    expect(answering).not.toHaveProperty('tool_choice');     // and a tool_choice without tools
+    expect(deltas(res.written)).toEqual(['Node 22.']);
+  });
+
+  it('ends the turn with the results and the budget notice when the answering call asks for the tool again', async () => {
+    // The loop's termination guarantee: one answering call per request, never a second.
+    mockMaxSearches.mockReturnValue(1);
+    const res = mockRes();
+    const req = cappedReq();
+    mockPost.mockImplementation(async () => asksAgain());
+
+    await before({ req, res, utils });
+    writeFirstCall(res);
+    await settleAll();
+
+    expect(mockPost).toHaveBeenCalledTimes(2);               // the continuation and the answering call, no third
+    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);   // and no second search either
+
+    const f = frames(res.written);
+    expect(f.filter(x => x.type === 'response.completed')).toHaveLength(1);
+    // Every refused call still gets client-facing items, so it is never an item with no events.
+    const calls = f.filter(x => x.type === 'response.output_item.done' && x.item.type === 'web_search_call');
+    expect(calls.map(x => x.item.status)).toEqual(['completed', 'failed', 'failed']);
+    // This dump is USER-facing (rendered verbatim as the assistant's message), so its text is
+    // the plain statement `FAILURE_MESSAGES.cap_reached.user` in webSearch/descriptor.ts, not
+    // the model-facing instruction `renderOutput` sends.
+    expect(deltas(res.written).some(d => d.startsWith("This turn's web-search budget was used up"))).toBe(true);
     // No model-facing imperative may leak into what the user reads.
-    expect(frames(res.written).some(x => x.type === 'response.output_text.delta'
-      && /do not tell the user/i.test(String(x.delta)))).toBe(false);
+    expect(deltas(res.written).some(d => /do not tell the user/i.test(d))).toBe(false);
   });
 
   it('stops the loop when it outlives the idle budget the controller allows it', async () => {

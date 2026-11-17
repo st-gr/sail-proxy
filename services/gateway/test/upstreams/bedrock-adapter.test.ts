@@ -8,10 +8,12 @@ import request from 'supertest';
 
 jest.mock('@libs/logger', () => ({ getDefaultLogger: () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn(), trace: jest.fn() }) }));
 jest.mock('../../src/utils/payloadLogger', () => ({ savePayload: jest.fn() }));
+let mockBetaRenames: Record<string, string> = {};
 jest.mock('../../src/services/configService', () => {
   const service = {
     getTimeout: () => 5000,
-    getSupportedBetaHeaders: () => ['context-1m-2025-08-07', 'interleaved-thinking-2025-05-14'],
+    getSupportedBetaHeaders: () => ['context-1m-2025-08-07', 'interleaved-thinking-2025-05-14', 'tool-search-tool-2025-10-19'],
+    getBetaHeaderRenames: () => mockBetaRenames,
     getExcludedBetaHeaders: () => ['interleaved-thinking-2025-05-14'],
   };
   return { __esModule: true, default: service, getTimeout: () => 5000 };
@@ -113,6 +115,23 @@ describe('bedrock adapter', () => {
     expect(JSON.parse(none.body)).not.toHaveProperty('anthropic_beta');
     const fromBody = await adapter.buildRequest('messages', { max_tokens: 1, messages: [], anthropic_beta: ['context-1m-2025-08-07'] }, PROFILE);
     expect(JSON.parse(fromBody.body).anthropic_beta).toEqual(['context-1m-2025-08-07']);
+  });
+
+  it('a beta flag Bedrock knows under another name is renamed before the lists apply, as on the SAP Bedrock path', async () => {
+    // Claude Code sends the tool search beta as advanced-tool-use-2025-11-20; Bedrock calls it
+    // tool-search-tool-2025-10-19. Merely dropped, the request's tool search fields lose their flag.
+    mockBetaRenames = { 'advanced-tool-use-2025-11-20': 'tool-search-tool-2025-10-19' };
+    try {
+      const adapter = adapterFor(bedrock())!;
+      const fromHeader = await adapter.buildRequest('messages', { max_tokens: 1, messages: [] }, PROFILE, {
+        'anthropic-beta': 'advanced-tool-use-2025-11-20,context-1m-2025-08-07',
+      });
+      expect(JSON.parse(fromHeader.body).anthropic_beta).toEqual(['tool-search-tool-2025-10-19', 'context-1m-2025-08-07']);
+      const fromBody = await adapter.buildRequest('messages', { max_tokens: 1, messages: [], anthropic_beta: ['advanced-tool-use-2025-11-20'] }, PROFILE);
+      expect(JSON.parse(fromBody.body).anthropic_beta).toEqual(['tool-search-tool-2025-10-19']);
+    } finally {
+      mockBetaRenames = {};
+    }
   });
 
   it('listModels merges foundation models and profiles', async () => {

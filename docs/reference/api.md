@@ -9,7 +9,7 @@ sail-proxy describes its HTTP APIs in four OpenAPI documents:
 
 - **Gateway**: every client route of the gateway. The vendor-compatible routes (OpenAI, Anthropic, Google Gemini, AWS Bedrock, OpenRouter) say what sail-proxy changes and link the vendor's own reference for the bodies; sail-proxy's own routes (SAP-RPT, models, health) have full schemas. [API endpoints](/reference/api-endpoints) lists the same routes as tables.
 - **Admin OData**: the Admin Cockpit's OData service.
-- **Admin REST**: the admin service's REST routes for the configuration status and Grounding.
+- **Admin REST**: the admin service's REST routes for the configuration status, Grounding and the export of the gateway's log.
 - **Ollama**: the [Ollama-compatible service](/reference/ollama-api).
 
 The Realtime API is a WebSocket, not an HTTP route, and is not in the documents: see [OpenAI Realtime API](/guide/clients/realtime).

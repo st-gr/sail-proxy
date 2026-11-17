@@ -9,7 +9,7 @@ import { UpgradePolicy, materializeKit } from './kit';
 import { CommandRunner, guarded, spawnCommand } from './kubectl';
 import { Refusal, defaultStatfs } from './kymaChecks';
 import { ImageTarget, PromptOne } from './kymaRender';
-import { UpgradeResult, askBeforeOutage, describe, withoutSecretEnv } from './kyma';
+import { NEW_DEFAULTS_NOTE, UpgradeResult, askBeforeOutage, describe, withoutSecretEnv } from './kyma';
 import { OUTAGE_STEPS, SignalSource, StepRunner, quotePath, runPhase } from './steps';
 import { ComposeTarget, HttpGet, ImageCoordinates, composeArgs, withComposeEnv, composeFiles, dumpDatabase, healthUrls, httpStatus, projectContainers, restoreDatabase, sha256, waitHealthy } from './dockerHost';
 import { DockerKit, applyDockerAnswers, collectDockerAnswers, loadDockerKit, managedFiles, recordUpgrade } from './dockerRender';
@@ -169,10 +169,11 @@ export async function runDockerUpgrade(ctx: DockerUpgradeContext): Promise<Upgra
     await runner.step('record', async () => recordUpgrade(dk, dir, collected.answers, images, sha256));
     log(`\nUpgrade complete: ${from} → ${images.tag}. Backup of the previous version: ${backup}`);
     log('This directory now holds the release\'s files: update it with `sail-proxy upgrade docker`, no longer with `git pull`.');
+    log(NEW_DEFAULTS_NOTE);
     return { ok: true, from, to: images.tag, backup: backup! };
   } catch (error) {
     const failedAt = runner.current || 'read';
-    const why = runner.interrupted ? `interrupted by ${runner.interrupted}` : describe(error);
+    const why = runner.interrupted ? `interrupted by ${runner.interrupted}` : describe(error, { kubectlHint: false });
     if (!OUTAGE_STEPS.includes(failedAt)) {
       if (!(error instanceof Refusal)) log(`\nThe upgrade stopped at step ${failedAt}: ${why}. Nothing was changed.`);
       else log(`\n${why}`);
@@ -185,7 +186,7 @@ export async function runDockerUpgrade(ctx: DockerUpgradeContext): Promise<Upgra
       log(`\nRolled back: the installation runs ${from} again on the database as it was before the upgrade.`);
       return { ok: false, failedAt, rolledBack: true, from, backup, error: why };
     } catch (rollbackError) {
-      log(`\nTHE ROLLBACK FAILED: ${describe(rollbackError)}.`);
+      log(`\nTHE ROLLBACK FAILED: ${describe(rollbackError, { kubectlHint: false })}.`);
       const cmd = backup ? `sail-proxy restore docker --dir ${quotePath(dir)} --input ${quotePath(backup)}` : undefined;
       const t = state.installed!.target;
       if (!state.applied) {
@@ -195,7 +196,7 @@ export async function runDockerUpgrade(ctx: DockerUpgradeContext): Promise<Upgra
         log(`The installation may be partly upgraded.${backup ? ` The backup ${quotePath(backup)} was kept.` : ''}`);
         if (cmd) log(`Restore the previous version by hand:\n  ${cmd}`);
       }
-      return { ok: false, failedAt, rolledBack: false, from, backup, error: `${why}; rollback failed: ${describe(rollbackError)}`, restoreCommand: cmd };
+      return { ok: false, failedAt, rolledBack: false, from, backup, error: `${why}; rollback failed: ${describe(rollbackError, { kubectlHint: false })}`, restoreCommand: cmd };
     }
   } finally {
     runner.stop();

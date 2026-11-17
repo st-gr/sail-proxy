@@ -5,6 +5,7 @@
     "config-app",
     "connections-app",
     "grounding-app",
+    "logs-app",
     "model-library-app",
     "plugins-app",
     "sap-rates-app",

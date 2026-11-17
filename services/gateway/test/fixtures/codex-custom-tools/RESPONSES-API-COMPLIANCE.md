@@ -339,13 +339,13 @@ usable anyway, because the tool is now declared as `function` and a `custom_tool
 history no longer matches its own declaration.
 
 This section records pre-translation baseline behavior for `custom`, captured the same way the
-`custom` and `tool_search` rejections in `../codex-reasoning/effort-evidence.md` were. It has not
-been re-measured against the shipped translation with a live Codex session — that is Task 9 of
-`docs/superpowers/plans/2026-08-11-custom-tool-translation.md`, not yet run as of this writing.
+`custom` and `tool_search` rejections in `../codex-reasoning/effort-evidence.md` were. The shipped
+translation was measured with a live Codex session afterwards; that record is
+`apply-patch-translation-verification.md` in this folder.
 
 ## The 33-type map — deployed vs orchestration, derived 2026-08-11
 
-Workstream 4 of `docs/superpowers/plans/2026-08-11-parity-workstreams-3-4.md`. Every cell below was
+Workstream 4 of the Responses parity work. Every cell below was
 derived by reading the code as it stands on this date, not from earlier notes in this file — the
 accounting moved twice in one day, so nothing here is inherited. The 33 types are the list already
 recorded above, verbatim from the validation error.

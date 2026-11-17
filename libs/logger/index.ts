@@ -2,6 +2,9 @@ import { LogEntry, RequestContext } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export type { LogEntry };
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -43,10 +46,20 @@ export interface Logger {
   log(level: LogLevel, component: string, message: string, metadata?: any, error?: Error): void;
   
   // Utility methods
+  runWithRequestContext<T>(context: RequestContext, fn: () => T): T;
   setRequestContext(context: RequestContext): void;
   clearRequestContext(): void;
   isLevelEnabled(component: string, level: LogLevel): boolean;
   reinitialize(): void;
+  /** Takes the levels of a configuration the service received (not read from the file); undefined restores the constructed level and clears the components. */
+  applyLoggingConfig(logging: { defaultLevel?: string; components?: Record<string, string> } | undefined): void;
+  /** The environment variables that fix a setting whatever the configuration says. */
+  fixedByEnvironment(): { LOG_LEVEL?: string };
+  /**
+   * A second output beside the console: called with each entry after it was written. It must only
+   * queue and return; an exception from it is swallowed. Returns the function that removes it.
+   */
+  addSink(sink: (entry: LogEntry) => void): () => void;
   close(): void;
   
   // Morgan HTTP integration
@@ -105,10 +118,12 @@ let warnedIgnoredLegacyLogging = false;
 class EnhancedServiceLogger implements Logger {
   private config: LogConfig;
   private requestContext?: RequestContext;
+  private readonly requestContexts = new AsyncLocalStorage<RequestContext>();
   private componentLevels: Record<string, LogLevel> = {};
   private logDir: string = '';
   private logFiles: Set<fs.WriteStream> = new Set();
   private baseLevel: LogLevel = 'info';
+  private readonly sinks = new Set<(entry: LogEntry) => void>();
 
   constructor(config: Partial<LogConfig> = {}) {
     // Check if file logging should be disabled
@@ -229,6 +244,10 @@ class EnhancedServiceLogger implements Logger {
     process.on('SIGTERM', cleanup);
   }
 
+  runWithRequestContext<T>(context: RequestContext, fn: () => T): T {
+    return this.requestContexts.run(context, fn);
+  }
+
   setRequestContext(context: RequestContext): void {
     this.requestContext = context;
   }
@@ -243,6 +262,31 @@ class EnhancedServiceLogger implements Logger {
     const requestedLevelValue = LOG_LEVELS[level];
     
     return requestedLevelValue <= componentLevelValue;
+  }
+
+  applyLoggingConfig(logging: { defaultLevel?: string; components?: Record<string, string> } | undefined): void {
+    const envLevel = this.environmentLevel();
+    // a level that is not text (a file-fallback configuration the schema never checked) is ignored like an unknown one
+    const rawLevel: unknown = logging?.defaultLevel;
+    const configLevel = (typeof rawLevel === 'string' ? rawLevel.toLowerCase() : '') as LogLevel;
+    const configLevelValid = !!configLevel && Object.keys(LOG_LEVELS).includes(configLevel);
+    this.config.level = envLevel ?? (configLevelValid ? configLevel : this.baseLevel);
+    this.componentLevels = {};
+    Object.entries(logging?.components ?? {}).forEach(([component, level]) => {
+      const normalizedLevel = String(level).toLowerCase() as LogLevel;
+      if (Object.keys(LOG_LEVELS).includes(normalizedLevel)) {
+        this.componentLevels[component] = normalizedLevel;
+      }
+    });
+  }
+
+  fixedByEnvironment(): { LOG_LEVEL?: string } {
+    return this.environmentLevel() ? { LOG_LEVEL: process.env.LOG_LEVEL as string } : {};
+  }
+
+  private environmentLevel(): LogLevel | undefined {
+    const envLevel = process.env.LOG_LEVEL?.toLowerCase() as LogLevel;
+    return envLevel && Object.keys(LOG_LEVELS).includes(envLevel) ? envLevel : undefined;
   }
 
   reinitialize(): void {
@@ -296,16 +340,34 @@ class EnhancedServiceLogger implements Logger {
       message,
       component,
       timestamp: new Date().toISOString(),
-      requestId: this.requestContext?.requestId,
+      requestId: (this.requestContexts.getStore() ?? this.requestContext)?.requestId,
       metadata: this.formatMetadata(level, metadata),
-      error: error ? {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
-      } : undefined
+      error: error ? this.errorOf(error) : undefined
     };
 
     this.writeLog(logEntry);
+    for (const sink of this.sinks) {
+      try {
+        sink(logEntry);
+      } catch {
+        // A sink never affects the caller or the console line.
+      }
+    }
+  }
+
+  // `logText` (what a stored copy of the log may show instead of the message) is not enumerable:
+  // the sinks read it, while the json console format and the file transport, which write the
+  // entry with JSON.stringify, print the error as before.
+  private errorOf(error: Error): NonNullable<LogEntry['error']> {
+    const out: NonNullable<LogEntry['error']> = { name: error.name, message: error.message, stack: error.stack };
+    const logText = (error as any).logText;
+    if (typeof logText === 'string') Object.defineProperty(out, 'logText', { value: logText, enumerable: false });
+    return out;
+  }
+
+  addSink(sink: (entry: LogEntry) => void): () => void {
+    this.sinks.add(sink);
+    return () => { this.sinks.delete(sink); };
   }
 
   private formatMetadata(level: LogLevel, metadata?: any): any {

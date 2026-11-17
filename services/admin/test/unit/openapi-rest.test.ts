@@ -54,12 +54,14 @@ const groundingRestApi = require('../../src/srv/grounding-rest-api');
 const pluginsRestApi = require('../../src/srv/plugins-rest-api');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const versionRestApi = require('../../src/srv/version-rest-api');
+const logsRestApi = require('../../src/srv/admin-service-logs').gatewayLogExportRouter;
+const tracesRestApi = require('../../src/srv/admin-service-traces').traceDownloadRouter;
 
 const ADMIN_ROOT = path.resolve(__dirname, '../..');
 const DOC_FILE = path.resolve(ADMIN_ROOT, '../../openapi/admin-rest.yaml');
 const INTERNAL_FILE = path.resolve(ADMIN_ROOT, '../../openapi/internal-routes.json');
 const MOUNT_FILE = 'src/index.ts';
-const ROUTERS: Record<string, express.Router> = { configRestApi, groundingRestApi, pluginsRestApi, versionRestApi };
+const ROUTERS: Record<string, express.Router> = { configRestApi, groundingRestApi, pluginsRestApi, versionRestApi, logsRestApi, tracesRestApi };
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'];
 
 interface Mount { prefix: string; router: string }
@@ -69,7 +71,7 @@ function mountsInSource(): { mounts: Mount[]; appRoutes: RouteKey[] } {
   const mounts: Mount[] = [];
   const appRoutes: RouteKey[] = [];
   const source = fs.readFileSync(path.join(ADMIN_ROOT, MOUNT_FILE), 'utf8');
-  for (const m of source.matchAll(/app\.use\('\/api((?:\/[^']*)?)',\s*\(?(configRestApi|groundingRestApi|pluginsRestApi|versionRestApi)\b/g)) {
+  for (const m of source.matchAll(/app\.use\('\/api((?:\/[^']*)?)',\s*\(?(configRestApi|groundingRestApi|pluginsRestApi|versionRestApi|logsRestApi|tracesRestApi)\b/g)) {
     mounts.push({ prefix: m[1], router: m[2] });
   }
   for (const m of source.matchAll(/app\.(get|post|put|delete|patch)\('\/api(\/[^']*)'/g)) {
@@ -141,7 +143,7 @@ describe('admin REST OpenAPI document: coverage', () => {
   it('finds the router mounts and the app-level routes in the source', () => {
     const { mounts, appRoutes } = mountsInSource();
     expect([...new Set(mounts.map((m) => `${m.router} ${m.prefix}`))].sort())
-      .toEqual(['configRestApi ', 'groundingRestApi /grounding', 'pluginsRestApi /plugins', 'versionRestApi /version']);
+      .toEqual(['configRestApi ', 'groundingRestApi /grounding', 'logsRestApi /logs', 'pluginsRestApi /plugins', 'tracesRestApi /logs', 'versionRestApi /version']);
     expect(appRoutes).toEqual([{ method: 'get', path: '/health' }, { method: 'get', path: '/docs' }]);
   });
 

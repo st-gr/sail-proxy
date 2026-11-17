@@ -82,6 +82,7 @@ import { getFileSearchConfig } from '../services/configService';
 import { getDefaultLogger } from '@libs/logger';
 import { EXTRACTION_VERSION, UnsupportedFileTypeError } from './extractors/registry';
 import { DocumentReadError } from './extractors/ooxml/limits';
+import { PandocTooOldError } from './extractors/pandocSandbox';
 import { sweepStaleExtractDirs } from './extractors/runners';
 import type { Chunk } from './chunker';
 import { ChunkingSetting, ChunkingStrategyError, chunkingKey, resolveChunking } from './chunkingSetting';
@@ -167,7 +168,9 @@ function isPermanentFailure(error: unknown): boolean {
     // either — the store needs a re-embed.
     error instanceof EmbeddingModelUnavailableError ||
     // The store's chunking setting is invalid (hand-edited): no retry can chunk the file.
-    error instanceof ChunkingStrategyError
+    error instanceof ChunkingStrategyError ||
+    // The gateway's pandoc has no --sandbox: it refuses every upload of its types, so a retry fails alike.
+    error instanceof PandocTooOldError
   );
 }
 
@@ -758,9 +761,10 @@ async function handleFailure(storeId: string, fileId: string, error: unknown, ma
   // message (extractor/embedder/DB driver), not raw document content — but
   // pandoc/pdftotext stderr can legitimately quote a fragment of the
   // document they failed to parse, so `error.message` is NOT unconditionally
-  // safe on its own merits; it's runners.ts's `sanitizeStderrForError` that
-  // truncates and strips control characters BEFORE that message ever
-  // reaches the Error this function receives, closing that specific gap.
+  // safe on its own merits. runners.ts's `sanitizeStderrForError` only bounds it
+  // (control characters stripped, cut to 200); the console line and last_error
+  // keep it. The stored gateway log does not: an ExtractorExitError carries a
+  // logText (tool and exit code) that the log shipper stores instead.
   if (error instanceof EmbeddingModelUnavailableError) {
     // An expected state with a known remedy (re-embed the store), not a fault.
     logger.warn('IngestWorker', `Ingestion attempt failed for store ${storeId}, file ${fileId}: `
@@ -1244,4 +1248,4 @@ export { commitChunkSets as __commitChunkSetsForTests };
  * logic itself, independent of what a live run happens to produce. Never
  * imported this way in production.
  */
-export { sanitizeErrorMessage as __sanitizeErrorMessageForTests };
+export { sanitizeErrorMessage as __sanitizeErrorMessageForTests, isPermanentFailure as __isPermanentFailureForTests };

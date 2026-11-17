@@ -63,6 +63,33 @@ describe('readDockerConfigValues', () => {
     expect(JSON.stringify(values)).not.toContain('never-returned-1');
   });
 
+  it('reads an IAS (OIDC) connector: the tenant issuer, not Dex\'s own, and the quoted client secret exactly', () => {
+    const secret = 's3:cr#t "q" \\ $& [x]';
+    write('.env.auth', 'IDENTITY_PROVIDER=ias\nROLE_MAPPING={"ias-admins":"admin","ias-users":"user"}\n');
+    write(
+      'dex.config.yaml',
+      'issuer: https://gw.example.invalid/dex\nconnectors:\n- type: oidc\n  id: sap-ias\n  config:\n' +
+        '    issuer: "https://tenant.example.invalid"\n    clientID: "client-1"\n' +
+        `    clientSecret: ${JSON.stringify(secret)}\n    redirectURI: https://gw.example.invalid/dex/callback\n`
+    );
+    const values = readDockerConfigValues(dir);
+    expect(values).toMatchObject({
+      IDENTITY_PROVIDER: 'ias',
+      groups: { admin: 'ias-admins', user: 'ias-users' },
+      IAS_ISSUER_URL: 'https://tenant.example.invalid',
+      IAS_CLIENT_ID: 'client-1',
+      IAS_CLIENT_SECRET: secret,
+    });
+  });
+
+  it('a GitHub connector yields no IAS values', () => {
+    write('dex.config.yaml', 'issuer: https://gw.example.invalid/dex\nconnectors:\n- type: github\n  config:\n    clientID: id-1\n    clientSecret: secret-1\n');
+    const values = readDockerConfigValues(dir);
+    expect(values.IAS_ISSUER_URL).toBeUndefined();
+    expect(values.IAS_CLIENT_ID).toBeUndefined();
+    expect(values.IAS_CLIENT_SECRET).toBeUndefined();
+  });
+
   it('an unreadable ROLE_MAPPING yields no groups', () => {
     write('.env.auth', 'IDENTITY_PROVIDER=okta\nROLE_MAPPING={not json\n');
     expect(readDockerConfigValues(dir).groups).toEqual({ admin: undefined, user: undefined });

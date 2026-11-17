@@ -79,7 +79,7 @@ const cases = ROUTES.map((r) => [r.name, r] as const);
 const upstreamArgs = () => JSON.stringify(upstream.mock.calls);
 /** What each upstream call sends: the request body handed to awsBedrockService, else the call's payload. */
 const upstreamPayloads = () => JSON.stringify(upstream.mock.calls.map((c: any[]) => c[1]?.requestBody ?? c[1]));
-const shipped = () => ({ hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: {} });
+const shipped = () => ({ hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: { pseudonymization: { enabled: true } } });
 
 function expectRefused(res: any, code = 'pseudonymization_hook_missing') {
   expect(res.statusCode).toBe(503);
@@ -133,7 +133,8 @@ it('Bedrock converse on a deployment, forced, with invoke chains only: refused',
 // The shipped hooks run the plugin on these routes: forced masking reaches the upstream masked,
 // the deployed Anthropic branch included (its before-chain runs ahead of the deployment branch).
 describe('forced, with the shipped hooks: the upstream receives the masked request', () => {
-  it.each(['orchestration chat', 'Anthropic messages', 'Anthropic messages, deployed', 'Bedrock invoke, deployed', 'Bedrock converse, deployed'])('%s', async (name) => {
+  it.each(['orchestration chat', 'Anthropic messages', 'Anthropic messages, deployed', 'Bedrock invoke, deployed', 'Bedrock converse, deployed',
+    'Gemini generateContent', 'Gemini streamGenerateContent'])('%s', async (name) => {
     mockConfig.api_config = shipped();
     const res = await route(name).run();
     expect(res.body?.error?.code).not.toBe('pseudonymization_hook_missing');

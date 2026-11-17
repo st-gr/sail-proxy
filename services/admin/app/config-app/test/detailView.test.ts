@@ -396,6 +396,21 @@ function formMethod(name: string): string {
   return doc > 0 ? body.slice(0, doc) : body;
 }
 
+// The notice that the global pseudonymization switch was switched on with a flag stayed on screen
+// after the switch itself was switched Off again. Only that notice is cleared, never another one.
+describe('the global switch notice', () => {
+  it('switching the global switch off again clears the switched-on notice, and only that notice', () => {
+    const body = formMethod('_applyChange');
+    expect(body).toMatch(/this\._autoFlipNotice = autoFlipMessage\(/);
+    expect(body).toMatch(/this\._setProperty\("\/formNotice", this\._autoFlipNotice\)/);
+    const clear = body.match(/else if \(([^{]*)\) \{\s*this\._setProperty\("\/formNotice", ""\)/);
+    expect(clear).not.toBeNull();
+    expect(clear![1]).toMatch(/pointer === GLOBAL_SWITCH_POINTER/);
+    expect(clear![1]).toMatch(/value !== true/);
+    expect(clear![1]).toMatch(/this\._getProperty\("\/formNotice"\) === this\._autoFlipNotice/);
+  });
+});
+
 // Duplicate from the form view copied edits that fail validation without marking them; the
 // server's create then refused the copy. The form checks them as Save does, before the copy opens.
 describe('duplicating from the form view', () => {

@@ -48,9 +48,8 @@ function queryOf(r: ToolExecResult): string {
  * model, and belong exactly there.
  *
  * `renderResultMessage` produces an assistant `message` ITEM: on the no-continuation path
- * (`performCall`'s cap branch forecloses every further continuation for the rest of the
- * turn, so this is the ONLY hook that call ever reaches) this is rendered to the HUMAN
- * verbatim, as if the assistant said it. Fix round 2 pointed this hook at the exact same
+ * (for a call refused at the cap: the answering call failed, or its reply asked for the tool
+ * again) this is rendered to the HUMAN verbatim, as if the assistant said it. Fix round 2 pointed this hook at the exact same
  * text as `renderOutput` — an instruction addressed to the model, appearing unparaphrased in
  * a user's transcript, reads as nonsense to a person and leaks how this tool is implemented.
  * `USER` is therefore a plain statement of what happened, addressed to a person, with no
@@ -114,7 +113,7 @@ export const webSearchDescriptor: HostedToolDescriptor = {
     try {
       return { call, status: 'completed', payload: await executeWebSearch(searchQuery, ctx.logger) };
     } catch (error: any) {
-      ctx.logger.error(`Web search failed${ctx.isStreaming ? ' mid-stream' : ''} for "${searchQuery}": ${error.message}`);
+      ctx.logger.error(`Web search failed${ctx.isStreaming ? ' mid-stream' : ''}: ${error.message}`, { query: searchQuery });
       return {
         call,
         status: 'failed',

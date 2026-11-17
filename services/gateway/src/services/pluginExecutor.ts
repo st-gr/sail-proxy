@@ -9,6 +9,23 @@ import { readForceSource } from '../pluginSupport/pseudonymization/forcedRun';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 
+/** A plugin's `error(message, meta)`: an Error is the entry's error, anything else its metadata. */
+const pluginError = (ruleId: string, message: string, meta?: any): void =>
+  meta instanceof Error ? logger.error(ruleId, message, meta) : logger.error(ruleId, message, undefined, meta);
+
+/**
+ * A hook names a plugin that has no handler for the running strategy. A plugin with handlers for
+ * other strategies only (a before-only plugin in the after chain) is passed over; an id no plugin
+ * has is a configuration fault and warns.
+ */
+function reportMissingRule(ruleId: string, strategy: 'before' | 'after'): void {
+  if (pluginLoader.getAllRulesById(ruleId).length > 0) {
+    logger.debug('PluginExecutor', `Plugin '${ruleId}' has no '${strategy}' handler`);
+    return;
+  }
+  logger.warn('PluginExecutor', `Plugin rule '${ruleId}' with strategy '${strategy}' not found`);
+}
+
 // Type definitions for plugin interfaces
 interface PluginLogger {
   error: (message: string, meta?: any) => void;
@@ -121,7 +138,7 @@ export async function executeBeforePlugins(
     const rule: PluginRule | null = selected.rule;
 
     if (!rule) {
-      logger.warn('PluginExecutor', `Plugin rule '${ruleId}' with strategy 'before' not found`);
+      reportMissingRule(ruleId, 'before');
       continue;
     }
     if (ruleId === PSEUDONYMIZATION_RULE_ID) pseudonymizationReached = true;
@@ -132,7 +149,7 @@ export async function executeBeforePlugins(
 
       // Create the logger object for the plugin
       const pluginLogger: PluginLogger = {
-        error: (message: string, meta?: any) => logger.error(ruleId, message, meta),
+        error: (message: string, meta?: any) => pluginError(ruleId, message, meta),
         warn: (message: string, meta?: any) => logger.warn(ruleId, message, meta),
         info: (message: string, meta?: any) => logger.info(ruleId, message, meta),
         debug: (message: string, meta?: any) => logger.debug(ruleId, message, meta),
@@ -193,8 +210,9 @@ export async function executeBeforePlugins(
         logger.error('PluginExecutor', `Error executing plugin '${ruleId}': ${describeErrorWithoutContent(error)}`);
         continue;
       }
-      // Log the full error object for more details, including stack
-      logger.error('PluginExecutor', `Error executing plugin '${ruleId}': ${error.message}. Stack: ${error.stack}`);
+      // The error as the error argument: its stack reaches the console only, the stored log
+      // keeps the name and the message (cut to 500).
+      logger.error('PluginExecutor', `Error executing plugin '${ruleId}' (before)`, error instanceof Error ? error : new Error(String(error)));
       continue;
     }
   }
@@ -249,7 +267,7 @@ export async function executeAfterPlugins(
     const rule: PluginRule | null = pluginLoader.getRule(ruleId, 'after');
 
     if (!rule) {
-      logger.warn('PluginExecutor', `Plugin rule '${ruleId}' with strategy 'after' not found`);
+      reportMissingRule(ruleId, 'after');
       continue;
     }
 
@@ -258,7 +276,7 @@ export async function executeAfterPlugins(
       logger.debug('PluginExecutor', `Executing 'after' plugin: ${ruleId}`);
 
       const pluginLogger: PluginLogger = {
-        error: (message: string, meta?: any) => logger.error(ruleId, message, meta),
+        error: (message: string, meta?: any) => pluginError(ruleId, message, meta),
         warn: (message: string, meta?: any) => logger.warn(ruleId, message, meta),
         info: (message: string, meta?: any) => logger.info(ruleId, message, meta),
         debug: (message: string, meta?: any) => logger.debug(ruleId, message, meta),
@@ -294,7 +312,7 @@ export async function executeAfterPlugins(
       logger.debug('PluginExecutor', `Plugin '${ruleId}' modified response`);
       finalResponse = result; // Chain the response for next plugin
     } catch (error: any) {
-      logger.error('PluginExecutor', `Error executing plugin '${ruleId}': ${error.message}. Stack: ${error.stack}`);
+      logger.error('PluginExecutor', `Error executing plugin '${ruleId}' (after)`, error instanceof Error ? error : new Error(String(error)));
       continue;
     }
   }
@@ -348,7 +366,7 @@ export async function executeStreamPlugins(
       logger.debug('PluginExecutor', `Executing 'stream' plugin: ${ruleId}`);
 
       const pluginLogger: PluginLogger = {
-        error: (message: string, meta?: any) => logger.error(ruleId, message, meta),
+        error: (message: string, meta?: any) => pluginError(ruleId, message, meta),
         warn: (message: string, meta?: any) => logger.warn(ruleId, message, meta),
         info: (message: string, meta?: any) => logger.info(ruleId, message, meta),
         debug: (message: string, meta?: any) => logger.debug(ruleId, message, meta),

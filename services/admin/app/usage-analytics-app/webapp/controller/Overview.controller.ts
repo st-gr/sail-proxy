@@ -20,7 +20,8 @@ import formatMessage from "sap/base/strings/formatMessage";
 import Localization from "sap/base/i18n/Localization";
 import Filter from "sap/ui/model/Filter";
 import { connectionChartState, avgCostPerRequest } from "../model/connectionSpend";
-import { readsSapTenants, tenantFilter, tenantOptions, foldByApiKey, costFiguresByKey, rowCost, totalsCost, sapCostTileText, sapCostTileCurrencies, connectionOptions, usageParams, ConnectionRow, TenantRow } from "../model/tenantFilter";
+import { sapBillingTable } from "../model/sapBilling";
+import { readsSapTenants, tenantOptions, sapCostTileText, sapCostTileCurrencies, connectionOptions, usageParams, ConnectionRow, TenantRow } from "../model/tenantFilter";
 // import Spreadsheet from "sap/ui/export/Spreadsheet";
 // import { EdmType } from "sap/ui/export/util/Type";
 
@@ -379,6 +380,7 @@ export default class OverviewController extends Controller {
                 return this._loadLiveData(loadId);
             }
             
+            this._sapBilling = result && typeof result === 'object' ? result.sapBilling || null : null;
             if (result && typeof result === 'object') {
                 this._processUsageData(result);
                 MessageToast.show(this.text("usageDataLoaded", [this._periodName(selectedTimePeriod)]));
@@ -565,121 +567,43 @@ export default class OverviewController extends Controller {
         this._apiKeyOwners = owners;
     }
 
+    /** getUsageStatistics.sapBilling of the last load: the SAP figures for the chosen Time Period. */
+    private _sapBilling: { credentials?: any[]; teams?: any[] } | null = null;
+
     /**
-     * Load the SAP-native Capacity-Unit / cost aggregates (Task 11), beside the dollar-estimate
-     * data loaded by _loadLiveData above. Read directly from the two OData entity sets rather
-     * than folded into the getUsageStatistics() pipeline: capacityUnits/genAiTokens/
-     * imageInputTokens are on ApiKeyUsageStats (currency-neutral, safe to sum per apiKey);
-     * sapCost is priced per currency, so it lives on the separate ApiKeyUsageSapCostStats view
-     * (grouped by apiKey + sapCostCurrency) to avoid summing different currencies together.
-     * Failures here are logged and leave the SAP billing tables empty - they must never break
-     * the main dashboard load.
+     * Fill the SAP billing tables and the SAP Cost tile from getUsageStatistics.sapBilling, so they
+     * follow the chosen Time Period, tenant and row scope like every other figure, and cover API keys
+     * and AWS credentials. (They used to read the all-time views ApiKeyUsageStats /
+     * ApiKeyUsageSapCostStats, which have no date.) capacityUnits/genAiTokens are currency-neutral;
+     * sapCost is priced per currency and never summed across currencies.
      */
     private async _loadSapBillingStats(): Promise<void> {
         const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
-        const oDataModel = this.getView()?.getModel() as ODataModel;
-        if (!viewModel || !oDataModel) {
+        if (!viewModel) {
             return;
         }
+        const billing = this._sapBilling || {};
 
-        const filters = tenantFilter(this._tenantInUse()).map((f) => new Filter(f.path, f.operator as any, f.value1));
+        const { rows, totals } = sapBillingTable(billing.credentials || [], this._apiKeyOwners);
+        viewModel.setProperty("/charts/sapBillingCapacityStats", rows);
+        // Column totals for the bottom-of-table footer, so the figures can be reconciled
+        // against the SAP invoice (which reports one total per service + subaccount).
+        viewModel.setProperty("/charts/sapBillingTotals", totals);
 
-        try {
-            // Resolve each api key GUID to its owner name + email from the map loaded up
-            // front by _loadApiKeyOwners (the stats views key on the GUID only).
-            const ownerById = this._apiKeyOwners;
-
-            const withOwner = (rows: any[]): any[] =>
-                rows.map(row => {
-                    const owner = ownerById[row.apiKey_ID] || {};
-                    return { ...row, apiKeyName: owner.name, apiKeyEmail: owner.email };
-                });
-
-            const capacityBinding = oDataModel.bindList("/ApiKeyUsageStats", undefined, undefined, filters, {
-                $select: "apiKey_ID,sapTenant,totalImageInputTokens,totalImageOutputTokens,totalAudioInputTokens,totalAudioOutputTokens,totalGenAiTokens,totalCapacityUnits"
-            });
-            const capacityContexts = await capacityBinding.requestContexts();
-            // A row per key and tenant: with all tenants shown, a key's rows are folded into one.
-            const capacityRows = withOwner(foldByApiKey(capacityContexts.map(context => context.getObject()), [
-                "totalImageInputTokens", "totalImageOutputTokens", "totalAudioInputTokens", "totalAudioOutputTokens", "totalGenAiTokens", "totalCapacityUnits"
-            ]));
-
-            // sapCost lives on a separate view grouped by apiKey + currency (a key can be
-            // billed in more than one currency). Aggregate it per key from the PRICED rows
-            // only (sapCostCurrency set); the unpriced rows - usage with no matching
-            // ModelCosts/price yet - carry a null currency and would otherwise show as empty
-            // $0.00 lines. Then fold the per-key cost into the capacity rows so there is one
-            // row per API key.
-            const costBinding = oDataModel.bindList("/ApiKeyUsageSapCostStats", undefined, undefined, filters, {
-                $select: "apiKey_ID,sapTenant,sapCostCurrency,totalSapCost"
-            });
-            const costContexts = await costBinding.requestContexts();
-            // Per key and currency, never one sum across currencies (a key can span tenants billed differently).
-            const costByKey = costFiguresByKey(costContexts.map(context => context.getObject()));
-
-            const merged = capacityRows.map((row: any) => {
-                const cost = rowCost(costByKey[row.apiKey_ID]);
-                const cu = Number(row.totalCapacityUnits) || 0;
-                return {
-                    ...row,
-                    ...cost,
-                    // Effective price per Capacity Unit so the row's arithmetic closes:
-                    // Capacity Units x Price per CU = SAP Cost (the missing reconciliation link).
-                    pricePerCu: cost.sapCost != null && cu > 0 ? cost.sapCost / cu : null
-                };
-            });
-            viewModel.setProperty("/charts/sapBillingCapacityStats", merged);
-
-            // Column totals for the bottom-of-table footer, so the figures can be reconciled
-            // against the SAP invoice (which reports one total per service + subaccount).
-            const cost = totalsCost(merged);
-            viewModel.setProperty("/charts/sapBillingTotals", {
-                totalImageInputTokens: merged.reduce((s, r) => s + (Number(r.totalImageInputTokens) || 0), 0),
-                totalImageOutputTokens: merged.reduce((s, r) => s + (Number(r.totalImageOutputTokens) || 0), 0),
-                totalAudioInputTokens: merged.reduce((s, r) => s + (Number(r.totalAudioInputTokens) || 0), 0),
-                totalAudioOutputTokens: merged.reduce((s, r) => s + (Number(r.totalAudioOutputTokens) || 0), 0),
-                totalGenAiTokens: merged.reduce((s, r) => s + (Number(r.totalGenAiTokens) || 0), 0),
-                totalCapacityUnits: merged.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0),
-                // One total only for a single currency; several currencies are listed, never summed into one.
-                totalSapCost: cost.sapCostByCurrency.length ? cost.sapCost : 0, // no cost at all stays 0, as before
-                sapCostByCurrency: cost.sapCostByCurrency,
-                // Blended effective price per CU for the footer: total SAP Cost / total Capacity Units.
-                pricePerCu: (() => {
-                    const cu = merged.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0);
-                    return cu > 0 && cost.sapCost ? cost.sapCost / cu : null;
-                })(),
-                sapCostCurrency: cost.sapCostCurrency
-            });
-        } catch (error) {
-            console.error("Failed to load SAP-native CU/cost analytics:", error);
-            viewModel.setProperty("/charts/sapBillingCapacityStats", []);
-            viewModel.setProperty("/charts/sapBillingTotals", {});
-        }
-
-        // Team billing has its own failure path, so a failed team read leaves the per-key table intact.
-        try {
-            // Team billing is admin-only on the server; skip the read for other users (no 403 in the log).
-            if (viewModel.getProperty("/userContext")?.isAdmin) {
-                const teamBinding = oDataModel.bindList("/TeamSapBillingStats", undefined, undefined, filters, { $select: "teamId,sapCostCurrency,teamName,totalRequests,totalGenAiTokens,totalCapacityUnits,totalSapCost" });
-                const teamRows = (await teamBinding.requestContexts()).map(context => context.getObject()).map((row: any) => {
-                    const cu = Number(row.totalCapacityUnits) || 0; const cost = Number(row.totalSapCost) || 0;
-                    return { ...row, teamName: row.teamName || this.text("noTeam"), sapCost: cost, pricePerCu: cu > 0 ? cost / cu : null };
-                });
-                viewModel.setProperty("/charts/sapBillingTeamStats", teamRows);
-                const teamCurrencies = new Set(teamRows.map(r => r.sapCostCurrency));
-                viewModel.setProperty("/charts/sapBillingTeamTotals", {
-                    totalRequests: teamRows.reduce((s, r) => s + (Number(r.totalRequests) || 0), 0),
-                    totalGenAiTokens: teamRows.reduce((s, r) => s + (Number(r.totalGenAiTokens) || 0), 0),
-                    totalCapacityUnits: teamRows.reduce((s, r) => s + (Number(r.totalCapacityUnits) || 0), 0),
-                    totalSapCost: teamRows.reduce((s, r) => s + (Number(r.sapCost) || 0), 0),
-                    sapCostCurrency: teamCurrencies.size === 1 ? [...teamCurrencies][0] : null
-                });
-            }
-        } catch (error) {
-            console.error("Failed to load the SAP billing by team:", error);
-            viewModel.setProperty("/charts/sapBillingTeamStats", []);
-            viewModel.setProperty("/charts/sapBillingTeamTotals", {});
-        }
+        // Team billing is for platform admins; the server returns no team rows to anyone else.
+        const teamRows = (billing.teams || []).map((row: any) => {
+            const cu = Number(row.totalCapacityUnits) || 0; const cost = Number(row.totalSapCost) || 0;
+            return { ...row, teamName: row.teamName || this.text("noTeam"), sapCost: cost, pricePerCu: cu > 0 ? cost / cu : null };
+        });
+        viewModel.setProperty("/charts/sapBillingTeamStats", teamRows);
+        const teamCurrencies = new Set(teamRows.map((r: any) => r.sapCostCurrency));
+        viewModel.setProperty("/charts/sapBillingTeamTotals", teamRows.length ? {
+            totalRequests: teamRows.reduce((s: number, r: any) => s + (Number(r.totalRequests) || 0), 0),
+            totalGenAiTokens: teamRows.reduce((s: number, r: any) => s + (Number(r.totalGenAiTokens) || 0), 0),
+            totalCapacityUnits: teamRows.reduce((s: number, r: any) => s + (Number(r.totalCapacityUnits) || 0), 0),
+            totalSapCost: teamRows.reduce((s: number, r: any) => s + (Number(r.sapCost) || 0), 0),
+            sapCostCurrency: teamCurrencies.size === 1 ? [...teamCurrencies][0] : null
+        } : {});
     }
 
     /**

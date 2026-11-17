@@ -42,7 +42,8 @@ describe('file_search.parsing.vision defaults', () => {
     // The pseudonymization warning is part of the configuration text.
     expect(visionSchema.description).toMatch(/unmasked/);
     // The warning covers forced masking only; a single request's masking cannot be foreseen.
-    expect(visionSchema.description).toMatch(/force-enabled/);
+    expect(visionSchema.description).toMatch(/enforced for file_search content/);
+    expect(visionSchema.description).toMatch(/global switch is on/);
     expect(visionSchema.description).toMatch(/single request/);
     expect(p.default_mode.description).toMatch(/unmasked/);
   });
@@ -105,11 +106,25 @@ describe('getFileSearchConfig().parsing.vision and the pseudonymization flag (fr
   });
 
   it('isPseudonymizationForcedForFileSearch: forced for the openai endpoint or any model; not for another endpoint alone', () => {
-    const forced = (api: unknown) => load(api).isPseudonymizationForcedForFileSearch();
+    const on = { observability: { pseudonymization: { enabled: true } } };
+    const forced = (api: Record<string, unknown>) => load({ ...on, ...api }).isPseudonymizationForcedForFileSearch();
     expect(forced({ hooks: { defaults: { openai: { pseudonymization: { enabled: true } } } } })).toBe(true);
     expect(forced({ models: { overrides: { 'some-model': { pseudonymization: { enabled: true } } } } })).toBe(true);
     expect(forced({ hooks: { defaults: { anthropic: { pseudonymization: { enabled: true } } } } })).toBe(false);
     expect(forced({ hooks: { defaults: { openai: { pseudonymization: { enabled: false } } } } })).toBe(false);
     expect(forced({})).toBe(false);
+  });
+
+  const openaiFlag = { hooks: { defaults: { openai: { pseudonymization: { enabled: true } } } } };
+  const modelFlag = { models: { overrides: { 'some-model': { pseudonymization: { enabled: true } } } } };
+  it.each([
+    ['off, openai flag', false, openaiFlag, false],
+    ['absent, model flag', undefined, modelFlag, false],
+    ['on, openai flag', true, openaiFlag, true],
+    ['on, model flag', true, modelFlag, true],
+    ['on, no flag', true, {}, false],
+  ])('isPseudonymizationForcedForFileSearch follows the global switch: %s', (_n, global, flags, expected) => {
+    const api = { ...flags, ...(global === undefined ? {} : { observability: { pseudonymization: { enabled: global } } }) };
+    expect(load(api).isPseudonymizationForcedForFileSearch()).toBe(expected);
   });
 });

@@ -11,11 +11,11 @@ Common issues, error messages and their fixes when using sail-proxy.
 
 ### CLI installation
 
-**Node.js version**: the CLI needs Node.js 20 or later.
+**Node.js version**: the CLI needs Node.js 24 or later.
 
 ```bash
-nvm install 20
-nvm use 20
+nvm install 24
+nvm use 24
 npm install -g @st-gr/sail-proxy
 ```
 
@@ -239,6 +239,20 @@ curl -N -H "Authorization: Bearer $API_KEY" \
 - OpenAI models (the GPT-4.1 and GPT-5 families) served through SAP's orchestration service send their answer in one burst at the end: the stream stays silent while the model writes, then all chunks arrive within a fraction of a second. SAP's orchestration service does this, not the gateway, whatever the chunk size. Claude models through orchestration stream while they write.
 - Test the same request with streaming disabled.
 - Check the gateway log for streaming errors (CLI: `sail-proxy logs gateway`).
+
+### Gemini: several tool calls in one step
+
+A Gemini model served through SAP's orchestration service can lose tool calls when it streams. When the model writes some text and then calls two or more tools in the same step, SAP's orchestration service sends those calls as a single call whose arguments are several JSON objects in a row, and without the information the model needs to continue. The client cannot run that call, or the next request is refused. SAP's orchestration service does this, not the gateway, and the gateway cannot put the calls back together: SAP refuses a conversation in which they are separated again.
+
+What is not affected:
+
+- **A Gemini model with its own deployment on `/google`** (marked *Deployed* in the Model Library). Its answer comes straight from the deployment, with every call intact. For Gemini CLI and the Google GenAI SDK, ask an administrator to deploy the model; see [Gemini CLI and SDK](/guide/clients/gemini#which-models-work).
+- **Requests without streaming**, on every route.
+- **Claude and GPT models** through orchestration.
+
+On `/openai/v1/chat/completions` and `/openai/v1/responses` a Gemini model is always served through orchestration, whether it has a deployment or not.
+
+An administrator can avoid it there: add the model's name to `providers.openai.emulate_streaming_for_models` in the [configuration](/reference/configuration#streaming-emulation). The gateway then asks SAP for the whole answer and sends it on as a stream, with every call intact. The text then arrives in one piece when the model has finished, not while it writes. Without that entry, clients that use tools on these routes, such as Codex and pi, work more reliably with a GPT or Claude model.
 
 ## Kyma deployment issues
 

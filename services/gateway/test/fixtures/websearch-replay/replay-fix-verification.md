@@ -3,8 +3,8 @@
 Written BEFORE the run, per the plan's Task 7 Step 1. Predictions first; observations are appended
 afterwards beside them, including any mismatch, verbatim.
 
-Code under test: commits `c202f44`..`1e9dcfc` on branch `claude` (Tasks 1-6 of
-`docs/superpowers/plans/2026-08-10-hosted-tool-result-replay.md`). The gateway runs under nodemon
+Code under test: commits `c202f44`..`1e9dcfc` on branch `claude` (Tasks 1-6 of the hosted tool
+result replay work). The gateway runs under nodemon
 and hot-reloaded these edits; `/health` answered 200 before the run.
 
 ## What was broken

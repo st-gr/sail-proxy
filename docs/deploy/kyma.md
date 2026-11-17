@@ -11,6 +11,9 @@ Video: [Deploy on SAP BTP Kyma](/guide/videos#deploy-on-sap-btp-kyma), with chap
 
 ## Architecture
 
+![SAP BTP Kyma deployment](/generated/kyma-panel-light.svg){.light-only}
+![SAP BTP Kyma deployment](/generated/kyma-panel-dark.svg){.dark-only}
+
 | Service | Kind | Istio sidecar | Purpose |
 |---|---|---|---|
 | `nginx` | Deployment, 2 replicas | yes | Entry point behind the Istio ingress: sign-in, `/admin/` and `/gateway/` |
@@ -18,7 +21,7 @@ Video: [Deploy on SAP BTP Kyma](/guide/videos#deploy-on-sap-btp-kyma), with chap
 | `dex` | Deployment | no | Identity provider hub |
 | `gateway` | Deployment | no | The API gateway; an init container sets up the file search tables first |
 | `admin` | Deployment | no | Admin service and Admin Cockpit; updates its database schema at every start |
-| `postgres` | StatefulSet, 20 Gi volume | no | PostgreSQL 16 with pgvector |
+| `postgres` | StatefulSet, 20 Gi volume | no | PostgreSQL 16 with pgvector; not deployed when the installation uses an [external PostgreSQL](./external-postgres) |
 | `valkey` | Deployment | no | Cache and event bus |
 
 The deployment follows a "mesh at the edge" pattern: only the services the Istio ingress talks to, nginx and oauth2-proxy, run with an Istio sidecar; the namespace uses permissive mTLS so they can reach the services without one. The setup renders no NetworkPolicies: inside the namespace the services reach each other without restriction, and the Istio ingress routes to nginx only.
@@ -32,7 +35,8 @@ There are two ways in:
 
 - An SAP BTP subaccount with a Kyma runtime, and permissions to create namespaces and, for the IP allowlist, policies in `istio-system`.
 - `kubectl` with the `oidc-login` plugin and the cluster's kubeconfig: see [Kyma prerequisites](/deploy/kyma-prerequisites). `setup-kyma.js` reads the live namespace with `kubectl` and stops when it cannot reach the cluster.
-- **Node.js 20 or later** and **git**.
+- **Node.js 24 or later** and **git**.
+- A **local copy of the sail-proxy repository** on the machine you deploy from: the setup and deploy scripts and the manifest templates live in it, and every command runs from its root. Clone it with git (the first command under [Deploy](#deploy)), or download the source as a ZIP from the [GitHub repository](https://github.com/st-gr/sail-proxy) and unpack it. Keep the folder: the setup renders the namespace's manifests and keys into `kyma/deployments/` in it, and a later setup run picks up from there.
 - The **service key** of your SAP AI Core instance as JSON, and an orchestration deployment in SAP AI Core.
 - Access to a container registry with the sail-proxy images: the published images at `ghcr.io/st-gr`, or your own (see [Images](#images)).
 
@@ -42,7 +46,7 @@ The deployment needs the **istio** module (sidecars, AuthorizationPolicies, the 
 
 ## Deploy
 
-From the root of a checkout:
+Clone the repository (or unpack the downloaded copy) and run everything from its root:
 
 ```bash
 git clone https://github.com/st-gr/sail-proxy.git
@@ -197,7 +201,7 @@ The cockpit is then at `http://localhost:22001/admin/` on the Cloud Connector ho
 
 The pods use `<registry>/<organization>/sail-proxy-gateway`, `sail-proxy-admin` and `sail-proxy-nginx` with the version you chose; the other services use public images (`pgvector/pgvector:pg16-trixie`, `valkey/valkey:8`, Dex v2.46.1, oauth2-proxy v7.6.0). The nginx image is the one Docker uses; on Kyma it renders the same configuration template.
 
-- **Public registries** (GitHub Container Registry, Docker Hub) need no pull secret for public images. For a private registry, the setup asks for the registry user and token and saves them as the `registry-secret` image pull secret with the other generated Secrets, which the deploy applies; the printed deploy command never contains the token; without them it prints the `kubectl create secret docker-registry` command to run yourself.
+- **Public registries** (GitHub Container Registry, Docker Hub) need no pull secret for public images. For a private registry, the setup asks for the registry user and token and saves them as the `registry-secret` image pull secret with the other generated Secrets, which the deploy applies; the printed deploy command never contains the token; without them it prints the `kubectl create secret docker-registry` command to run yourself. A `registry-secret` you create in the namespace after the installation, for example to move it to a private registry, is used by the next setup run and by `sail-proxy upgrade kyma`.
 - **Your own images**: build and push them with the repository's scripts (`pnpm docker:build`, `pnpm docker:push`, or `pnpm docker:buildx` for multi-architecture images), with `DOCKER_REGISTRY`, `DOCKER_ORGANIZATION` and `DOCKER_TAG` set to your registry, organization and version, then give the same values to the setup.
 - Pin a version tag, not `latest`.
 
@@ -229,6 +233,12 @@ kubectl -n sail-proxy scale deployment/nginx --replicas=3
 # Roll back a deployment to its previous revision
 kubectl -n sail-proxy rollout undo deployment/gateway
 ```
+
+The cockpit's [Logs](/guide/cockpit/logs) page shows the gateway's log to administrators, for 48 hours by default. To send the output of the pods to a central log system outside sail-proxy, use a LogPipeline of Kyma's **telemetry** module: it collects the same output that `kubectl logs` shows.
+
+### Payload files
+
+To look at the content of requests, use the [payload traces and raw capture](/guide/cockpit/logs#payload-traces) of the Logs page: they keep content masked or encrypted, and every look is recorded. The file payload logger is a separate debug switch (`platform.logging.payload_logging_enabled` in the configuration, or `PAYLOAD_LOGGING_ENABLED=true` in the gateway's environment). While it is on, each gateway pod writes the content of requests and answers to `/app/payloads` inside the pod (`kubectl -n sail-proxy cp <pod>:/app/payloads ./payloads` copies them out); the files are lost when the pod restarts. They are not masked in every stage, and reading them is not recorded; the Logs page warns while the switch is on. Switch it off again when you are done.
 
 Change Secrets and ConfigMaps by running `setup-kyma.js` and `deploy-kyma.js` again rather than editing them in the cluster: a later deploy renders them from your answers again and would undo a hand edit. The optional `gateway-s3-env` Secret is the exception: you create it by hand, and the setup keeps it (see [File storage for file_search](/deploy/file-storage)).
 

@@ -553,7 +553,7 @@ export class UnifiedValidationCache extends EnhancedValidationCache {
       const consistent = discrepancies.length === 0;
       
       logger.debug('UnifiedValidationCache', 'Cross-validation completed', {
-        tokenPrefix: tokenOrKey.substring(0, 20) + '...',
+        tokenLabel: secretLabel(tokenOrKey),
         authType,
         consistent,
         discrepancies: discrepancies.length,

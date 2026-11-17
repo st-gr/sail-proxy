@@ -18,6 +18,8 @@ import { getTrustForwardedFor } from '../services/configService';
 import { extractApiKey, API_KEY_HEADERS } from '../utils/extractApiKey';
 import { redactUrl } from '../utils/redactUrl';
 import { isAwsSigV4Request } from '../utils/sigv4Verifier';
+import { rawCaptureRunning } from '../services/rawCapture';
+import { rawCaptureTap } from './rawCaptureTap';
 const logger = getDefaultLogger();
 
 interface UnifiedAuthRequest extends Request {
@@ -372,7 +374,10 @@ export const createUnifiedTokenAuth = (options?: {
       config.fallbackToLocal = options.fallbackToLegacy;
     }
 
-    return unifiedTokenAuth(req, res, next);
+    // While a raw capture session runs, an authenticated request passes the raw capture tap before
+    // its route's next middleware, so a request refused here is never captured. Otherwise nothing.
+    if (!rawCaptureRunning()) return unifiedTokenAuth(req, res, next);
+    return unifiedTokenAuth(req, res, (err?: any) => (err ? next(err) : rawCaptureTap(req, res, next)));
   };
 };
 

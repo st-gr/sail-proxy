@@ -9,7 +9,7 @@ const logger = getDefaultLogger();
  */
 export const downloadAndEncodeImage = async (imageUrl: string): Promise<string> => {
   try {
-    logger.info('ImageUtils', `Downloading image from URL: ${imageUrl}`);
+    logger.info('ImageUtils', 'Downloading image from URL', { imageUrl });
     
     // Download the image as an array buffer
     const response = await axios.get(imageUrl, {

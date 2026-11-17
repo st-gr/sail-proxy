@@ -147,7 +147,7 @@ The deployment is auto-discovered by matching `details.resources.backendDetails.
 
 ### 2. Orchestration Fallback
 
-If no direct deployment is found, the plugin falls back to SAP AI Core orchestration (`/v2/inference/deployments/{id}/completion`). **Note**: The orchestration wrapper strips Perplexity's `citations` and `search_results` fields from the response (see [SAP incident report](../../../docs/sap-incident-orchestration-strips-perplexity-fields.md)). In this mode, URLs in search results are LLM-generated and may be hallucinated.
+If no direct deployment is found, the plugin falls back to SAP AI Core orchestration (`/v2/inference/deployments/{id}/completion`). **Note**: The orchestration wrapper strips Perplexity's `citations` and `search_results` fields from the response. In this mode, URLs in search results are LLM-generated and may be hallucinated.
 
 ### Environment Variables
 
@@ -232,6 +232,6 @@ curl -X POST http://localhost:3000/anthropic/v1/messages \
 
 ## Related Documentation
 
-- [Plugin System](../../../docs/chapter-13-plugin-system.md)
-- [SAP AI Core Orchestration](../../../docs/sap-ai-core.md)
+- [Plugin System](../../../../../docs/developer/plugins.md)
+- [The gateway and SAP AI Core orchestration](../../../../../docs/developer/gateway.md)
 - [Anthropic Web Search Tool](https://docs.anthropic.com/en/docs/build-with-claude/tool-use/web-search-tool)

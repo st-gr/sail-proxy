@@ -133,3 +133,13 @@ export function requestsImageOutput(body: any): boolean {
   const modalities = body?.generationConfig?.responseModalities;
   return Array.isArray(modalities) && modalities.some((m: any) => String(m).toUpperCase() === 'IMAGE');
 }
+
+/**
+ * True when the request asks for images and nothing else: `generationConfig.responseModalities`
+ * holds IMAGE only. Such a request is image generation and exempt from pseudonymization; one that
+ * also asks for text is a text request, so a client cannot switch masking off by listing IMAGE.
+ */
+export function requestsImageOutputOnly(body: any): boolean {
+  const modalities = body?.generationConfig?.responseModalities;
+  return Array.isArray(modalities) && modalities.length > 0 && modalities.every((m: any) => String(m).toUpperCase() === 'IMAGE');
+}

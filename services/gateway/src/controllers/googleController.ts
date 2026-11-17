@@ -27,7 +27,7 @@ import { resolveExternalTarget } from '../upstreams/externalTarget';
 import { sseBlock } from '../utils/sseFraming';
 import { geminiFailure, refuse } from './googleWire';
 import {
-  GEMINI_METHODS, GeminiDeployment, GeminiMethod, geminiError, parseModelMethod, requestsImageOutput, resolveGeminiDeployment,
+  GEMINI_METHODS, GeminiDeployment, GeminiMethod, geminiError, parseModelMethod, requestsImageOutput, requestsImageOutputOnly, resolveGeminiDeployment,
 } from '../services/googleGeminiService';
 import { validateGeminiRequest } from '../google/orchestrationBridge/requestTranslator';
 import { GeminiDispatchContext, dispatchBridge, dispatchEmbeddings, dispatchNative } from './googleDispatch';
@@ -148,9 +148,9 @@ export async function headersForSap(): Promise<Record<string, string>> {
 }
 
 async function failGemini(req: Request, res: Response, usage: any, accountedId: string, error: any): Promise<void> {
-  const { status, message } = await geminiFailure(error);
-  logger.error('googleController', `Gemini request failed for ${accountedId || 'unresolved model'}: ${message}`,
-    undefined, { status });
+  const { status, message, logText } = await geminiFailure(error);
+  logger.error('googleController', `Gemini request failed for ${accountedId || 'unresolved model'}: ${logText}`,
+    undefined, { status, upstreamMessage: message });
 
   // Only once a model was resolved: a 404 or a refused method never reached an
   // upstream and belongs to no model's account.
@@ -230,13 +230,27 @@ export const handleGemini = async (req: Request, res: Response, _next: NextFunct
     // upstream — SAP would reject the extra field.
     (req as any).__endpoint = 'google';
     req.body = req.body || {};
+    // Google's REST API also takes `system_instruction` (its curl examples send it). Everything
+    // here - masking, the limits check, the orchestration translator - reads `systemInstruction`,
+    // so the snake_case spelling reached a deployment unmasked and was dropped on orchestration.
+    if (req.body.system_instruction !== undefined) {
+      if (req.body.systemInstruction !== undefined) {
+        refuse(res, 400, 'Send the system instruction once: either systemInstruction or system_instruction, not both.');
+        return;
+      }
+      req.body.systemInstruction = req.body.system_instruction;
+      delete req.body.system_instruction;
+    }
     req.body.model = accountedId;
 
     const resolvedHooks = configService.getHookConfig(accountedId, method, 'google');
     let hookConfig = resolvedHooks;
-    if (method === 'embedContent') {
-      // Embeddings are never pseudonymized, forced or not: a masked input would be embedded
-      // instead of the real text. The other plugins in the chain still run.
+    if (method === 'embedContent' || requestsImageOutputOnly(req.body)) {
+      // Embeddings and image generation are never pseudonymized, forced or not: a masked input
+      // would be embedded instead of the real text, and an image model would draw the placeholder
+      // token. The other plugins in the chain still run. Image generation is a request for images
+      // alone: one that also asks for text is masked like any text request, or a client could
+      // switch enforced masking off by listing IMAGE.
       hookConfig = exemptFromPseudonymization(req, resolvedHooks);
     } else {
       // Fail closed: with pseudonymization forced and no hook chain that runs the plugin, the

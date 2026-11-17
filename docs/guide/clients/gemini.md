@@ -89,6 +89,11 @@ Every model listed in the [Model Library](/guide/cockpit/model-library) (Admin C
 On the platform route the request is translated on the way in and the answer on the way back,
 function calls included — which is what Gemini CLI's built-in tools rely on.
 
+Prefer a deployed Gemini model for work with tools. On the platform route a streamed answer in
+which a Gemini model writes text and then calls two or more tools in one step arrives with those
+calls merged into one that cannot be run; a deployment returns them intact. See
+[Gemini: several tool calls in one step](/guide/troubleshooting#gemini-several-tool-calls-in-one-step).
+
 You can pass either the bare model name (for example `gemini-3.5-flash`) or its `--deployed` id — the
 gateway resolves whichever one actually serves the request, so Gemini CLI and the SDK see a name
 they recognize either way.
@@ -124,7 +129,7 @@ const response = await ai.models.generateContent({
   model: 'gemini-3.1-flash-image',
   contents: 'A watercolor painting of a lighthouse at sunset',
   config: {
-    responseModalities: ['IMAGE', 'TEXT'],
+    responseModalities: ['IMAGE'],
     imageConfig: { aspectRatio: '1:1' },
   },
 });
@@ -140,9 +145,16 @@ for (const part of response.candidates[0].content.parts) {
 values Google documents for the model apply. Images come back as `inlineData` parts alongside any text parts. `streamGenerateContent` works the
 same way — the image arrives in the stream's last event.
 
-**Data masking does not apply to images.** Pseudonymization rewrites text prompts; it is not
-applied to image prompts or to uploaded (`inlineData`) images, which reach SAP AI Core as you sent
-them. Do not put personal data in an image prompt or upload an image containing it.
+Add `'TEXT'` to `responseModalities` to get text beside the image.
+
+**Data masking does not apply to image generation.** Pseudonymization rewrites text prompts; it
+is not applied to uploaded (`inlineData`) images, and a request that asks for images alone
+(`responseModalities` is `['IMAGE']`) is not masked at all, also while masking is enforced: the
+model would draw the placeholder instead of the name. Such a request reaches SAP AI Core as you
+sent it. Do not put personal data in an image prompt or upload an image containing it.
+
+A request that asks for text as well (`['IMAGE', 'TEXT']`) is a text request: where masking is
+on, its prompt is masked like any other, and names in it reach the image model as placeholders.
 
 **Pricing:** SAP publishes no rate for image models, so generated-image tokens are priced from an
 image output rate an administrator enters in the Model Library; Google's own list
@@ -151,12 +163,18 @@ ordinary output tokens.
 
 ## Hooks and PII masking
 
-Everything configured for your other gateway routes — [PII masking / pseudonymization](/guide/features#pii-masking-pseudonymization)
-and any other request/response hooks — applies to `/google` the same way: request text (system
-instructions and message parts), response text and streamed text are all covered.
+[PII masking / pseudonymization](/guide/features#pii-masking-pseudonymization) is enforced for
+`/google` by the shipped configuration once the global switch is on, like for the other routes: request text (system
+instructions and message parts), response text and streamed text are all covered. Other
+request/response hooks are configured under `hooks.defaults.google` (`generateContent`,
+`streamGenerateContent`, `embedContent`) or per model.
 
-**One documented exception:** a pseudonymization hook configured for `embedContent` does **not**
-mask the text being embedded. This matches the OpenAI embeddings endpoint, which runs no masking
+An installation that activated its own configuration before masking was shipped for this route has
+no `hooks.defaults.google`; until that block is added and the configuration activated, `/google`
+requests are not masked, even with the global switch on.
+
+**Two documented exceptions:** image generation (see above), and embeddings: a pseudonymization
+hook configured for `embedContent` does **not** mask the text being embedded. This matches the OpenAI embeddings endpoint, which runs no masking
 either — an embedding is a numeric representation of the text, not a chat turn, and masking it
 would change the vector without protecting anything a downstream consumer could reconstruct from
 it.
@@ -177,6 +195,10 @@ routes — the same API keys, entitlement catalogs, quotas and cost accounting a
   directly as inline image data instead.
 - **Non-image inline data is refused.** Inline data parts (`inlineData`) are accepted for images
   only — audio, video and other inline mime types are rejected.
+- **Several tool calls in one step need a deployment of the model when streaming.** Through the
+  platform route, a Gemini model's streamed answer with text followed by two or more tool calls
+  arrives with the calls merged into one; see
+  [Gemini: several tool calls in one step](/guide/troubleshooting#gemini-several-tool-calls-in-one-step).
 - **Image output needs a deployment of the model.** A model without its own SAP AI Core deployment
   cannot return `responseModalities: ["IMAGE"]`, even when it is otherwise reachable through the
   platform route — see [Image generation](#image-generation) above.

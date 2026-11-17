@@ -568,6 +568,22 @@ importers:
         specifier: ^3.13.1
         version: 3.13.1(babel-plugin-istanbul@6.1.1)
 
+  services/admin/app/logs-app:
+    dependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.19
+    devDependencies:
+      '@ui5/cli':
+        specifier: ^4.0.69
+        version: 4.0.69
+      ui5-tooling-modules:
+        specifier: ^3.38.3
+        version: 3.38.3(@ui5/project@4.0.17(@ui5/builder@4.3.2))(typescript@5.9.3)
+      ui5-tooling-transpile:
+        specifier: ^3.13.1
+        version: 3.13.1(babel-plugin-istanbul@6.1.1)
+
   services/admin/app/model-library-app:
     dependencies:
       '@types/node':

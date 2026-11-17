@@ -29,7 +29,7 @@ sections:
 
 [01:10] Then a question only the web can answer. SAP AI Core has no web search of its own, so the gateway's web search plugin runs it on Perplexity Sonar Pro on SAP AI Core. The search leaves under your SAP AI Core tenant, never from the user's machine, and carries nothing that identifies the user.
 
-[01:43] Claude answers from the results and lists its sources.
+[01:59] Claude searches the web through the gateway, then answers from the results and lists its sources.
 
 [02:13] Codex gets a provider entry with the gateway's OpenAI base URL and the responses wire API. It edits the file, runs it and reports the output.
 
@@ -53,7 +53,7 @@ sections:
 
 [08:36] The Code tab runs Claude Code on a folder. It reads index.js, adds the greet function and runs it with Node, every step through the gateway.
 
-[09:06] It prints Hello, SAP. The app's own short requests, such as the titles of its conversations, go through the gateway too, under the same key.
+[09:20] It prints Hello, SAP. Even the app's own title requests go through the gateway.
 
 [09:29] Open WebUI is a self-hosted chat interface for a whole team. Its OpenAI connection points at the gateway's OpenAI base URL with a key, and the model list comes from the gateway, so every chat model of your instance is there to pick.
 
@@ -69,7 +69,7 @@ sections:
 
 [12:06] The Cost tab has the cost per model, per key and per user.
 
-[12:21] The Models tab splits the same calls by model, so you see which models were asked for and what they cost.
+[12:27] The Models tab splits the same calls by model.
 
 ## On-screen cues
 - 00:08 the Claude Code page of the documentation

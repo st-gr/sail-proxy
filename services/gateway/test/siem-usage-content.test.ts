@@ -39,6 +39,8 @@ jest.mock('../src/services/configService', () => ({
   getConfig: () => mockConfig,
   getSubstitutedModel: (_endpoint: string, model: string) => model,
   getTrustForwardedFor: () => false,
+  getCachedConfig: () => mockConfig,
+  payloadCaptureAllowed: () => true,
 }));
 
 import { EventEmitter } from 'events';
@@ -412,6 +414,20 @@ describe('a STREAMED response, through the real interceptor', () => {
 
     expect((req as any).__siemMaskedResponse).toBeUndefined();
     expect(buildUsageEvent(req, CONTEXT, gates())!.content).toBeUndefined();
+  });
+
+  it('starts for a masked streamed request when payload capture is on, with no sink asking for content', async () => {
+    mockConfig.api_config.observability.payload_capture = { enabled: true };
+    try {
+      const { req, res } = await streamingRequest(CANARY_PROMPT);
+      expect(getStreamCapture(req)).toBeDefined();
+
+      streamText(res, 'A masked answer.');
+      res.end();
+      expect((req as any).__siemMaskedResponse).toBe('A masked answer.');
+    } finally {
+      delete mockConfig.api_config.observability.payload_capture;
+    }
   });
 
   it('does not capture a non-streaming request, which the after handler already covers', async () => {

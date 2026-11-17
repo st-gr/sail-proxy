@@ -1,4 +1,9 @@
 jest.mock('../../src/fileSearch/extractors/runners', () => ({ runExtractor: jest.fn() }));
+// The pandoc version check has its own suite (pandocSandbox.test.ts); here pandoc may run.
+jest.mock('../../src/fileSearch/extractors/pandocSandbox', () => ({
+  ...jest.requireActual('../../src/fileSearch/extractors/pandocSandbox'),
+  ensurePandocSandbox: () => Promise.resolve(),
+}));
 
 import { runExtractor } from '../../src/fileSearch/extractors/runners';
 import { extractStructuredText, extractText, UnsupportedFileTypeError } from '../../src/fileSearch/extractors/registry';
@@ -33,7 +38,7 @@ describe('extractStructuredText', () => {
       run.mockResolvedValue('# Heading\n\n| a |\n|---|\n');
       const out = await extractStructuredText(`doc.${ext}`, Buffer.from('bytes'), { timeoutMs: 1234 });
       expect(out).toEqual({ text: '# Heading\n\n| a |\n|---|\n', format: 'markdown' });
-      expect(run).toHaveBeenCalledWith('pandoc', ['-f', reader, '-t', 'gfm', '--wrap=none'], Buffer.from('bytes'), { timeoutMs: 1234 });
+      expect(run).toHaveBeenCalledWith('pandoc', ['--sandbox', '-f', reader, '-t', 'gfm', '--wrap=none'], Buffer.from('bytes'), { timeoutMs: 1234 });
     }
   );
 
@@ -50,7 +55,7 @@ describe('extractStructuredText', () => {
   it('keeps the static pandoc call on plain text', async () => {
     run.mockResolvedValue('Heading\n');
     await extractText('doc.docx', Buffer.from('bytes'), { timeoutMs: 1234 });
-    expect(run).toHaveBeenCalledWith('pandoc', ['-f', 'docx', '-t', 'plain'], Buffer.from('bytes'), { timeoutMs: 1234 });
+    expect(run).toHaveBeenCalledWith('pandoc', ['--sandbox', '-f', 'docx', '-t', 'plain'], Buffer.from('bytes'), { timeoutMs: 1234 });
   });
 
   it('reads pdftotext output (the static call) as pages', async () => {

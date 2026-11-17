@@ -31,7 +31,7 @@ The standalone CLI runs the gateway alone. Docker and Kyma run the same set of s
 
 ## Choosing
 
-- **Try it, or use it alone**: the [standalone CLI](/deploy/cli) is the fastest start and needs only Node.js 20 or later. It has no cockpit: whoever runs it manages its keys.
+- **Try it, or use it alone**: the [standalone CLI](/deploy/cli) is the fastest start and needs only Node.js 24 or later. It has no cockpit: whoever runs it manages its keys.
 - **Run it for a team**: [Docker Compose](/deploy/docker) adds the Admin Cockpit with per-user keys, usage and cost analytics, quotas and single sign-on.
 - **Run it on SAP BTP**: the [Kyma deployment](/deploy/kyma) runs the Docker services on a Kyma cluster, with an IP allowlist at the Istio ingress or access through the SAP Cloud Connector only.
 

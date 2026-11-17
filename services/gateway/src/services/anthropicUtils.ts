@@ -62,7 +62,7 @@ export function extractSystemPromptText(systemPromptParam: SystemPromptParam): s
     return systemPromptParam.text;
   }
 
-  logger.warn('AnthropicUtils', `Unrecognized system prompt format: ${JSON.stringify(systemPromptParam).substring(0,100)}... Defaulting to empty string.`);
+  logger.warn('AnthropicUtils', 'Unrecognized system prompt format. Defaulting to empty string.', { systemPrompt: `${JSON.stringify(systemPromptParam).substring(0,100)}...` });
   return '';
 }
 

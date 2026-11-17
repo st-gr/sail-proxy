@@ -12,3 +12,7 @@ using from './users';
 using from './teams';
 using from './connections';
 using from './plugins';
+using from './gateway-log';
+using from './payload-traces';
+using from './raw-capture-sessions';
+using from './logging-settings';

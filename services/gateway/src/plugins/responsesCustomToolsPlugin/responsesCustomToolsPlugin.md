@@ -10,7 +10,7 @@ accepts work on the `/openai/v1/responses` route:
   back, which Codex REQUIRES to dispatch the call.
 - **`tool_search`** — Codex's deferred-tool discovery. Rewritten the same way, with
   `tool_search_call` / `tool_search_output` restored. See
-  [`toolSearch/adapter.ts`](./toolSearch/adapter.ts) and the
+  [`toolSearch/adapter.ts`](../../pluginSupport/toolSearch/adapter.ts) and the
   [`tool_search` section](#tool_search) below, which also covers the discovered-tool hoist.
 
 The two translations are independent: a turn may carry either, both, or neither, and each has its
@@ -23,7 +23,7 @@ hosted `web_search` tool). All three exist for the same reason: Codex CLI sends 
 unconditionally that at least one SAP route rejects, and the fix is to rewrite the request into
 a shape the deployment accepts and repair the response so the client still sees the feature it
 asked for. This plugin's request/response shaping lives in
-[`customTools/adapter.ts`](./customTools/adapter.ts), which contains all the pure
+[`customTools/adapter.ts`](../../pluginSupport/customTools/adapter.ts), which contains all the pure
 transformations — the plugin itself is orchestration: read config, call the adapter, stash/read
 the translated names, log, never throw. `responsesNamespaceToolsPlugin.ts` is the template both
 files imitate, down to variable and function names.
@@ -148,7 +148,7 @@ Codex 0.147.0 sends 11 tools for `gpt-5.5`: 9 `function`, 1 `custom` (`apply_pat
 "gateway-side tool-registry state carried across turns". That was wrong, and a capture disproved
 it.** The declaration carries `execution: "client"`: Codex holds the deferred-tool registry and
 runs the search locally. There is no server-side state to keep. Shapes are recorded in
-[`tool-search-capture.md`](../../test/fixtures/codex-custom-tools/tool-search-capture.md),
+[`tool-search-capture.md`](../../../test/fixtures/codex-custom-tools/tool-search-capture.md),
 captured from real Codex against `api.openai.com`.
 
 Two details decide the implementation, and both run opposite to the `custom` case:
@@ -300,7 +300,7 @@ regardless of which tool plugins run) and inner than web-search (so it sees what
 generates).
 
 Both directions are pinned, whole and by name, in
-[`test/responses-tool-plugin-layering.test.ts`](../../test/responses-tool-plugin-layering.test.ts).
+[`test/responses-tool-plugin-layering.test.ts`](../../../test/responses-tool-plugin-layering.test.ts).
 Reordering either array fails that suite.
 
 The three `api_config.json` copies (`services/gateway`, `services/admin`,
@@ -320,7 +320,7 @@ The full frame contract — which of the five upstream frame kinds a translated 
 through as, how `function_call_arguments.delta` fragments are buffered rather than translated
 one-for-one, the end-of-stream flush for a cancelled turn, and the accepted known gaps — is
 documented as a block comment directly above `installCustomToolInterceptor` in
-[`responsesCustomToolsPlugin.ts`](./responsesCustomToolsPlugin.ts). That comment is the
+[`responsesCustomToolsPlugin.ts`](./index.ts). That comment is the
 authoritative version; what follows here is the summary an operator needs without reading the
 implementation.
 
@@ -349,24 +349,16 @@ mere *presence*: on orchestration a tracked call's buffer is always still there 
 `output_item.done` arrives (nothing ever clears it), and that is the route's normal
 shape, not upstream misbehaving.
 
-**Task 9 watch item.** Whether Codex is satisfied by `item.input` alone on the
-orchestration route — with no `custom_tool_call_input` frames of any kind — is unproven,
-and is arguably a bigger departure from what real OpenAI ever sends than the
-single-resynthesised-delta question below is for the deployed route. Both are open
-questions Task 9 needs to answer against a live session; this document does not assume
-either works.
-
-**This is unverified.** Whether Codex's client actually accepts a single non-incremental
-`custom_tool_call_input.delta` in place of the token-by-token stream it would see from real
-OpenAI has not been tested against a live Codex session — Task 9 (live verification) has not run
-as of this writing. The plugin header pre-declares a fallback for exactly this case: if Codex
-renders nothing for the patch, chunk the already-buffered payload into several synthetic
-`custom_tool_call_input.delta` frames instead of one. That needs no new parsing, only a
-different split of text that has already been decoded — see the `WHY DELTAS ARE BUFFERED...`
-section of the ts file's header comment for the full reasoning, and
-[`docs/superpowers/plans/2026-08-11-custom-tool-translation.md`](../../../../docs/superpowers/plans/2026-08-11-custom-tool-translation.md)
-Task 9 for the verification plan itself. Until that runs, treat the single-delta resynthesis as
-a design choice awaiting confirmation, not as a proven-working behavior.
+**Verified against a live Codex session** (2026-08-11, codex CLI 0.147.0; the record is
+[`apply-patch-translation-verification.md`](../../../test/fixtures/codex-custom-tools/apply-patch-translation-verification.md)).
+On the orchestration route Codex receives no `custom_tool_call_input` frames of any kind and
+dispatches the call all the same: it routes from the finished item, not from the input frames.
+On the deployed route two consecutive apply_patch turns in one session completed and the file
+carries both edits; the second turn is the replay path. The plugin header pre-declares a
+fallback for a client that renders nothing for a single resynthesised
+`custom_tool_call_input.delta` (chunk the already-buffered payload into several synthetic
+delta frames; see the `WHY DELTAS ARE BUFFERED...` section of the ts file's header comment).
+The live run did not need it and it is not used.
 
 ## Masking
 
@@ -375,17 +367,15 @@ like any other request text. `custom_tool_call.input` and the content-part text 
 array-shaped `custom_tool_call_output.output` are both covered by the masking coverage in
 `responsesBodyAdapter.ts`, and the two synthesised `response.custom_tool_call_input.*` stream
 events are unmasked on the way out by `pseudonymization/index.ts`, the same way
-`response.output_text.delta`/`.done` already are. Whether this survives a live round trip end to
-end (a plausible secret in an edited file's contents reaching the TUI unmasked as the real
-value, and the outbound request carrying only the placeholder) is one of the things Task 9 is
-meant to confirm; it has not been confirmed live as of this writing.
+`response.output_text.delta`/`.done` already are. The live verification confirmed the round trip:
+the outbound request carried only the placeholder and the client received the real value (section
+"Masking survives the round trip" of the record linked under Verification status).
 
 ## Verification status
 
-**Task 9 (live verification against a running Codex CLI session) has not run.** Everything above
-that is not a direct reading of the shipped code — in particular whether Codex accepts the
-resynthesised single delta, and whether masking survives the full round trip — is a design
-decision backed by unit tests and the reasoning `namespaceTools/adapter.ts` established for the
-sibling plugin, not a confirmed live behavior. Do not read this document as proof the feature
-works end to end against real Codex traffic; read it as what the code does and why, with the
-open question named rather than assumed away.
+The translation was verified against a running Codex CLI session on 2026-08-11 (codex CLI
+0.147.0), on the orchestration route and on the deployed route:
+[`apply-patch-translation-verification.md`](../../../test/fixtures/codex-custom-tools/apply-patch-translation-verification.md)
+holds the measurements, including the replay of converted history, the masking round trip and
+two defects only the live run found. What this document says beyond that record is a reading of
+the shipped code and its unit tests.

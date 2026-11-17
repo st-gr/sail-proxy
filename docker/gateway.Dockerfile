@@ -114,6 +114,10 @@ RUN addgroup -g 1001 -S nodejs && \
 
 # Create logs directory
 RUN mkdir -p /app/logs
+# The file payload logger's folder (PAYLOAD_LOGGING_ENABLED, a debug switch), owned by the runtime user and
+# never bind-mounted: a folder Docker creates for a bind mount on a Linux host is root-owned and the gateway
+# (uid 1001) could not write to it. Read the files with docker compose cp; they go with the container or pod.
+RUN mkdir -p /app/payloads && chown nodejs:nodejs /app/payloads
 COPY --chown=nodejs:nodejs --from=build /app/services/gateway/dist ./services/gateway/dist
 COPY --chown=nodejs:nodejs --from=build /app/libs ./libs
 COPY --chown=nodejs:nodejs --from=build /app/services/gateway/config ./services/gateway/config
@@ -140,5 +144,6 @@ EXPOSE 3000
 
 ENV NODE_ENV=production
 ENV DEPLOY_TARGET=docker
+ENV PAYLOAD_LOG_DIR=/app/payloads
 
 CMD ["node", "services/gateway/dist/services/gateway/src/index.js"]

@@ -44,6 +44,7 @@ const { extractText, UnsupportedFileTypeError } = require('../../../src/fileSear
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { embed, EmbeddingModelUnavailableError } = require('../../../src/fileSearch/embedder');
 
+import { PandocTooOldError } from '../../../src/fileSearch/extractors/pandocSandbox';
 import { DocumentReadError } from '../../../src/fileSearch/extractors/ooxml/limits';
 import { StructureChunkOutOfMemoryError } from '../../../src/fileSearch/structureChunkThread';
 import {
@@ -211,6 +212,15 @@ d('ingestWorker against a real Postgres database (requires FILE_SEARCH_TEST_DSN)
     expect(await statusOf(storeId, fileId)).toBe('failed');
     expect(await attemptsOf(storeId, fileId)).toBe(0);
     expect((await lastErrorOf(storeId, fileId)).message).toBe('Could not read the Excel file: it is not a valid zip archive');
+  });
+
+  it('a file whose pandoc has no sandbox fails at once, and the uploader reads no version', async () => {
+    const { storeId, fileId } = await seedAttached('a@x.com');
+    extractText.mockRejectedValue(new PandocTooOldError());
+    await processOne(storeId, fileId);
+    expect(await statusOf(storeId, fileId)).toBe('failed');
+    expect(await attemptsOf(storeId, fileId)).toBe(0);
+    expect((await lastErrorOf(storeId, fileId)).message).toBe('Files of this type cannot be converted on this installation. The administrator has been told.');
   });
 
   it('a file whose chunking needs more heap than the chunker thread may use fails at once as a permanent error', async () => {

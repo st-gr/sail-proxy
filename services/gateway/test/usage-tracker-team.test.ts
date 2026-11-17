@@ -2,7 +2,7 @@
 import { describe, it, expect, jest } from '@jest/globals';
 const emitted: any[] = [];
 jest.mock('../src/services/usageEventEmitter', () => ({ __esModule: true, default: { emit: jest.fn(async (e: any) => { emitted.push(e); }) } }));
-jest.mock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn() }));
+jest.mock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn(), payloadCaptureOn: () => false }));
 jest.mock('../src/config/unifiedAuthConfig', () => ({ isStandaloneMode: () => false }));
 jest.mock('../src/toolGovernance/record', () => ({ toolsForEvent: () => undefined }));
 jest.mock('@libs/logger', () => ({ getDefaultLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) }));

@@ -315,7 +315,7 @@ async function beforeHandler({ req, utils }: PluginContext): Promise<PluginResul
       return { stop: false };
     }
 
-    pluginLogger.info(`Found pending web_search with ID ${pendingSearch.id}, query: "${pendingSearch.query}"`);
+    pluginLogger.info(`Found pending web_search with ID ${pendingSearch.id}`, { query: pendingSearch.query });
 
     // 4. Execute search via Perplexity
     const searchResults = await executeWebSearch(pendingSearch.query, pluginLogger);
@@ -365,7 +365,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
     // the query leaves the process; the tool_use block handed back to the client keeps
     // the unmasked query.
     const searchQuery = remaskSearchQuery(req, webSearchUse.input.query);
-    pluginLogger.info(`Intercepted web_search tool_use: ${webSearchUse.id}, query: "${searchQuery}"`);
+    pluginLogger.info(`Intercepted web_search tool_use: ${webSearchUse.id}`, { query: searchQuery });
 
     // Execute the search via Perplexity sonar-pro
     const searchResults = await executeWebSearch(searchQuery, pluginLogger);

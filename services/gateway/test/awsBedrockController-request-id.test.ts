@@ -65,6 +65,7 @@ jest.mock('../src/services/awsBedrockService', () => ({
 
 import { handleBedrockRequest } from '../src/controllers/awsBedrockController';
 import usageEmitter from '../src/services/usageEventEmitter';
+import { openCollector, clearRawCaptureState } from '../src/services/rawCapture';
 
 function mockRes() {
   const r: any = {
@@ -156,3 +157,75 @@ describe('awsBedrockController: request id survives payload logging being off (C
     expect(event.requestId).not.toBe('unknown');
   });
 });
+
+describe('awsBedrockController: a request in a raw capture session', () => {
+  const savedEnv = { DEBUG: process.env.DEBUG, PAYLOAD_LOGGING_ENABLED: process.env.PAYLOAD_LOGGING_ENABLED };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DEBUG = 'false';
+    process.env.PAYLOAD_LOGGING_ENABLED = 'false';
+    clearRawCaptureState();
+  });
+  afterAll(() => {
+    clearRawCaptureState();
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it('hands awsBedrockService its request id with payload logging off, so the service stages carry it', async () => {
+    usageEmitter.setValkeyClient(null);
+    usageEmitter.getAndClearMemoryQueue();
+    // @ts-ignore - Jest mock typing issues
+    mockProcessBedrockRequest.mockResolvedValue({ usage: { inputTokens: 1, outputTokens: 1 } });
+    const req = buildReq('test-model');
+    req.debugRequestId = 'gateway-bedrock-1';
+    openCollector('gateway-bedrock-1', 's-1', 'aws-key-1', { stageMaxBytes: 262144, maxStages: 40, requestMaxBytes: 2097152 });
+
+    await handleBedrockRequest(req, mockRes(), (() => {}) as any);
+
+    expect((mockProcessBedrockRequest as any).mock.calls[0][0].debugRequestId).toBe('gateway-bedrock-1');
+  });
+});
+
+describe('awsBedrockController: a streaming call the service answered before it threw', () => {
+  const savedEnv = { DEBUG: process.env.DEBUG, PAYLOAD_LOGGING_ENABLED: process.env.PAYLOAD_LOGGING_ENABLED };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DEBUG = 'false';
+    process.env.PAYLOAD_LOGGING_ENABLED = 'false';
+  });
+  afterAll(() => {
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it('is counted once with the upstream status and not answered a second time', async () => {
+    usageEmitter.setValkeyClient(null);
+    usageEmitter.getAndClearMemoryQueue();
+    const req = buildReq('test-model');
+    req.params.subpath = 'invoke-with-response-stream';
+    const res = mockRes();
+    res.write = () => true;
+    res.end = () => { res.headersSent = true; };
+    res.on = () => res;
+    const json = jest.spyOn(res, 'json');
+    // What awsBedrockService does when the upstream rejects a streaming call: answer, then throw.
+    // @ts-ignore - Jest mock typing issues
+    mockProcessBedrockRequest.mockImplementation(async () => {
+      res.headersSent = true;
+      throw Object.assign(new Error('Model has been retired.'), { status: 410 });
+    });
+
+    await handleBedrockRequest(req, res, (() => {}) as any);
+
+    const events = usageEmitter.getAndClearMemoryQueue();
+    expect(events).toHaveLength(1);
+    expect(events[0].statusCode).toBe(410);
+    expect(json).not.toHaveBeenCalled();
+  });
+});
+

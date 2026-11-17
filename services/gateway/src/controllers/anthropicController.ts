@@ -15,6 +15,7 @@ import * as payloadLogger from '../utils/payloadLogger';
 import { executeBeforePlugins } from '../services/pluginExecutor';
 import { refuseIfForcedWithoutPlugin } from '../pluginSupport/pseudonymization/forcedRun';
 import awsBedrockService from '../services/awsBedrockService';
+import { restoreThinkingBlocks } from '../pluginSupport/pseudonymization/thinkingRoundTrip';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
@@ -25,6 +26,7 @@ import { resolveExternalTarget } from '../upstreams/externalTarget';
 import { dispatchMessages } from '../upstreams/messagesDispatch';
 import { recordInvokedTools, anthropicAdapter } from '../toolGovernance';
 import { deferStreamStart, DeferredStreamStart, StreamFailure, chunkError, failureFromChunk, failureFromError, httpStatusOr } from '../utils/streamStart';
+import { loggableErrorText, upstreamErrorKind, upstreamErrorText, upstreamTextMeta } from '../utils/upstreamErrorLogText';
 import { anthropicErrorBody, sendAnthropicHttpError } from '../utils/anthropicErrors';
 
 // Type definitions
@@ -230,6 +232,16 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
     // shared Valkey cache for a request we are about to 403.
     if (!enforceEntitlement(req, res, substitutedModelName)) return;
 
+    // Thinking the client returns carries the gateway's restore record on its signature
+    // (thinkingRoundTrip.ts). Stripped and applied here, for every request and before a
+    // Connection's dispatch: every upstream must get the signature and the text it produced, with
+    // masking on or off, with hooks or without.
+    const thinking = restoreThinkingBlocks(req.body);
+    (req as any).__thinkingExact = thinking.exact;
+    if (thinking.restored + thinking.unreadable > 0) {
+      logger.info('AnthropicController', `Thinking round trip: ${thinking.restored} block(s) rebuilt from their record, ${thinking.unreadable} without a usable record`);
+    }
+
     // A Connection model is never sent to SAP: it is served by its connection.
     const external = await resolveExternalTarget(req, res, substitutedModelName, 'claude', 'anthropic');
     if (external.kind === 'handled') return;
@@ -344,17 +356,19 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
         return;
         
       } catch (deployedCallError: any) {
-        logger.error('AnthropicController', `Error during deployed model call for ${debugRequestId}: ${deployedCallError.message}`);
+        logger.error('AnthropicController', `Error during deployed model call for ${debugRequestId}: ${loggableErrorText(deployedCallError)}`, undefined, upstreamTextMeta(deployedCallError));
         
         // Emit usage event for deployed model error case
         const statusCode = httpStatusOr(deployedCallError.status ?? deployedCallError.response?.status);
         const modelIdForUsageEvent = configService.getSubstitutedModel('anthropic', originalModelFromClient);
         emitUsageEvent(req, usageMetrics, modelIdForUsageEvent, statusCode);
-        
+        // One reading of the error for the stream and the blocking answer. The service has put
+        // the upstream's own message on it ("Model has been retired. …").
+        const failure = { status: statusCode, message: deployedCallError.message || 'Deployed model processing failed' };
+
         if (clientRequestedStream) {
           // Anthropic's shape on both sides of the stream start: the real status and a JSON
           // body while nothing was sent, else one `error` event and the end of the stream.
-          const failure = { status: statusCode, message: deployedCallError.message || 'Deployed model processing failed' };
           if (!res.headersSent) {
             sendAnthropicHttpError(res, failure);
           } else if (!res.writableEnded) {
@@ -370,7 +384,7 @@ export const handleMessages = async (req: ExtendedRequest, res: Response, next: 
         
         // For non-streaming requests or if response headers haven't been sent
         if (!res.headersSent) {
-          sendAnthropicHttpError(res, { status: statusCode, message: deployedCallError.message || 'Deployed model processing failed' });
+          sendAnthropicHttpError(res, failure);
           return;
         }
       }
@@ -804,7 +818,8 @@ function saveSSEStreamToFile(requestId: string, sseEvents: string[]): void {
   }
 
   try {
-    const logDir = path.join(__dirname, '..', 'logs', 'payloads');
+    // The payload folder the JSON stages go to, so the payload folder sweeper also removes these dumps.
+    const logDir = payloadLogger.getLogDir();
     if (!fs.existsSync(logDir)) {
       fs.mkdirSync(logDir, { recursive: true });
       logger.info('AnthropicController', `SSE_STREAM_LOG: Created log directory: ${logDir}`);
@@ -812,7 +827,7 @@ function saveSSEStreamToFile(requestId: string, sseEvents: string[]): void {
 
     const safeRequestId = String(requestId).replace(/[^a-zA-Z0-9_-]/g, '');
     const timestamp = new Date().toISOString().replace(/[.:]/g, '-');
-    const filename = `${timestamp}_${safeRequestId}_04_client_native_stream_response.txt`;
+    const filename = `${timestamp}_${safeRequestId}${payloadLogger.STREAM_DUMP_SUFFIX}`;
     const filePath = path.join(logDir, filename);
 
     const wireFormatContent = sseEvents.join('\n');
@@ -1067,7 +1082,7 @@ async function handleNativeStreaming(options: NativeStreamingOptions): Promise<v
     // chunk, so this is also how "prompt is too long" arrives.
     if (chunkError(chunk)) {
       failure = failureFromChunk(chunk);
-      logger.error('AnthropicController', `Native Stream: upstream error (status ${failure.status}): ${failure.message}`);
+      logger.error('AnthropicController', `Native Stream: ${upstreamErrorText(failure.status, upstreamErrorKind(chunkError(chunk)), failure.message)}`, undefined, { upstreamMessage: failure.message });
       deliverFailure(failure);
       return;
     }

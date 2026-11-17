@@ -16,6 +16,8 @@ import { runMigration } from './fileSearch/db';
 import { startIngestWorker, stopIngestWorker } from './fileSearch/ingestWorker';
 import { startExpirySweeper, stopExpirySweeper } from './fileSearch/expirySweeper';
 import { startJobSweeper, stopJobSweeper } from './fileSearch/jobSweeper';
+import { startPayloadFolderSweeper, stopPayloadFolderSweeper } from './utils/payloadFolderSweeper';
+import { getLogDir, isPayloadLoggingEnabled, payloadFilesNotice } from './utils/payloadLogger';
 import { startBlobSweeper, stopBlobSweeper } from './fileSearch/blob/blobSweeper';
 import { startBlobMigrationWorker, stopBlobMigrationWorker } from './fileSearch/blob/blobMigrationQueue';
 
@@ -35,6 +37,8 @@ const { app, deploymentsMounted, groundingMounted } = createApp(config);
 // Initialize usage event system
 import usageEmitter from './services/usageEventEmitter';
 import securityEventEmitter from './services/securityEventEmitter';
+import { logShipperSettings, repeatPseudonymizationState } from './services/configService';
+import { startLogShipper, logShippingAllowed, warnToStderr } from './services/logShipper';
 import Redis from 'iovalkey';
 import { isStandaloneMode, shouldEnableDistributedCaching } from './config/unifiedAuthConfig';
 import { configureQuotaEnforcement } from './middlewares/quotaEnforcement';
@@ -252,6 +256,17 @@ async function initializeGatewayService(): Promise<void> {
   }
   startPluginWatch();
 
+  // The log goes to Valkey for the admin cockpit; never in the standalone gateway.
+  if (logShippingAllowed(process.env, isStandaloneMode())) {
+    cleanupResources.stopLogShipper = startLogShipper({
+      publish: (batch) => securityEventEmitter.appendGatewayLogBatch(batch),
+      settings: logShipperSettings,
+      warn: warnToStderr,
+    });
+    // The state line was written while the configuration loaded, before the shipper listened: once more, so it is stored.
+    repeatPseudonymizationState();
+  }
+
   // Standalone: no admin, so the snapshot comes from connections.json (no SAP target sync: the
   // standalone SAP key stays in .env).
   if (isStandaloneMode()) {
@@ -267,6 +282,10 @@ async function initializeGatewayService(): Promise<void> {
   startIngestWorker();
   startExpirySweeper();
   startJobSweeper();
+  startPayloadFolderSweeper();
+  // Said once at startup (after the log shipper started, so the cockpit stores it too).
+  const payloadFilesWarning = payloadFilesNotice(isPayloadLoggingEnabled(), getLogDir());
+  if (payloadFilesWarning) logger.warn('PayloadLogger', payloadFilesWarning);
   startBlobSweeper();
   startBlobMigrationWorker();
 }
@@ -276,7 +295,8 @@ const cleanupResources = {
   server: null as any,
   intervals: [] as NodeJS.Timeout[],
   valkeyClients: [] as any[],
-  realtime: null as null | { closeAll(code: number, reason: string): void }
+  realtime: null as null | { closeAll(code: number, reason: string): void },
+  stopLogShipper: null as null | (() => void)
 };
 
 // Enhanced graceful shutdown handler
@@ -316,7 +336,9 @@ function gracefulShutdown(signal: string): void {
     // see fileSearch/expirySweeper.ts's stopExpirySweeper).
     stopExpirySweeper();
     stopJobSweeper();
+    stopPayloadFolderSweeper();
     stopBlobSweeper();
+    cleanupResources.stopLogShipper?.();
 
     // Close the config event connections. These are NOT in
     // cleanupResources.valkeyClients — that registry only holds the clients

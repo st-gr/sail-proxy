@@ -14,7 +14,8 @@ const scratch = process.env.SAIL_DOCS_SCRATCH || join(root, 'screencast', 'out',
 export const NS = 'sail-proxy-test';
 export const HOST = 'sail-proxy-test';
 const ORG = process.env.SAIL_DOCS_KYMA_ORG || 'st-gr/sail-proxy-private';
-const TAG = process.env.SAIL_DOCS_KYMA_TAG || 'docs-800da807';
+// The setup now checks the tag against the registry: it must still be published (docs-800da807 is gone).
+const TAG = process.env.SAIL_DOCS_KYMA_TAG || 'rc-bbd93dc2';
 const SUBDOMAIN = process.env.SAIL_DOCS_KYMA_SUBDOMAIN || '';
 const env = { HOME: scratch, KUBECONFIG: process.env.KUBECONFIG ?? `${process.env.HOME}/.kube/config`, PATH: process.env.PATH };
 const common = { cols: 110, rows: 30, cwd: root, env };
@@ -45,28 +46,36 @@ export const casts = {
   ] },
   get setup() { return { ...common, env: setupEnv(), commands: [{ cmd: `node kyma/scripts/setup-kyma.js --namespace ${NS}`, timeoutMs: 600000, holdMs: 4000, input: [
     { waitFor: 'Kubernetes namespace to deploy into', send: '<enter>' },
-    { waitFor: 'Generate new encryption keys', send: 'y<enter>' },
+    // Confirm questions are Yes / No / ← Back lists that start on their default: Up reaches Yes from No.
+    { waitFor: 'Generate new encryption keys', send: '<up><enter>' },
     { waitFor: 'Select deployment type', send: '<enter>' },
     { waitFor: 'Select authentication provider', send: '<enter>' },
     { waitFor: 'Logout redirect URL', send: '<enter>' },
     { waitFor: 'APIRule host name', send: `${HOST}<enter>` },
     { waitFor: 'Kyma cluster subdomain', send: [{ env: 'SAIL_DOCS_KYMA_SUBDOMAIN', show: 'c-abc123', redraw: true }, '<enter>'] },
     { waitFor: 'IP allowlist (comma-separated', send: [{ env: 'SAIL_DOCS_LAPTOP_CIDR', show: '203.0.113.7/32', redraw: true }, '<enter>'] },
-    { waitFor: 'manage IP restrictions in istio-system', send: 'y<enter>' },
+    { waitFor: 'manage IP restrictions in istio-system', send: '<enter>' },
     // This cluster carries the cp.* tunnel policies: keep them reachable (the default); the prefixed copies are
     // labelled and go with the teardown.
     { waitFor: 'Cloud Connector', send: '<enter>' },
     { waitFor: 'Select container registry', send: '<enter>' },
     { waitFor: 'Organization/namespace', send: `${ORG}<enter>` },
-    { waitFor: 'Requires image pull secrets', send: 'y<enter>' },
+    { waitFor: 'Requires image pull secrets', send: '<up><enter>' },
     { waitFor: 'Docker registry username', send: 'st-gr<enter>' },
     { waitFor: 'Docker registry password/token', send: [{ env: 'GHCR_PULL_TOKEN' }, '<enter>'] },
     // The registry lists no tags for a nested private package (GitHub API and registry fallback both come back
     // empty), so the setup asks for the tag directly. With a custom tag it never offers "deploy now".
     { waitFor: 'Enter image version or tag', send: `${TAG}<enter>` },
+    // A new installation is asked where its database is: keep the in-cluster PostgreSQL (the default).
+    { waitFor: 'Database:', send: '<enter>' },
     { waitFor: 'Database username', send: '<enter>' },
     { waitFor: 'Database password', send: '<enter>' },
-    { waitFor: 'Use existing SAP AI Core configuration?', send: 'y<enter>' }
+    { waitFor: 'Use existing SAP AI Core configuration?', send: '<enter>' },
+    // USD keeps SAP's published capacity-unit price; no CU prices to enter.
+    { waitFor: 'SAP billing currency', send: '<enter>' },
+    { waitFor: 'Allow admins to install plugins', send: '<enter>' },
+    // The setup ends on a review of every answer; Write configuration is preselected.
+    { waitFor: 'Review your answers', send: '<enter>' }
   ] }] }; },
   get deploy() { return { ...common, env: { ...env, KYMA_DEPLOY_CONFIG: deployConfig() }, commands: [{ cmd: `node kyma/scripts/deploy-kyma.js --namespace ${NS}`, timeoutMs: 900000, holdMs: 3000 }] }; },
   rollout: { ...common, commands: [

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { shotArgs, effectFilter } from './render.mjs';
+import { shotArgs, effectFilter, SIZES } from './render.mjs';
 import { EFFECTS } from './model.mjs';
 
 const clipShot = { id: 'k', source: { clip: '05-cockpit/section-2', start: 4, crop: { x: 100, y: 50, w: 1600, h: 900 } }, effect: 'push-in', frames: 75 };
@@ -71,4 +71,15 @@ test('a pull-out on a looped still renders to its end', () => {
     assert.equal(r.signal, null, 'ffmpeg crashed');
     assert.equal(r.status, 0, r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The 1440p render scales the layout, not the pixels: the clip is cropped in its own 1080p pixels and scaled once
+// to 2560×1440, and every effect works on the larger frame.
+test('a 1440p shot crops in clip pixels and scales once to 2560×1440', () => {
+  const a = shotArgs(clipShot, { inputPath: '/c.mp4', size: SIZES['1440p'] });
+  const fc = a[a.indexOf('-filter_complex') + 1];
+  assert.ok(fc.includes('crop=1600:900:100:50,scale=2560:1440'), fc);
+  assert.ok(!fc.includes('1920'), fc);
+  assert.ok(effectFilter('slide-left', 30, SIZES['1440p']).includes('2560'));
+  assert.ok(effectFilter('wipe', 30, SIZES['1440p']).includes('s=2560x1440'));
 });

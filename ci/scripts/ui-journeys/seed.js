@@ -516,6 +516,10 @@ async function main() {
     await purgePlugins(adminUrl, roles.admin.credentials);
     created.plugin = await seedPlugins(adminUrl, roles.admin.credentials);
   }
+  // The Logs journey saves the logging settings and resets them again; a run that failed in between
+  // left them set. Log entries themselves cannot be seeded: the service only reads them (they arrive
+  // from a gateway through Valkey), so the journey checks the page without relying on rows.
+  if (SEEDING_FOR === 'logs-app') await client.post('/resetLoggingSettings', {});
   if (inThisRun('grounding-app')) {
     try {
       created.grounding = await seedGrounding(adminUrl);

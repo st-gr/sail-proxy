@@ -16,7 +16,7 @@ let gate: Promise<void> = Promise.resolve();
 let entered: () => void = () => undefined;
 
 jest.mock('../src/services/usageEventEmitter', () => ({ __esModule: true, default: { emit: jest.fn(async (e: any) => { emitted.push(e); }) } }));
-jest.mock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn() }));
+jest.mock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn(), payloadCaptureOn: () => false }));
 jest.mock('../src/toolGovernance/record', () => ({ toolsForEvent: () => undefined }));
 // Standalone mode emits no usage events: this gateway has an admin.
 jest.mock('../src/config/unifiedAuthConfig', () => ({ ...(jest.requireActual('../src/config/unifiedAuthConfig') as object), isStandaloneMode: () => false }));

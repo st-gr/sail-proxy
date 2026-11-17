@@ -4,7 +4,7 @@
 
 The `responsesNamespaceToolsPlugin` makes Codex CLI's sub-agent feature (`multi_agent`) work on the `/openai/v1/responses` route when the deployment sits behind SAP AI Core. It flattens Codex's `namespace` tool wrapper into the ordinary function tools it contains before the request reaches the deployment, then restores the `namespace` field on each affected `function_call` in the response so Codex can route it back to the sub-agent it belongs to.
 
-It is the Responses-route sibling of [`responsesWebSearchPlugin`](../responsesWebSearchPlugin/responsesWebSearchPlugin.md): both exist because SAP AI Core rejects a tool `type` that Codex CLI sends unconditionally, and both fix it by rewriting the request into a shape the deployment accepts and repairing the response so the client still sees the feature it asked for. This plugin's request/response shaping lives in [`namespaceTools/adapter.ts`](./namespaceTools/adapter.ts), which contains all the pure transformations — the plugin itself is orchestration: read config, call the adapter, stash/read the map, log, never throw.
+It is the Responses-route sibling of [`responsesWebSearchPlugin`](../responsesWebSearchPlugin/responsesWebSearchPlugin.md): both exist because SAP AI Core rejects a tool `type` that Codex CLI sends unconditionally, and both fix it by rewriting the request into a shape the deployment accepts and repairing the response so the client still sees the feature it asked for. This plugin's request/response shaping lives in [`namespaceTools/adapter.ts`](../../pluginSupport/namespaceTools/adapter.ts), which contains all the pure transformations — the plugin itself is orchestration: read config, call the adapter, stash/read the map, log, never throw.
 
 ## Problem Statement
 
@@ -111,7 +111,7 @@ The interceptor holds a partial `tail` across writes, because SSE block boundari
 | Hook array | Shipped order | Consumed by | Direction |
 |---|---|---|---|
 | `hooks.defaults.openai.responses-stream` | `pseudonymizationPlugin` → **this plugin** → `responsesWebSearchPlugin` | the `res.write` interceptors the `before` handlers install | inside-out — the **last installed is outermost** |
-| `hooks.defaults.openai.responses` | `pseudonymizationPlugin` → `responsesWebSearchPlugin` → **this plugin** | the after-handler chain in [`services/pluginExecutor.ts`](../services/pluginExecutor.ts) | in order — each handler receives the previous one's result |
+| `hooks.defaults.openai.responses` | `pseudonymizationPlugin` → `responsesWebSearchPlugin` → **this plugin** | the after-handler chain in [`services/pluginExecutor.ts`](../../services/pluginExecutor.ts) | in order — each handler receives the previous one's result |
 
 Both arrays encode the *same* requirement — this plugin must observe whatever web-search produced — and they land on inverted positions because inside-out nesting and in-order chaining are opposites. Making them agree reintroduces one of the two bugs, whichever way they are made to agree. `pseudonymizationPlugin` stays at index 0 in both; only the two tool plugins swap.
 
@@ -134,7 +134,7 @@ The two are otherwise non-interfering, and each of those properties was checked 
 
 Listing this plugin first here (which is what happens if the two arrays are made to match the streaming one) means a `spawn_agent` the model emits in a continuation round reaches the client with **no `namespace`** — the same `unsupported call: spawn_agent` failure as above, relocated to the non-streaming route. Reachability is low today, because Codex CLI always streams, and the failure is silent, which is exactly why it is pinned by a test rather than left to inspection.
 
-[`test/responses-tool-plugin-layering.test.ts`](../../test/responses-tool-plugin-layering.test.ts) pins **both** directions by behavior, reading each order out of the shipped `api_config.json` rather than restating it: it installs both interceptors on one `res` for the streaming order, chains both after handlers over a response whose continuation round emits a namespaced `function_call` for the non-streaming order, and asserts outright that the two arrays disagree. Reordering either one fails the suite.
+[`test/responses-tool-plugin-layering.test.ts`](../../../test/responses-tool-plugin-layering.test.ts) pins **both** directions by behavior, reading each order out of the shipped `api_config.json` rather than restating it: it installs both interceptors on one `res` for the streaming order, chains both after handlers over a response whose continuation round emits a namespaced `function_call` for the non-streaming order, and asserts outright that the two arrays disagree. Reordering either one fails the suite.
 
 ### Write callbacks
 
@@ -150,6 +150,6 @@ A throw inside a patched `res.write` must never break the stream. Three guards, 
 
 ## Shared SSE framing
 
-The block-framing machinery — `splitBlocks`, `parseFrame`, `sseBlock`, `rebuildBlockWithSubstitution` and the `TERMINAL_RESPONSE_TYPES` set — lives in [`utils/sseFraming.ts`](../utils/sseFraming.ts) and is shared with `responsesWebSearchPlugin`, which is where it was first written and privately revised across three phases. It was extracted rather than copied when this interceptor became its second consumer: two independently-drifting copies of `rebuildBlockWithSubstitution`'s byte-identical-on-no-change guarantee is exactly the kind of subtle divergence that would show up as a corrupted stream for one plugin and not the other.
+The block-framing machinery — `splitBlocks`, `parseFrame`, `sseBlock`, `rebuildBlockWithSubstitution` and the `TERMINAL_RESPONSE_TYPES` set — lives in [`utils/sseFraming.ts`](../../utils/sseFraming.ts) and is shared with `responsesWebSearchPlugin`, which is where it was first written and privately revised across three phases. It was extracted rather than copied when this interceptor became its second consumer: two independently-drifting copies of `rebuildBlockWithSubstitution`'s byte-identical-on-no-change guarantee is exactly the kind of subtle divergence that would show up as a corrupted stream for one plugin and not the other.
 
 Note the one convention the shared helper imposes: it decides "unchanged" by object identity (`substitutedFrame === originalFrame`). The namespace adapter mutates items in place and reports the change as a boolean, so a changed frame is handed a shallow copy purely to break that identity and force re-serialisation.

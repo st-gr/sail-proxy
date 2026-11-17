@@ -1,5 +1,5 @@
 {
-  "minUpgradeFrom": "0.11.0",
+  "minUpgradeFrom": "0.12.1",
   "postgresImage": "pgvector/pgvector:pg16-trixie",
   "storageLayoutChange": false
 }

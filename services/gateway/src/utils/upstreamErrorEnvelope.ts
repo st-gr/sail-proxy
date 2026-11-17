@@ -104,6 +104,21 @@ export function truncateUpstreamMessage(text: string): string {
 
 const truncate = truncateUpstreamMessage;
 
+/**
+ * An upstream error body as it may appear in a log line: the allow-listed fields of
+ * SAP's nested or flat shape (plus the flat shape's label), or a capped plain-text
+ * body. SAP's orchestration body repeats the templated prompt in
+ * `intermediate_results`, and the gateway's console is a log line like any other.
+ */
+export function upstreamErrorForLog(body: any): any {
+  if (typeof body === 'string') return truncate(body);
+  if (!body || typeof body !== 'object') return body;
+  const inner = unwrapUpstreamError(body);
+  const safe = sanitizeUpstreamErrorObject(inner);
+  if (inner === body && typeof body.error === 'string') safe.error = body.error;
+  return safe;
+}
+
 export interface NormalisedUpstreamError {
   error: {
     message: string;

@@ -49,7 +49,7 @@ export function trimSilence(pcm, rate) {
 const pcmOf = (path) => trimSilence(readFileSync(path).subarray(44), RATE);
 const seconds = (pcm) => pcm.length / (RATE * 2);
 
-export function mix({ audioDir, manifest, videoFile, videoSeconds, recapAt, outFile, trackFile }) {
+export function mix({ audioDir, manifest, videoFile, videoSeconds, recapAt, outFile, trackFile, bitrate = '12M' }) {
   const spoken = manifest.segments.map((s) => pcmOf(join(audioDir, s.file)));
   const recap = pcmOf(join(audioDir, manifest.recap.file));
   const p = plan(manifest.segments.map((s, i) => ({ at: s.at, seconds: seconds(spoken[i]) })), seconds(recap), videoSeconds, recapAt);
@@ -57,7 +57,7 @@ export function mix({ audioDir, manifest, videoFile, videoSeconds, recapAt, outF
   pieces.push({ start: p.recapStart, pcm: recap });
   writeFileSync(trackFile, wavFromPcm(buildTrack(pieces, RATE, p.total), RATE));
   const pad = p.freeze > 0 ? ['-vf', `tpad=stop_mode=clone:stop_duration=${p.freeze}`] : [];
-  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', videoFile, '-i', trackFile, ...pad, '-map', '0:v', '-map', '1:a', '-c:v', H264, '-b:v', '12M', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-t', String(p.total), outFile], { stdio: ['ignore', 'inherit', 'inherit'] });
+  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', videoFile, '-i', trackFile, ...pad, '-map', '0:v', '-map', '1:a', '-c:v', H264, '-b:v', bitrate, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-t', String(p.total), outFile], { stdio: ['ignore', 'inherit', 'inherit'] });
   if (r.status !== 0) throw new Error('ffmpeg failed while mixing');
   return { ...p, segmentSeconds: spoken.map(seconds), recapSeconds: seconds(recap) };
 }

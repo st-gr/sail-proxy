@@ -558,19 +558,18 @@ describe('responsesWebSearchPlugin — CHARACTERIZATION: continuation POST bodie
 });
 
 describe('responsesWebSearchPlugin — CHARACTERIZATION: the cap-overflow batch', () => {
-  // A batch whose parallel calls exceed the search budget left for this request. POSTing a
-  // continuation for it would leave some call without a function_call_output — the
-  // malformed-turn shape the deployment rejects outright — so the batch is spliced IN
-  // PLACE instead and the loop stops. Before this pair of tests the branch
-  // (`overflow` at responsesWebSearchPlugin.ts:1342/1378, `capReached` at :663) had no
-  // coverage anywhere in the repo: every other fixture pins the cap to 3 and never issues
-  // more parallel calls than the remaining budget, so it is never entered.
+  // A batch whose parallel calls exceed the search budget left for this request. The call
+  // over the budget is answered as refused and the model is asked once more without the
+  // tool (the answering call — covered in responses-websearch-stream.test.ts and
+  // hosted-tool-engine.test.ts). This pair pins what the client gets when that call cannot
+  // be made: the batch spliced IN PLACE, exactly what the cap produced before the answering
+  // call existed.
   const CAP_FC_A = { type: 'function_call', id: 'fc_a', call_id: 'call_a', name: 'web_search', arguments: '{"query":"node lts"}' };
   const CAP_FC_B = { type: 'function_call', id: 'fc_b', call_id: 'call_b', name: 'web_search', arguments: '{"query":"deno lts"}' };
   // Task 2 fix round 2: a capped call's dump message used to fall through to
   // `buildSearchMessageItem([], query, ...)`, which reads as "the search ran and found
   // nothing" — exactly the conflation this whole task removes, and unreachable from the
-  // `renderOutput` fix alone because `capReached` blocks every path that would carry it.
+  // `renderOutput` fix alone because the cap then blocked every path that would carry it.
   //
   // Fix round 3: the non-streaming overflow batch below and the streaming test that follows
   // it used to produce TWO DIFFERENT texts for the same situation — the non-streaming
@@ -583,27 +582,25 @@ describe('responsesWebSearchPlugin — CHARACTERIZATION: the cap-overflow batch'
   // Fix round 4: that ONE constant was itself wrong. It was fix round 2's `renderOutput`
   // text verbatim — MODEL-facing, carrying an instruction ("Do not tell the user…") that a
   // live acceptance run then showed rendered UNPARAPHRASED as the sole final message a human
-  // saw in the TUI, since `capReached` forecloses every continuation and this dump IS the
+  // saw in the TUI, since the cap then foreclosed every continuation and this dump WAS the
   // last thing rendered on that path. This is the USER-facing text now — a plain statement
   // of what happened, no imperative — matching what a person actually reads. See
   // `webSearch/descriptor.ts`'s `FAILURE_MESSAGES`.
   const CAP_TEXT = "This turn's web-search budget was used up, so some of the requested "
     + 'searches were not run.';
 
-  it('CHARACTERIZATION: a batch that overflows the remaining cap is spliced in place, with NO continuation POST — non-streaming', async () => {
+  it('CHARACTERIZATION: a batch that overflows the remaining cap is spliced in place when the answering call fails — non-streaming', async () => {
     mockMaxSearches.mockReturnValue(1);                        // budget 1, two parallel calls
     const req: any = { body: { stream: false, input: 'node lts?', tools: [{ type: 'web_search' }] }, __responsesUpstream: UPSTREAM() };
     req[REWROTE_FLAG] = true;
-    mockPost.mockResolvedValue({ data: FIXTURE_BLOCKING_CONTINUATION });
+    mockPost.mockRejectedValue(new Error('upstream gone'));
 
     const result = await after({
       req, res: {} as any, utils,
       upstreamResponse: { id: 'resp_1', status: 'completed', output: [REASONING, CAP_FC_A, CAP_FC_B], usage: { input_tokens: 10, output_tokens: 2 } },
     });
 
-    // An upstream context IS available — only the overflow stops the continuation.
-    expect(req.__responsesUpstream.url).toBeTruthy();
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockPost).toHaveBeenCalledTimes(1);                 // the answering call, which failed
     expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);     // only the in-budget call ran
 
     // Both calls still get client-facing items, in place, so neither is ever an item with
@@ -629,11 +626,11 @@ describe('responsesWebSearchPlugin — CHARACTERIZATION: the cap-overflow batch'
     expect(result.usage).toEqual({ input_tokens: 10, output_tokens: 2 });
   });
 
-  it('CHARACTERIZATION: a batch that overflows the remaining cap is spliced in place, with NO continuation POST — streaming', async () => {
+  it('CHARACTERIZATION: a batch that overflows the remaining cap falls back to both result dumps when the answering call fails — streaming', async () => {
     mockMaxSearches.mockReturnValue(1);
     const res = captureWrites();
     const req = streamingReq();
-    mockPost.mockResolvedValue(upstreamStream(FIXTURE_CONTINUATION));
+    mockPost.mockRejectedValue(new Error('upstream gone'));
 
     await before({ req, res, utils });
     res.write(sse({ type: 'response.created', sequence_number: 0, response: { id: 'resp_1' } }));
@@ -647,28 +644,28 @@ describe('responsesWebSearchPlugin — CHARACTERIZATION: the cap-overflow batch'
     }));
     await settleAll();
 
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockPost).toHaveBeenCalledTimes(1);
     expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);
 
     const events = frames(res);
-    // `capReached` blocks any continuation, so BOTH searches fall back to the result dump
-    // — the client's only view of what was found.
+    // The answering call failed, so BOTH searches fall back to the result dump — the
+    // client's only view of what was found.
     expect(events.map(e => e.type)).toEqual([
       'response.created',
       'response.output_item.added', 'response.output_item.done',                      // web_search_call @0
-      'response.output_item.added', 'response.content_part.added',
-      'response.output_text.delta', 'response.output_text.done',
-      'response.content_part.done', 'response.output_item.done',                      // its dump @0
       'response.output_item.added', 'response.output_item.done',                      // web_search_call @1
       'response.output_item.added', 'response.content_part.added',
       'response.output_text.delta', 'response.output_text.done',
-      'response.content_part.done', 'response.output_item.done',                      // its dump @1
+      'response.content_part.done', 'response.output_item.done',                      // a dump
+      'response.output_item.added', 'response.content_part.added',
+      'response.output_text.delta', 'response.output_text.done',
+      'response.content_part.done', 'response.output_item.done',                      // the other dump
       'response.completed',
     ]);
-    // Each web_search_call stays with its own dump rather than both dumps arriving in one
-    // lump after both pairs.
+    // The dumps were held back for the answering call, so they follow both call items —
+    // each under its own call's output_index, the refused call's first (it resolved first).
     expect(events.map(e => e.output_index).filter(n => typeof n === 'number'))
-      .toEqual([...Array(8).fill(0), ...Array(8).fill(1)]);
+      .toEqual([0, 0, 1, 1, ...Array(6).fill(1), ...Array(6).fill(0)]);
 
     const terminal = events[events.length - 1];
     expect(terminal.response.output.map((i: any) => i.type))

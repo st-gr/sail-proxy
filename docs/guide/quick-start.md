@@ -9,7 +9,7 @@ Every path needs the service key of your SAP AI Core instance (Extended plan), d
 
 ## CLI (single user)
 
-The npm package runs a standalone gateway on your machine. It needs Node.js 20 or later and has no Admin Cockpit.
+The npm package runs a standalone gateway on your machine. It needs Node.js 24 or later and has no Admin Cockpit.
 
 ```bash
 npm install -g @st-gr/sail-proxy
@@ -36,7 +36,7 @@ curl -X POST http://localhost:3000/openai/v1/chat/completions \
 
 ## Docker (team)
 
-Docker Compose runs the gateway together with the Admin Cockpit, nginx, single sign-on (oauth2-proxy and Dex), PostgreSQL and Valkey. It needs a Docker runtime and Node.js 20 or later.
+Docker Compose runs the gateway together with the Admin Cockpit, nginx, single sign-on (oauth2-proxy and Dex), PostgreSQL and Valkey. It needs a Docker runtime and Node.js 24 or later.
 
 ```bash
 git clone https://github.com/st-gr/sail-proxy.git
@@ -95,7 +95,7 @@ On Docker, open `http://localhost:8080/admin/app/shell/` (or your configured dom
 ### Common issues
 
 **CLI**
-- **Node.js version**: Node.js 20 or later is required.
+- **Node.js version**: Node.js 24 or later is required.
 - **Network access**: the machine must reach the SAP AI Core endpoints named in your service key.
 - **Service key**: the setup reads the SAP AI Core service key JSON; download it again if it is rejected.
 

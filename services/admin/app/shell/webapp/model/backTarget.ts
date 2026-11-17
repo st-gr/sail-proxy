@@ -13,7 +13,8 @@ const BY_APP_KEY: Record<string, string> = {
 	users: "UsersList",
 	toolPolicies: "ToolPoliciesList",
 	connections: "ConnectionsList",
-	plugins: "pluginsList"
+	plugins: "pluginsList",
+	logs: "logsList"
 };
 
 /**

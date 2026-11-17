@@ -1090,6 +1090,7 @@ describe('Pseudonymization Plugin', () => {
 
     // ─── Bypass mechanics ────────────────────────────────────────────────────
     function setEndpointForce(endpoint: string, allowBypass: boolean): void {
+      mockConfig.api_config.observability.pseudonymization = { ...mockConfig.api_config.observability.pseudonymization, enabled: true };
       mockConfig.api_config.hooks.defaults[endpoint] = {
         pseudonymization: { enabled: true, method: 'pseudonymization', allow_user_bypass: allowBypass },
       };
@@ -1126,6 +1127,24 @@ describe('Pseudonymization Plugin', () => {
       expect(req.body.messages[0].content).toBe('John Smith email is john@example.com');
       expect(req.__pseudonymization).toBeUndefined();
       // Field must be stripped before forwarding upstream
+      expect(req.body.pseudonymization_off).toBeUndefined();
+    });
+
+    it('the body bypass field is stripped when the global switch is off (nothing forced, no bypass applied)', async () => {
+      setEndpointForce('openai', false);
+      mockConfig.api_config.observability.pseudonymization.enabled = false;
+      const req: any = {
+        __endpoint: 'openai',
+        headers: {},
+        body: {
+          model: 'gpt-4.1',
+          pseudonymization_off: true,
+          messages: [{ role: 'user', content: 'Jane Roe email is jane.roe@example.org' }],
+        },
+      };
+      await beforeHandler({ req, res: {}, utils: { logger: mockLogger } });
+      expect(req.body.messages[0].content).toBe('Jane Roe email is jane.roe@example.org');
+      expect(req.__pseudonymization).toBeUndefined();
       expect(req.body.pseudonymization_off).toBeUndefined();
     });
 
@@ -1564,6 +1583,12 @@ describe('Pseudonymization Plugin', () => {
       // Hardened: explicitly forbids inventing tokens and mandates using unmasked values
       expect(sys[sys.length - 1].text).toContain('NEVER invent');
       expect(sys[sys.length - 1].text).toContain('use that unmasked value as-is');
+
+      // The note says the values come back: without it models read "masked" as "I may not use this"
+      // and decline (claude-4.5-haiku refused "write to <name> (<email>)" 5 of 5, 2026-11-09).
+      expect(sys[sys.length - 1].text).toContain('restored automatically');
+      expect(sys[sys.length - 1].text).toContain('as you would with the real values');
+      expect(sys[sys.length - 1].text).toMatch(/do not decline/i);
 
       // string-form system prompt
       const req2: any = {

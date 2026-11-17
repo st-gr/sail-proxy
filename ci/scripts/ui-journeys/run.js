@@ -29,7 +29,8 @@ const APPS = [
   { name: 'connections-app', mount: '/connections', minTests: 5, roles: ['admin'] },   // admin-only app
   { name: 'tool-policies-app', mount: '/tool-policies', minTests: 4, roles: ['admin'] },   // admin-only app (plan B ruling 1)
   { name: 'grounding-app', mount: '/grounding', minTests: 12 },   // needs the Phase 5 gateway and its file_search database
-  { name: 'plugins-app', mount: '/plugins', minTests: 6, roles: ['admin'] }   // admin-only app
+  { name: 'plugins-app', mount: '/plugins', minTests: 6, roles: ['admin'] },   // admin-only app
+  { name: 'logs-app', mount: '/logs', minTests: 11, roles: ['admin'] }   // admin-only app; the log and trace rows need a gateway (checked in a container)
 ];
 
 // UI_JOURNEYS_APPS=<name>[,<name>…] restricts a run to those apps. seed.js honours the same

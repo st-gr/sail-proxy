@@ -32,7 +32,8 @@
 
 import { Request, Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
-import configService, { getTrustForwardedFor } from './configService';
+import configService, { getTrustForwardedFor, getCachedConfig, payloadCaptureAllowed } from './configService';
+import { isStandaloneMode } from '../config/unifiedAuthConfig';
 import securityEventEmitter from './securityEventEmitter';
 import { getStreamCapture, installStreamCapture } from './siemStreamCapture';
 import { getClientIp } from '../utils/clientIp';
@@ -95,7 +96,7 @@ export function resolveContentGates(siem: any): ContentGates {
  * because the cap exists to bound what is written to Postgres and pushed to a sink, and a
  * character-count cap bounds neither for non-ASCII text.
  */
-function capBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+export function capBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
   const buffer = Buffer.from(text, 'utf8');
   if (buffer.length <= maxBytes) return { text, truncated: false };
   // A cut inside a multi-byte sequence decodes to U+FFFD rather than to half a character;
@@ -126,7 +127,7 @@ function textOfMessage(message: any): string[] {
  * as it stands — raw. It is marked `masked: false` and gated accordingly; this function
  * never guesses that untouched text is safe because it happens to contain no PII.
  */
-function promptOf(req: Request): { text: string; masked: boolean } {
+export function promptOf(req: Request): { text: string; masked: boolean } {
   const state = (req as any).__pseudonymization;
   if (state && Array.isArray(state.maskedInputs)) {
     return { text: state.maskedInputs.join('\n'), masked: true };
@@ -301,17 +302,34 @@ export function beginStreamContentCapture(req: Request, res: Response | undefine
     try {
       siem = configService.getConfig()?.api_config?.observability?.siem;
     } catch {
-      return;
+      siem = undefined;
     }
 
     const gates = resolveContentGates(siem);
-    if (!gates.emit || !gates.includeContent) return;
+    const siemWantsContent = gates.emit && gates.includeContent;
+    const traceWantsContent = payloadCaptureOn();
+    if (!siemWantsContent && !traceWantsContent) return;
 
-    installStreamCapture(req, res, gates.maxBytes);
+    installStreamCapture(req, res, Math.max(siemWantsContent ? gates.maxBytes : 0, traceWantsContent ? DEFAULT_CONTENT_MAX_BYTES : 0));
   } catch (error) {
     logger.warn('SiemUsageEvent', 'Failed to start streamed content capture', {
       error: error instanceof Error ? error.message : 'Unknown error',
     });
+  }
+}
+
+/**
+ * Payload capture is on right now: the configuration received so far says so, and this gateway
+ * has a Valkey to publish to and is not the standalone one. Reads only what is already in
+ * memory; never throws, never allocates.
+ */
+export function payloadCaptureOn(): boolean {
+  try {
+    // The same `enabled` test payloadCaptureSettings makes, without building its settings object per request.
+    if ((getCachedConfig() as any)?.api_config?.observability?.payload_capture?.enabled !== true) return false;
+    return payloadCaptureAllowed(process.env, isStandaloneMode());
+  } catch {
+    return false;
   }
 }
 

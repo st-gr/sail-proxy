@@ -80,7 +80,7 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
 
     it('orders observability\'s sections as the schema declares them, with no document to follow', () => {
         const groupSchema = resolveGroupSchema(apiConfigSchema, 'observability');
-        expect(groupSectionKeys(groupSchema)).toEqual(['pseudonymization', 'siem']);
+        expect(groupSectionKeys(groupSchema)).toEqual(['pseudonymization', 'siem', 'gateway_log', 'payload_capture']);
     });
 
     it('orders platform\'s eight sections as the schema declares them, with no document to follow', () => {
@@ -169,12 +169,14 @@ describe('apiConfigGroups (the tab shell\'s pure half)', () => {
     // in the real code show up as a red test - see this function's own header for the mistake
     // this replaces.
     describe('groupSections (what buildTab actually calls)', () => {
-        it('pointers and resolves observability\'s two sections, siem to the exact object siemSchemaDef is', () => {
+        it('pointers and resolves observability\'s four sections, siem to the exact object siemSchemaDef is', () => {
             const sections = groupSections(apiConfigSchema, 'observability');
-            expect(sections.map(s => s.key)).toEqual(['pseudonymization', 'siem']);
+            expect(sections.map(s => s.key)).toEqual(['pseudonymization', 'siem', 'gateway_log', 'payload_capture']);
             expect(sections.map(s => s.pointer)).toEqual([
                 '/api_config/observability/pseudonymization',
-                '/api_config/observability/siem'
+                '/api_config/observability/siem',
+                '/api_config/observability/gateway_log',
+                '/api_config/observability/payload_capture'
             ]);
             // Same reference, not a copy - the schema `buildDescriptors` is handed for siem is
             // the one thing that must not have changed shape when siem moved into this tab.

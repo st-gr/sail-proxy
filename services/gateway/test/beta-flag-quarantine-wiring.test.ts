@@ -47,6 +47,7 @@ jest.mock('../src/services/configService', () => ({
   default: {
     getSupportedBetaHeaders: () => [],
     getExcludedBetaHeaders: () => [],
+    getBetaHeaderRenames: () => ({ 'advanced-tool-use-2025-11-20': 'tool-search-tool-2025-10-19' }),
     getTimeout: () => 1000,
     getConfig: () => ({}),
     getSAPAICoreConfig: () => ({ url: 'http://mock-sap' }),
@@ -114,7 +115,7 @@ describe('beta flag quarantine wiring (awsBedrockService)', () => {
 
     await expect(
       processBedrockRequest(buildOptions({ max_tokens: 1, messages: [] }))
-    ).rejects.toMatchObject({ message: 'Request failed with status code 400' });
+    ).rejects.toMatchObject({ message: 'invalid beta flag', status: 400 });
 
     expect(getQuarantinedFlags('test-model')).toEqual(['bad-flag-2026-01-01']);
 
@@ -125,5 +126,22 @@ describe('beta flag quarantine wiring (awsBedrockService)', () => {
     expect(mockPost).toHaveBeenCalledTimes(2);
     const secondCallBody = mockPost.mock.calls[1][1] as any;
     expect(secondCallBody).not.toHaveProperty('anthropic_beta');
+  });
+});
+
+describe('beta flag renames wiring (awsBedrockService)', () => {
+  beforeEach(() => {
+    clearQuarantine();
+    mockPost.mockReset();
+  });
+
+  it('forwards a flag under the name the configuration maps it to', async () => {
+    mockPost.mockResolvedValueOnce({ data: { ok: true } } as never);
+    const options = buildOptions({ max_tokens: 1, messages: [] });
+    options.headers = { 'anthropic-beta': 'claude-code-20250219,advanced-tool-use-2025-11-20' };
+
+    await processBedrockRequest(options);
+
+    expect((mockPost.mock.calls[0][1] as any).anthropic_beta).toEqual(['claude-code-20250219', 'tool-search-tool-2025-10-19']);
   });
 });

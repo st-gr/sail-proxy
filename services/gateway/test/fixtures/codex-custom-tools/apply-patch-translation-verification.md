@@ -1,6 +1,6 @@
 # apply_patch custom→function translation — live verification
 
-Task 9 of `docs/superpowers/plans/2026-08-11-custom-tool-translation.md`, run 2026-08-11 against the
+The live verification of the custom tool translation, run 2026-08-11 against the
 running gateway with codex CLI 0.147.0. Every number below is measured, not estimated.
 
 ## What was broken before

@@ -17,14 +17,17 @@ Claude Code can reach the gateway two ways: through the Anthropic Messages API r
 
 ## Configuration
 
-Set the base URL to the gateway's `/anthropic` path (Claude Code appends `/v1/messages` itself) and pass a gateway API key:
+Set the base URL to the gateway's `/anthropic` path (Claude Code appends `/v1/messages` itself), pass a gateway API key and name a model the gateway serves:
 
 ```bash
 export ANTHROPIC_BASE_URL="http://localhost:3000/anthropic"
 export ANTHROPIC_AUTH_TOKEN="sk-demo-your-key"
+export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 claude
 ```
+
+`ANTHROPIC_MODEL` matters: without it Claude Code asks for its own default model, Anthropic's newest release, which the gateway may not know yet. Claude Code then stops with "There's an issue with the selected model". [Models](#models) lists the names the gateway maps.
 
 On a Docker or Kyma deployment behind nginx, the gateway sits under `/gateway`:
 
@@ -143,6 +146,23 @@ To add a flag permanently, extend the list (the Admin Cockpit's configuration ed
   }
 }
 ```
+
+### `There's an issue with the selected model`
+
+Claude Code asked for a model name the gateway does not know, and the gateway answered `404` with `model: <name>`:
+
+```text
+There's an issue with the selected model (claude-…). It may not exist or you may not have access to it. Run --model to pick a different model.
+```
+
+This happens when Claude Code is started without a model and its default is a release newer than the names in the gateway's [model mapping](#models). Name a mapped model, once per session or for good:
+
+```bash
+claude --model claude-sonnet-4-5-20250929
+export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
+```
+
+`sail-proxy claude` sets the model for you. An administrator can also add the missing name to `api_config.providers.anthropic.substitute_models`.
 
 ### Authentication errors
 

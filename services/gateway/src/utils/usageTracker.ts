@@ -5,39 +5,40 @@ import { getDefaultLogger } from '@libs/logger';
 import { redactUrl } from './redactUrl';
 const logger = getDefaultLogger();
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
-import { emitSiemUsageEvent } from '../services/siemUsageEvent';
+import { emitSiemUsageEvent, payloadCaptureOn } from '../services/siemUsageEvent';
+import { emitPayloadTrace } from '../services/payloadTrace';
 import { toolsForEvent } from '../toolGovernance/record';
 import { teamFromRequest } from './userBlock';
+
+/**
+ * The credential id of an authenticated request (what extractAuthInfo reports), or undefined; builds no object.
+ */
+export function credentialIdOf(req: Request): string | undefined {
+  try {
+    // Check unified auth first
+    if ((req as any).unifiedAuth?.valid) {
+      return (req as any).unifiedAuth.data?.id || (req as any).unifiedAuth.data?.keyId || (req as any).unifiedAuth.data?.credentialId || 'unknown';
+    }
+
+    // Fallback to legacy auth patterns
+    if ((req as any).apiKey?.id) return (req as any).apiKey.id;
+    if ((req as any).awsCredential?.accessKeyId) return (req as any).awsCredential.accessKeyId;
+
+    return undefined;
+  } catch (error) {
+    return undefined;
+  }
+}
 
 /**
  * Extract authentication info from request for usage tracking
  */
 export function extractAuthInfo(req: Request): { authType: 'api_key' | 'aws_credential'; credentialId: string } | null {
   try {
-    // Check unified auth first
-    if ((req as any).unifiedAuth?.valid) {
-      return {
-        authType: (req as any).unifiedAuth.authType,
-        credentialId: (req as any).unifiedAuth.data?.id || (req as any).unifiedAuth.data?.keyId || (req as any).unifiedAuth.data?.credentialId || 'unknown'
-      };
-    }
-
-    // Fallback to legacy auth patterns
-    if ((req as any).apiKey?.id) {
-      return {
-        authType: 'api_key' as const,
-        credentialId: (req as any).apiKey.id
-      };
-    }
-
-    if ((req as any).awsCredential?.accessKeyId) {
-      return {
-        authType: 'aws_credential' as const, 
-        credentialId: (req as any).awsCredential.accessKeyId
-      };
-    }
-
-    return null;
+    const credentialId = credentialIdOf(req);
+    if (credentialId === undefined) return null;
+    if ((req as any).unifiedAuth?.valid) return { authType: (req as any).unifiedAuth.authType, credentialId };
+    return { authType: (req as any).apiKey?.id ? 'api_key' : 'aws_credential', credentialId };
   } catch (error) {
     return null;
   }
@@ -151,6 +152,20 @@ export async function emitUsageEvent(
       authType: authInfo?.authType,
       endpoint: redactUrl(req.originalUrl || req.url || ''),
     });
+
+    // The light payload trace, while payload capture is on, and for a request of a raw capture session
+    // (its facts only while capture is off); the guard keeps any other request free of allocation.
+    if (payloadCaptureOn() || (req as any).__rawCaptureSessionId) {
+      void emitPayloadTrace(req, {
+        model,
+        statusCode,
+        durationMs: Date.now() - metrics.startTime,
+        inputTokens: metrics.inputTokens,
+        outputTokens: metrics.outputTokens,
+        credentialId: authInfo?.credentialId,
+        authType: authInfo?.authType,
+      });
+    }
 
     if (!authInfo) return; // Skip if no auth info available
 

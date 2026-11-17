@@ -86,6 +86,28 @@ export function stubDockerCalls(setup: any, existingVolumes: string[] = []): str
   return calls;
 }
 
+/**
+ * Stands in for the image registry (DockerSetup.registryRequest): a token for every token request,
+ * `listing` (or its error) for the tag list, and for a tag's manifest the status `manifest` gives
+ * (default 401: the registry will not tell). Returns the live list of requested URLs.
+ */
+export function stubRegistry(setup: any, listing: string[] | Error, manifest: (tag: string) => number = () => 401): string[] {
+  const urls: string[] = [];
+  setup.registryRequest = async (url: string) => {
+    urls.push(url);
+    if (/\/token\?/.test(url)) return JSON.stringify({ token: 'anonymous-token' });
+    const tag = (url.match(/\/manifests\/(.+)$/) || [])[1];
+    if (tag !== undefined) {
+      const status = manifest(tag);
+      if (status === 200) return '{}';
+      throw Object.assign(new Error(`HTTP ${status}`), { statusCode: status });
+    }
+    if (listing instanceof Error) throw listing;
+    return JSON.stringify(/registry\.hub\.docker\.com/.test(url) ? { results: listing.map((name) => ({ name })) } : { tags: listing });
+  };
+  return urls;
+}
+
 /** Guard: any direct child_process use that escapes the stubs (docker pull etc.) fails the test. */
 export function forbidChildProcess(): void {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -108,5 +130,7 @@ export function newDockerSetup(
   setup.dockerDir = path.join(root, 'docker');
   setup.configsDir = path.join(root, 'docker', 'configs');
   setup.projectRoot = root;
+  // No test reaches a real registry: the tag listing fails unless a test stubs one (stubRegistry).
+  stubRegistry(setup, new Error('no registry in a unit test'));
   return { setup, calls: stubDockerCalls(setup, existingVolumes) };
 }

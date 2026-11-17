@@ -475,13 +475,29 @@ describe('hostedTool engine — per-descriptor caps', () => {
     });
   });
 
-  it('blocks the continuation when one tool is asked for more calls than its own cap allows', async () => {
-    // Two alpha calls against a cap of 1. The first is admitted and runs; the second cannot
-    // be answered, so the turn cannot be POSTed at all — a function_call with no
-    // function_call_output is the malformed shape the deployment rejects.
+  /** An upstream whose payload offers `types`' rewritten function tools and one client tool. */
+  function upstreamOffering(...types: string[]): any {
+    return {
+      ...UPSTREAM(),
+      payload: {
+        model: 'm', input: 'go', stream: false,
+        tools: [...types.map(t => ({ type: 'function', name: `${t}_fn` })), { type: 'function', name: 'client_fn' }],
+      },
+    };
+  }
+  /** The names of the tools the n-th continuation POST offered. */
+  function postedToolNames(n: number): string[] {
+    return ((mockPost.mock.calls[n] as any[])[1].tools || []).map((t: any) => t.name);
+  }
+
+  it('answers a call over its tool\'s cap with a failed output and asks the model once more without that tool', async () => {
+    // Two alpha calls against a cap of 1. The first is admitted and runs; the second is
+    // refused. Every call still has a function_call_output, so the turn CAN be POSTed — and
+    // it is, without alpha on offer, so the model writes its answer from what it has.
     const alpha = makeTool({ type: 'alpha', cap: 1 });
 
-    const req = afterReq();
+    const req = afterReq({ upstream: upstreamOffering('alpha') });
+    mockPost.mockResolvedValueOnce(reply('resp_2', [FINAL_MSG]));
 
     const result = await hostedToolAfterHandler({
       req,
@@ -490,7 +506,40 @@ describe('hostedTool engine — per-descriptor caps', () => {
       upstreamResponse: firstTurn([REASONING, fc('alpha', 'c_a1', 'a1'), fc('alpha', 'c_a2', 'a2')]),
     });
 
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(execLog).toEqual(['alpha:c_a1']);
+    expect(alpha.executed).toHaveLength(1);
+    expect(postedToolNames(0)).toEqual(['client_fn']);
+    expect(postedInput(0).filter((i: any) => i.type === 'function_call_output').map((i: any) => i.call_id))
+      .toEqual(['c_a1', 'c_a2']);
+    // The stashed payload is shared by reference and keeps its tools.
+    expect(req.__responsesUpstream.payload.tools).toHaveLength(2);
+
+    // No result dump: the model answered. The refused call keeps its failed call item.
+    expect(result.output).toEqual([
+      REASONING,
+      callItem('alpha', 'c_a1', 'a1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      FINAL_MSG,
+    ]);
+  });
+
+  it('falls back to the results in place when the answering call fails', async () => {
+    // What the client got at the cap before the answering call existed, and still gets when
+    // that call cannot be made.
+    const alpha = makeTool({ type: 'alpha', cap: 1 });
+
+    const req = afterReq();
+    mockPost.mockRejectedValueOnce(new Error('upstream gone'));
+
+    const result = await hostedToolAfterHandler({
+      req,
+      res: {} as any,
+      utils,
+      upstreamResponse: firstTurn([REASONING, fc('alpha', 'c_a1', 'a1'), fc('alpha', 'c_a2', 'a2')]),
+    });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
     expect(execLog).toEqual(['alpha:c_a1']);
     expect(alpha.executed).toHaveLength(1);
 
@@ -507,15 +556,16 @@ describe('hostedTool engine — per-descriptor caps', () => {
       .toEqual(['completed', 'failed']);
   });
 
-  it('lets ONE overflowing tool block the whole round, including a tool that still had budget', async () => {
-    // alpha overflows (cap 1, two calls); beta has 2 of its 3 left and its call DOES run.
-    // The round is still not continued: the batch it would POST carries an unanswerable
-    // alpha call. This is the difference from the previous test — budget elsewhere does not
-    // rescue the round.
+  it('takes only the tool that is over its cap off the list: a tool with budget left stays on offer', async () => {
+    // alpha overflows (cap 1, two calls); beta has 2 of its 3 left and its call runs. The
+    // round is continued without alpha, and beta spends another call in the next one.
     const alpha = makeTool({ type: 'alpha', cap: 1 });
     const beta = makeTool({ type: 'beta', cap: 3 });
 
-    const req = afterReq();
+    const req = afterReq({ upstream: upstreamOffering('alpha', 'beta') });
+    mockPost
+      .mockResolvedValueOnce(reply('resp_2', [fc('beta', 'c_b2', 'b2')]))
+      .mockResolvedValueOnce(reply('resp_3', [FINAL_MSG]));
 
     const result = await hostedToolAfterHandler({
       req,
@@ -526,23 +576,50 @@ describe('hostedTool engine — per-descriptor caps', () => {
       ]),
     });
 
-    expect(mockPost).not.toHaveBeenCalled();
-    // beta ran — it was admitted — so what is blocked is the CONTINUATION, not the call.
-    expect(execLog).toEqual(['alpha:c_a1', 'beta:c_b1']);
-    expect(beta.executed.map(e => e.callId)).toEqual(['c_b1']);
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(execLog).toEqual(['alpha:c_a1', 'beta:c_b1', 'beta:c_b2']);
     expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
+    // alpha stays off the list for the rest of the request, beta stays on it.
+    expect(postedToolNames(0)).toEqual(['beta_fn', 'client_fn']);
+    expect(postedToolNames(1)).toEqual(['beta_fn', 'client_fn']);
 
     expect(result.output).toEqual([
       callItem('alpha', 'c_a1', 'a1'),
-      msgItem('alpha', 'c_a1', 'a1'),
+      callItem('beta', 'c_b1', 'b1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      callItem('beta', 'c_b2', 'b2'),
+      FINAL_MSG,
+    ]);
+  });
+
+  it('ends the round in place when a tool is asked for again after the answering call, even beside a tool with budget', async () => {
+    // The termination guarantee: alpha was refused once and taken off the list; a reply that
+    // calls it anyway is not given another round. beta's call in that reply still runs, and
+    // the client gets every result in place.
+    const alpha = makeTool({ type: 'alpha', cap: 1 });
+    const beta = makeTool({ type: 'beta', cap: 3 });
+
+    const req = afterReq({ upstream: upstreamOffering('alpha', 'beta') });
+    mockPost.mockResolvedValueOnce(reply('resp_2', [fc('beta', 'c_b1', 'b1'), fc('alpha', 'c_a3', 'a3')]));
+
+    const result = await hostedToolAfterHandler({
+      req,
+      res: {} as any,
+      utils,
+      upstreamResponse: firstTurn([fc('alpha', 'c_a1', 'a1'), fc('alpha', 'c_a2', 'a2')]),
+    });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(execLog).toEqual(['alpha:c_a1', 'beta:c_b1']);
+
+    expect(result.output).toEqual([
+      callItem('alpha', 'c_a1', 'a1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
       callItem('beta', 'c_b1', 'b1'),
       msgItem('beta', 'c_b1', 'b1'),
-      callItem('alpha', 'c_a2', 'a2', 'failed'),
-      msgItem('alpha', 'c_a2', 'a2', 'failed'),
+      callItem('alpha', 'c_a3', 'a3', 'failed'),
+      msgItem('alpha', 'c_a3', 'a3', 'failed'),
     ]);
-    // beta's own call is completed even though the round was blocked by alpha's overflow.
-    expect(result.output.filter((i: any) => i.type === 'beta_call').map((i: any) => i.status))
-      .toEqual(['completed']);
   });
 });
 
@@ -621,15 +698,14 @@ describe('hostedTool engine — merged usage across continuation rounds (T10)', 
   });
 });
 
-describe('hostedTool engine — calls no cap can cover are dropped, not failed', () => {
-  it('drops every stranded call from output when nothing is within any cap', async () => {
-    // A cap of 0 (the tool is configured off) means not one call can be admitted, so the
-    // loop breaks BEFORE the in-place splice — a different code path from overflow above,
-    // and the distinction is load-bearing: overflow renders failed items, this drops them.
-    // Two call items in must therefore produce ZERO items out, not two and not three.
+describe('hostedTool engine — a round with no call any cap can cover', () => {
+  it('gives the answering call straight away when not one call of the first response is within any cap', async () => {
+    // A cap of 0 means not one call can be admitted. Both are answered as refused and the
+    // model is asked once, without the tool.
     const zeta = makeTool({ type: 'zeta', cap: 0 });
 
     const req = afterReq();
+    mockPost.mockResolvedValueOnce(reply('resp_2', [FINAL_MSG]));
 
     const result = await hostedToolAfterHandler({
       req,
@@ -638,22 +714,27 @@ describe('hostedTool engine — calls no cap can cover are dropped, not failed',
       upstreamResponse: firstTurn([fc('zeta', 'c_z1', 'z1'), fc('zeta', 'c_z2', 'z2')]),
     });
 
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockPost).toHaveBeenCalledTimes(1);
     expect(zeta.executed).toHaveLength(0);
     expect(execLog).toEqual([]);
-    expect(result.output).toEqual([]);
-    // Not "no function_calls" — no ITEMS at all. A failed-placeholder render would leave two.
-    expect(result.output).toHaveLength(0);
+    expect(postedInput(0).filter((i: any) => i.type === 'function_call_output').map((i: any) => i.call_id))
+      .toEqual(['c_z1', 'c_z2']);
+    expect(result.output).toEqual([
+      callItem('zeta', 'c_z1', 'z1', 'failed'),
+      callItem('zeta', 'c_z2', 'z2', 'failed'),
+      FINAL_MSG,
+    ]);
   });
 
-  it('drops a stranded call from a LATER round while keeping everything the earlier rounds produced', async () => {
+  it('gives the answering call when a LATER round asks for a tool whose budget is spent', async () => {
     // Round 1 spends alpha's only budget and is continued; the model then asks for alpha
-    // again. That call can never be answered, so it is dropped outright — the client keeps
-    // round 1's items and gains no failed call item and no result dump for the stranded one.
+    // again. That call is refused, and the model answers in the answering call.
     const alpha = makeTool({ type: 'alpha', cap: 1 });
 
     const req = afterReq();
-    mockPost.mockResolvedValueOnce(reply('resp_2', [REASONING, fc('alpha', 'c_a2', 'a2')]));
+    mockPost
+      .mockResolvedValueOnce(reply('resp_2', [REASONING, fc('alpha', 'c_a2', 'a2')]))
+      .mockResolvedValueOnce(reply('resp_3', [FINAL_MSG]));
 
     const result = await hostedToolAfterHandler({
       req,
@@ -662,13 +743,51 @@ describe('hostedTool engine — calls no cap can cover are dropped, not failed',
       upstreamResponse: firstTurn([fc('alpha', 'c_a1', 'a1')]),
     });
 
-    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
+    expect(postedInput(1).filter((i: any) => i.type === 'function_call_output').map((i: any) => i.call_id))
+      .toEqual(['c_a1', 'c_a2']);
+
+    expect(result.output).toEqual([
+      callItem('alpha', 'c_a1', 'a1'),
+      REASONING,
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      FINAL_MSG,
+    ]);
+    expect(result.output.some((i: any) => i.type === 'function_call')).toBe(false);
+    // Usage is summed across all three deployment calls: 10 + 5 + 5, 2 + 1 + 1.
+    expect(result.usage.input_tokens).toBe(20);
+    expect(result.usage.output_tokens).toBe(4);
+  });
+
+  it('drops a call the model makes for the tool again after the answering call, and makes no further call', async () => {
+    // The termination guarantee on the round with nothing else in it: the stranded call is
+    // dropped outright — the client keeps what the earlier rounds produced and gains no
+    // second failed item and no result dump.
+    const alpha = makeTool({ type: 'alpha', cap: 1 });
+
+    const req = afterReq();
+    mockPost
+      .mockResolvedValueOnce(reply('resp_2', [fc('alpha', 'c_a2', 'a2')]))
+      .mockResolvedValueOnce(reply('resp_3', [REASONING, fc('alpha', 'c_a3', 'a3')]));
+
+    const result = await hostedToolAfterHandler({
+      req,
+      res: {} as any,
+      utils,
+      upstreamResponse: firstTurn([fc('alpha', 'c_a1', 'a1')]),
+    });
+
+    expect(mockPost).toHaveBeenCalledTimes(2);
     expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
 
     // The stranded call vanishes; the reasoning item it arrived with does not.
-    expect(result.output).toEqual([callItem('alpha', 'c_a1', 'a1'), REASONING]);
-    expect(result.output.some((i: any) => i.status === 'failed')).toBe(false);
-    expect(result.output.some((i: any) => i.id === 'alpha_item_c_a2')).toBe(false);
+    expect(result.output).toEqual([
+      callItem('alpha', 'c_a1', 'a1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      REASONING,
+    ]);
+    expect(result.output.some((i: any) => i.id === 'alpha_item_c_a3')).toBe(false);
     expect(result.output.some((i: any) => i.type === 'function_call')).toBe(false);
   });
 });
@@ -1138,8 +1257,7 @@ function continuationAnswerFrames(respId: string): any[] {
  *
  * The interceptor does NOT share the after handler's cap code. It keeps its own
  * `callsRunByType` (engine.ts, interceptor scope) and its own `performCall`, which reads
- * `descriptor.maxCallsPerRequest()` per call and sets the turn-wide `capReached` when a call
- * finds no budget. Mutating that Map to a single global key leaves all 129 tests in the nine
+ * `descriptor.maxCallsPerRequest()` per call and refuses a call that finds no budget. Mutating that Map to a single global key leaves all 129 tests in the nine
  * existing web_search streaming/characterization suites green, because one descriptor cannot
  * tell a per-type counter from a global one. These tests are what closes that.
  *
@@ -1209,8 +1327,8 @@ describe('hostedTool engine — per-descriptor caps on the STREAMING transport',
   it('gives each tool its own budget within ONE streaming round', async () => {
     // Four calls in a single turn: one alpha (cap 1, exactly spent) and three beta (cap 3,
     // exactly spent). Every one is within its OWN budget, so nothing is capped and the round
-    // is continued. Counted against a single shared budget the fourth call would be refused,
-    // `capReached` would block the continuation, and no POST would happen at all.
+    // is continued with both tools still on offer. Counted against a single shared budget
+    // the fourth call would be refused and the continuation would be the answering call.
     const alpha = makeTool({ type: 'alpha', cap: 1 });
     const beta = makeTool({ type: 'beta', cap: 3 });
 
@@ -1245,16 +1363,93 @@ describe('hostedTool engine — per-descriptor caps on the STREAMING transport',
     expect(streamedFrames(res).some(e => e.type === 'response.output_text.delta')).toBe(false);
   });
 
-  it('lets ONE tool over its own cap block the whole streaming turn, including a tool that still had budget', async () => {
+  it('asks the model once more without the tool that is over its cap, and the streamed turn ends with its answer', async () => {
     // alpha is asked for two calls against a cap of 1; beta has 2 of its 3 left and its call
-    // DOES run. `capReached` still ends the turn: no continuation is opened, and every call
-    // falls back to its result dump — the client's only view of what the tools produced.
+    // runs. The refused alpha call is answered with a failed output and the continuation is
+    // the answering call: alpha is off its tool list, beta and the client's tool stay.
+    const alpha = makeTool({ type: 'alpha', cap: 1 });
+    makeTool({ type: 'beta', cap: 3 });
+
+    const res = captureWrites();
+    const req = streamingReq([{ type: 'alpha' }, { type: 'beta' }]);
+    req.__responsesUpstream.payload.tools = [
+      { type: 'function', name: 'alpha_fn' }, { type: 'function', name: 'beta_fn' }, { type: 'function', name: 'client_fn' },
+    ];
+    mockPost.mockResolvedValue(upstreamStream(continuationAnswerFrames('resp_2')));
+
+    await hostedToolBeforeHandler({ req, res, utils });
+    for (const frame of firstCallFrames([
+      fc('alpha', 'c_a1', 'a1'), fc('beta', 'c_b1', 'b1'), fc('alpha', 'c_a2', 'a2'),
+    ])) {
+      res.write(sse(frame));
+    }
+    await settleStream(res);
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(execLog).toEqual(['alpha:c_a1', 'beta:c_b1']);
+    expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
+    const posted = (mockPost.mock.calls[0] as any[])[1];
+    expect(posted.tools.map((t: any) => t.name)).toEqual(['beta_fn', 'client_fn']);
+    expect(posted.input.filter((i: any) => i.type === 'function_call_output').map((i: any) => i.call_id).sort())
+      .toEqual(['c_a1', 'c_a2', 'c_b1']);
+
+    const terminal = terminalFrame(res);
+    expect(terminal.type).toBe('response.completed');
+    // The over-cap call is rendered as a `failed` call item, never dropped: its raw frames
+    // were already suppressed, so dropping it would leave Codex with a call that has no
+    // output_item events at all. No result dump: the model answered.
+    expect(terminal.response.output).toEqual([
+      callItem('alpha', 'c_a1', 'a1'),
+      callItem('beta', 'c_b1', 'b1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      FINAL_MSG,
+    ]);
+    const events = streamedFrames(res);
+    const announced = events.filter(e => e.type === 'response.output_item.done').map(e => e.item.id);
+    expect(announced).toEqual(terminal.response.output.map((i: any) => i.id));
+  });
+
+  it('ends the streaming turn with every result dump when the model asks for the tool again after the answering call', async () => {
+    // alpha's only call is spent by the first response; the continuation asks for alpha
+    // again (refused, answering call), and the answering call's reply asks a third time.
+    // That ends the turn: no further call, and the refused calls' dumps reach the client.
+    const alpha = makeTool({ type: 'alpha', cap: 1 });
+
+    const res = captureWrites();
+    const req = streamingReq([{ type: 'alpha' }]);
+    mockPost
+      .mockResolvedValueOnce(upstreamStream(continuationCallFrames('resp_2', fc('alpha', 'c_a2', 'a2'))))
+      .mockResolvedValueOnce(upstreamStream(continuationCallFrames('resp_3', fc('alpha', 'c_a3', 'a3'))));
+
+    await hostedToolBeforeHandler({ req, res, utils });
+    for (const frame of firstCallFrames([fc('alpha', 'c_a1', 'a1')])) res.write(sse(frame));
+    await settleStream(res);
+
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
+
+    const terminal = terminalFrame(res);
+    expect(terminal.response.output).toEqual([
+      callItem('alpha', 'c_a1', 'a1'),
+      callItem('alpha', 'c_a2', 'a2', 'failed'),
+      callItem('alpha', 'c_a3', 'a3', 'failed'),
+      msgItem('alpha', 'c_a3', 'a3', 'failed'),
+    ]);
+    expect(terminal.response.output.some((i: any) => i.type === 'function_call')).toBe(false);
+    const announced = streamedFrames(res).filter(e => e.type === 'response.output_item.done').map(e => e.item.id);
+    expect(announced).toEqual(terminal.response.output.map((i: any) => i.id));
+  });
+
+  it('falls back to every result dump when the answering call cannot be made', async () => {
+    // What the client got at the cap before the answering call existed, and still gets when
+    // that call fails: every call falls back to its result dump — the client's only view of
+    // what the tools produced.
     const alpha = makeTool({ type: 'alpha', cap: 1 });
     const beta = makeTool({ type: 'beta', cap: 3 });
 
     const res = captureWrites();
     const req = streamingReq([{ type: 'alpha' }, { type: 'beta' }]);
-    mockPost.mockResolvedValue(upstreamStream(continuationAnswerFrames('resp_2')));
+    mockPost.mockRejectedValue(new Error('upstream gone'));
 
     await hostedToolBeforeHandler({ req, res, utils });
     // Emission order puts beta between alpha's two calls, so "the overflowing tool" is not
@@ -1266,10 +1461,7 @@ describe('hostedTool engine — per-descriptor caps on the STREAMING transport',
     }
     await settleStream(res);
 
-    // An upstream context IS available — only the exhausted alpha budget stops the turn.
-    expect(req.__responsesUpstream.url).toBeTruthy();
-    expect(mockPost).not.toHaveBeenCalled();
-    // beta ran — it was within budget — so what is blocked is the CONTINUATION, not the call.
+    expect(mockPost).toHaveBeenCalledTimes(1);
     expect(execLog).toEqual(['alpha:c_a1', 'beta:c_b1']);
     expect(beta.executed.map(e => e.callId)).toEqual(['c_b1']);
     expect(alpha.executed.map(e => e.callId)).toEqual(['c_a1']);
@@ -1294,10 +1486,14 @@ describe('hostedTool engine — per-descriptor caps on the STREAMING transport',
     expect(terminal.response.output.some((i: any) => i.type === 'function_call')).toBe(false);
 
     // Every item named in the terminal frame really was announced by its own events — the
-    // fallback dump is the client's only view of the results, so it must reach the wire.
+    // fallback dump is the client's only view of the results, so it must reach the wire. The
+    // dumps were held back for the answering call, so they follow the call items, each under
+    // its own call's output_index.
     const events = streamedFrames(res);
     const announced = events.filter(e => e.type === 'response.output_item.done').map(e => e.item.id);
-    expect(announced).toEqual(terminal.response.output.map((i: any) => i.id));
+    expect([...announced].sort()).toEqual(terminal.response.output.map((i: any) => i.id).sort());
+    const dumpIndex = (id: string) => events.find(e => e.type === 'response.output_item.done' && e.item.id === id).output_index;
+    expect([dumpIndex('alpha_msg_c_a1'), dumpIndex('beta_msg_c_b1'), dumpIndex('alpha_msg_c_a2')]).toEqual([0, 1, 2]);
   });
 });
 
@@ -1307,15 +1503,12 @@ describe('hostedTool engine — per-descriptor caps on the STREAMING transport',
  * per-descriptor cap tests above drive `makeTool()`, whose `renderOutput` hardcodes
  * `{ error: 'unavailable' }` regardless of `r.error`.
  *
- * Worse than a blind assertion: `renderOutput` is never even CALLED for a call `performCall`
- * capped. `capReached` blocks the continuation for the rest of the turn, and `renderOutput`
- * is only ever invoked when POSTing one (engine.ts ~:1555, ~:2301) — so a capped call's
- * result reaches the client exclusively through `renderCallItem`/`renderResultMessage`, the
- * `msgItem` dump the test above already asserts on. Verified empirically: a spy dropped into
- * `makeTool()`'s `renderOutput` and left driving the "lets ONE tool over its own cap..." test
- * above logs zero calls for the failed item. So the fix this test needs is not "make
- * `renderOutput` echo `r.error`" (there is nothing here for it to echo TO) — it is
- * `renderResultMessage`, the hook this branch actually reaches.
+ * When this was written, `renderOutput` was never called for a call `performCall` capped:
+ * the cap ended the turn, so a capped call's result reached the client exclusively through
+ * `renderCallItem`/`renderResultMessage`. Since the answering call exists, `renderOutput`
+ * carries the reason to the model first, and `renderResultMessage` is what the client reads
+ * when the turn ends at the cap after all — the answering call failed, or its reply asked for
+ * the tool again. This test drives the first of those.
  *
  * A DEDICATED descriptor, not a change to `makeTool()`'s shared `renderResultMessage`, on
  * purpose: that hook is reused by ~60 call sites in this file, including the two
@@ -1367,6 +1560,7 @@ describe('hostedTool engine — the streaming cap branch names WHY (Task 2 fix r
 
     const res = captureWrites();
     const req = streamingReq([{ type: 'gamma' }]);
+    mockPost.mockRejectedValue(new Error('upstream gone'));
 
     await hostedToolBeforeHandler({ req, res, utils });
     // Two gamma calls against a cap of 1: the second finds no budget.
@@ -1375,9 +1569,12 @@ describe('hostedTool engine — the streaming cap branch names WHY (Task 2 fix r
     }
     await settleStream(res);
 
-    // capReached blocked the continuation entirely — this is the streaming asymmetry the
-    // block comment above describes, confirmed again here rather than just asserted in prose.
-    expect(mockPost).not.toHaveBeenCalled();
+    // The answering call was tried and failed, so the turn ends at the cap with the dumps.
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    // The model was given the reason first, in the refused call's function_call_output.
+    const posted = (mockPost.mock.calls[0] as any[])[1];
+    expect(posted.input.find((i: any) => i.type === 'function_call_output' && i.call_id === 'c_g2').output)
+      .toContain('cap_reached');
     expect(execLog).toEqual(['gamma:c_g1']);
 
     const terminal = terminalFrame(res);
@@ -1756,6 +1953,54 @@ describe('hostedTool engine — continuation replies from orchestration', () => 
     });
   });
 
+  it('posts a streaming continuation through the upstream\'s own function when it supplies one', async () => {
+    // Streaming emulation: a model the configuration lists is called WITHOUT streaming and
+    // its whole answer is handed over as a stream. The engine must not open its own
+    // streaming call beside that — the upstream decides how a continuation is fetched.
+    makeTool({ type: 'alpha', cap: 3 });
+    const res = captureWrites();
+    const req = streamingReq([{ type: 'alpha' }]);
+    const bodies: any[] = [];
+    req.__responsesUpstream = {
+      ...ORCH_UPSTREAM(),
+      postContinuationStream: async (body: any) => {
+        bodies.push(body);
+        return orchestrationStream([
+          { final_result: { choices: [{ delta: { content: 'the whole answer' }, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } } },
+        ]);
+      },
+    };
+
+    await hostedToolBeforeHandler({ req, res, utils });
+    for (const frame of firstCallFrames([fc('alpha', 'c_a1', 'a1')])) res.write(sse(frame));
+    await settleStream(res);
+
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].messages_history).toBeDefined();
+    const terminal = terminalFrame(res);
+    expect(terminal.type).toBe('response.completed');
+    expect(terminal.response.output[1].content[0].text).toBe('the whole answer');
+  });
+
+  it('ends the streaming turn with the result dump when the upstream\'s own function fails', async () => {
+    makeTool({ type: 'alpha', cap: 3 });
+    const res = captureWrites();
+    const req = streamingReq([{ type: 'alpha' }]);
+    req.__responsesUpstream = {
+      ...ORCH_UPSTREAM(),
+      postContinuationStream: async () => { throw new Error('upstream said no'); },
+    };
+
+    await hostedToolBeforeHandler({ req, res, utils });
+    for (const frame of firstCallFrames([fc('alpha', 'c_a1', 'a1')])) res.write(sse(frame));
+    await settleStream(res);
+
+    expect(mockPost).not.toHaveBeenCalled();
+    const terminal = terminalFrame(res);
+    expect(terminal.response.output.map((i: any) => i.type)).toEqual(['alpha_call', 'message']);
+  });
+
   it("hands the builder a RELAXED tool_choice, so 'required' does not re-force every round", async () => {
     // relaxForcedToolChoice was reached only by the fallback branch, so an orchestration
     // turn re-forced `required` on every continuation and burnt to the cap — the exact
@@ -1784,6 +2029,33 @@ describe('hostedTool engine — continuation replies from orchestration', () => 
     expect(seen).toEqual([{ toolChoice: 'auto' }]);
     // The client's own stash is untouched — only the outbound decision is relaxed.
     expect(upstream.toolChoice).toBe('required');
+  });
+
+  it('names the tools to leave out to the builder when the continuation is the answering call', async () => {
+    // The answering call on an upstream with its own body shape: the engine decides which
+    // tools are over their budget, the builder leaves them out of whatever it builds.
+    makeTool({ type: 'alpha', cap: 1 });
+    const seen: any[] = [];
+    const req = afterReq({
+      upstream: {
+        ...ORCH_UPSTREAM(),
+        buildContinuationPayload: (history: any[], opts?: any) => {
+          seen.push(opts);
+          return { config: { modules: {} }, messages_history: history };
+        },
+      },
+    });
+    mockPost.mockResolvedValue({
+      data: { final_result: { choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] } },
+    });
+
+    await hostedToolAfterHandler({
+      req, res: {} as any, utils,
+      upstreamResponse: firstTurn([fc('alpha', 'c_a1', 'a1'), fc('alpha', 'c_a2', 'a2')]),
+    });
+
+    expect(seen).toEqual([{ toolChoice: undefined, withoutFunctionTools: ['alpha_fn'] }]);
+    expect(Object.keys(seen[0])).toContain('withoutFunctionTools');
   });
 
   it("leaves a tool_choice that cannot loop exactly as the client sent it", async () => {

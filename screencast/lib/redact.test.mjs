@@ -142,3 +142,15 @@ test('the overlay sweeps input values a script set after the node was added (no 
   sweep();
   assert.equal(input.value, 'demo-tenant-b.us10');
 });
+
+test('the overlay rewrites a title a control changed in place (an attribute mutation, no added node)', () => {
+  const attrs = { title: 'first' };
+  const div = { nodeType: 1, tagName: 'DIV', childNodes: [], hasAttribute: (n) => n in attrs, getAttribute: (n) => attrs[n], setAttribute: (n, v) => { attrs[n] = v; } };
+  const body = { nodeType: 1, tagName: 'BODY', hasAttribute: () => false, childNodes: [div] };
+  let observer; let options;
+  new Function('window', 'document', 'MutationObserver', overlaySource({}))({}, { body }, class { constructor(cb) { observer = cb; } observe(_, o) { options = o; } });
+  assert.ok(options.attributes && options.attributeFilter.includes('title'));
+  attrs.title = 'POST from 172.19.0.8 /openai/v1/chat/completions'; // as UI5's FormattedText re-renders its tooltip
+  observer([{ type: 'attributes', attributeName: 'title', target: div, addedNodes: [] }]);
+  assert.equal(attrs.title, 'POST from 203.0.113.7 /openai/v1/chat/completions');
+});

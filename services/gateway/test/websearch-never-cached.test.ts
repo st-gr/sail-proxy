@@ -24,6 +24,7 @@
  * direction. These tests assert exactly that observable contract.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+import { EventEmitter } from 'events';
 
 jest.mock('@libs/logger', () => ({
   getDefaultLogger: () => ({
@@ -60,7 +61,8 @@ function makeReq(tools: any[] | undefined) {
 }
 
 function makeRes() {
-  const res: any = { chunks: [] as string[] };
+  // An emitter, as a real response is: the cache listens for its 'close'.
+  const res: any = Object.assign(new EventEmitter(), { chunks: [] as string[] });
   res.writable = true;
   res.writableEnded = false;
   res.headersSent = false;

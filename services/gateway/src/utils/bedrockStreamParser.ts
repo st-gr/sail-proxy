@@ -350,7 +350,7 @@ class BedrockStreamParser {
           bedrockEvent = JSON.parse(data);
         }
       } catch (parseError: any) {
-        logger.warn('BedrockStreamParser', `Failed to parse data as JSON: ${parseError.message}, data: ${data.substring(0, 50)}...`);
+        logger.warn('BedrockStreamParser', `Failed to parse data as JSON: ${parseError.message}`, { data: `${data.substring(0, 50)}...` });
         
         // Try more aggressively to salvage the JSON by attempting conversion even if we don't detect single quotes
         try {
@@ -404,7 +404,7 @@ class BedrockStreamParser {
         sseWriter.writeChunk(this.res, JSON.stringify(bedrockEvent));
       }
     } catch (error: any) {
-      logger.error('BedrockStreamParser', `Error handling data: ${error}, Raw data: ${typeof data === 'string' ? data.substring(0, 100) : JSON.stringify(data).substring(0, 100)}`);
+      logger.error('BedrockStreamParser', `Error handling data: ${error}`, undefined, { rawData: typeof data === 'string' ? data.substring(0, 100) : JSON.stringify(data).substring(0, 100) });
       // In case of error, try to send the raw data
       if (this.res && !this.res.writableEnded && data) {
         sseWriter.writeChunk(this.res, data);

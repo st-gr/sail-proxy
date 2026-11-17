@@ -26,6 +26,9 @@ import {
   ToolSearchMode, resolveToolSearchMode, DEFAULT_TOOL_SEARCH_MODE,
   resolveHoistDiscoveredTools, DEFAULT_HOIST_DISCOVERED_TOOLS,
 } from '../pluginSupport/toolSearch/adapter';
+import { differsOnlyInLoggingSettings } from './loggingOnlyChange';
+import { applySessions, rawCaptureRunning } from './rawCapture';
+import { isGlobalSwitchOn, enforcementState, enforcementLine } from '../pluginSupport/pseudonymization/enforcementState';
 
 interface ModelSubstitution {
   from: string;
@@ -52,6 +55,7 @@ interface ProviderConfig {
   anthropic_bedrock_version?: string;
   excluded_beta_headers?: string[];
   supported_beta_headers?: string[];
+  beta_header_renames?: Record<string, string>;
   emulate_streaming_for_models?: string[];
   substitute_models?: ModelSubstitution[];
   unsupported_params?: string[];
@@ -286,6 +290,24 @@ interface Config {
   api_config: ApiConfig;
 }
 
+// The line that says where pseudonymization is enforced, written when it differs from the last one.
+let lastPseudonymizationLine: string | null = null;
+function reportPseudonymizationState(config: any): void {
+  const line = enforcementLine(enforcementState(config?.api_config));
+  if (line === lastPseudonymizationLine) return;
+  lastPseudonymizationLine = line;
+  logger.info('pseudonymization', line);
+}
+
+/**
+ * Writes the last state line once more. The first one is written while the configuration loads, before
+ * the log shipper starts, so it never reaches the cockpit's stored log; startup calls this after
+ * starting the shipper. Nothing before a configuration was loaded.
+ */
+export function repeatPseudonymizationState(): void {
+  if (lastPseudonymizationLine !== null) logger.info('pseudonymization', lastPseudonymizationLine);
+}
+
 // Default configuration path
 const CONFIG_FILE_PATH = process.env.CONFIG_FILE_PATH || path.join(process.cwd(), 'api_config.json');
 
@@ -319,6 +341,10 @@ const CONNECTIONS_CHANGE_CHANNEL = process.env.CONNECTIONS_CHANGE_CHANNEL || 'sa
 const PLUGINS_CHANGE_CHANNEL = process.env.PLUGINS_CHANGE_CHANNEL || 'sap-llm-gateway:plugins-changed';
 const MODEL_LIST_CHANNEL = 'sap-llm-gateway:model-list-updated';
 const STARTUP_READY_CHANNEL = 'sap-llm-gateway:service-ready';
+// The running raw capture sessions (services/rawCapture.ts): the admin service writes the key and
+// announces each change on the channel. Sessions are not configuration: a change reloads nothing.
+const RAW_CAPTURE_CHANNEL = 'sap-llm-gateway:raw-capture-changed';
+const RAW_CAPTURE_KEY = 'sap-llm-gateway:raw-capture';
 
 // Startup coordination
 let configurationReceived = false;
@@ -552,9 +578,12 @@ const initializeValkey = async (): Promise<void> => {
         `Valkey publisher error (config still resolves from the local file): ${error?.message}`);
     });
 
-    // Subscribe to configuration changes only (Gateway doesn't need to listen to startup events)
-    await valkeySubscriber.subscribe(CONFIG_CHANGE_CHANNEL, CONNECTIONS_CHANGE_CHANNEL, PLUGINS_CHANGE_CHANNEL);
+    // The startup channel only for the admin service's start announcement (answerAdminServiceStart).
+    await valkeySubscriber.subscribe(CONFIG_CHANGE_CHANNEL, CONNECTIONS_CHANGE_CHANNEL, PLUGINS_CHANGE_CHANNEL, STARTUP_READY_CHANNEL, RAW_CAPTURE_CHANNEL);
     valkeySubscriber.on('message', handleValkeyEvent);
+    // The raw capture sessions now, and again after a reconnect (a change announced meanwhile was missed).
+    void refreshRawCaptureSessions();
+    valkeySubscriber.on('ready', () => { void refreshRawCaptureSessions(); });
     
     // Initial configuration request will be handled by getConfigAsync when needed
     // Don't make duplicate requests here
@@ -580,6 +609,8 @@ const initializeValkey = async (): Promise<void> => {
  */
 export const closeValkeyConnections = async (): Promise<void> => {
   const clients = [valkeySubscriber, valkeyPublisher];
+  if (rawCaptureRereadTimer) clearTimeout(rawCaptureRereadTimer);
+  rawCaptureRereadTimer = undefined;
   valkeySubscriber = null;
   valkeyPublisher = null;
   valkeyInitialized = false;
@@ -616,6 +647,43 @@ export function setPluginsReloadedHandler(handler: () => void): void {
   pluginsReloadedHandler = handler;
 }
 
+let rawCaptureReads = 0;
+const RAW_CAPTURE_REREAD_MS = 60_000;
+let rawCaptureRereadTimer: NodeJS.Timeout | undefined;
+
+/**
+ * While a session is held, reads the key again in a minute: a Stop whose read failed then ends the
+ * capture within a minute rather than at the session's end. No timer while no session is held.
+ */
+function scheduleRawCaptureReread(): void {
+  if (rawCaptureRereadTimer) clearTimeout(rawCaptureRereadTimer);
+  rawCaptureRereadTimer = undefined;
+  if (!rawCaptureRunning()) return;
+  rawCaptureRereadTimer = setTimeout(() => {
+    rawCaptureRereadTimer = undefined;
+    void refreshRawCaptureSessions();
+  }, RAW_CAPTURE_REREAD_MS);
+  rawCaptureRereadTimer.unref?.();
+}
+
+/**
+ * Reads the raw capture sessions from Valkey and hands them to the raw capture; when two reads
+ * overlap, the later one wins. Never throws: a failed read keeps the sessions held, which still end
+ * at their end time, and the key is read again every minute while any is held.
+ * Nothing of this in the standalone gateway or without VALKEY_URL.
+ */
+const refreshRawCaptureSessions = async (): Promise<void> => {
+  if (!valkeyPublisher || !payloadCaptureAllowed(process.env, isStandaloneMode())) return;
+  const read = ++rawCaptureReads;
+  try {
+    const json = await valkeyPublisher.get(RAW_CAPTURE_KEY);
+    if (read === rawCaptureReads) applySessions(typeof json === 'string' ? json : null, new Date());
+  } catch (error: any) {
+    logger.warn('ConfigService', `Could not read the raw capture sessions from Valkey: ${error?.message}`);
+  }
+  if (read === rawCaptureReads && valkeyPublisher) scheduleRawCaptureReread();
+};
+
 /**
  * Handle all Valkey events (configuration changes, startup coordination)
  */
@@ -624,6 +692,10 @@ export const handleValkeyEvent = async (channel: string, message: string): Promi
     // The marker's content does not matter, only that it arrived.
     if (channel === PLUGINS_CHANGE_CHANNEL) {
       pluginsChangedHandler?.();
+      return;
+    }
+    if (channel === RAW_CAPTURE_CHANNEL) {
+      await refreshRawCaptureSessions();
       return;
     }
 
@@ -635,6 +707,9 @@ export const handleValkeyEvent = async (channel: string, message: string): Promi
         break;
       case CONNECTIONS_CHANGE_CHANNEL:
         connectionsChangedHandler?.();
+        break;
+      case STARTUP_READY_CHANNEL:
+        await answerAdminServiceStart(event);
         break;
       default:
         logger.debug('ConfigService', `Received unknown channel event: ${channel}`);
@@ -654,12 +729,17 @@ const handleConfigChangeEvent = async (configEvent: any): Promise<void> => {
     configName: configEvent.configName,
     version: configEvent.version
   });
-  
+
+  // What the gateway held before this event, once a configuration from the admin service has
+  // been taken with a full reload: the light path below compares against it.
+  const heldBefore = configurationReceived ? cachedConfig : null;
+
   try {
     // Use configuration data from the event if available (event-driven approach)
     if (configEvent.configData) {
       // Use the configuration data directly from the event (already has api_config wrapper)
       cachedConfig = configEvent.configData;
+      reportPseudonymizationState(cachedConfig);
       configurationReceived = true;
       
       logger.info('ConfigService', 'Configuration updated from Valkey event data', {
@@ -675,6 +755,7 @@ const handleConfigChangeEvent = async (configEvent: any): Promise<void> => {
       
       if (newConfig) {
         cachedConfig = newConfig;
+        reportPseudonymizationState(cachedConfig);
         configurationReceived = true;
         logger.info('ConfigService', 'Configuration updated from Admin Service HTTP call');
       } else {
@@ -693,6 +774,21 @@ const handleConfigChangeEvent = async (configEvent: any): Promise<void> => {
       configurationPromise = null;
     }
     
+    // A change of the logging settings alone (the Logs page's levels and storage switch, or a
+    // timed level that ran out): the levels go to the logger, and the log shipper reads the
+    // switch from the cached configuration. Nothing else is reloaded. Decided by comparing the
+    // content, not by the event's type: the event carries the whole configuration, and a
+    // gateway that missed an activation gets the new one with it (services/loggingOnlyChange.ts).
+    if (configEvent.eventType === 'logging-settings-changed' && heldBefore
+      && differsOnlyInLoggingSettings(heldBefore, configEvent.configData)) {
+      applyReceivedLoggingConfig();
+      logger.info('ConfigService', 'Logging settings applied without a reload', { version: configEvent.version });
+      // Kept from the full path: a model list that could not be published yet is owed to the
+      // admin service, and every configuration event is the retry. A no-op once it was published.
+      await publishModelListAfterConfigUpdate();
+      return;
+    }
+
     // Trigger hot-reload mechanisms
     await triggerConfigurationReload();
     
@@ -701,6 +797,42 @@ const handleConfigChangeEvent = async (configEvent: any): Promise<void> => {
     
   } catch (error: any) {
     logger.error('ConfigService', `Failed to handle config change event: ${error.message}`);
+  }
+};
+
+/**
+ * What the environment fixes of the logging settings the admin service lays over the configuration:
+ * LOG_LEVEL when it holds a valid level (it overrules the default level), PAYLOAD_LOGGING_ENABLED when
+ * set, GATEWAY_LOG_SHIPPING when it switches log shipping off. Sent with the start-up request.
+ */
+export function environmentFixedReport(env: NodeJS.ProcessEnv): Record<string, string> {
+  const fixed: Record<string, string> = typeof (logger as any).fixedByEnvironment === 'function' ? { ...(logger as any).fixedByEnvironment() } : {};
+  if (env.PAYLOAD_LOGGING_ENABLED !== undefined && env.PAYLOAD_LOGGING_ENABLED !== '') fixed.PAYLOAD_LOGGING_ENABLED = env.PAYLOAD_LOGGING_ENABLED;
+  if (env.GATEWAY_LOG_SHIPPING === 'off') fixed.GATEWAY_LOG_SHIPPING = 'off';
+  return fixed;
+}
+
+/**
+ * The admin service announced that it started: tell it what the environment fixes. The start-up
+ * request carries that report, but a gateway that was running before the admin service published
+ * it while nobody listened. The report goes alone, as 'gateway-environment-report', which the admin
+ * service only stores: asking for the configuration again would make it republish, and every
+ * gateway would reload once per gateway. One answer per announcement; nothing runs on a timer.
+ * Everything else on the startup channel (this and other gateways' own messages) is not for it.
+ */
+const answerAdminServiceStart = async (event: any): Promise<void> => {
+  if (event?.service !== 'admin-service' || event?.eventType !== 'admin-service-started') return;
+  if (!valkeyPublisher || isStandaloneMode()) return;
+  try {
+    await valkeyPublisher.publish(STARTUP_READY_CHANNEL, JSON.stringify({
+      eventType: 'gateway-environment-report',
+      service: 'gateway-service',
+      timestamp: new Date().toISOString(),
+      fixedByEnvironment: environmentFixedReport(process.env)
+    }));
+    logger.info('ConfigService', 'Sent the environment report to the admin service, which has started');
+  } catch (error: any) {
+    logger.warn('ConfigService', `Could not send the environment report to the admin service: ${error.message}`);
   }
 };
 
@@ -723,7 +855,8 @@ const requestInitialConfiguration = async (): Promise<void> => {
       eventType: 'gateway-startup-request',
       service: 'gateway-service',
       timestamp: new Date().toISOString(),
-      requestId: ValidationTokenUtils.generateRequestId()
+      requestId: ValidationTokenUtils.generateRequestId(),
+      fixedByEnvironment: environmentFixedReport(process.env)
     };
     
     if (valkeyPublisher) {
@@ -764,6 +897,16 @@ export const reloadPluginModules = (): Promise<void> => withPluginLock(() => rel
 });
 
 /**
+ * Hand the levels of the configuration just received to the logger. On Docker and Kyma the
+ * configuration comes from the admin service and is never written to the file the logger reads.
+ */
+const applyReceivedLoggingConfig = (): void => {
+  if (logger && typeof (logger as any).applyLoggingConfig === 'function') {
+    (logger as any).applyLoggingConfig(cachedConfig?.api_config?.platform?.logging);
+  }
+};
+
+/**
  * Trigger configuration reload mechanisms (plugins, model service cache, etc.)
  */
 const triggerConfigurationReload = async (): Promise<void> => {
@@ -773,6 +916,7 @@ const triggerConfigurationReload = async (): Promise<void> => {
       (logger as any).reinitialize();
       logger.info('ConfigService', 'Logger reinitialized with updated configuration');
     }
+    applyReceivedLoggingConfig();
     
     // Reload PLUGIN modules to pick up plugin code/config changes.
     await reloadPluginModules();
@@ -962,6 +1106,69 @@ export const isConfigurationReady = (): boolean => {
   return configurationReceived || isStandaloneMode();
 };
 
+const GATEWAY_LOG_LEVELS = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR'];
+
+/** `api_config.observability.gateway_log` with its defaults; a value of the wrong type gives the default. */
+export function gatewayLogSettings(config: any): { enabled: boolean; retentionHours: number; maxEntries: number; minLevel: string } {
+  const block = config?.api_config?.observability?.gateway_log;
+  const b = block && typeof block === 'object' ? block : {};
+  const count = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback);
+  const level = typeof b.min_level === 'string' ? b.min_level.toUpperCase() : '';
+  return {
+    enabled: typeof b.enabled === 'boolean' ? b.enabled : true,
+    retentionHours: count(b.retention_hours, 48),
+    maxEntries: count(b.max_entries, 2000000),
+    minLevel: GATEWAY_LOG_LEVELS.includes(level) ? level : 'INFO',
+  };
+}
+
+export interface PayloadCaptureSettings {
+  enabled: boolean;
+  retentionHours: number;
+  raw: { maxDurationMinutes: number; retentionHours: number; stageMaxBytes: number; maxStages: number; requestMaxBytes: number };
+}
+
+/**
+ * `api_config.observability.payload_capture` with its defaults; a value of the wrong type gives the default,
+ * 0 hours is kept, a limit that is not a whole number of at least 1 (the schema's minimum) gives the default.
+ */
+export function payloadCaptureSettings(config: any): PayloadCaptureSettings {
+  const object = (v: unknown): Record<string, any> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {});
+  const b = object(config?.api_config?.observability?.payload_capture);
+  const raw = object(b.raw);
+  const count = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback);
+  const limit = (v: unknown, fallback: number): number => (Number.isInteger(v) && (v as number) >= 1 ? (v as number) : fallback);
+  return {
+    enabled: typeof b.enabled === 'boolean' ? b.enabled : false,
+    retentionHours: count(b.retention_hours, 48),
+    raw: {
+      maxDurationMinutes: limit(raw.max_duration_minutes, 240),
+      retentionHours: count(raw.retention_hours, 24),
+      stageMaxBytes: limit(raw.stage_max_bytes, 262144),
+      maxStages: limit(raw.max_stages, 40),
+      requestMaxBytes: limit(raw.request_max_bytes, 2097152),
+    },
+  };
+}
+
+/** Payload capture runs only where there is a Valkey to publish to: never in the standalone gateway. */
+export function payloadCaptureAllowed(env: NodeJS.ProcessEnv, standalone: boolean): boolean {
+  return !standalone && !!env.VALKEY_URL?.trim();
+}
+
+/** The configuration received so far, or undefined: no fetch, no logging, no throw. */
+export const getCachedConfig = (): Config | undefined => cachedConfig ?? undefined;
+
+/**
+ * The log shipper's settings, read once a second (index.ts): from the configuration received so far;
+ * storing is off until one has arrived. Never getConfig, which logs and throws while the gateway waits
+ * for the admin service's first configuration.
+ */
+export function logShipperSettings(): { enabled: boolean; minLevel: string } {
+  const config = getCachedConfig();
+  return config ? gatewayLogSettings(config) : { enabled: false, minLevel: 'INFO' };
+}
+
 /**
  * Load the configuration from disk or Admin Service
  * @param forceRefresh - Whether to force a refresh from source
@@ -990,6 +1197,8 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
       fetchConfigurationFromAdmin(forceRefresh).then(adminConfig => {
         if (adminConfig) {
           cachedConfig = adminConfig;
+          reportPseudonymizationState(cachedConfig);
+          applyReceivedLoggingConfig();
           logger.info('ConfigService', 'Using Admin Service for configuration - async fetch completed');
         }
       }).catch(error => {
@@ -1012,6 +1221,7 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
     
     // Return minimal config for now, but log the issue
     cachedConfig = DEFAULT_CONFIG;
+    reportPseudonymizationState(cachedConfig);
     logger.info('ConfigService', 'Using minimal default configuration - consider using getConfigAsync() for proper event waiting');
     
     return cachedConfig;
@@ -1023,6 +1233,7 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
       // Read and parse the config file
       const configData = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
       cachedConfig = JSON.parse(configData);
+      reportPseudonymizationState(cachedConfig);
       
       const source = isStandaloneMode() ? 'local file (standalone mode)' : 'local file (fallback)';
       logger.info('ConfigService', `Loaded configuration from ${source}: ${CONFIG_FILE_PATH}`);
@@ -1046,11 +1257,13 @@ export const getConfig = (forceRefresh: boolean = false): Config => {
     } else if (isStandaloneMode()) {
       // Create the default config file if it doesn't exist (standalone mode only)
       cachedConfig = DEFAULT_CONFIG;
+      reportPseudonymizationState(cachedConfig);
       fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(cachedConfig, null, 2));
       logger.info('ConfigService', `Created default configuration at ${CONFIG_FILE_PATH}`);
     } else {
       // In non-standalone mode without Valkey, use default config but don't write to disk
       cachedConfig = DEFAULT_CONFIG;
+      reportPseudonymizationState(cachedConfig);
       logger.warn('ConfigService', 'Using default configuration - no local file and Admin Service unavailable');
     }
     
@@ -1166,6 +1379,7 @@ export const getConfigAsync = async (forceRefresh: boolean = false): Promise<Con
         });
         
         cachedConfig = await Promise.race([configurationPromise, timeoutPromise]);
+        reportPseudonymizationState(cachedConfig);
         logger.info('ConfigService', 'Successfully received configuration from Admin Service via events');
         
         // Plugin loading and other processing is already handled by the event handler
@@ -1184,6 +1398,7 @@ export const getConfigAsync = async (forceRefresh: boolean = false): Promise<Con
       
       if (adminConfig) {
         cachedConfig = adminConfig;
+        reportPseudonymizationState(cachedConfig);
         configurationReceived = true;
         logger.info('ConfigService', 'Successfully loaded configuration from Admin Service via HTTP');
         
@@ -1232,6 +1447,7 @@ export const updateConfig = (newConfig: Config): Config => {
     
     // Update the cached config
     cachedConfig = newConfig;
+    reportPseudonymizationState(cachedConfig);
     
     logger.info('ConfigService', `Updated configuration at ${CONFIG_FILE_PATH}`);
     
@@ -1403,6 +1619,25 @@ export const getSupportedBetaHeaders = (): string[] => {
 };
 
 /**
+ * Get the beta flag renames for Anthropic requests to SAP AI Core: a flag a client sends under
+ * Anthropic's name is forwarded under the name the deployment knows. Applied before the
+ * allowlist and the denylist. Entries that are not a non-empty string are ignored.
+ * @returns Map from the client's flag to the upstream's flag
+ */
+export const getBetaHeaderRenames = (): Record<string, string> => {
+  try {
+    const renames = getConfig()?.api_config?.providers?.anthropic?.beta_header_renames;
+    if (!renames || typeof renames !== 'object' || Array.isArray(renames)) return {};
+    return Object.fromEntries(
+      Object.entries(renames).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+    );
+  } catch (error: any) {
+    logger.error('ConfigService', `Error getting beta header renames: ${error.message}`);
+    return {};
+  }
+};
+
+/**
  * Get the request parameters a provider/model does not accept, so they can be
  * stripped before forwarding to SAP AI Core (which returns HTTP 400
  * "does not support parameters: [...]" otherwise, e.g. `tools` for Perplexity).
@@ -1471,7 +1706,8 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
 };
 
 /**
- * True when retrieved file_search content may be pseudonymized: masking is force-enabled for the
+ * True when retrieved file_search content may be pseudonymized: the global switch
+ * (`observability.pseudonymization.enabled === true`) is On and masking is force-enabled for the
  * `openai` endpoint (the Responses and Chat Completions routes, where the hosted file_search tool
  * runs and masks the passages it retrieves) or for any model through
  * `models.overrides.<model>.pseudonymization.enabled`. Masking a request can also be asked for per
@@ -1481,6 +1717,7 @@ export const getSupportsPromptCaching = (provider?: string, modelName?: string):
 export const isPseudonymizationForcedForFileSearch = (): boolean => {
   try {
     const api = getConfig().api_config;
+    if (!isGlobalSwitchOn(api)) return false;
     if (defaultHookEntry(api, 'openai')?.pseudonymization?.enabled === true) return true;
     const overrides = (api?.models?.overrides ?? {}) as Record<string, { pseudonymization?: { enabled?: unknown } }>;
     return Object.values(overrides).some((o) => o?.pseudonymization?.enabled === true);
@@ -2565,6 +2802,7 @@ export default {
   getAnthropicBedrockVersion,
   getExcludedBetaHeaders,
   getSupportedBetaHeaders,
+  getBetaHeaderRenames,
   getUnsupportedParams,
   getParamRenames,
   getSupportsResponsesApi,

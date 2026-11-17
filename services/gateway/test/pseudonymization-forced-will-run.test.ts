@@ -167,7 +167,7 @@ function shippedConfig(forced: boolean) {
   for (const entry of Object.values(hooks.defaults) as any[]) {
     if (entry?.pseudonymization) entry.pseudonymization.enabled = forced;
   }
-  return { hooks, models: { overrides: {} as Record<string, any> }, observability: {} };
+  return { hooks, models: { overrides: {} as Record<string, any> }, observability: { pseudonymization: { enabled: true } } };
 }
 
 const sentText = () => JSON.stringify(sent);

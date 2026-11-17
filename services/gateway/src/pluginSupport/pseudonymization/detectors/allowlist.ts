@@ -86,17 +86,19 @@ function usableEntries(values: unknown): string[] {
  * Warn — once per pattern source per process — when a compiled pattern also matches ordinary
  * personal data. The pattern still applies: this reports, it never rejects.
  */
-function warnIfOverBroad(source: string, compiled: RegExp): void {
+function warnIfOverBroad(source: string, index: number, compiled: RegExp): void {
   if (warnedBroad.has(source)) return;
   if (!ALLOWLIST_CANARIES.some(canary => compiled.test(canary))) return;
 
   if (warnedBroad.size >= WARNED_INVALID_CAP) warnedBroad.clear();
   warnedBroad.add(source);
+  // The pattern is request input that typically names people: the console gets it, the stored
+  // log only its index.
   getDefaultLogger().warn('Pseudonymization',
-    `Allow-list pattern ${JSON.stringify(source)} also matches ordinary personal data — it may `
+    `Allow-list pattern #${index} also matches ordinary personal data — it may `
     + 'disable masking far beyond what was intended. The pattern is still applied; narrow it if '
     + 'that was not the intent (it is anchored to the whole detected value, so it needs to '
-    + 'describe one completely).');
+    + 'describe one completely).', { pattern: source });
 }
 
 /**
@@ -113,18 +115,20 @@ export function compileAllowlist(config: AllowlistConfig | undefined): CompiledA
   const terms = new Set(usableEntries(config.terms));
   const patterns: RegExp[] = [];
 
-  for (const source of usableEntries(config.patterns)) {
+  const listed: unknown[] = Array.isArray(config.patterns) ? config.patterns : [];
+  for (const [index, source] of listed.entries()) {
+    if (typeof source !== 'string' || source.trim().length === 0) continue;
     try {
       const compiled = new RegExp(`^(?:${source})$`);
-      warnIfOverBroad(source, compiled);
+      warnIfOverBroad(source, index, compiled);
       patterns.push(compiled);
     } catch (error: any) {
       if (!warnedInvalid.has(source)) {
         if (warnedInvalid.size >= WARNED_INVALID_CAP) warnedInvalid.clear();
         warnedInvalid.add(source);
         getDefaultLogger().warn('Pseudonymization',
-          `Ignoring invalid pseudonymization.allowlist pattern ${JSON.stringify(source)}: `
-          + `${error?.message || 'not a valid regular expression'}. The rest of the allow-list still applies.`);
+          `Ignoring invalid pseudonymization.allowlist pattern #${index} (${error?.name || 'SyntaxError'}). `
+          + 'The rest of the allow-list still applies.', { pattern: source, error: error?.message || 'not a valid regular expression' });
       }
     }
   }

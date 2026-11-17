@@ -53,6 +53,7 @@
 						<tnt:NavigationListItem key="toolPolicies" text="{i18n>nav.toolPolicies}" visible="{appView>/isAdmin}" />
 						<tnt:NavigationListItem key="connections" text="{i18n>nav.connections}" visible="{appView>/isAdmin}" />
 						<tnt:NavigationListItem key="plugins" text="{i18n>nav.plugins}" visible="{appView>/isAdmin}" />
+						<tnt:NavigationListItem key="logs" text="{i18n>nav.logs}" visible="{appView>/isAdmin}" />
 					</tnt:NavigationListItem>
 				</tnt:NavigationList>
 			</tnt:fixedItem>

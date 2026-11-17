@@ -371,19 +371,44 @@ describe('responsesWebSearchPlugin — continuation', () => {
     });
   });
 
-  it('loops for a second search and stops at the configured cap', async () => {
+  it('loops for a second search, refuses the one over the configured cap and lets the model answer', async () => {
     mockMaxSearches.mockReturnValue(2);
     const req = reqWithUpstream();
     const searchCall = (id: string) => ({ type: 'function_call', call_id: id, name: 'web_search', arguments: '{"query":"q"}' });
+    const answer = { type: 'message', id: 'msg_answer', role: 'assistant', content: [{ type: 'output_text', text: 'From two searches.' }] };
     mockPost
       .mockResolvedValueOnce({ data: { output: [searchCall('call_2')], usage: { input_tokens: 1, output_tokens: 1 } } })
-      .mockResolvedValueOnce({ data: { output: [searchCall('call_3')], usage: { input_tokens: 1, output_tokens: 1 } } });
+      .mockResolvedValueOnce({ data: { output: [searchCall('call_3')], usage: { input_tokens: 1, output_tokens: 1 } } })
+      .mockResolvedValueOnce({ data: { output: [answer], usage: { input_tokens: 1, output_tokens: 1 } } });
 
     const out = await after({ req, upstreamResponse: { output: [searchCall('call_1')] }, utils });
 
-    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(2);
-    expect(mockPost).toHaveBeenCalledTimes(2);
-    expect(out.output.filter((i: any) => i.type === 'web_search_call')).toHaveLength(2);
+    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(2);   // the third search is never run
+    expect(mockPost).toHaveBeenCalledTimes(3);               // two continuations and the answering call
+    // The answering call tells the model why, for the refused call, and answers every call.
+    const answering = (mockPost.mock.calls[2] as any[])[1];
+    const outputs = answering.input.filter((i: any) => i.type === 'function_call_output');
+    expect(outputs.map((i: any) => i.call_id)).toEqual(['call_1', 'call_2', 'call_3']);
+    expect(String(outputs[2].output)).toContain('budget for this turn is used up');
+
+    expect(out.output.filter((i: any) => i.type === 'web_search_call').map((i: any) => i.status))
+      .toEqual(['completed', 'completed', 'failed']);
+    // The turn ends with the model's answer, not with a result dump or the budget notice.
+    expect(out.output[out.output.length - 1].content[0].text).toBe('From two searches.');
+    expect(out.output.filter((i: any) => i.type === 'message')).toHaveLength(1);
+    expect(out.output.some((i: any) => i.type === 'function_call')).toBe(false);
+  });
+
+  it('stops for good when the model asks for a search again after the answering call', async () => {
+    mockMaxSearches.mockReturnValue(1);
+    const req = reqWithUpstream();
+    const searchCall = (id: string) => ({ type: 'function_call', call_id: id, name: 'web_search', arguments: '{"query":"q"}' });
+    mockPost.mockImplementation(async () => ({ data: { output: [searchCall(`call_${mockPost.mock.calls.length + 1}`)], usage: { input_tokens: 1, output_tokens: 1 } } }));
+
+    const out = await after({ req, upstreamResponse: { output: [searchCall('call_1')] }, utils });
+
+    expect(mockExecuteWebSearch).toHaveBeenCalledTimes(1);
+    expect(mockPost).toHaveBeenCalledTimes(2);               // one continuation, one answering call, no third
     // the cap stopped the loop with a call still outstanding: it must not leak
     expect(out.output.some((i: any) => i.type === 'function_call')).toBe(false);
   });

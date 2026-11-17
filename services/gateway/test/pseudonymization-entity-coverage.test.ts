@@ -86,7 +86,7 @@ describe('org/location configuration inputs', () => {
 // the code path exists to fire it (an unverified log line is not evidence).
 describe('empty-producer warning (spec §4)', () => {
   beforeEach(() => {
-    mockConfig.api_config.observability.pseudonymization = undefined;
+    mockConfig.api_config.observability.pseudonymization = { enabled: true };
     mockConfig.api_config.hooks.defaults = {};
     mockConfig.api_config.models.overrides = {};
   });
@@ -145,7 +145,7 @@ describe('layered confidence thresholds', () => {
   };
 
   beforeEach(() => {
-    mockConfig.api_config.observability.pseudonymization = undefined;
+    mockConfig.api_config.observability.pseudonymization = { enabled: true };
     mockConfig.api_config.models.overrides = {};
     mockConfig.api_config.hooks.defaults = {
       anthropic: { pseudonymization: { enabled: true } },
@@ -157,12 +157,12 @@ describe('layered confidence thresholds', () => {
   });
 
   it('a global min_confidence of 0.6 stops masking it', async () => {
-    mockConfig.api_config.observability.pseudonymization = { min_confidence: 0.6 };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, min_confidence: 0.6 };
     expect(await maskedValues()).not.toContain('Ferreira Nakamura');
   });
 
   it('a per-ENDPOINT min_confidence overrides the global one', async () => {
-    mockConfig.api_config.observability.pseudonymization = { min_confidence: 0.6 };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, min_confidence: 0.6 };
     mockConfig.api_config.hooks.defaults = {
       anthropic: { pseudonymization: { enabled: true, min_confidence: 0.4 } },
     };
@@ -171,6 +171,7 @@ describe('layered confidence thresholds', () => {
 
   it('a per-ENDPOINT thresholds entry overrides the global one', async () => {
     mockConfig.api_config.observability.pseudonymization = {
+      enabled: true,
       min_confidence: 0.6,
       thresholds: { 'profile-person': 0.7 },
     };
@@ -191,7 +192,7 @@ describe('layered confidence thresholds', () => {
   });
 
   it('a per-model min_confidence overrides the global one', async () => {
-    mockConfig.api_config.observability.pseudonymization = { min_confidence: 0.6 };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, min_confidence: 0.6 };
     mockConfig.api_config.models.overrides = {
       'claude-sonnet-4-20250514': { pseudonymization: { min_confidence: 0.4 } },
     };
@@ -200,6 +201,7 @@ describe('layered confidence thresholds', () => {
 
   it('a per-entity threshold beats min_confidence for that category', async () => {
     mockConfig.api_config.observability.pseudonymization = {
+      enabled: true,
       min_confidence: 0.6,
       thresholds: { 'profile-person': 0.4 },
     };
@@ -208,6 +210,7 @@ describe('layered confidence thresholds', () => {
 
   it('merges the thresholds map per category across layers instead of replacing it', async () => {
     mockConfig.api_config.observability.pseudonymization = {
+      enabled: true,
       min_confidence: 0.6,
       thresholds: { 'profile-person': 0.4 },
     };
@@ -220,7 +223,7 @@ describe('layered confidence thresholds', () => {
   });
 
   it('ignores an out-of-range min_confidence rather than obeying it', async () => {
-    mockConfig.api_config.observability.pseudonymization = { min_confidence: 1.5 };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, min_confidence: 1.5 };
     expect(await maskedValues()).toContain('Ferreira Nakamura');
   });
 });

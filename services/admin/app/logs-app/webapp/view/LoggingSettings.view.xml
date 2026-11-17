@@ -1,0 +1,164 @@
+<mvc:View
+    controllerName="admin.logs.controller.LoggingSettings"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:form="sap.ui.layout.form">
+    <!-- Save, Reset to configuration and Cancel are in the Logs page's footer (view/Logs.view.xml), shown on this tab. -->
+    <VBox id="settingsBox" busy="{form>/busy}" busyIndicatorDelay="300">
+        <MessageStrip id="settingsErrorStrip" type="Error" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{form>/error}" visible="{= ${form>/error} !== '' }"/>
+        <MessageStrip id="settingsWarningStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{form>/warning}" visible="{= ${form>/warning} !== '' }"/>
+        <MessageStrip id="fileLoggingSettingsStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{i18n>payloadFilesOn}" visible="{= ${form>/payloadFileLoggingEnabled} === true }"/>
+        <MessageStrip id="notReportedStrip" type="Information" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{i18n>environmentNotReported}" visible="{= ${form>/loaded} &amp;&amp; !${form>/environmentReported} }"/>
+
+        <form:Form id="settingsForm" editable="true" visible="{form>/loaded}" class="logsSettingsForm">
+            <form:layout>
+                <form:ColumnLayout columnsM="1" columnsL="1" columnsXL="1" labelCellsLarge="3"/>
+            </form:layout>
+            <form:formContainers>
+                <form:FormContainer id="storageContainer" title="{i18n>storageSection}">
+                    <form:formElements>
+                        <!-- A setting the environment fixes is a text in its own element: two fields in one element would share its width. -->
+                        <form:FormElement label="{i18n>storageLabel}" visible="{= !${form>/fixed/storage} }">
+                            <form:fields>
+                                <Select id="storageSelect" selectedKey="{form>/storage}" width="16rem"
+                                    valueState="{form>/state/storage}" valueStateText="{form>/stateText/storage}" change=".onFormChange">
+                                    <core:Item key="config" text="{form>/texts/storageConfigItem}"/>
+                                    <core:Item key="on" text="{i18n>storageOn}"/>
+                                    <core:Item key="off" text="{i18n>storageOff}"/>
+                                </Select>
+                            </form:fields>
+                        </form:FormElement>
+                        <form:FormElement label="{i18n>storageLabel}" visible="{= !!${form>/fixed/storage} }">
+                            <form:fields>
+                                <Text id="storageFixedText" text="{form>/texts/storageFixed}"/>
+                            </form:fields>
+                        </form:FormElement>
+                        <form:FormElement label="{i18n>captureLabel}">
+                            <form:fields>
+                                <Select id="captureSelect" selectedKey="{form>/capture}" width="16rem" change=".onFormChange">
+                                    <core:Item key="config" text="{form>/texts/captureConfigItem}"/>
+                                    <core:Item key="on" text="{i18n>storageOn}"/>
+                                    <core:Item key="off" text="{i18n>storageOff}"/>
+                                </Select>
+                            </form:fields>
+                        </form:FormElement>
+                        <!-- ColumnLayout takes only form content as fields (no VBox): a helper text is an element of its
+                             own with an empty label, so it lines up under the field. -->
+                        <form:FormElement>
+                            <form:label><Label text=""/></form:label>
+                            <form:fields>
+                                <Text id="captureHelpText" text="{i18n>captureHelp}" class="logsFieldHelp"/>
+                            </form:fields>
+                        </form:FormElement>
+                    </form:formElements>
+                </form:FormContainer>
+                <form:FormContainer id="levelsContainer" title="{i18n>levelsSection}">
+                    <form:formElements>
+                        <form:FormElement label="{i18n>defaultLevelLabel}" visible="{= !${form>/fixed/defaultLevel} }">
+                            <form:fields>
+                                <Select id="defaultLevelSelect" selectedKey="{form>/defaultLevel}" width="16rem"
+                                    valueState="{form>/state/defaultLevel}" valueStateText="{form>/stateText/defaultLevel}" change=".onFormChange">
+                                    <core:Item key="config" text="{form>/texts/defaultConfigItem}"/>
+                                    <core:Item key="ERROR" text="{i18n>levelError}"/>
+                                    <core:Item key="WARN" text="{i18n>levelWarn}"/>
+                                    <core:Item key="INFO" text="{i18n>levelInfo}"/>
+                                    <core:Item key="DEBUG" text="{i18n>levelDebug}"/>
+                                    <core:Item key="TRACE" text="{i18n>levelTrace}"/>
+                                </Select>
+                            </form:fields>
+                        </form:FormElement>
+                        <form:FormElement label="{i18n>defaultLevelLabel}" visible="{= !!${form>/fixed/defaultLevel} }">
+                            <form:fields>
+                                <Text id="defaultFixedText" text="{form>/texts/defaultFixed}"/>
+                            </form:fields>
+                        </form:FormElement>
+                        <!-- Only a level set here can apply for a while; a level that follows the configuration or that the environment fixes cannot. -->
+                        <form:FormElement label="{i18n>durationLabel}" visible="{= !${form>/fixed/defaultLevel} &amp;&amp; ${form>/defaultLevel} !== 'config' }">
+                            <form:fields>
+                                <Select id="defaultDurationSelect" selectedKey="{form>/defaultDuration}" width="16rem"
+                                    valueState="{form>/state/defaultDuration}" valueStateText="{form>/stateText/defaultDuration}" change=".onFormChange">
+                                    <core:Item key="none" text="{i18n>durationNone}"/>
+                                    <core:Item key="15" text="{i18n>duration15}"/>
+                                    <core:Item key="60" text="{i18n>duration60}"/>
+                                    <core:Item key="240" text="{i18n>duration240}"/>
+                                    <core:Item key="1440" text="{i18n>duration1440}"/>
+                                    <core:Item key="keep" text="{i18n>durationKeep}" enabled="{= !!${form>/defaultUntil} }"/>
+                                </Select>
+                            </form:fields>
+                        </form:FormElement>
+                        <form:FormElement visible="{= ${form>/texts/defaultEnds} !== '' &amp;&amp; !${form>/fixed/defaultLevel} &amp;&amp; ${form>/defaultLevel} !== 'config' }">
+                            <form:label><Label text=""/></form:label>
+                            <form:fields>
+                                <Text id="defaultEndsText" text="{form>/texts/defaultEnds}" class="logsFieldHelp"/>
+                            </form:fields>
+                        </form:FormElement>
+                        <form:FormElement visible="{= ${form>/texts/verboseNote} !== '' }">
+                            <form:label><Label text=""/></form:label>
+                            <form:fields>
+                                <ObjectStatus id="verboseNoteText" icon="sap-icon://information" state="Information" text="{form>/texts/verboseNote}"/>
+                            </form:fields>
+                        </form:FormElement>
+                    </form:formElements>
+                </form:FormContainer>
+            </form:formContainers>
+        </form:Form>
+
+        <Table id="componentsTable" items="{form>/components}" visible="{form>/loaded}" noDataText="{i18n>componentsEmpty}"
+            ariaLabelledBy="componentsTitle" contextualWidth="Auto" popinLayout="GridSmall" class="sapUiMediumMarginTop">
+            <headerToolbar>
+                <OverflowToolbar style="Clear">
+                    <Title id="componentsTitle" text="{i18n>componentsTitle}" level="H3"/>
+                    <Text id="configurationComponentsText" text="{form>/texts/configurationComponents}" class="sapUiSmallMarginBegin"/>
+                    <ToolbarSpacer/>
+                    <Button id="addComponentButton" icon="sap-icon://add" text="{i18n>addComponent}" type="Transparent" press=".onAddComponent"/>
+                </OverflowToolbar>
+            </headerToolbar>
+            <columns>
+                <Column width="30%"><Text id="componentHeader" text="{i18n>columnComponent}"/></Column>
+                <Column width="10rem"><Text id="levelHeader" text="{i18n>columnLevel}"/></Column>
+                <Column width="14rem" demandPopin="true" minScreenWidth="Tablet"><Text id="durationHeader" text="{i18n>durationLabel}"/></Column>
+                <Column demandPopin="true" minScreenWidth="Tablet"><Text text="{i18n>columnConfiguration}"/></Column>
+                <Column width="6rem" hAlign="End"><Text text="{i18n>columnActions}"/></Column>
+            </columns>
+            <items>
+                <ColumnListItem vAlign="Middle">
+                    <cells>
+                        <!-- Suggests the component names of the stored log and the configured ones; any other name can be typed
+                             (a component that has not logged yet), and gets a warning, as does a name that differs only in case. -->
+                        <ComboBox value="{form>component}" placeholder="{i18n>componentPlaceholder}" width="100%"
+                            items="{path: 'form>/knownComponents', templateShareable: false}"
+                            valueState="{form>componentState}" valueStateText="{form>componentStateText}"
+                            ariaLabelledBy="componentHeader" change=".onFormChange">
+                            <core:Item key="{form>name}" text="{form>name}"/>
+                        </ComboBox>
+                        <Select selectedKey="{form>level}" width="100%" change=".onFormChange" ariaLabelledBy="levelHeader">
+                            <core:Item key="ERROR" text="{i18n>levelError}"/>
+                            <core:Item key="WARN" text="{i18n>levelWarn}"/>
+                            <core:Item key="INFO" text="{i18n>levelInfo}"/>
+                            <core:Item key="DEBUG" text="{i18n>levelDebug}"/>
+                            <core:Item key="TRACE" text="{i18n>levelTrace}"/>
+                        </Select>
+                        <VBox>
+                            <Select selectedKey="{form>duration}" width="100%" change=".onFormChange" ariaLabelledBy="durationHeader">
+                                <core:Item key="none" text="{i18n>durationNone}"/>
+                                <core:Item key="15" text="{i18n>duration15}"/>
+                                <core:Item key="60" text="{i18n>duration60}"/>
+                                <core:Item key="240" text="{i18n>duration240}"/>
+                                <core:Item key="1440" text="{i18n>duration1440}"/>
+                                <core:Item key="keep" text="{i18n>durationKeep}" enabled="{= !!${form>until} }"/>
+                            </Select>
+                            <Text text="{form>endsText}" visible="{= ${form>endsText} !== '' }"/>
+                        </VBox>
+                        <Text text="{form>configText}"/>
+                        <Button icon="sap-icon://decline" type="Transparent" tooltip="{i18n>removeComponent}" press=".onRemoveComponent"/>
+                    </cells>
+                </ColumnListItem>
+            </items>
+        </Table>
+    </VBox>
+</mvc:View>

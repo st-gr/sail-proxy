@@ -89,6 +89,22 @@ export function coalesce(events, gapMs = 50) {
   return out;
 }
 
+// A long stretch (an image pull) played faster: the gaps from the first event holding `from` to the first later event
+// holding `to` are divided by `factor`, and everything after moves earlier by the time saved. A marker that never
+// appears throws, so a changed output cannot ship the stretch at full length.
+export function fastForward(events, { from, to, factor }) {
+  const start = events.findIndex(([, s]) => s.includes(from));
+  if (start < 0) throw new Error(`fast-forward marker "${from}" never appeared`);
+  const rel = events.slice(start + 1).findIndex(([, s]) => s.includes(to));
+  if (rel < 0) throw new Error(`fast-forward marker "${to}" never appeared`);
+  const end = start + 1 + rel;
+  let saved = 0;
+  return events.map(([t, s], i) => {
+    if (i > start && i <= end) saved += (t - events[i - 1][0]) * (1 - 1 / factor);
+    return [i > start ? t - saved : t, s];
+  });
+}
+
 export const castText = (events) => events.map(([, s]) => s).join('');
 export const serialize = (header, events) => [JSON.stringify(header), ...events.map(([t, s]) => JSON.stringify([Math.round(t * 1000) / 1000, 'o', s]))].join('\n') + '\n';
 export function castSeconds(text) {
@@ -224,7 +240,7 @@ export async function recordCast(def, { map = {}, env: outer = process.env, log 
   if (!env.HOME) { mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(home, 0o700); }
   const shellEnv = { PATH: outer.PATH, HOME: home, TERM: 'xterm-256color', LANG: 'en_US.UTF-8', PS1: '$ ', PS2: '> ', BASH_SILENCE_DEPRECATION_WARNING: '1', HISTFILE: '/dev/null', ...env };
   const child = spawn('python3', ['-I', PTY_HOST, String(cols), String(rows), '--', 'bash', '--noprofile', '--norc', '-i'], { cwd, env: shellEnv, stdio: ['pipe', 'pipe', 'pipe'] });
-  let buf = ''; const raw = []; const typed = []; let t0 = 0; let on = false; let err = ''; let failure = null; let redraw = null;
+  let buf = ''; const raw = []; const typed = []; const forwards = []; let t0 = 0; let on = false; let err = ''; let failure = null; let redraw = null;
   child.stdout.setEncoding('utf8');
   // A chunk that arrives while a redrawn value is typed carries the state of that value (its k-th character typed).
   child.stdout.on('data', (s) => { buf += s; if (on) raw.push(redraw ? [(Date.now() - t0) / 1000, s, { ...redraw }] : [(Date.now() - t0) / 1000, s]); });
@@ -245,7 +261,8 @@ export async function recordCast(def, { map = {}, env: outer = process.env, log 
     buf = ''; child.stdin.write('clear\r'); await prompt(5000);
     t0 = Date.now(); on = true; raw.push([0, '$ ']);
     for (const c of commands) {
-      const { cmd, input = [], holdMs = 1200, timeoutMs: cmdMs = timeoutMs } = typeof c === 'string' ? { cmd: c } : c;
+      const { cmd, input = [], holdMs = 1200, timeoutMs: cmdMs = timeoutMs, fastForward: ff } = typeof c === 'string' ? { cmd: c } : c;
+      if (ff) forwards.push(ff);
       buf = ''; await type(cmd); child.stdin.write('\r'); log(`cmd: ${scrub(cmd, map)}`); // the console is no place for a real host either
       for (const step of input) {
         // A prompt that never comes is a wrong order or a changed text: fail fast, the raw log shows what was asked.
@@ -271,6 +288,6 @@ export async function recordCast(def, { map = {}, env: outer = process.env, log 
     e.raw = raw; throw e;
   } finally { if (child.exitCode === null) child.kill('SIGKILL'); }
   if (err.trim()) throw new Error(`pty host: ${err.trim().split('\n')[0]}`);
-  const events = scrubEvents(coalesce(raw.map(([t, s, r]) => [t, r ? maskRedraw(s, r) : s])), map, typed).filter(([, s]) => s);
+  const events = forwards.reduce((ev, ff) => fastForward(ev, ff), scrubEvents(coalesce(raw.map(([t, s, r]) => [t, r ? maskRedraw(s, r) : s])), map, typed).filter(([, s]) => s));
   return { header: castHeader({ cols, rows, title }), events, misses: verify(events, map, typed, cols), raw };
 }

@@ -8,9 +8,12 @@ import { UpgradePolicy } from './kit';
 import { compareVersions } from '../utils/version';
 
 export class Refusal extends Error {
-  constructor(message: string) {
+  /** The image registry refused or failed, not kubectl: no "log in to the cluster" hint (kyma.ts describe). */
+  registry: boolean;
+  constructor(message: string, opts: { registry?: boolean } = {}) {
     super(message);
     this.name = 'Refusal';
+    this.registry = opts.registry === true;
   }
 }
 
@@ -54,6 +57,9 @@ export async function readInstallation(o: {
     throw new Refusal('This release changes the layout of file storage or Valkey data; it cannot be installed by `upgrade`. See its release notes.');
   }
   const postgres = await workloadImage(kubectl, ns, 'statefulset', 'postgres');
+  if (!postgres) {
+    throw new Refusal(`Namespace ${ns} runs no PostgreSQL of its own: the installation uses an external database, which \`upgrade\` cannot back up or roll back. Back the database up with its own service, then run the new release's setup and deploy.`);
+  }
   if (postgres !== policy.postgresImage) {
     throw new Refusal(`The installation runs Postgres image ${postgres || '(none)'}, this release needs ${policy.postgresImage}; a Postgres image change is not done by \`upgrade\`.`);
   }
@@ -104,7 +110,11 @@ export async function preflight(o: {
     try {
       await o.lookupDigest(o.containerConfig, image, o.containerConfig.tag);
     } catch (error) {
-      throw new Refusal(`Image ${ref} cannot be found with the installation's registry login (${(error as Error).message}). Nothing was changed.`);
+      const e = error as Error & { statusCode?: number };
+      // A registry that refuses the login: the login is the namespace's pull secret, never kubectl's
+      const refused = e.statusCode === 401 || e.statusCode === 403 || /\bHTTP 40[13]\b|unauthori[sz]ed|denied/i.test(e.message);
+      const hint = refused ? ` The registry refused the login: check the Secret registry-secret in namespace ${ns} (a public image needs none).` : '';
+      throw new Refusal(`Image ${ref} cannot be found with the installation's registry login (${e.message}).${hint} Nothing was changed.`, { registry: true });
     }
   }
   const rebuild = await o.kit.dbOps.findRunningIndexRebuild(ns, { kubectl });

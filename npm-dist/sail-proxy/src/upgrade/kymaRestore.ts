@@ -6,7 +6,7 @@ import * as path from 'path';
 import { BundleError, openBundle, resolvePassphrase } from './bundle';
 import { materializeKit } from './kit';
 import { Kubectl, SECRET_ENV, spawnKubectl } from './kubectl';
-import { KubeObject, checkHealth, deleteNewObjects, isInstallObject, restoreObjects, stopMigrationJobs } from './kymaCluster';
+import { KubeObject, allowlistPolicyName, checkHealth, deleteNewObjects, isInstallObject, restoreObjects, stopMigrationJobs } from './kymaCluster';
 import { PromptOne, loadKitScripts } from './kymaRender';
 import { describe } from './kyma';
 import { SignalSource, runPhase } from './steps';
@@ -71,7 +71,10 @@ export async function runRestore(ctx: RestoreContext): Promise<{ ok: boolean; er
       : [];
     const foreign = objects.filter((o) => o.metadata.namespace && o.metadata.namespace !== ns && o.metadata.namespace !== 'istio-system');
     if (foreign.length > 0) throw new Error(`The backup was taken from namespace ${foreign[0].metadata.namespace}, not ${ns}`);
-    const alien = objects.find((o) => !isInstallObject(o, ns));
+    // The default namespace's allowlist policy is owned by its exact name, from the BASE_URL in the
+    // backup's own admin-env Secret (the bundle is authenticated before anything is read from it).
+    const allowlistName = allowlistPolicyName(objects, ns);
+    const alien = objects.find((o) => !isInstallObject(o, ns, allowlistName));
     if (alien) throw new Error(`The backup holds ${alien && alien.kind}/${alien && alien.metadata && alien.metadata.name}, which is not an object of installation ${ns}; nothing was changed`);
     const replicas = names.includes('previous/replicas.json')
       ? JSON.parse(fs.readFileSync(bundle.path('previous/replicas.json'), 'utf8'))

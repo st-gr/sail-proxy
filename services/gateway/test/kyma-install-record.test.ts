@@ -89,6 +89,8 @@ let outputRoot: string;
 let projectRoot: string;
 let printed: string[];
 let savedServiceKey: string | undefined;
+/** Extra KymaSetup options of the test in progress (the --external-database flag). */
+let setupOptions: Record<string, unknown> = {};
 
 const writeJson = (rel: string, value: unknown) => {
   const file = path.join(projectRoot, rel);
@@ -97,6 +99,7 @@ const writeJson = (rel: string, value: unknown) => {
 };
 
 beforeEach(() => {
+  setupOptions = {};
   savedServiceKey = process.env.SAP_AI_CORE_SERVICE_KEY;
   delete process.env.SAP_AI_CORE_SERVICE_KEY;
   outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kyma-record-out-'));
@@ -154,6 +157,24 @@ beforeEach(() => {
       },
     ],
   });
+  writeJson('docker/configs/providers/ias/dex.config.yaml', {
+    connectors: [
+      {
+        type: 'oidc',
+        id: 'sap-ias',
+        name: 'SAP Cloud Identity Services',
+        config: {
+          issuer: 'IAS_ISSUER_URL',
+          clientID: 'IAS_CLIENT_ID',
+          clientSecret: 'IAS_CLIENT_SECRET',
+          redirectURI: 'BASE_URL/dex/callback',
+          scopes: ['email', 'profile', 'groups'],
+          insecureEnableGroups: true,
+          userNameKey: 'email',
+        },
+      },
+    ],
+  });
   printed = [];
   const capture = (...a: unknown[]) => {
     printed.push(a.map(String).join(' '));
@@ -196,7 +217,7 @@ interface Shown {
 const fakeDigest = (seed: string) => `sha256:${sha(seed)}`;
 
 function newSetup(cluster: Cluster, calls: string[][] = []) {
-  const setup = new KymaSetup({ outputRoot, namespace: NAMESPACE });
+  const setup = new KymaSetup({ outputRoot, namespace: NAMESPACE, ...setupOptions });
   setup.projectRoot = projectRoot;
   setup._k8sApiClusterIp = '10.0.0.1';
   setup.runDockerSetup = async (config: Record<string, unknown>) => setup.postProcessEnvFiles(config);
@@ -296,6 +317,17 @@ const OKTA_RUN = {
   OKTA_USER_GROUP: 'okta-users',
 };
 
+const IAS_CLIENT_SECRET = 'ias-client-secret-record-1';
+const IAS_RUN = {
+  ...BASE_RUN,
+  provider: 'ias',
+  IAS_ISSUER_URL: 'https://example-tenant.accounts.ondemand.com',
+  IAS_CLIENT_ID: '11111111-2222-3333-4444-555555555555',
+  IAS_CLIENT_SECRET,
+  IAS_ADMIN_GROUP: 'ias-admins',
+  IAS_USER_GROUP: 'ias-users',
+};
+
 /** The data of a rendered install record (every value a JSON string). */
 function recordData(text: string): Record<string, string> {
   const data: Record<string, string> = {};
@@ -349,6 +381,7 @@ describe('setup-kyma.js reads a namespace without rendered files from the cluste
     ['GitHub', GITHUB_RUN, []],
     ['LDAP', LDAP_RUN, []],
     ['Okta', OKTA_RUN, ['OKTA_METADATA_URL', 'OKTA_SAML_CA_DATA']],
+    ['SAP Cloud Identity Services', IAS_RUN, []],
   ])('a %s install: live-only current equals the rendered-files current', async (_label, answers, absent) => {
     const { setup: first } = await run(answers);
     const live = liveFromRender(first, { withRecord: false });
@@ -359,6 +392,64 @@ describe('setup-kyma.js reads a namespace without rendered files from the cluste
     const fromCluster = await newSetup(live).loadCurrentValues(NAMESPACE);
     for (const id of absent as string[]) expect(fromFiles[id]).toBeUndefined();
     expect(fromCluster).toEqual(fromFiles);
+  });
+
+  it('SAP Cloud Identity Services: the Dex connector is OIDC against the tenant, groups map to roles, and a re-run finds every answer', async () => {
+    const { setup: first, shown } = await run(IAS_RUN);
+    expect(shown.find((q) => q.id === 'IAS_CLIENT_SECRET')).toMatchObject({ type: 'password' });
+    const dex = first.readRenderedYaml(path.join(secretsDir(), 'dex-config.yaml'), 'config.yaml');
+    expect(dex.connectors).toHaveLength(1);
+    expect(dex.connectors[0]).toMatchObject({
+      type: 'oidc',
+      config: {
+        issuer: IAS_RUN.IAS_ISSUER_URL,
+        clientID: IAS_RUN.IAS_CLIENT_ID,
+        clientSecret: IAS_CLIENT_SECRET,
+        redirectURI: 'https://record-test-host.c-example1.kyma.ondemand.com/dex/callback',
+        scopes: ['email', 'profile', 'groups'],
+        insecureEnableGroups: true,
+        userNameKey: 'email',
+      },
+    });
+    expect(dex.enablePasswordDB).toBe(false);
+    const admin = stringData(path.join(secretsDir(), 'admin-env.yaml'));
+    expect(admin.IDENTITY_PROVIDER).toBe('ias');
+    expect(JSON.parse(admin.ROLE_MAPPING)).toEqual({ 'ias-admins': 'admin', 'ias-users': 'user' });
+    // The client secret is in the Dex Secret only: not in the record, not printed.
+    expect(fs.readFileSync(recordFile(), 'utf8')).not.toContain(IAS_CLIENT_SECRET);
+    expect(printed.join('\n')).not.toContain(IAS_CLIENT_SECRET);
+
+    const live = liveFromRender(first, { withRecord: false });
+    removeRender();
+    const current = await newSetup(live).loadCurrentValues(NAMESPACE);
+    expect(current).toMatchObject({
+      provider: 'ias',
+      IAS_ISSUER_URL: IAS_RUN.IAS_ISSUER_URL,
+      IAS_CLIENT_ID: IAS_RUN.IAS_CLIENT_ID,
+      IAS_CLIENT_SECRET,
+      IAS_ADMIN_GROUP: 'ias-admins',
+      IAS_USER_GROUP: 'ias-users',
+    });
+  });
+
+  it('SAP Cloud Identity Services: a client secret holding "$" reaches Dex as it was entered', async () => {
+    // "$&", "$$", "$1", "$`" and "$'" are replacement patterns of String.replace: passed as the
+    // replacement text they changed the secret, and every sign-in failed with invalid_client.
+    const secret = "pa$&ss$$wo$1rd$`x$'y";
+    const { setup } = await run({ ...IAS_RUN, IAS_CLIENT_SECRET: secret });
+    const dex = setup.readRenderedYaml(path.join(secretsDir(), 'dex-config.yaml'), 'config.yaml');
+    expect(dex.connectors[0].config.clientSecret).toBe(secret);
+    // The same helper fills in the GitHub client secret and the LDAP bind password.
+    expect(setup.replaceInObject({ bindPW: 'LDAP_BIND_PASSWORD' }, { LDAP_BIND_PASSWORD: secret })).toEqual({ bindPW: secret });
+  });
+
+  it.each([
+    ['https://tenant.example.com/', 'trailing slash'],
+    ['http://tenant.example.com', 'not https'],
+    ['https://tenant.example.com/.well-known/openid-configuration', 'the discovery document instead of the issuer'],
+    ['tenant.example.com', 'no scheme'],
+  ])('SAP Cloud Identity Services: the issuer %s is refused (%s)', async (issuer) => {
+    await expect(run({ ...IAS_RUN, IAS_ISSUER_URL: issuer })).rejects.toThrow(/IAS_ISSUER_URL rejected/);
   });
 
   it.each([
@@ -517,6 +608,24 @@ describe('setup-kyma.js reads a namespace without rendered files from the cluste
     expect(notes.join('\n')).toContain(extra);
   });
 
+  it('a pull secret added to the namespace after the install (the record says none) is used, and named', async () => {
+    // 2026-11-17: an install from public images got a registry-secret by hand before an upgrade to a
+    // private registry. The record's imagePullSecrets: false won, the upgrade looked the images up
+    // without a login and the registry answered 401.
+    const { setup: first } = await run(GITHUB_RUN);
+    const dockerconfig = Buffer.from(JSON.stringify({ auths: { 'ghcr.io': { username: 'robot', password: REGISTRY_TOKEN } } })).toString('base64');
+    const live = {
+      ...liveFromRender(first),
+      'secret registry-secret': () => JSON.stringify({ data: { '.dockerconfigjson': dockerconfig } }),
+    };
+    expect((await newSetup(liveFromRender(first)).loadCurrentValues(NAMESPACE)).imagePullSecrets).toBe(false);
+    printed = [];
+    const current = await newSetup(live).loadCurrentValues(NAMESPACE);
+    expect(current.imagePullSecrets).toBe(true);
+    expect(printed.filter((line) => line.includes('registry-secret'))).toHaveLength(1);
+    expect(printed.join('\n')).not.toContain(REGISTRY_TOKEN);
+  });
+
   describe('a live read that fails (Forbidden on istio-system)', () => {
     const POLICY = `authorizationpolicy ${NAMESPACE}-allowlist-record-test-host`;
     const forbidden = () => {
@@ -665,5 +774,312 @@ describe('the install record', () => {
     expect(stamped.match(/recordedAt/g)).toHaveLength(1);
     expect(stamped).toMatch(/^ {2}recordedAt: "b"$/m);
     expect(stamped).toMatch(/^ {2}recordedBy: "upgrade"$/m);
+  });
+});
+
+// --external-database <secret>: the installation uses a PostgreSQL outside the cluster (SAP BTP
+// "PostgreSQL, hyperscaler option", or any PostgreSQL the Secret describes). The Secret is a
+// service binding's: hostname, port, dbname, username, password, sslrootcert. The default,
+// in-cluster path is pinned byte for byte by kyma-golden.test.ts and must not move.
+describe('setup-kyma.js --external-database', () => {
+  const BINDING = 'pg-binding';
+  const DB_PASSWORD = 'ext-db-password-record-1';
+  const CA = '-----BEGIN CERTIFICATE-----\nMIIBexampleCA\n-----END CERTIFICATE-----\n';
+  const bindingSecret = (over: Record<string, string | undefined> = {}) => {
+    const data: Record<string, string | undefined> = {
+      hostname: '203.0.113.7', port: '5432', dbname: 'ExtDbName', username: 'ext_owner', password: DB_PASSWORD, sslrootcert: CA, ...over,
+    };
+    return secretJson(Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)) as Record<string, string>);
+  };
+  const external = (over: Record<string, string | undefined> = {}): Cluster => ({ [`secret ${BINDING}`]: bindingSecret(over) });
+  const core = (name: string) => path.join(coreDir(), name);
+  const configMapData = (name: string) => {
+    const text = fs.readFileSync(path.join(outputDir(), 'templates/configmaps', `${name}.yaml`), 'utf8');
+    const out: Record<string, string> = {};
+    for (const m of text.matchAll(/^ {2}([A-Za-z_.]+): (.*)$/gm)) out[m[1]] = m[2].startsWith('"') ? JSON.parse(m[2]) : m[2];
+    return out;
+  };
+
+  it('renders no PostgreSQL workload and points the admin service, the gateway and the migrations at the external database over TLS', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { shown } = await run(GITHUB_RUN, external());
+    // The database user and password come from the binding: neither is asked.
+    expect(shown.map((q) => q.id)).not.toEqual(expect.arrayContaining(['POSTGRES_USER']));
+    expect(shown.map((q) => q.id)).not.toEqual(expect.arrayContaining(['POSTGRES_PASSWORD']));
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(false);
+
+    const gateway = stringData(path.join(secretsDir(), 'gateway-env.yaml'));
+    expect(gateway.FILE_SEARCH_DATABASE_URL).toMatch(/^postgresql:\/\/file_search_app:[^@]+@203\.0\.113\.7:5432\/ExtDbName\?sslmode=no-verify$/);
+    const migration = stringData(path.join(secretsDir(), 'gateway-migration-env.yaml'));
+    expect(migration.FILE_SEARCH_MIGRATION_DATABASE_URL).toBe(`postgresql://ext_owner:${DB_PASSWORD}@203.0.113.7:5432/ExtDbName?sslmode=no-verify`);
+    // The CA for both file-search connections: a gateway that knows the setting verifies the
+    // server certificate against it (dbTls.ts); the DSN's no-verify serves an older image.
+    expect(gateway.FILE_SEARCH_DATABASE_CA).toBe(CA);
+    expect(migration.FILE_SEARCH_DATABASE_CA).toBe(CA);
+    const admin = stringData(path.join(secretsDir(), 'admin-env.yaml'));
+    expect(admin.DATABASE_URL).toBe(`postgres://ext_owner:${DB_PASSWORD}@203.0.113.7:5432/ExtDbName`);
+    expect(admin['cds.requires.db.credentials.password']).toBe(DB_PASSWORD);
+    expect(admin['cds.requires.db.credentials.sslrootcert']).toBe(CA);
+    const adminConfig = configMapData('admin-config');
+    expect(adminConfig['cds.requires.db.credentials.host']).toBe('203.0.113.7');
+    expect(String(adminConfig['cds.requires.db.credentials.port'])).toBe('5432');
+    expect(adminConfig['cds.requires.db.credentials.database']).toBe('ExtDbName');
+    expect(adminConfig['cds.requires.db.credentials.user']).toBe('ext_owner');
+
+    // The pods wait for the external host, not for the Service of a PostgreSQL pod that does not exist.
+    for (const file of [core('admin.yaml'), path.join(outputDir(), 'manifests/upgrade/migrate-jobs.yaml')]) {
+      const text = fs.readFileSync(file, 'utf8');
+      expect(text).toContain('nc -z 203.0.113.7 5432');
+      expect(text).not.toContain('POSTGRES_SERVICE_HOST');
+    }
+    // The record names the Secret, never a credential; nothing prints the password.
+    const record = recordData(fs.readFileSync(recordFile(), 'utf8'));
+    expect(JSON.parse(record.answers).externalDatabase).toBe(BINDING);
+    expect(fs.readFileSync(recordFile(), 'utf8')).not.toContain(DB_PASSWORD);
+    expect(printed.join('\n')).not.toContain(DB_PASSWORD);
+  });
+
+  it('a new installation is asked for the database, in-cluster by default; answering External asks for the Secret', async () => {
+    const { shown } = await run({ ...GITHUB_RUN, databaseMode: 'external', externalDatabaseSecret: BINDING }, external());
+    const mode = shown.find((q) => q.id === 'databaseMode')!;
+    expect(mode).toMatchObject({ type: 'list', default: 'in-cluster' });
+    expect(shown.map((q) => q.id)).toEqual(expect.arrayContaining(['externalDatabaseSecret']));
+    expect(shown.map((q) => q.id)).not.toEqual(expect.arrayContaining(['POSTGRES_USER']));
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(false);
+    expect(stringData(path.join(secretsDir(), 'admin-env.yaml')).DATABASE_URL).toContain('@203.0.113.7:5432/ExtDbName');
+  });
+
+  it('an installed namespace is not asked: it keeps its in-cluster database', async () => {
+    const { setup: first } = await run(GITHUB_RUN);
+    const { shown } = await run(GITHUB_RUN, liveFromRender(first));
+    expect(shown.map((q) => q.id)).not.toEqual(expect.arrayContaining(['databaseMode']));
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(true);
+  });
+
+  it('a re-run without the flag stays external: the record names the Secret', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { setup: first } = await run(GITHUB_RUN, external());
+    const live = { ...liveFromRender(first), ...external() };
+    setupOptions = {};
+    await run(GITHUB_RUN, live);
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(false);
+    expect(stringData(path.join(secretsDir(), 'admin-env.yaml')).DATABASE_URL).toContain('@203.0.113.7:5432/ExtDbName');
+  });
+
+  // Where the database is, is a fact about the installation, not a default for a question: --force
+  // (no defaults from the existing configuration) and --ci (no prompt session) must find it too.
+  // They did not: without the flag such a re-run went on to render an in-cluster PostgreSQL for an
+  // installation whose data lives outside, and with the flag it was refused as "in-cluster".
+  it('a --force re-run of an external installation stays external, with the flag and without it', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { setup: first } = await run(GITHUB_RUN, external());
+    const live = { ...liveFromRender(first), ...external() };
+
+    for (const flag of [{}, { externalDatabase: BINDING }]) {
+      removeRender();
+      printed.length = 0;
+      setupOptions = { forceOverwrite: true, ...flag };
+      await run(GITHUB_RUN, live);
+      expect(fs.existsSync(core('postgres.yaml'))).toBe(false);
+      expect(stringData(path.join(secretsDir(), 'admin-env.yaml')).DATABASE_URL).toContain('@203.0.113.7:5432/ExtDbName');
+      expect(JSON.parse(recordData(fs.readFileSync(recordFile(), 'utf8')).answers).externalDatabase).toBe(BINDING);
+    }
+  });
+
+  it('a --force re-run of an external installation without an install record is refused without the flag', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { setup: first } = await run(GITHUB_RUN, external());
+    const live = { ...liveFromRender(first, { withRecord: false }), ...external() };
+    removeRender();
+    printed.length = 0;
+    setupOptions = { forceOverwrite: true };
+    await expect(run(GITHUB_RUN, live)).rejects.toThrow(/uses an external database.*--external-database/);
+    expect(listFiles(outputRoot)).toEqual([]);
+  });
+
+  // The unattended run asks its SAP AI Core question outside the scripted session, so this takes
+  // its database step alone: the same call the interactive run makes.
+  it('an unattended (--ci) re-run finds the external database, with the flag and without it', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { setup: first } = await run(GITHUB_RUN, external());
+    const live = { ...liveFromRender(first), ...external() };
+
+    for (const flag of [{}, { externalDatabase: BINDING }]) {
+      setupOptions = { ciMode: true, ...flag };
+      const setup = newSetup(live);
+      await setup.loadExistingKeys();
+      await setup.selectDatabase(await setup.readDatabaseLocation());
+      expect(setup.externalDb).toMatchObject({ secretName: BINDING, host: '203.0.113.7' });
+    }
+
+    // Without an install record and without the flag it stops, as the interactive run does.
+    setupOptions = { ciMode: true };
+    const unrecorded = newSetup({ ...liveFromRender(first, { withRecord: false }), ...external() });
+    await unrecorded.loadExistingKeys();
+    await expect(unrecorded.readDatabaseLocation().then((location: unknown) => unrecorded.selectDatabase(location)))
+      .rejects.toThrow(/uses an external database.*--external-database/);
+  });
+
+  it('an external installation without an install record: a re-run without the flag is refused, with the flag it stays external', async () => {
+    setupOptions = { externalDatabase: BINDING };
+    const { setup: first } = await run(GITHUB_RUN, external());
+    const live = { ...liveFromRender(first, { withRecord: false }), ...external() };
+    removeRender();
+    setupOptions = {};
+    await expect(run(GITHUB_RUN, live)).rejects.toThrow(/uses an external database.*--external-database/);
+    expect(listFiles(outputRoot)).toEqual([]);
+    printed.length = 0; // run() reads the failure line of the run before
+    setupOptions = { externalDatabase: BINDING };
+    await run(GITHUB_RUN, live);
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(false);
+  });
+
+  describe('reconnecting an external installation to another binding (a restored instance)', () => {
+    const OTHER = 'pg-binding-restored';
+    const restored = () => secretJson({
+      hostname: '203.0.113.99', port: '5432', dbname: 'ExtDbName', username: 'restored_owner', password: 'restored-db-password-1', sslrootcert: CA,
+    });
+    const marker = () => path.join(outputDir(), 'templates', 'database-reconnect.json');
+    async function installed(): Promise<Cluster> {
+      setupOptions = { externalDatabase: BINDING };
+      const { setup: first } = await run(GITHUB_RUN, external());
+      return { ...liveFromRender(first), ...external(), [`secret ${OTHER}`]: restored() };
+    }
+
+    it('is refused unless confirmed: nothing is rendered for the other database', async () => {
+      const live = await installed();
+      const before = fs.readFileSync(path.join(secretsDir(), 'admin-env.yaml'), 'utf8');
+      setupOptions = { externalDatabase: OTHER };
+      printed.length = 0;
+      await expect(run(GITHUB_RUN, live)).rejects.toThrow(/pg-binding.*pg-binding-restored|reconnect/i);
+      expect(fs.readFileSync(path.join(secretsDir(), 'admin-env.yaml'), 'utf8')).toBe(before);
+      expect(fs.existsSync(marker())).toBe(false);
+    });
+
+    it('confirmed: the render points at the other database, the record names its Secret, and a marker tells the deploy the change is meant', async () => {
+      const live = await installed();
+      setupOptions = { externalDatabase: OTHER };
+      printed.length = 0;
+      const { shown } = await run({ ...GITHUB_RUN, confirmDatabaseReconnect: true }, live);
+      expect(shown.find((q) => q.id === 'confirmDatabaseReconnect')).toMatchObject({ type: 'confirm', default: false });
+      const admin = stringData(path.join(secretsDir(), 'admin-env.yaml'));
+      expect(admin.DATABASE_URL).toBe('postgres://restored_owner:restored-db-password-1@203.0.113.99:5432/ExtDbName');
+      expect(JSON.parse(recordData(fs.readFileSync(recordFile(), 'utf8')).answers).externalDatabase).toBe(OTHER);
+      expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ from: BINDING, to: OTHER });
+      // The file-search runtime role keeps its password: a restored instance holds the role.
+      const liveDsn = Buffer.from(JSON.parse(String(live['secret gateway-env']())).data.FILE_SEARCH_DATABASE_URL, 'base64').toString();
+      const before = /file_search_app:([^@]+)@/.exec(liveDsn)![1];
+      expect(stringData(path.join(secretsDir(), 'gateway-env.yaml')).FILE_SEARCH_DATABASE_URL).toContain(`file_search_app:${before}@203.0.113.99:5432/ExtDbName`);
+      expect(printed.join('\n')).not.toContain('restored-db-password-1');
+    });
+
+    it('a later run without a change removes the marker', async () => {
+      const live = await installed();
+      setupOptions = { externalDatabase: OTHER };
+      printed.length = 0;
+      const { setup: second } = await run({ ...GITHUB_RUN, confirmDatabaseReconnect: true }, live);
+      expect(fs.existsSync(marker())).toBe(true);
+      const liveAfter = { ...liveFromRender(second), ...external(), [`secret ${OTHER}`]: restored() };
+      setupOptions = {};
+      printed.length = 0;
+      await run(GITHUB_RUN, liveAfter);
+      expect(fs.existsSync(marker())).toBe(false);
+      expect(stringData(path.join(secretsDir(), 'admin-env.yaml')).DATABASE_URL).toContain('@203.0.113.99:5432/');
+    });
+  });
+
+  // The binding Secret the installation already uses can come to hold other values: SAP's
+  // operator renews a binding's credentials, or the binding is deleted and created again under
+  // the same name. That used to be a dead end: the setup refused the changed user and password
+  // ("its volume keeps the user and password"), and the deploy refused changed database values
+  // unless the Secret had another name.
+  describe('the binding Secret in use holds other values (a renewed or re-created binding)', () => {
+    const marker = () => path.join(outputDir(), 'templates', 'database-reconnect.json');
+    const RENEWED_PASSWORD = 'ext-db-password-renewed-2';
+    const renewed = () => external({ username: 'ext_owner_2', password: RENEWED_PASSWORD });
+    async function installed(): Promise<Cluster> {
+      setupOptions = { externalDatabase: BINDING };
+      const { setup: first } = await run(GITHUB_RUN, external());
+      setupOptions = {};
+      printed.length = 0;
+      return liveFromRender(first);
+    }
+
+    it('unchanged: no question and no marker', async () => {
+      const live = await installed();
+      const { shown } = await run(GITHUB_RUN, { ...live, ...external() });
+      expect(shown.map((q) => q.id)).not.toEqual(expect.arrayContaining(['confirmDatabaseChange']));
+      expect(fs.existsSync(marker())).toBe(false);
+    });
+
+    it('other credentials: asked, default no; declined, nothing is rendered for them', async () => {
+      const live = await installed();
+      const before = fs.readFileSync(path.join(secretsDir(), 'admin-env.yaml'), 'utf8');
+      await expect(run(GITHUB_RUN, { ...live, ...renewed() })).rejects.toThrow(/pg-binding.*credentials.*not confirmed/i);
+      expect(fs.readFileSync(path.join(secretsDir(), 'admin-env.yaml'), 'utf8')).toBe(before);
+      expect(fs.existsSync(marker())).toBe(false);
+      expect(printed.join('\n')).not.toContain(RENEWED_PASSWORD);
+    });
+
+    it('other credentials, confirmed: rendered with them, and the marker tells the deploy the change is meant', async () => {
+      const live = await installed();
+      const { shown } = await run({ ...GITHUB_RUN, confirmDatabaseChange: true }, { ...live, ...renewed() });
+      expect(shown.find((q) => q.id === 'confirmDatabaseChange')).toMatchObject({ type: 'confirm', default: false });
+      const admin = stringData(path.join(secretsDir(), 'admin-env.yaml'));
+      expect(admin.DATABASE_URL).toBe(`postgres://ext_owner_2:${RENEWED_PASSWORD}@203.0.113.7:5432/ExtDbName`);
+      expect(stringData(path.join(secretsDir(), 'gateway-migration-env.yaml')).FILE_SEARCH_MIGRATION_DATABASE_URL)
+        .toBe(`postgresql://ext_owner_2:${RENEWED_PASSWORD}@203.0.113.7:5432/ExtDbName?sslmode=no-verify`);
+      expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ from: BINDING, to: BINDING });
+      expect(JSON.parse(recordData(fs.readFileSync(recordFile(), 'utf8')).answers).externalDatabase).toBe(BINDING);
+      expect(printed.join('\n')).not.toContain(RENEWED_PASSWORD);
+    });
+
+    it('another database under the same name: the question names both addresses', async () => {
+      const live = await installed();
+      const moved = external({ hostname: '203.0.113.50' });
+      const { shown } = await run({ ...GITHUB_RUN, confirmDatabaseChange: true }, { ...live, ...moved });
+      const question = shown.find((q) => q.id === 'confirmDatabaseChange') as any;
+      expect(question).toMatchObject({ type: 'confirm', default: false });
+      expect(stringData(path.join(secretsDir(), 'admin-env.yaml')).DATABASE_URL).toContain('@203.0.113.50:5432/ExtDbName');
+      expect(fs.existsSync(marker())).toBe(true);
+    });
+
+    it('unattended (--ci): refused, the change needs a confirmation', async () => {
+      const live = await installed();
+      setupOptions = { ciMode: true };
+      const setup = newSetup({ ...live, ...renewed() });
+      await setup.loadExistingKeys();
+      await expect(setup.readDatabaseLocation().then((location: unknown) => setup.selectDatabase(location)))
+        .rejects.toThrow(/pg-binding.*confirmation.*unattended/i);
+    });
+  });
+
+  it.each([
+    ['the Secret does not exist', undefined, /pg-binding.*not found/i],
+    ['the Secret lacks the password', { password: undefined }, /pg-binding.*password/],
+    ['the Secret lacks the CA certificate', { sslrootcert: undefined }, /pg-binding.*sslrootcert/],
+    ['the port is no number', { port: 'abc' }, /pg-binding.*port/],
+  ])('refuses before anything is written when %s', async (_name, over, message) => {
+    setupOptions = { externalDatabase: BINDING };
+    const cluster = over === undefined ? {} : external(over as Record<string, string | undefined>);
+    await expect(run(GITHUB_RUN, cluster)).rejects.toThrow(message as RegExp);
+    expect(listFiles(outputRoot)).toEqual([]);
+  });
+
+  it('refuses to move a namespace that runs its in-cluster database, and the reverse', async () => {
+    const { setup: first } = await run(GITHUB_RUN);
+    const liveInCluster = { ...liveFromRender(first), ...external() };
+    setupOptions = { externalDatabase: BINDING };
+    await expect(run(GITHUB_RUN, liveInCluster)).rejects.toThrow(/in-cluster database/);
+  });
+
+  it('without the flag nothing changes: the PostgreSQL workload and the in-cluster addresses are rendered', async () => {
+    await run(GITHUB_RUN);
+    expect(fs.existsSync(core('postgres.yaml'))).toBe(true);
+    expect(stringData(path.join(secretsDir(), 'gateway-env.yaml')).FILE_SEARCH_DATABASE_URL).toMatch(/@postgres:5432\/sap_llm_gateway$/);
+    expect(stringData(path.join(secretsDir(), 'gateway-env.yaml')).FILE_SEARCH_DATABASE_CA).toBeUndefined();
+    expect(stringData(path.join(secretsDir(), 'gateway-migration-env.yaml')).FILE_SEARCH_DATABASE_CA).toBeUndefined();
+    expect(fs.readFileSync(core('admin.yaml'), 'utf8')).toContain('nc -z ${POSTGRES_SERVICE_HOST} ${POSTGRES_SERVICE_PORT}');
+    expect(JSON.parse(recordData(fs.readFileSync(recordFile(), 'utf8')).answers).externalDatabase).toBeUndefined();
   });
 });

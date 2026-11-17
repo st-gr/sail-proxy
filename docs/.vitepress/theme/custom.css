@@ -45,6 +45,13 @@
   --vp-c-border: #2C333B;
   --vp-c-gutter: #2C333B;
   --vp-code-block-bg: #1D232A;
+
+  /* The callouts' light backgrounds above would otherwise stay in dark mode, under light text. */
+  --vp-c-tip-soft: rgba(77, 177, 255, 0.16);     --vp-c-tip-1: #89D1FF;
+  --vp-c-success-soft: rgba(151, 221, 64, 0.14); --vp-c-success-1: #97DD40;
+  --vp-c-warning-soft: rgba(255, 201, 51, 0.14); --vp-c-warning-1: #FFC933;
+  --vp-c-danger-soft: rgba(255, 140, 178, 0.14); --vp-c-danger-1: #FF8CB2;
+
   --vp-button-brand-bg: #4DB1FF;
   --vp-button-brand-hover-bg: #7FC8FF;
   --vp-button-brand-active-bg: #7FC8FF;

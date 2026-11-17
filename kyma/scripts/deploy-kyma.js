@@ -28,6 +28,7 @@ const { runKubectlRead, stderrOf, namespaceExists, readResourceData } = require(
 const { REGISTRY_SECRET_FILE, writeRegistrySecret } = require('./registry-secret');
 const { withSecretsChecksum } = require('./secrets-checksum');
 const { INSTALL_RECORD_FILE, stampInstallRecord } = require('./install-record');
+const { enableVectorExtension } = require('./external-database');
 const { DeployError, stderrFrom } = require('./deploy-error');
 const { runMigrationJobs, MIGRATION_JOBS } = require('./migration-jobs');
 
@@ -79,6 +80,49 @@ async function runCommand(command, description, options = {}) {
     }
     return { success: false, error };
   }
+}
+
+/** The binding Secret an external-database render names in its install record, or null. */
+function externalDatabaseSecretOf(manifestPath) {
+  const file = path.join(manifestPath, 'core', INSTALL_RECORD_FILE);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const answers = JSON.parse(readRenderedStringData(file, 'data').answers || '{}');
+    return typeof answers.externalDatabase === 'string' && answers.externalDatabase ? answers.externalDatabase : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * File search needs the vector extension, which the user of an SAP BTP PostgreSQL may not create:
+ * ask SAP's service API for it before the gateway's migration runs. Any other external database
+ * must have the extension already. A failure is reported with what to do and does not stop the
+ * deploy: the admin service does not need the extension, and the gateway says so when it is missing.
+ */
+async function enableVectorForExternalDatabase(manifestPath, namespace) {
+  const secretName = externalDatabaseSecretOf(manifestPath);
+  if (!secretName) return;
+  if (run.dryRun) {
+    console.log(`(dry run) would enable the vector extension through the service API of Secret ${secretName}`);
+    return;
+  }
+  try {
+    const binding = readResourceData(run.kubectlRead, 'secret', secretName, namespace);
+    if (!binding) throw new Error(`Secret ${secretName} was not found in namespace ${namespace}`);
+    const result = await enableVectorExtension(binding);
+    console.log(result.status === 'enabled'
+      ? '✓ vector extension enabled for the external database (file search)'
+      : `Secret ${secretName} is no SAP BTP service binding: the vector extension must already exist in the database (CREATE EXTENSION vector) for file search to work`);
+  } catch (error) {
+    console.error(`✗ Could not enable the vector extension for the external database: ${error.message}. File search stays unavailable until the extension exists; see "External PostgreSQL" in the Kyma guide.`);
+    failedCommands.push('Enabling the vector extension for the external database');
+  }
+}
+
+/** Whether the render holds the in-cluster PostgreSQL; an external-database render has no such manifest. */
+function rendersInClusterPostgres(manifestPath) {
+  return fs.existsSync(path.join(manifestPath, 'core', 'postgres.yaml'));
 }
 
 async function deployAndWait(service, type, manifestPath, namespace, secretsDir) {
@@ -232,19 +276,60 @@ function refreshApiConfigMap(
 // non-default namespace matches only policies labelled with its own namespace,
 // so it can never reach production's unlabelled allowlist-sail-proxy. The
 // SCC tunnel ALLOW policies (allowlist-cp-*) are never deleted, only re-applied.
-function selectOwnedAllowlistPolicies(policies, namespace) {
+function selectOwnedAllowlistPolicies(policies, namespace, renderedNames = []) {
   return policies
     .filter(policy => {
       const name = policy.metadata?.name || '';
       const owner = policy.metadata?.labels?.[NAMESPACE_LABEL];
       if (isDefaultNamespace(namespace)) {
-        return name.includes('allowlist-sail-proxy') && (owner === undefined || owner === namespace);
+        // The default namespace's policy is `allowlist-<domain>` and carries no label: besides the
+        // historic `allowlist-sail-proxy*` it owns exactly the names its render holds, never another
+        // application's allowlist in istio-system.
+        const ours = name.includes('allowlist-sail-proxy') ||
+          (renderedNames.includes(name) && !name.startsWith('allowlist-cp-'));
+        return ours && (owner === undefined || owner === namespace);
       }
       return owner === namespace &&
         name.startsWith(istioSystemName(namespace, 'allowlist-')) &&
         !name.startsWith(istioSystemName(namespace, 'allowlist-cp-'));
     })
     .map(policy => policy.metadata.name);
+}
+
+/**
+ * The metadata names in a rendered istio-system policy file: documents separated by `---`, as
+ * YAML (what setup-kyma.js writes with yaml.dump) or JSON. Only `metadata.name` counts, not a
+ * `name` under labels or a selector.
+ */
+function renderedAllowlistNames(renderedText) {
+  const names = [];
+  for (const doc of String(renderedText || '').split(/^---\s*$/m)) {
+    if (!doc.trim()) continue;
+    try {
+      const name = JSON.parse(doc)?.metadata?.name;
+      if (typeof name === 'string') names.push(name);
+      continue;
+    } catch {
+      // not JSON: read it as block YAML below
+    }
+    const lines = doc.split(/\r?\n/);
+    const start = lines.findIndex((line) => /^metadata:\s*$/.test(line));
+    if (start === -1) continue;
+    let childIndent = null;
+    for (const line of lines.slice(start + 1)) {
+      if (!line.trim() || /^\s*#/.test(line)) continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent === 0) break;
+      if (childIndent === null) childIndent = indent;
+      if (indent !== childIndent) continue;
+      const match = /^name:\s*(.+?)\s*$/.exec(line.trim());
+      if (match) {
+        names.push(match[1].replace(/^(["'])(.*)\1$/, '$2'));
+        break;
+      }
+    }
+  }
+  return names;
 }
 
 /**
@@ -286,13 +371,12 @@ async function cleanupAndApplyIstioSystemPolicies(templatesPath, namespace) {
     // both the match and the "nothing matched" branch are explicit now.
     const { stdout } = await run.kubectl('kubectl get authorizationpolicies -n istio-system -o json');
     const items = JSON.parse(stdout).items || [];
-    const policies = selectOwnedAllowlistPolicies(items, namespace);
+    const renderedPolicy = path.join(istioSystemManifestsPath, 'authorization-policy.yaml');
+    const renderedText = fs.existsSync(renderedPolicy) ? fs.readFileSync(renderedPolicy, 'utf8') : '';
+    const policies = selectOwnedAllowlistPolicies(items, namespace, renderedAllowlistNames(renderedText));
     if (policies.length > 0) {
       console.log(`Found existing ${namespace} IP allowlist policies: ${policies.join(', ')}`);
-      const renderedPolicy = path.join(istioSystemManifestsPath, 'authorization-policy.yaml');
-      const dropped = fs.existsSync(renderedPolicy)
-        ? droppedAllowlistEntries(items, policies, fs.readFileSync(renderedPolicy, 'utf8'))
-        : [];
+      const dropped = renderedText ? droppedAllowlistEntries(items, policies, renderedText) : [];
       if (dropped.length > 0) {
         console.warn(`⚠️  The live IP allowlist has entries the rendered policy lacks; they are removed now: ${dropped.join(', ')}`);
         console.warn('   Re-run setup-kyma.js (it offers the live list) to keep them.');
@@ -521,6 +605,16 @@ const GUARDED_SECRET_KEYS = {
   'gateway-migration-env': ['FILE_SEARCH_MIGRATION_DATABASE_URL']
 };
 
+// Written by setup-kyma.js next to the rendered Secrets for a confirmed reconnect to another
+// external database; then exactly these protected values may differ from the live ones.
+const DATABASE_RECONNECT_FILE = 'database-reconnect.json';
+const DATABASE_VALUES = new Set([
+  'admin-env/DATABASE_URL', 'admin-env/cds.requires.db.credentials.password',
+  'gateway-env/FILE_SEARCH_DATABASE_URL',
+  'postgres-env/POSTGRES_USER', 'postgres-env/POSTGRES_PASSWORD',
+  'gateway-migration-env/FILE_SEARCH_MIGRATION_DATABASE_URL'
+]);
+
 // stringData of a Secret (or `data` of a ConfigMap) rendered by setup-kyma.js
 // (values plain or JSON-quoted).
 function readRenderedStringData(file, section = 'stringData') {
@@ -614,6 +708,17 @@ function verifyLiveCredentials({ namespace, templatesPath, kubectl = runKubectlR
         !changed.includes('admin-config/SIEM_CREDENTIAL_KEY')) {
       changed.push('admin-config/SIEM_CREDENTIAL_KEY');
     }
+  }
+
+  // A reconnect to another external database, confirmed in setup-kyma.js: the database values
+  // are meant to change. Every other protected value still is.
+  const reconnect = fs.existsSync(path.join(templatesPath, DATABASE_RECONNECT_FILE));
+  if (reconnect) {
+    const database = changed.filter((entry) => DATABASE_VALUES.has(entry));
+    if (database.length > 0) {
+      console.log(`Database reconnect confirmed in setup: these values change with this deploy: ${database.join(', ')}`);
+    }
+    changed.splice(0, changed.length, ...changed.filter((entry) => !DATABASE_VALUES.has(entry)));
   }
 
   if (changed.length > 0) {
@@ -835,7 +940,12 @@ spec:
   
   // Step 1: Deploy data stores first (no dependencies)
   console.log('\n--- Deploying data stores ---');
-  await deployAndWait('postgres', 'statefulset', manifestPath, namespace, secretsPath);
+  if (rendersInClusterPostgres(manifestPath)) {
+    await deployAndWait('postgres', 'statefulset', manifestPath, namespace, secretsPath);
+  } else {
+    console.log('PostgreSQL: not deployed, the installation uses an external database');
+    await enableVectorForExternalDatabase(manifestPath, namespace);
+  }
   await deployAndWait('valkey', 'deployment', manifestPath, namespace, secretsPath);
   
   // Step 2: Deploy Dex (no dependencies)
@@ -1064,6 +1174,9 @@ module.exports = {
   renderApiConfigMap,
   refreshApiConfigMap,
   selectOwnedAllowlistPolicies,
+  renderedAllowlistNames,
+  rendersInClusterPostgres,
+  externalDatabaseSecretOf,
   droppedAllowlistEntries,
   isIngressDenyByDefault,
   renderConnectivityProxyAllow,

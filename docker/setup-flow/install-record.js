@@ -25,6 +25,7 @@ const INSTALL_RECORD_FILE = '.sail-proxy-install.json';
  */
 const SECRET_ANSWER_IDS = Object.freeze([
   'GITHUB_CLIENT_SECRET',
+  'IAS_CLIENT_SECRET',
   'LDAP_BIND_PASSWORD',
   'CLIENT_SECRET',
   'POSTGRES_PASSWORD',

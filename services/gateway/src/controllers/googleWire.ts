@@ -16,6 +16,7 @@ import { getDefaultLogger } from '@libs/logger';
 import { executeAfterPlugins } from '../services/pluginExecutor';
 import { foldInclusiveUsage, foldOrchestrationUsageFor } from '../utils/usageFolding';
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
+import { loggableErrorText, upstreamErrorKind, upstreamErrorText } from '../utils/upstreamErrorLogText';
 import { parseFrame, sseBlock } from '../utils/sseFraming';
 import { geminiError, usageFromGemini } from '../services/googleGeminiService';
 import { mapCachedTokens } from '../responses/orchestrationBridge/cacheBreakpoints';
@@ -48,17 +49,23 @@ function isTransportError(error: any): boolean {
  * Any failure → the status and message a Gemini client is shown (spec 5.9):
  * a translator refusal is 400 INVALID_ARGUMENT naming the offending item, an
  * upstream JSON error is relayed with its own status (SAP's "Subpath ... is not
- * allowed" already IS a 400), and a transport failure is 502.
+ * allowed" already IS a 400), and a transport failure is 502. `logText` is what a log line may
+ * say: the gateway's own text, or for an upstream's own text its status, classification and message cut.
  */
-export async function geminiFailure(error: any): Promise<{ status: number; message: string }> {
-  if (error instanceof UnsupportedGeminiInputError) return { status: 400, message: error.message };
+export async function geminiFailure(error: any): Promise<{ status: number; message: string; logText: string }> {
+  if (error instanceof UnsupportedGeminiInputError) return { status: 400, message: error.message, logText: error.message };
   const upstream = error?.response;
   const status = upstream?.status || error?.status || (isTransportError(error) ? 502 : 500);
   // Streaming requests use responseType:'stream', so on an error status axios
   // hands back a live IncomingMessage; draining it first is what keeps a
   // circular object out of JSON.stringify.
   const body = upstream ? await readUpstreamErrorBody(upstream) : error?.details;
-  return { status, message: upstreamMessage(body) || error?.message || 'request failed' };
+  const fromBody = upstreamMessage(body);
+  const message = fromBody || error?.message || 'request failed';
+  // What a log line may say (upstreamErrorLogText.ts): the message field only, cut; a body that is
+  // plain text is not a message and stays on the console.
+  const logText = fromBody ? upstreamErrorText(status, upstreamErrorKind(body), typeof body === 'string' ? undefined : fromBody) : (error?.message ? loggableErrorText(error) : message);
+  return { status, message, logText };
 }
 
 /**

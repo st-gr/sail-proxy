@@ -2,6 +2,7 @@
 import modelService from './modelService';
 import configService from './configService';
 import { getDefaultLogger } from '@libs/logger';
+import { upstreamErrorKind, upstreamErrorText } from '../utils/upstreamErrorLogText';
 import type { SapV2CompletionResponse, SapV2Usage } from './sapOrchestrationTypes';
 import { fullRatePromptTokens } from '../utils/usageFolding';
 const logger = getDefaultLogger();
@@ -344,7 +345,7 @@ export async function transformSAPResponseToAnthropic(
           try {
             toolInput = JSON.parse(toolCall.function.arguments);
           } catch (e) {
-            logger.warn('AnthropicResponseService', `Failed to parse tool arguments: ${toolCall.function.arguments}`);
+            logger.warn('AnthropicResponseService', 'Failed to parse tool arguments', { arguments: toolCall.function.arguments });
             toolInput = { raw_arguments: toolCall.function.arguments };
           }
         } else {
@@ -426,7 +427,8 @@ export async function transformSAPChunkToAnthropic(
   }
   
   if (chunk.error) {
-    logger.error('AnthropicResponseService', `Error chunk received from SAP AI Core: ${chunk.error}`);
+    logger.error('AnthropicResponseService', `Error chunk received from SAP AI Core: ${upstreamErrorText(typeof chunk.error?.code === 'number' ? chunk.error.code : undefined, upstreamErrorKind(chunk.error), typeof chunk.error === 'object' ? chunk.error.message : chunk.error)}`, undefined,
+      { upstreamMessage: typeof chunk.error === 'object' ? chunk.error.message : chunk.error });
     return { 
       event: { 
         type: "error", 

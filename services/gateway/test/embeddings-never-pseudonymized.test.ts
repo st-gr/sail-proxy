@@ -20,7 +20,7 @@ jest.mock('@libs/logger', () => ({
 const shippedHooks = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'api_config.json'), 'utf-8'),
 ).api_config.hooks;
-const mockConfig: any = { api_config: { hooks: shippedHooks, models: { overrides: {} }, observability: {} } };
+const mockConfig: any = { api_config: { hooks: shippedHooks, models: { overrides: {} }, observability: { pseudonymization: { enabled: true } } } };
 jest.mock('../src/services/configService', () => {
   const svc = {
     getConfig: () => mockConfig,

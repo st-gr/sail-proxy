@@ -100,7 +100,7 @@ function forcedConfig() {
   for (const entry of Object.values(hooks.defaults) as any[]) {
     if (entry?.pseudonymization) entry.pseudonymization.enabled = true;
   }
-  return { hooks, models: { overrides: {} as Record<string, any> }, observability: {} };
+  return { hooks, models: { overrides: {} as Record<string, any> }, observability: { pseudonymization: { enabled: true } } };
 }
 
 beforeEach(() => {

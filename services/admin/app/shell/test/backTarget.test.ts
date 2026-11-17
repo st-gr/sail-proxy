@@ -24,6 +24,9 @@ describe('backTargetRoute', () => {
   it('plugins returns to its one screen', () => {
     expect(backTargetRoute('anything', 'plugins')).toBe('pluginsList');
   });
+  it('logs returns to its one screen', () => {
+    expect(backTargetRoute('anything', 'logs')).toBe('logsList');
+  });
   it('no target for an unknown app key', () => {
     expect(backTargetRoute('detail', 'nope')).toBeUndefined();
   });

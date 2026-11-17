@@ -204,6 +204,152 @@ describe('kyma namespace helpers', () => {
   });
 });
 
+describe('external database: the setup flag and the deploy step', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { parseExternalDatabaseArg } = require('../../../kyma/scripts/external-database.js');
+
+  it('--external-database takes the name of the binding Secret, in both spellings', () => {
+    expect(parseExternalDatabaseArg(['--ci'])).toBeNull();
+    expect(parseExternalDatabaseArg(['--external-database', 'pg-binding'])).toBe('pg-binding');
+    expect(parseExternalDatabaseArg(['--namespace', 'x', '--external-database=pg.binding-2'])).toBe('pg.binding-2');
+  });
+
+  it.each([
+    [['--external-database']],
+    [['--external-database', '--ci']],
+    [['--external-database=']],
+    [['--external-database', 'Not_A_Secret_Name']],
+  ])('refuses %j', (args) => {
+    expect(() => parseExternalDatabaseArg(args as string[])).toThrow(/--external-database/);
+  });
+
+  it('the deploy runs the PostgreSQL step only when the render holds its manifest', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kyma-extdb-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'core'), { recursive: true });
+      expect(deployKyma.rendersInClusterPostgres(dir)).toBe(false);
+      fs.writeFileSync(path.join(dir, 'core', 'postgres.yaml'), 'kind: StatefulSet\n');
+      expect(deployKyma.rendersInClusterPostgres(dir)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('external database: the deploy enables the vector extension through SAP\'s service API', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const ext = require('../../../kyma/scripts/external-database.js');
+  const binding = (over: Record<string, string | undefined> = {}) => {
+    const data: Record<string, string | undefined> = {
+      hostname: '203.0.113.7', port: '5432', dbname: 'ExtDbName', username: 'u', password: 'p-0001',
+      instance_guid: '11111111-2222-3333-4444-555555555555',
+      urls: JSON.stringify({ api_server: 'https://api.example.test' }),
+      clientcert: '-----BEGIN CERTIFICATE-----\nchain\n-----END CERTIFICATE-----\n',
+      clientkey: 'invented-client-key-material-0001',
+      ...over,
+    };
+    return Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+  };
+
+  it('builds the call from the binding: instance, database, client certificate', () => {
+    expect(ext.extensionRequest(binding())).toEqual({
+      url: 'https://api.example.test/v1/postgresql-db/instances/11111111-2222-3333-4444-555555555555/extensions/vector',
+      body: JSON.stringify({ database: 'ExtDbName' }),
+      cert: expect.stringContaining('BEGIN CERTIFICATE'),
+      key: 'invented-client-key-material-0001',
+    });
+  });
+
+  it.each([
+    ['no API address', { urls: undefined }],
+    ['an API address that is no https URL', { urls: JSON.stringify({ api_server: 'http://api.example.test' }) }],
+    ['unreadable urls', { urls: '{not json' }],
+    ['no client certificate', { clientcert: undefined }],
+    ['no instance id', { instance_guid: undefined }],
+  ])('a Secret with %s is no SAP binding: nothing is called', async (_n, over) => {
+    expect(ext.extensionRequest(binding(over as Record<string, string | undefined>))).toBeNull();
+    const request = jest.fn();
+    await expect(ext.enableVectorExtension(binding(over as Record<string, string | undefined>), { request })).resolves.toEqual({ status: 'skipped' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('a success answer means enabled', async () => {
+    const request = jest.fn(async () => ({ status: 201, body: '{"status":"succeeded"}' }));
+    await expect(ext.enableVectorExtension(binding(), { request })).resolves.toEqual({ status: 'enabled' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refusal is an error that names the status and never the key or the password', async () => {
+    const request = jest.fn(async () => ({ status: 403, body: 'forbidden for invented-client-key-material-0001 p-0001' }));
+    const failure = await ext.enableVectorExtension(binding(), { request }).catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/403/);
+    expect((failure as Error).message).not.toMatch(/invented-client-key-material-0001|p-0001/);
+  });
+
+  it('the deploy finds the binding Secret of an external installation in the rendered install record', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kyma-extdb-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'core'), { recursive: true });
+      expect(deployKyma.externalDatabaseSecretOf(dir)).toBeNull();
+      const record = (answers: unknown) => `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sail-proxy-install\ndata:\n  version: "1.2.3"\n  answers: ${JSON.stringify(JSON.stringify(answers))}\n`;
+      fs.writeFileSync(path.join(dir, 'core', 'install-record.yaml'), record({ provider: 'local' }));
+      expect(deployKyma.externalDatabaseSecretOf(dir)).toBeNull();
+      fs.writeFileSync(path.join(dir, 'core', 'install-record.yaml'), record({ provider: 'local', externalDatabase: 'pg-binding' }));
+      expect(deployKyma.externalDatabaseSecretOf(dir)).toBe('pg-binding');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('external database: the deploy lets a confirmed reconnect change the database values, and nothing else', () => {
+  const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+  const liveSecrets: Record<string, Record<string, string>> = {
+    'admin-env': { VALIDATION_TOKEN_SECRET: 'v-1', DATABASE_URL: 'postgres://old:old-pw@203.0.113.7:5432/Db', 'cds.requires.db.credentials.password': 'old-pw' },
+    'gateway-env': { VALIDATION_TOKEN_SECRET: 'v-1', FILE_SEARCH_DATABASE_URL: 'postgresql://file_search_app:r-pw@203.0.113.7:5432/Db?sslmode=no-verify' },
+    'postgres-env': { POSTGRES_USER: 'old', POSTGRES_PASSWORD: 'old-pw' },
+    'gateway-migration-env': { FILE_SEARCH_MIGRATION_DATABASE_URL: 'postgresql://old:old-pw@203.0.113.7:5432/Db?sslmode=no-verify' },
+  };
+  const kubectl = (args: string[]) => {
+    if (args[0] === 'get' && args[1] === 'namespace') return 'namespace/x\n';
+    if (args[0] === 'get' && args[1] === 'secret' && liveSecrets[args[2]]) {
+      return JSON.stringify({ data: Object.fromEntries(Object.entries(liveSecrets[args[2]]).map(([k, v]) => [k, b64(v)])) });
+    }
+    const error = new Error('NotFound') as Error & { stderr: string };
+    error.stderr = `Error from server (NotFound): ${args[1]}s "${args[2]}" not found\n`;
+    throw error;
+  };
+  function render(validationSecret: string, withMarker: boolean) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kyma-reconnect-'));
+    fs.mkdirSync(path.join(dir, 'secrets'), { recursive: true });
+    const secret = (name: string, data: Record<string, string>) => fs.writeFileSync(path.join(dir, 'secrets', `${name}.yaml`),
+      `apiVersion: v1\nkind: Secret\nmetadata:\n  name: ${name}\nstringData:\n${Object.entries(data).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}\n`);
+    secret('admin-env', { VALIDATION_TOKEN_SECRET: validationSecret, DATABASE_URL: 'postgres://new:new-pw@203.0.113.99:5432/Db', 'cds.requires.db.credentials.password': 'new-pw' });
+    secret('gateway-env', { VALIDATION_TOKEN_SECRET: validationSecret, FILE_SEARCH_DATABASE_URL: 'postgresql://file_search_app:r-pw@203.0.113.99:5432/Db?sslmode=no-verify' });
+    secret('postgres-env', { POSTGRES_USER: 'new', POSTGRES_PASSWORD: 'new-pw' });
+    secret('gateway-migration-env', { FILE_SEARCH_MIGRATION_DATABASE_URL: 'postgresql://new:new-pw@203.0.113.99:5432/Db?sslmode=no-verify' });
+    if (withMarker) fs.writeFileSync(path.join(dir, 'database-reconnect.json'), JSON.stringify({ from: 'a', to: 'b' }));
+    return dir;
+  }
+  const check = (dir: string) => deployKyma.verifyLiveCredentials({ namespace: 'x', templatesPath: dir, kubectl });
+
+  it('without the marker a changed database is refused, as before', () => {
+    expect(() => check(render('v-1', false))).toThrow(/DATABASE_URL/);
+  });
+
+  it('with the marker the database values may change', () => {
+    expect(() => check(render('v-1', true))).not.toThrow();
+  });
+
+  it('with the marker any other protected value is still refused', () => {
+    const failure = (() => { try { check(render('v-2', true)); return null; } catch (e) { return e as Error; } })();
+    expect(failure).not.toBeNull();
+    expect(failure!.message).toMatch(/VALIDATION_TOKEN_SECRET/);
+    expect(failure!.message).not.toMatch(/DATABASE_URL/);
+  });
+});
+
 describe('setup-kyma.js namespace selection', () => {
   it('rejects an invalid namespace instead of rendering it', () => {
     expect(() => new KymaSetup({ namespace: 'Bad_Namespace' })).toThrow();
@@ -551,6 +697,62 @@ describe('deploy-kyma.js namespace handling', () => {
 
   it('never matches another namespace\'s policies when deploying the default namespace', () => {
     expect(deployKyma.selectOwnedAllowlistPolicies(LIVE_POLICIES, 'sail-proxy')).toEqual(['allowlist-sail-proxy']);
+  });
+
+  it('a default-namespace install on another domain owns the policy its render names, and no foreign allowlist', () => {
+    // The default namespace's policy is `allowlist-<domain>` without a label. With a domain that does not
+    // start with "sail-proxy" the deploy did not recognise its own policy: it was not removed before the
+    // re-apply and the dropped-entries warning never fired.
+    const live = [...LIVE_POLICIES, policy('allowlist-llm-gw'), policy('allowlist-voxtral'), policy('allowlist-llm-gw', { 'sail-proxy/namespace': 'someone-else' })];
+    const rendered = JSON.stringify({ kind: 'AuthorizationPolicy', metadata: { name: 'allowlist-llm-gw', namespace: 'istio-system' } }, null, 2);
+    expect(deployKyma.renderedAllowlistNames(rendered)).toEqual(['allowlist-llm-gw']);
+    const owned = deployKyma.selectOwnedAllowlistPolicies(live, 'sail-proxy', deployKyma.renderedAllowlistNames(rendered));
+    // the unlabelled allowlist-llm-gw once; the copy labelled for another namespace is not ours
+    expect(owned.sort()).toEqual(['allowlist-llm-gw', 'allowlist-sail-proxy']);
+    expect(owned).not.toContain('allowlist-voxtral');
+    // a rendered SCC tunnel policy is never part of the delete-and-reapply set
+    expect(deployKyma.selectOwnedAllowlistPolicies(live, 'sail-proxy', ['allowlist-cp-tunnel'])).toEqual(['allowlist-sail-proxy']);
+  });
+
+  it('reads the policy names from the YAML setup-kyma.js writes (yaml.dump), also with several documents and a quoted name', () => {
+    // The first version parsed each document as JSON: the real render is YAML, so no name was
+    // found and the default-namespace fix above never took effect on a deploy.
+    const rendered = [
+      'apiVersion: security.istio.io/v1',
+      'kind: AuthorizationPolicy',
+      'metadata:',
+      '  name: allowlist-llm-gw',
+      '  namespace: istio-system',
+      'spec:',
+      '  action: ALLOW',
+      '  rules:',
+      '    - to:',
+      '        - operation:',
+      '            hosts:',
+      '              - llm-gw.c-example1.kyma.ondemand.com',
+      '      when:',
+      '        - key: source.ip',
+      '          values:',
+      '            - 198.51.100.0/24',
+      '---',
+      'apiVersion: security.istio.io/v1',
+      'kind: AuthorizationPolicy',
+      'metadata:',
+      '  labels:',
+      '    name: not-the-policy-name',
+      '  namespace: istio-system',
+      '  name: "allowlist-second"',
+      'spec:',
+      '  selector:',
+      '    matchLabels:',
+      '      name: not-a-policy-name-either',
+      '',
+    ].join('\n');
+    expect(deployKyma.renderedAllowlistNames(rendered)).toEqual(['allowlist-llm-gw', 'allowlist-second']);
+    const live = [...LIVE_POLICIES, policy('allowlist-llm-gw'), policy('allowlist-voxtral')];
+    expect(deployKyma.selectOwnedAllowlistPolicies(live, 'sail-proxy', deployKyma.renderedAllowlistNames(rendered)).sort())
+      .toEqual(['allowlist-llm-gw', 'allowlist-sail-proxy']);
+    expect(deployKyma.renderedAllowlistNames('')).toEqual([]);
   });
 
   it('names the live allowlist entries the rendered policy would drop (deploy deletes and re-applies it)', () => {

@@ -3,6 +3,7 @@ import { EmbeddingRequest, EmbeddingResponse, SAPEmbeddingRequest, SAPEmbeddingR
 import sapAIService from '../services/sapAIService';
 import modelService from '../services/modelService';
 import { getDefaultLogger } from '@libs/logger';
+import { loggableErrorText, upstreamTextMeta } from '../utils/upstreamErrorLogText';
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { enforceEntitlement } from '../utils/modelEntitlement';
 import { resolveExternalTarget } from '../upstreams/externalTarget';
@@ -136,7 +137,7 @@ export const handleEmbedding = async (req: EmbeddingRequestExtended, res: Respon
       // Call SAP AI Core embedding service
       sapResponse = await sapAIService.createEmbedding(sapRequest, model);
     } catch (error: any) {
-      logger.error('EmbeddingController', `SAP AI Core embedding error: ${error.message}`);
+      logger.error('EmbeddingController', `SAP AI Core embedding error: ${loggableErrorText(error)}`, undefined, upstreamTextMeta(error));
       // An upstream 4xx (e.g. SAP's 300000-token request limit) can never succeed on retry: pass it on.
       if (typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
         res.status(error.status).json({
@@ -189,7 +190,7 @@ export const handleEmbedding = async (req: EmbeddingRequestExtended, res: Respon
     res.json(openaiResponse);
 
   } catch (error: any) {
-    logger.error('EmbeddingController', `Unhandled error: ${error.message}`);
+    logger.error('EmbeddingController', `Unhandled error: ${loggableErrorText(error)}`, undefined, upstreamTextMeta(error));
     next(error);
   }
 };

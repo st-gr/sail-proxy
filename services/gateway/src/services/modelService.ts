@@ -176,7 +176,7 @@ async function _fetchDeployments(token: string): Promise<any[]> {
   } catch (error: any) {
     logger.error('ModelService', `Error fetching deployments from SAP AI Core: ${error.message}`);
     if (error.response) {
-      logger.error('ModelService', `Deployment fetch error - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data, null, 2)}`);
+      logger.error('ModelService', `Deployment fetch error - Status: ${error.response.status}`, undefined, { data: error.response.data });
     }
     // Don't let this error stop the getModels function, return empty array
     return [];
@@ -610,6 +610,31 @@ async function fetchSapModels(
 }
 
 /**
+ * Names a rebuilt list did not hold, with the time of that rebuild. A lookup that misses
+ * rebuilds the list once, in case the model was deployed a moment ago; without this note it did
+ * so on EVERY lookup, and routes ask for a model's `<model>--deployed` twin on each request
+ * although most models have none (measured 2026-11-12: one rebuild, about 0.6 s, per
+ * /responses request for gpt-5.5). A noted name is looked for again after a minute.
+ */
+const recentMisses = new Map<string, number>();
+const MISS_RECHECK_MS = 60_000;
+const MAX_RECENT_MISSES = 1000;
+
+function isRecentMiss(modelId: string): boolean {
+  const missedAt = recentMisses.get(modelId);
+  if (missedAt === undefined) return false;
+  if (Date.now() - missedAt < MISS_RECHECK_MS) return true;
+  recentMisses.delete(modelId);
+  return false;
+}
+
+function noteMiss(modelId: string): void {
+  // Bounded: names come from requests, and a client can send any number of them.
+  if (recentMisses.size >= MAX_RECENT_MISSES) recentMisses.clear();
+  recentMisses.set(modelId, Date.now());
+}
+
+/**
  * Get a specific model by ID from SAP AI Core
  * @param modelId - The ID of the model to retrieve (this is the OpenAI formatted ID)
  * @param forceRefresh - Force refresh the cache
@@ -628,6 +653,8 @@ export async function getModelById(modelId: string, forceRefresh: boolean = fals
   while (attemptCount < 2 && !modelDetail) {
     attemptCount++;
     if (attemptCount > 1) { // If this is a retry
+        // A list rebuilt within the last minute did not hold this name either: no second rebuild.
+        if (isRecentMiss(modelId)) break;
         logger.warn('ModelService', `Model '${modelId}' not found on attempt ${attemptCount-1}. Retrying with cache refresh.`);
         currentForceRefresh = true;
     }
@@ -659,7 +686,10 @@ export async function getModelById(modelId: string, forceRefresh: boolean = fals
       }
     }
     // If we are already forcing refresh and still not found, no need to loop again.
-    if (currentForceRefresh) break;
+    if (currentForceRefresh) {
+      noteMiss(modelId);
+      break;
+    }
   }
 
   // If model still not found after potential retry with refresh
@@ -681,11 +711,18 @@ export async function getModelDetails(modelId: string, forceRefresh: boolean = f
     return null;
   }
   try {
+    // Asked before the lookup, which notes a fresh miss itself: a name already known to be
+    // missing is not warned about again on every request.
+    const knownMissing = isRecentMiss(modelId);
     const model = await getModelById(modelId, forceRefresh);
     if (model) {
       return model;
     }
-    logger.warn('ModelService', `Model details not found for '${modelId}' (neither exact nor base name match).`);
+    if (knownMissing) {
+      logger.debug('ModelService', `Model details not found for '${modelId}' (as within the last minute).`);
+    } else {
+      logger.warn('ModelService', `Model details not found for '${modelId}' (neither exact nor base name match).`);
+    }
     return null;
   } catch (error: any) {
     // Catch errors from getModelById if it throws (e.g., if getModels failed)
@@ -701,6 +738,7 @@ export function clearModelsCache(): void {
   modelsCache.data = null;
   modelsCache.all = null;
   modelsCache.expiresAt = 0;
+  recentMisses.clear();
   logger.info('ModelService', 'Models cache cleared');
 }
 
@@ -713,6 +751,7 @@ export function clearAllCaches(): void {
   modelsCache.data = null;
   modelsCache.all = null;
   modelsCache.expiresAt = 0;
+  recentMisses.clear();
   
   // Clear token cache
   tokenCache.token = null;

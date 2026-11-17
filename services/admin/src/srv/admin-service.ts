@@ -26,6 +26,12 @@ import { backfillNeverExpires } from '../db/data/never-expires-backfill';
 import { backfillEnvironmentTenantOnce, environmentTenant, ensureSapTenantIndexes } from '../db/data/sap-tenant-backfill';
 import { ensureToolUsageIndexes } from '../db/data/tool-usage-indexes';
 import { ensureTeamIndexes } from '../db/data/team-usage-indexes';
+import { ensureGatewayLogIndexes } from '../db/data/gateway-log-indexes';
+import { startGatewayLogIngest } from '../services/gatewayLogIngest';
+import { startPayloadTraceIngest } from '../services/payloadTraceIngest';
+import { startGatewayLogRetention } from '../services/gatewayLogRetention';
+import { startRawCaptureExpiry } from '../services/rawCaptureSessions';
+import { startLoggingSettingsExpiry, loadLoggingSettings } from '../services/loggingSettings';
 import { healSqliteSchema, healableSqliteFile } from '../db/data/sqlite-schema-heal';
 import { backfillNotificationContext } from '../db/data/security-notification-context-backfill';
 import { securityNotificationConfig } from '../config/security-notifications';
@@ -35,10 +41,17 @@ import { notificationStreamService } from './notification-stream';
 import { registerLibraryHandlers, initializeModelLibrary } from './admin-service-library';
 import { registerToolPolicyHandlers } from './admin-service-tool-policies';
 import { registerUserHandlers } from './admin-service-users';
+import { readSapBilling } from './usageSapBilling';
 import { registerQuotaProfileHandlers } from './admin-service-quota-profiles';
 import { registerConnectionHandlers } from './admin-service-connections';
 import { registerTeamHandlers, bindCreatedCredential } from './admin-service-teams';
 import { registerCredentialTeamHandlers } from './admin-service-credential-teams';
+import { registerLoggingSettingsHandlers, LoggingSettingsHandOver } from './admin-service-logging-settings';
+import { registerLogDeleteHandlers } from './admin-service-log-delete';
+import { registerGatewayLogSearch } from './gateway-log-search';
+import { registerPayloadTraceSearch } from './payload-trace-search';
+import { registerTraceHandlers, traceDownloadRouter } from './admin-service-traces';
+import { registerRawCaptureHandlers } from './admin-service-raw-capture';
 import { adminTeamIdsOf, isTeamAdmin } from '../services/teamLookups';
 import { touch as touchUser, backfillUsers, migrateCatalogAssignments, isServiceKeyEmail } from '../services/usersService';
 import { isDeactivated } from '../services/userLifecycleService';
@@ -64,6 +77,7 @@ const configRestApi = require('./config-rest-api');
 const groundingRestApi = require('./grounding-rest-api');
 const pluginsRestApi = require('./plugins-rest-api');
 const versionRestApi = require('./version-rest-api');
+const { gatewayLogExportRouter } = require('./admin-service-logs');
 
 // Initialize logger
 const logger = getDefaultLogger();
@@ -195,6 +209,12 @@ class AdminService {
     // status and the Fiori apps with it. No-op on PostgreSQL and on in-memory test databases.
     await this.healLocalSqliteSchema();
 
+    // The logging settings laid over every configuration handed to the gateway are kept in memory
+    // (services/loggingSettings.ts): load them before the first hand-over can happen. The start-up
+    // event and the answer to a starting gateway wait for this load; requests come only after init.
+    // A failed load is logged inside and leaves "nothing set" until the expiry check loads them.
+    await loadLoggingSettings();
+
     // ========================================
     // Add global request debugging
     // ========================================
@@ -242,7 +262,7 @@ class AdminService {
     // Virtual fields are now defined in CDS annotations
     
     // Initialize configuration service
-    configurationService(service);
+    const configService = configurationService(service);
 
     // Model Library and entitlement catalogs (srv/admin-service-library.ts)
     registerLibraryHandlers(service);
@@ -257,12 +277,24 @@ class AdminService {
     // Teams: draft editing, pool virtuals, row filter, delete guard (srv/admin-service-teams.ts)
     registerTeamHandlers(service);
     registerCredentialTeamHandlers(service);
+    // Logging switches and levels outside the configuration versions (srv/admin-service-logging-settings.ts)
+    registerLoggingSettingsHandlers(service, configService);
+    // Deleting the stored gateway log on request (srv/admin-service-log-delete.ts)
+    registerLogDeleteHandlers(service);
+    // The gateway log's $search finds the whole text as typed (srv/gateway-log-search.ts)
+    registerGatewayLogSearch(service);
+    // Payload traces: their $search, and opening what is sealed with an audit event (srv/admin-service-traces.ts)
+    registerPayloadTraceSearch(service);
+    registerTraceHandlers(service);
+    // Raw capture sessions for chosen keys and users, written to Valkey for the gateway (srv/admin-service-raw-capture.ts)
+    registerRawCaptureHandlers(service);
 
     // Initialize services
     this.initializeUsageProcessor();
     this.initializeCacheInvalidation();
     this.initializeQuotaPublisher();
     this.initializeSecurityEventSubscriber();
+    this.initializeGatewayLog(configService);
     this.initializeCostRecalculation();
     this.initializeSapCapacityUnitPrice();
     this.initializeNeverExpiresBackfill();
@@ -2624,6 +2656,7 @@ class AdminService {
     apiKeyUsage: any[];
     awsCredentialUsage: any[];
     providerUsage: any[];
+    sapBilling: { credentials: any[]; teams: any[] };
     emailUsage: any[];
     teamUsage: any[];
     endpointUsage: any[];
@@ -3227,7 +3260,11 @@ class AdminService {
         adjustedDateRange: { adjustedStartDate, adjustedEndDate }
       });
 
+      // SAP Capacity-Unit billing for the same period, tenant and row scope (the SAP Cost tile).
+      const sapBilling = await readSapBilling({ period: whereClause, tenant, scoped, isAdmin });
+
       return {
+        sapBilling,
         apiKeyUsage,
         awsCredentialUsage,
         providerUsage,
@@ -3630,6 +3667,39 @@ class AdminService {
     }
   }
 
+  /**
+   * The gateway's log: the ingest reads the `gateway-log` stream whenever there is Valkey, the
+   * retention job runs whether or not storing is switched on, and the logging settings' expiry hands
+   * the configuration over again when a timed setting runs out. None starts in a test process;
+   * all stop at SIGTERM/SIGINT like the security event subscriber. Never throws.
+   */
+  private async initializeGatewayLog(handOver: LoggingSettingsHandOver): Promise<void> {
+    try {
+      const ingest = startGatewayLogIngest();
+      const traces = startPayloadTraceIngest();
+      const retention = startGatewayLogRetention();
+      const expiry = startLoggingSettingsExpiry(() => handOver.republishForLoggingSettings());
+      const stop = (): void => { void ingest?.stop(); void traces?.stop(); retention?.stop(); expiry?.stop(); };
+      if (ingest || traces || retention || expiry) {
+        process.once('SIGTERM', stop);
+        process.once('SIGINT', stop);
+      }
+    } catch (error) {
+      logger.warn('AdminService', `Failed to start the gateway log ingest: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    // On its own, so a failure above cannot keep raw capture sessions from ending on time: ends them,
+    // and its first run rewrites the sessions' key for the gateway.
+    try {
+      const rawCapture = startRawCaptureExpiry();
+      if (rawCapture) {
+        process.once('SIGTERM', rawCapture.stop);
+        process.once('SIGINT', rawCapture.stop);
+      }
+    } catch (error) {
+      logger.warn('AdminService', `Failed to start the raw capture expiry: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   private async initializeCostRecalculation(): Promise<void> {
     try {
       logger.info('AdminService', 'Initializing cost recalculation service');
@@ -3749,6 +3819,12 @@ class AdminService {
         logger.info('AdminService', `Team indexes ensured (${team.ensured})`);
       } else {
         logger.warn('AdminService', `Team indexes: ${team.ensured} ensured, ${team.failed.length} failed and retried on the next boot: ${team.failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
+      }
+      const gatewayLog = await ensureGatewayLogIndexes(db);
+      if (gatewayLog.failed.length === 0) {
+        logger.info('AdminService', `Gateway log indexes ensured (${gatewayLog.ensured})`);
+      } else {
+        logger.warn('AdminService', `Gateway log indexes: ${gatewayLog.ensured} ensured, ${gatewayLog.failed.length} failed and retried on the next boot: ${gatewayLog.failed.map((f) => `${f.name} (${f.error})`).join('; ')}`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -6331,6 +6407,8 @@ module.exports = (srv: any) => {
         app.use('/api/grounding', groundingRestApi);
         app.use('/api/plugins', pluginsRestApi);
         app.use('/api/version', versionRestApi);
+        app.use('/api/logs', gatewayLogExportRouter);
+        app.use('/api/logs', traceDownloadRouter);
         app.get('/api/notifications/stream', notificationStreamService.handleConnection);
         logger.info('AdminService', 'REST API endpoints mounted immediately at /api/admin');
         logger.info('AdminService', 'SSE endpoint mounted immediately');

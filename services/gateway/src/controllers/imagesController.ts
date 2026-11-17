@@ -27,8 +27,25 @@ const logger = getDefaultLogger();
 /** Per text field on `/edits`, well above any real prompt; see `parseMultipartFields` below. */
 const MAX_EDIT_TEXT_FIELD_BYTES = 32 * 1024;
 
+/**
+ * Answers an error. A request the gateway itself refuses for what the client sent also leaves its
+ * reason in the log: some clients (Open WebUI) do not read the body of such an answer and show
+ * their user only "Bad Request". These messages are the gateway's own and hold no prompt text. An
+ * upstream's own message is not logged here: the call sites below put it into the metadata (the
+ * console prints it) and the log line names only the status and the upstream's classification.
+ */
 function sendError(res: Response, e: ImageRequestError): void {
+  if (e.error.type === 'invalid_request_error') {
+    logger.warn('imagesController', `Images request refused (${e.status}${e.error.param ? `, ${e.error.param}` : ''}): ${e.error.message}`);
+  }
   res.status(e.status).json({ error: e.error });
+}
+
+/** Says in the log when a size that is not offered was replaced by the nearest offered one. */
+function noteReplacedSize(mapped: MappedImageRequest): void {
+  if (mapped.requestedSize) {
+    logger.info('imagesController', `Images request: size ${mapped.requestedSize} is not offered, using ${mapped.size}`);
+  }
 }
 
 const MODEL_HINT = 'a Google image model with a deployment on SAP AI Core, for example gemini-3.1-flash-image (or its --deployed id)';
@@ -46,8 +63,8 @@ function looksUpstream(error: any): boolean {
  */
 async function respondInternalFailure(res: Response, error: any, where: string): Promise<void> {
   if (looksUpstream(error)) {
-    const { status, message } = await geminiFailure(error);
-    logger.error('imagesController', `${where} failed: ${message}`, undefined, { status });
+    const { status, message, logText } = await geminiFailure(error);
+    logger.error('imagesController', `${where} failed: ${logText}`, undefined, { status, upstreamMessage: message });
     if (!res.headersSent) {
       const mapped502 = status === 503 ? 503 : 502;
       sendError(res, { status: mapped502, error: { message: `Could not reach SAP AI Core: ${message}`, type: 'upstream_error', code: 'upstream_error' } });
@@ -93,8 +110,8 @@ async function serve(req: Request, res: Response, mapped: MappedImageRequest): P
     // Fetching the SAP AI Core bearer token IS reaching SAP AI Core — distinct from the
     // catalog lookup above, which is this gateway's own model service. No model call was
     // attempted, so no usage event is raised.
-    const { message } = await geminiFailure(error);
-    logger.error('imagesController', `Could not obtain a SAP AI Core token for ${deployment.id}: ${message}`);
+    const { message, logText } = await geminiFailure(error);
+    logger.error('imagesController', `Could not obtain a SAP AI Core token for ${deployment.id}: ${logText}`, undefined, { upstreamMessage: message });
     sendError(res, { status: 502, error: { message: `Could not reach SAP AI Core: ${message}`, type: 'upstream_error', code: 'upstream_error' } });
     return;
   }
@@ -110,8 +127,8 @@ async function serve(req: Request, res: Response, mapped: MappedImageRequest): P
     try {
       upstream = await axios.post(url, mapped.geminiBody, { headers, timeout: configService.getTimeout(false) });
     } catch (error: any) {
-      const { status, message } = await geminiFailure(error);
-      logger.error('imagesController', `Image generation failed for ${deployment.id} (${i + 1}/${mapped.n}): ${message}`, undefined, { status });
+      const { status, message, logText } = await geminiFailure(error);
+      logger.error('imagesController', `Image generation failed for ${deployment.id} (${i + 1}/${mapped.n}): ${logText}`, undefined, { status, upstreamMessage: message });
       const mapped502 = status === 503 ? 503 : 502;
       emitUsageEvent(req, usage, deployment.id, mapped502);
       sendError(res, { status: mapped502, error: { message: `SAP AI Core refused the image request (HTTP ${status}): ${message}`, type: 'upstream_error', code: 'upstream_error', ...( { upstream_status: status } as any) } });
@@ -138,6 +155,7 @@ export const generateImage = async (req: Request, res: Response): Promise<void> 
   try {
     const mapped = mapImageRequest({ body: req.body || {} });
     if (!mapped.ok) { sendError(res, mapped.error); return; }
+    noteReplacedSize(mapped.value);
     await serve(req, res, mapped.value);
   } catch (error: any) {
     await respondInternalFailure(res, error, 'generateImage');
@@ -220,6 +238,7 @@ export const editImage = async (req: Request, res: Response): Promise<void> => {
     }
     const mapped = mapImageRequest({ body, images, hasMask });
     if (!mapped.ok) { sendError(res, mapped.error); return; }
+    noteReplacedSize(mapped.value);
     await serve(req, res, mapped.value);
   } catch (error: any) {
     await respondInternalFailure(res, error, 'editImage');

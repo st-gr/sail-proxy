@@ -76,7 +76,10 @@ On a Docker or Kyma deployment behind nginx, use `https://sail.example.com/gatew
 - **Every chat model** in the Model Library is reachable under the one `sail-proxy` provider —
   Claude, GPT, Gemini, Mistral and the rest.
 - A **GPT model with a deployment** answers natively on the Responses API. **Every other model**
-  is served through SAP orchestration, with tool calls, streaming and image input intact.
+  is served through SAP orchestration, with tool calls, streaming and image input intact. One
+  exception: a Gemini model that writes text and then calls two or more tools in one step loses
+  those calls in SAP's stream; see
+  [Gemini: several tool calls in one step](/guide/troubleshooting#gemini-several-tool-calls-in-one-step).
 - pi's thinking levels reach the models the Model Library marks as reasoning-capable (the
   launcher writes those with `"reasoning": true`); other models answer without a thinking phase.
 - Embedding, reranking and image-generation models are not listed: pi has no use for them.

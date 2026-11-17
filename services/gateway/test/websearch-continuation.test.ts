@@ -97,10 +97,10 @@ describe('web_search failure output is distinguishable from an empty search', ()
 });
 
 /**
- * Task 2 fix round 2. `renderResultMessage` is the ONLY hook a call `performCall`'s cap
- * branch reaches on the streaming path — `capReached` blocks every continuation for the
- * rest of the turn, and `renderOutput` (tested above) is exclusively a continuation-POST
- * hook, so it is never invoked for a call that branch capped. Before this fix,
+ * Task 2 fix round 2. `renderResultMessage` is what the CLIENT reads for a call
+ * `performCall`'s cap branch refused when the turn ends at the cap (the answering call
+ * failed, or its reply asked for the tool again); `renderOutput` (tested above) is
+ * exclusively a continuation-POST hook and carries the reason to the model. Before this fix,
  * `renderResultMessage` never looked at `r.status` at all, so a failed OR capped call fell
  * through to `buildSearchMessageItem([], query, ...)` — the exact "ran and found nothing"
  * conflation `renderOutput`'s `error` shape exists to prevent, just unreachable there.

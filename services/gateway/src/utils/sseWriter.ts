@@ -134,7 +134,11 @@ export const writeError = (res: Response, err: string | ErrorWithDetails | Error
   
   // Only log full error in debug mode
   if (process.env.DEBUG === 'true') {
-    logger.debug('SSEWriter', 'Writing SSE error:', { error: err });
+    // Never the object itself: an HTTP client's error serialises its request headers.
+    const e: any = err;
+    logger.debug('SSEWriter', 'Writing SSE error:', {
+      error: typeof e === 'string' ? e : { name: e?.name, message: e?.message ?? e?.error?.message, code: e?.code },
+    });
   } else {
     logger.info('SSEWriter', 'Writing SSE error message to client');
   }

@@ -23,6 +23,9 @@ export class StreamUnmaskBuffer {
   private maxPrefixLength: number;
   private containment?: ContainmentOptions;
   private jsonText: boolean;
+  private onReplace?: (placeholder: string, restored: string, outputOffset: number) => void;
+  /** Length of everything returned so far (append and flush): where the next output starts. */
+  private emitted = 0;
 
   /**
    * `containment` turns on the handling of placeholders the model invented: they are held until
@@ -32,11 +35,20 @@ export class StreamUnmaskBuffer {
    * `jsonText` is for a stream of JSON-text fragments (tool-call argument deltas): a placeholder
    * there sits inside a JSON string literal, so the restored value is inserted JSON-escaped and
    * a value containing `"` or `\` keeps the reassembled arguments valid JSON.
+   *
+   * `onReplace` is told each restored placeholder and where its value starts in the output (all
+   * returned text concatenated): what a thinking block's restore record is made of. Offsets are
+   * exact only without `containment`, which rewrites the text before placeholders are restored.
    */
-  constructor(map: ReplacementMap, containment?: ContainmentOptions, opts: { jsonText?: boolean } = {}) {
+  constructor(
+    map: ReplacementMap,
+    containment?: ContainmentOptions,
+    opts: { jsonText?: boolean; onReplace?: (placeholder: string, restored: string, outputOffset: number) => void } = {}
+  ) {
     this.reverseMap = map.reverse;
     this.containment = containment;
     this.jsonText = opts.jsonText === true;
+    this.onReplace = opts.onReplace;
 
     // Collect all unique prefixes from the reverse map
     const prefixes = new Set<string>();
@@ -121,11 +133,18 @@ export class StreamUnmaskBuffer {
       source = contained.text;
     }
     this.placeholderRegex.lastIndex = 0;
-    return source.replace(this.placeholderRegex, (match) => {
+    // How much longer the output is than the source up to the current match.
+    let shift = 0;
+    const result = source.replace(this.placeholderRegex, (match, offset: number) => {
       const original = this.reverseMap.get(match);
       if (!original) return match;
-      return this.jsonText ? JSON.stringify(original).slice(1, -1) : original;
+      const restored = this.jsonText ? JSON.stringify(original).slice(1, -1) : original;
+      this.onReplace?.(match, restored, this.emitted + offset + shift);
+      shift += restored.length - match.length;
+      return restored;
     });
+    this.emitted += result.length;
+    return result;
   }
 
   /**

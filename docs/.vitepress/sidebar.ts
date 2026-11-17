@@ -37,6 +37,7 @@ export const sidebar: DefaultTheme.Sidebar = {
       { text: 'Connections', link: '/guide/cockpit/connections' },
       { text: 'Gateway configuration', link: '/guide/cockpit/configuration' },
       { text: 'Plugins', link: '/guide/cockpit/plugins' },
+      { text: 'Logs', link: '/guide/cockpit/logs' },
       { text: 'Operations and audit trail', link: '/guide/cockpit/operations' }
     ] },
     { text: 'Help', items: [
@@ -51,13 +52,15 @@ export const sidebar: DefaultTheme.Sidebar = {
       { text: 'Standalone CLI', link: '/deploy/cli' },
       { text: 'Docker Compose', link: '/deploy/docker' },
       { text: 'SAP BTP Kyma', link: '/deploy/kyma' },
-      { text: 'Kyma prerequisites', link: '/deploy/kyma-prerequisites' }
+      { text: 'Kyma prerequisites', link: '/deploy/kyma-prerequisites' },
+      { text: 'External PostgreSQL on Kyma', link: '/deploy/external-postgres' }
     ] },
     { text: 'Operate', items: [
       { text: 'Authentication providers', link: '/deploy/authentication', items: [
         { text: 'GitHub', link: '/deploy/auth-github' },
         { text: 'LDAP', link: '/deploy/auth-ldap' },
-        { text: 'Okta', link: '/deploy/auth-okta' }
+        { text: 'Okta', link: '/deploy/auth-okta' },
+        { text: 'SAP Cloud Identity Services', link: '/deploy/auth-ias' }
       ] },
       { text: 'File storage for file_search', link: '/deploy/file-storage' },
       { text: 'Database migration', link: '/deploy/database-migration' },

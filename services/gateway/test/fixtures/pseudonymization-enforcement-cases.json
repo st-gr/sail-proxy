@@ -1,0 +1,279 @@
+[
+  {
+    "name": "on with flags",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": true
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          },
+          "anthropic": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          },
+          "google": {
+            "timeout": 30
+          },
+          "aws-bedrock": {
+            "pseudonymization": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      "models": {
+        "overrides": {
+          "m1--deployed": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          },
+          "m2--plain": {
+            "temperature": 0.2
+          }
+        }
+      }
+    },
+    "globalOn": true,
+    "endpoints": [
+      "openai",
+      "anthropic"
+    ],
+    "models": [
+      "m1--deployed"
+    ],
+    "line": "Pseudonymization is enforced for endpoints openai, anthropic; models m1--deployed."
+  },
+  {
+    "name": "on, endpoints only",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": true
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "google": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": true,
+    "endpoints": [
+      "google"
+    ],
+    "models": [],
+    "line": "Pseudonymization is enforced for endpoints google."
+  },
+  {
+    "name": "on, models only",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": true
+        }
+      },
+      "models": {
+        "overrides": {
+          "m1--deployed": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": true,
+    "endpoints": [],
+    "models": [
+      "m1--deployed"
+    ],
+    "line": "Pseudonymization is enforced for models m1--deployed."
+  },
+  {
+    "name": "on, no flags",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": true
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": false
+            }
+          }
+        }
+      }
+    },
+    "globalOn": true,
+    "endpoints": [],
+    "models": [],
+    "line": "Pseudonymization is switched on, but no endpoint or model enforces it."
+  },
+  {
+    "name": "off with flags",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": false
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          },
+          "aws-bedrock": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "models": {
+        "overrides": {
+          "m1--deployed": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": false,
+    "endpoints": [
+      "openai",
+      "aws-bedrock"
+    ],
+    "models": [
+      "m1--deployed"
+    ],
+    "line": "Pseudonymization is switched off (observability.pseudonymization.enabled is not true). Overruled: endpoints openai, aws-bedrock; models m1--deployed."
+  },
+  {
+    "name": "key absent",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "entities": {}
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": false,
+    "endpoints": [
+      "openai"
+    ],
+    "models": [],
+    "line": "Pseudonymization is switched off (observability.pseudonymization.enabled is not true). Overruled: endpoints openai."
+  },
+  {
+    "name": "block absent",
+    "api_config": {
+      "observability": {},
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": false,
+    "endpoints": [
+      "openai"
+    ],
+    "models": [],
+    "line": "Pseudonymization is switched off (observability.pseudonymization.enabled is not true). Overruled: endpoints openai."
+  },
+  {
+    "name": "observability absent",
+    "api_config": {},
+    "globalOn": false,
+    "endpoints": [],
+    "models": [],
+    "line": "Pseudonymization is switched off."
+  },
+  {
+    "name": "string true",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": "true"
+        }
+      },
+      "hooks": {
+        "defaults": {
+          "openai": {
+            "pseudonymization": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    "globalOn": false,
+    "endpoints": [
+      "openai"
+    ],
+    "models": [],
+    "line": "Pseudonymization is switched off (observability.pseudonymization.enabled is not true). Overruled: endpoints openai."
+  },
+  {
+    "name": "number one",
+    "api_config": {
+      "observability": {
+        "pseudonymization": {
+          "enabled": 1
+        }
+      }
+    },
+    "globalOn": false,
+    "endpoints": [],
+    "models": [],
+    "line": "Pseudonymization is switched off."
+  },
+  {
+    "name": "empty config",
+    "api_config": {},
+    "globalOn": false,
+    "endpoints": [],
+    "models": [],
+    "line": "Pseudonymization is switched off."
+  },
+  {
+    "name": "null config",
+    "api_config": null,
+    "globalOn": false,
+    "endpoints": [],
+    "models": [],
+    "line": "Pseudonymization is switched off."
+  }
+]

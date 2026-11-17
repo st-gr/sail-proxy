@@ -8,7 +8,7 @@ import { ProviderAdapter, UpstreamRequest } from './types';
 import { probe, runTest, trimSlash } from './probe';
 import { signAwsRequest } from '@libs/aws-signing/sigV4';
 import configService from '../services/configService';
-import { filterBetaFeatures, mergeBetaFeatures, parseAnthropicBetaHeader } from '../utils/betaFeatureFilter';
+import { filterBetaFeatures, mergeBetaFeatures, parseAnthropicBetaHeader, renameBetaFeatures } from '../utils/betaFeatureFilter';
 
 const DEFAULT_ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 const PROFILE_PAGE_SIZE = 1000;
@@ -32,7 +32,9 @@ export function bedrockAdapter(connection: Connection, secret: string, sessionTo
     const headerFlags = parseAnthropicBetaHeader(clientHeaders?.['anthropic-beta']);
     // The header wins over a body-supplied list, as on the SAP Bedrock path.
     const bodyFlags = headerFlags.length === 0 && Array.isArray(clientBody.anthropic_beta) ? clientBody.anthropic_beta.map(String) : [];
-    return filterBetaFeatures(mergeBetaFeatures(headerFlags, bodyFlags), {
+    // Renamed first (beta_header_renames), as on the SAP Bedrock path: both lists then see the names Bedrock knows.
+    const candidates = renameBetaFeatures(mergeBetaFeatures(headerFlags, bodyFlags), configService.getBetaHeaderRenames());
+    return filterBetaFeatures(candidates, {
       supported: configService.getSupportedBetaHeaders(),
       excluded: configService.getExcludedBetaHeaders(),
     });

@@ -122,6 +122,12 @@ export interface DescriptorControlOptions {
      */
     onFieldControl?: (pointer: string, control: FieldControl) => void;
     /**
+     * Text shown beside the switch at `pointer`; `undefined` renders no note control at all.
+     */
+    fieldNote?: (pointer: string) => string | undefined;
+    /** Offers the note and its switch, once per switch that has a note, so the host can update both. */
+    onFieldNote?: (pointer: string, controls: { note: { setText(text: string): unknown }; swtch: { setState(state: boolean): unknown } }) => void;
+    /**
      * What the host remembers about a map entry panel's expansion, by the entry's own pointer:
      * `true`/`false` for one it has a decision for, `undefined` for one it has never seen. A panel
      * opens by `initialEntryExpanded` - the remembered value when there is one, the map's collapse
@@ -1049,6 +1055,14 @@ function buildField(descriptor: Descriptor, options: DescriptorControlOptions, c
             // being a surprise discovered afterwards; `.setTooltip` (not the constructor) because
             // a schema description is not guaranteed free of "{" - see this module's header.
             setDescriptionTooltip(swtch, descriptor.description);
+            const noteText = options.fieldNote?.(descriptor.pointer);
+            if (noteText !== undefined) {
+                // `.setText` - the note names endpoint and model keys, which are not literals typed here.
+                const note = new Text({ wrapping: true });
+                note.setText(noteText);
+                options.onFieldNote?.(descriptor.pointer, { note, swtch });
+                return [swtch, note];
+            }
             return swtch;
         }
 

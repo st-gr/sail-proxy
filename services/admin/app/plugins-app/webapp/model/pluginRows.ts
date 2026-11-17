@@ -25,7 +25,17 @@ const EN_TEXTS: Record<string, string> = {
   switchAction: 'Switch to this version',
   incompatibleVersion: 'Needs gateway {0}; this installation is {1}.',
   helpFallback: 'This help is not available in your language; it is shown in {0}.',
-  allGateways: 'All gateways'
+  allGateways: 'All gateways',
+  unpackDisabledLocalDevelopment: 'This gateway runs in local development mode and does not unpack installed plugins. Uploaded plugins do not run on it.'
+};
+
+/**
+ * Reasons a gateway gives for not unpacking that the screen has its own, translated sentence for.
+ * The key is the text the gateway sends (services/gateway/src/pluginInstall/sync.ts,
+ * UNPACK_DISABLED_DEV); a reason that is not listed is shown as it arrives.
+ */
+const KNOWN_UNPACK_REASONS: Record<string, string> = {
+  'a local development gateway does not unpack installed plugins': 'unpackDisabledLocalDevelopment'
 };
 const defaultTranslate: Translator = (key, args) => {
   const pattern = EN_TEXTS[key] ?? key;
@@ -238,6 +248,11 @@ export function builtinRows(response: any, instance: string, options: RowOptions
   });
 }
 
+function unpackReasonText(reason: string, t: Translator): string {
+  const key = KNOWN_UNPACK_REASONS[reason];
+  return key ? t(key) : reason;
+}
+
 /** What the screen shows above the tables, and whether an upload can start. */
 export function pageState(response: any, instance: string, options: RowOptions = {}): {
   settingOff: boolean; canUpload: boolean; statusUnavailable: boolean; notResponding: boolean; unpackDisabledReason: string;
@@ -252,7 +267,7 @@ export function pageState(response: any, instance: string, options: RowOptions =
     canUpload: response?.enabled === true,
     statusUnavailable: !available,
     notResponding: available && instancesOf(response, instance).length === 0,
-    unpackDisabledReason: str(all.map((i) => i?.unpackDisabledReason).find((reason) => typeof reason === 'string' && reason !== '')),
+    unpackDisabledReason: unpackReasonText(str(all.map((i) => i?.unpackDisabledReason).find((reason) => typeof reason === 'string' && reason !== '')), t),
     showInstances: names.length > 1,
     instanceOptions: [{ key: '', text: t('allGateways') }, ...names.map((name) => ({ key: name, text: name }))]
   };

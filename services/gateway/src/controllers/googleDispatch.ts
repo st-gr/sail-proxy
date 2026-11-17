@@ -22,6 +22,7 @@ import { recordInvokedTools, geminiAdapter } from '../toolGovernance';
 import { splitBlocks, sseBlock } from '../utils/sseFraming';
 import { foldNativeGeminiUsage, foldOrchestrationUsage, onClientClose, openSseStream, pluginFrame, refuse } from './googleWire';
 import { StreamFailure, chunkError, failureFromChunk, failureFromError, httpStatusOr } from '../utils/streamStart';
+import { upstreamErrorText } from '../utils/upstreamErrorLogText';
 import {
   GeminiMethod, estimateEmbedTokens, geminiError, geminiUrl, usageFromSse,
 } from '../services/googleGeminiService';
@@ -232,7 +233,7 @@ async function bridgeStream(ctx: GeminiDispatchContext, payload: any): Promise<v
 
   if (preStartFailure) {
     const failure: StreamFailure = preStartFailure;
-    logger.error('googleController', `Orchestration stream refused for ${modelName} (${failure.status}): ${failure.message}`);
+    logger.error('googleController', `Orchestration stream refused for ${modelName}: ${upstreamErrorText(failure.status, undefined, failure.message)}`, undefined, { upstreamMessage: failure.message });
     foldOrchestrationUsage(usage, translator.usage(), modelName);
     emitUsageEvent(req, usage, modelName, abandoned ? 499 : failure.status);
     if (!res.headersSent && !res.writableEnded) refuse(res, failure.status, failure.message);

@@ -1,11 +1,11 @@
 {
   "name": "gateway",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "SAP AI Core Multi-Provider LLM Gateway Service",
   "private": true,
   "main": "dist/index.js",
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "build": "tsc -p . && node scripts/copy-plugin-manifests.js && node ../../cli-tools/copy-api-docs.js --ui=swagger-ui-bundle.js,swagger-ui.css dist/api-docs ../../openapi/gateway.yaml",

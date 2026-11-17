@@ -11,32 +11,29 @@ Video: [Deploy with Docker Compose](/guide/videos#deploy-with-docker-compose), f
 
 ## Architecture
 
-```
-          browser / API client
-                   │
-                   ▼
-            nginx :8080 ──────► oauth2-proxy ──────► Dex ──────► identity provider
-            │           │                                       (local, GitHub, LDAP, Okta)
-  /gateway/ │           │ /admin/
-            ▼           ▼
-        gateway ───► admin
-            │           │
-            ▼           ▼
-          Valkey    PostgreSQL (pgvector)
-```
+![Docker Compose deployment](/generated/docker-panel-light.svg){.light-only}
+![Docker Compose deployment](/generated/docker-panel-dark.svg){.dark-only}
 
-nginx is the single entry point. It sends browsers through oauth2-proxy and Dex to sign in, passes the signed-in user to the admin service, and forwards `/gateway/` to the gateway. Requests with an API key or an AWS SigV4 signature go to the gateway without a sign-in; the gateway checks the credential itself.
+| Path | Through |
+|---|---|
+| Browser to the cockpit | nginx on port 8080 → oauth2-proxy (session) → Dex → the identity provider: local test accounts, GitHub, LDAP/Active Directory, Okta (SAML) or SAP Cloud Identity Services (OpenID Connect); nginx then passes the signed-in user to the admin service under `/admin/` |
+| Client with an API key or an AWS SigV4 signature | nginx on port 8080 under `/gateway/` → the gateway, without a sign-in: the gateway checks the credential itself (also directly on port 3000) |
+| Gateway to SAP AI Core | The service key from the setup: orchestration and deployed models |
+| Inside the stack | Gateway and admin service share Valkey (cache and event bus); the admin service, Dex and file search keep their data in PostgreSQL 16 with pgvector |
+
+nginx is the single entry point. Every service with its image and port is listed under [Services](#services), the sign-in in detail under [Authentication providers](/deploy/authentication#how-sign-in-works).
 
 ## Prerequisites
 
 - A Docker runtime with Docker Compose 2.24 or later, for example Docker Desktop, Rancher Desktop on Windows, Colima on macOS, or Docker Engine on Linux.
-- **Node.js 20 or later** and **git**, for the setup script.
+- **Node.js 24 or later** and **git**, for the setup script.
+- A **local copy of the sail-proxy repository** on the host: the setup script, the compose file and the configuration the services read live in it, and every command runs from its root. Clone it with git (the first command under [Install](#install)), or download the source as a ZIP from the [GitHub repository](https://github.com/st-gr/sail-proxy) and unpack it. Keep the folder: it holds the installation's `.env` files and is where upgrades run.
 - The **service key** of your SAP AI Core instance as JSON, and an orchestration deployment in SAP AI Core.
 - For a sign-in other than the local test accounts: an OAuth app in GitHub, an Okta SAML application, or an LDAP/Active Directory server (see [Authentication providers](/deploy/authentication)).
 
 ## Install
 
-Run everything from the root of a checkout:
+Clone the repository (or unpack the downloaded copy) and run everything from its root:
 
 ```bash
 git clone https://github.com/st-gr/sail-proxy.git
@@ -54,7 +51,7 @@ The setup script is required before the first start: it writes the `.env` files 
 2. **SAP AI Core**: paste the service key JSON, enter the values by hand, or skip.
 3. **Sign-in**: the authentication provider (local test accounts, GitHub, LDAP/Active Directory or Okta SAML) and its settings.
 4. **Base URL**: `http://localhost:8080` for a local installation, or the URL your users open.
-5. **Image mode**: pull pre-built images from a registry (`ghcr.io/st-gr` by default) or build them locally.
+5. **Image mode**: pull pre-built images from a registry (`ghcr.io/st-gr` by default) or build them locally. When you pull, the setup then asks for the **version**: it lists the released versions the registry holds, newest first, and also takes a version or tag you type. Enter keeps the version of your checkout. When the registry cannot be listed (a private registry, no network), you type the version.
 6. **Plugins**: whether administrators may install gateway plugins from the cockpit (default yes). An installed plugin is code that runs inside the gateway, which holds the SAP AI Core credentials. Answering no writes `INSTALLED_PLUGINS_ENABLED=false` into `services/admin/.env`; see [Plugins in the cockpit](/guide/cockpit/plugins#switching-installation-off). `--ci` and `--config` do not ask and can return the setting to on, so check it after such a run.
 
 When configuration files exist already, it offers to copy them to `docker/backup-<timestamp>/` first. When Docker volumes exist already, it offers to delete them, which deletes their data. The default is to delete them when the database user or password changed (the existing volumes would not accept the new ones), and to keep them when both are unchanged. In registry mode it offers to pull the images.
@@ -90,7 +87,7 @@ The interactive setup lets you correct yourself and changes nothing until you co
 
 - **Going back**: press the Up arrow on a text or password question to return to the previous question. List questions have a **← Back** choice. Questions that open an editor offer **Open editor** and **← Back**, plus **Keep current** when the question already has a value. Your earlier answers are remembered and offered as defaults.
 - **Review screen**: after the last question the setup lists all answers. Choose any of them to change it, or **Write configuration**. Nothing is written, deleted, pulled or applied before you choose **Write configuration**. Secrets are never shown there; they appear as `set`, `new` or `generated`.
-- **Running again**: When configuration files from an earlier run exist, the setup reads them and offers their values as defaults, including the database user, the sign-in provider and its settings, the base URL and the image mode. Existing generated secrets are kept unless you choose to generate new ones. Press Enter to keep a current value. The SAP AI Core questions are asked only while `services/gateway/.env` does not exist; to change those values later, edit that file or run the setup with `--force`. `--force` ignores the current values and starts from the defaults, as a first run would.
+- **Running again**: When configuration files from an earlier run exist, the setup reads them and offers their values as defaults, including the database user, the sign-in provider and its settings, the base URL, the image mode and the image version. Existing generated secrets are kept unless you choose to generate new ones. Press Enter to keep a current value. The SAP AI Core questions are asked only while `services/gateway/.env` does not exist; to change those values later, edit that file or run the setup with `--force`. `--force` ignores the current values and starts from the defaults, as a first run would.
 - **Secrets**: a secret that is already set is never shown. For the database password you choose **Keep current** or **Enter new**. Other secrets you type, such as a client secret or a bind password, are marked `(set — Enter keeps it)`: press Enter to keep the value or type a new one. Secrets the setup generated (such as encryption keys, sign-in session secrets or a generated database password) are kept; to replace one, choose **Regenerate a key…** under **Generated keys**. The setup names what stops working before you confirm (for example, stored credentials that become unreadable, or users who are signed out). The setup never prints secret values.
 - **Billing currency**: the setup asks for the currency in which you are billed for SAP AI Core. The default is USD and needs no further input. For another currency you can enter the price of a productive and of a non-productive capacity unit. Without prices, SAP cost shows as not priced until you enter the rates in the SAP Rates app of the Admin Cockpit. Changing the prices in a later setup run adds new rates valid from that day; rates you edit in the SAP Rates app are kept until you change the prices in setup again.
 
@@ -115,7 +112,11 @@ The admin service trusts the user headers nginx sets after a sign-in, so its por
 docker compose -f docker/docker-compose.yml --profile ollama up -d
 ```
 
-The data lives in the named volumes `postgres_data` and `valkey_data` (Compose prefixes them with the project name, `docker_` by default). The gateway and admin logs are written to `logs/gateway/` and `logs/admin/` in the checkout.
+The data lives in the named volumes `postgres_data` and `valkey_data` (Compose prefixes them with the project name, `docker_` by default). The gateway and admin logs are written to `logs/gateway/` and `logs/admin/` in the checkout. Administrators can also read, search and download the gateway's log on the cockpit's [Logs](/guide/cockpit/logs) page; `docker compose -f docker/docker-compose.yml logs gateway` shows the complete output, including what the Logs page does not store.
+
+### Payload files
+
+To look at the content of requests, use the [payload traces and raw capture](/guide/cockpit/logs#payload-traces) of the Logs page: they keep content masked or encrypted, and every look is recorded. The file payload logger is a separate debug switch: with `PAYLOAD_LOGGING_ENABLED=true` in `services/gateway/.env` (or `platform.logging.payload_logging_enabled` in the configuration), the gateway writes the content of requests and answers to `/app/payloads` inside the gateway container. Copy them out with `docker compose -f docker/docker-compose.yml cp gateway:/app/payloads ./payloads`, and delete the copy when you are done; the files in the container are lost when it is recreated. These files are not masked in every stage, and reading them is not recorded; the Logs page warns while the switch is on. The gateway deletes them after 48 hours or above 1,024 MB (`PAYLOAD_LOG_RETENTION_HOURS`, `PAYLOAD_LOG_MAX_MB`). To switch the files off, remove the line and run `docker compose -f docker/docker-compose.yml up -d gateway`.
 
 Day-to-day commands:
 
@@ -162,7 +163,7 @@ The setup writes a `ROLE_MAPPING` for the chosen provider, which maps its groups
 
 ## Images
 
-The services `gateway`, `gateway-migrate`, `admin`, `nginx` and `ollama` use images named `<registry>/<organization>/sail-proxy-<service>:<tag>`. Compose takes the three parts from `DOCKER_REGISTRY` (default `ghcr.io`), `DOCKER_ORGANIZATION` (default `st-gr`) and `DOCKER_TAG` in `docker/.env`; the setup sets the tag to the version in the checkout's `package.json`.
+The services `gateway`, `gateway-migrate`, `admin`, `nginx` and `ollama` use images named `<registry>/<organization>/sail-proxy-<service>:<tag>`. Compose takes the three parts from `DOCKER_REGISTRY` (default `ghcr.io`), `DOCKER_ORGANIZATION` (default `st-gr`) and `DOCKER_TAG` in `docker/.env`; the setup sets the tag to the version you chose in registry mode, and to the version in the checkout's `package.json` for local builds.
 
 **Registry mode** pulls the published images: no build tools needed and the fastest start. Run `docker compose ... pull` before `up`; otherwise Compose may build missing images locally. To make building impossible, add the registry overlay:
 

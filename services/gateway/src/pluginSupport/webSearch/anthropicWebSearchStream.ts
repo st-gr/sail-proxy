@@ -490,7 +490,7 @@ export function installWebSearchStreamInterception(
           // A failed search must not strand the client mid-stream. Emit an empty
           // result block so the shape stays valid, and let the model answer
           // without sources rather than hanging.
-          logger.error(`web_search failed for "${call.query}": ${error.message}`);
+          logger.error(`web_search failed: ${error.message}`, { query: call.query });
           results = [];
         }
         searchesRun += 1;

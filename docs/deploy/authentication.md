@@ -1,6 +1,6 @@
 ---
 title: Authentication providers
-description: How people sign in to the Admin Cockpit on Docker and Kyma, the four supported identity providers, and how their groups become cockpit roles.
+description: How people sign in to the Admin Cockpit on Docker and Kyma, the five supported identity providers, and how their groups become cockpit roles.
 ---
 
 # Authentication providers
@@ -13,7 +13,7 @@ Three components handle it:
 
 - **nginx** is the entry point. For a cockpit request it asks oauth2-proxy whether the browser has a valid session; without one it redirects to the sign-in.
 - **oauth2-proxy** manages the session cookie. It signs the user in at Dex.
-- **Dex** connects to the identity provider: its own local accounts, GitHub, LDAP/Active Directory or Okta (SAML).
+- **Dex** connects to the identity provider: its own local accounts, GitHub, LDAP/Active Directory, Okta (SAML) or SAP Cloud Identity Services (OpenID Connect).
 
 After a sign-in, nginx passes the user to the admin service in these headers, taken from oauth2-proxy's answer:
 
@@ -32,7 +32,7 @@ Requests to `/gateway/` that carry an API key (`x-api-key`, or `Authorization: B
 
 ## Choosing a provider
 
-The setup script asks for the provider: `docker/setup-docker.js` on Docker, `kyma/scripts/setup-kyma.js` on Kyma. Both offer the same four.
+The setup script asks for the provider: `docker/setup-docker.js` on Docker, `kyma/scripts/setup-kyma.js` on Kyma. Both offer the same five.
 
 | Provider | For | Groups come from |
 |---|---|---|
@@ -40,6 +40,7 @@ The setup script asks for the provider: `docker/setup-docker.js` on Docker, `kym
 | GitHub OAuth | Teams that use a GitHub organization | Teams of the organization, as `<org>:<team>` |
 | LDAP/Active Directory | A corporate directory | LDAP groups |
 | Okta SAML | Okta single sign-on | The `groups` attribute of the SAML assertion |
+| SAP Cloud Identity Services | An SAP Cloud Identity Services (IAS) tenant, over OpenID Connect | The `groups` claim of the ID token |
 
 Every external provider calls back to Dex at `<base URL>/dex/callback`, for example `https://sail.example.com/dex/callback`. Register that URL with the provider. A second deployment, for example a test namespace on Kyma, has a host of its own and needs its own callback URL registered.
 
@@ -90,6 +91,13 @@ The [LDAP sign-in page](./auth-ldap) has the full steps and troubleshooting.
 
 The [Okta sign-in page](./auth-okta) has the full steps and troubleshooting.
 
+### SAP Cloud Identity Services
+
+1. In the IAS administration console, create an application with the protocol **OpenID Connect**. Add the redirect URI `<base URL>/dex/callback`, allow the grant type **Authorization Code**, add a client secret with the API access **OpenID**, and create the user groups for administrators and users.
+2. Run the setup and choose **SAP Cloud Identity Services (OpenID Connect)**. It asks for the tenant's issuer URL, the client ID and secret, and the admin and user group names (default `sap-llm-gateway-admin` and `sap-llm-gateway-user`).
+
+The [SAP Cloud Identity Services sign-in page](./auth-ias) has the full steps and troubleshooting.
+
 ## Roles
 
 The admin service maps each of the user's groups to a cockpit role with `ROLE_MAPPING`, a JSON map from group to role. The setup writes it for the chosen provider:
@@ -100,6 +108,7 @@ The admin service maps each of the user's groups to a cockpit role with `ROLE_MA
 | GitHub OAuth | `{"<org>:<admin team>":"admin","<org>:<user team>":"user"}` |
 | LDAP/Active Directory | `{"<admin group>":"admin","<user group>":"user"}` |
 | Okta SAML | `{"<admin group>":"admin","<user group>":"user"}` |
+| SAP Cloud Identity Services | `{"<admin group>":"admin","<user group>":"user"}` |
 
 The groups `admin` and `user` always map to the roles of the same name. A user whose groups map to no role gets the user role. On Docker, `ROLE_MAPPING` is in `docker/.env.auth` and `services/admin/.env`; the value in `docker/.env.auth` wins. Restart the admin service after a change. What each role may do is described in [Roles](/guide/roles).
 

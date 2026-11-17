@@ -5,12 +5,15 @@ import configService from './configService';
 import * as dotenv from 'dotenv';
 import { pluginExecutor } from './pluginExecutor';
 import * as payloadLogger from '../utils/payloadLogger';
+import { isRawCaptured } from './rawCapture';
 import { getDefaultLogger, createSafePreview } from '@libs/logger';
 import type {
   SapV2CompletionRequest,
   SapV2CompletionResponse,
 } from './sapOrchestrationTypes';
 import { currentSapTarget } from '../sap/sapTarget';
+import { markUpstreamText, upstreamErrorKind } from '../utils/upstreamErrorLogText';
+import { upstreamErrorForLog } from '../utils/upstreamErrorEnvelope';
 const logger = getDefaultLogger();
 
 // Replace destinationService with centralized configuration
@@ -168,9 +171,10 @@ export const completeChat = async (payload: SAPPayload, debugRequestId?: string)
     // Log the detailed error information
     if (error.response) {
       logger.error('SAPAIService', `Response status: ${error.response.status}`);
-      logger.error('SAPAIService', `Response data: ${JSON.stringify(error.response.data, null, 2)}`);
+      // Filtered: SAP's body repeats the templated prompt (upstreamErrorForLog).
+      logger.error('SAPAIService', 'Response data from SAP AI Core', undefined, { data: upstreamErrorForLog(error.response.data) });
     }
-    
+
     // Throw a custom error with the structured error response
     const enhancedError: CustomError = new Error(error.message);
     enhancedError.status = errorResponse.status;
@@ -224,7 +228,7 @@ export const callSAPAIOrchestration = async (payload: SAPPayload, debugRequestId
     logger.error('SAPAIService', `Error calling SAP AI Core: ${error.message}`);
     if (error.response) {
       logger.error('SAPAIService', `Response status: ${error.response.status}`);
-      logger.error('SAPAIService', `Response data: ${JSON.stringify(error.response.data, null, 2)}`);
+      logger.error('SAPAIService', 'Response data from SAP AI Core', undefined, { data: upstreamErrorForLog(error.response.data) });
     }
     // Re-throw a structured error
     const serviceError: CustomError = new Error(`Error calling SAP AI Core: ${error.message}`);
@@ -296,9 +300,14 @@ export const streamChatCompletion = async (
   let destination: DestinationConfig | null = null;
   
   const debugEnabled = process.env.DEBUG === 'true';
-  const debugRequestId = clientReq?.debugRequestId || (debugEnabled ? requestId : undefined); // Use debugRequestId from clientReq if available
+  // A request in a raw capture session keeps the streaming stages too, and so does file payload logging
+  // (PAYLOAD_LOGGING_ENABLED or platform.logging.payload_logging_enabled); the Anthropic service passes
+  // its request id in the payload instead of a client request.
+  const rawCaptured = isRawCaptured(clientReq?.debugRequestId || payload.debugRequestId);
+  const captureStages = debugEnabled || rawCaptured || payloadLogger.isPayloadLoggingEnabled();
+  const debugRequestId = clientReq?.debugRequestId || (captureStages ? payload.debugRequestId || requestId : undefined);
   
-  let streamingResponseData: StreamingResponseData | null = debugEnabled ? {
+  let streamingResponseData: StreamingResponseData | null = captureStages ? {
     allProcessedChunks: [], // Array to hold all processed JSON data chunks
     fullText: "",
     metadata: {
@@ -361,7 +370,7 @@ export const streamChatCompletion = async (
     logger.trace('SAPAIService', `[SAP AI Service - Streaming] Sending payload to ${endpoint}:\n` + createSafePreview(payload, 1000));
     
     // If debugging is enabled, log the streaming request payload
-    if (debugRequestId && debugEnabled) {
+    if (debugRequestId && captureStages) {
       payloadLogger.savePayload(debugRequestId, '02_streaming_request_payload', payload);
     }
     
@@ -546,7 +555,7 @@ export const streamChatCompletion = async (
               if (onChunk) {
                 onChunk({ done: true });
               }
-              if (debugEnabled && streamingResponseData) {
+              if (captureStages && streamingResponseData) {
                 // Log the [DONE] marker as a special chunk if needed
                 // streamingResponseData.allProcessedChunks.push({ type: "DONE_MARKER" });
               }
@@ -558,7 +567,7 @@ export const streamChatCompletion = async (
               // logger.debug('SAPAIService', `Received and parsed chunk #${chunkCount} from SAP AI Core for request ${requestId}`);
               // logger.debug('SAPAIService', `Chunk data: ${JSON.stringify(parsedData, null, 2)}`);    
               
-              if (debugEnabled && streamingResponseData) {
+              if (captureStages && streamingResponseData) {
                 streamingResponseData.metadata.totalProcessedChunks = chunkCount;
                 streamingResponseData.allProcessedChunks.push(parsedData); // Store the actual parsed JSON object
 
@@ -603,8 +612,8 @@ export const streamChatCompletion = async (
 
             } catch (jsonError: any) {
               logger.error('SAPAIService', `Error parsing JSON for request ${requestId}: ${jsonError.message}`);
-              logger.error('SAPAIService', `Problematic JSON data string: ${jsonDataString.substring(0, 200)}...`);
-              if (debugEnabled && streamingResponseData) {
+              logger.error('SAPAIService', 'Problematic JSON data string', undefined, { data: `${jsonDataString.substring(0, 200)}...` });
+              if (captureStages && streamingResponseData) {
                 // Log the problematic string if parsing fails
                 streamingResponseData.allProcessedChunks.push({ error: "JSON_PARSE_ERROR", raw: jsonDataString });
               }
@@ -622,7 +631,7 @@ export const streamChatCompletion = async (
     
     logger.debug('SAPAIService', `Streaming processing loop completed after ${chunkCount} parsed data chunks for request ${requestId}`);
     
-    if (debugEnabled && debugRequestId && streamingResponseData) {
+    if (captureStages && debugRequestId && streamingResponseData) {
       streamingResponseData.metadata.endTime = Date.now();
       streamingResponseData.metadata.durationMs = streamingResponseData.metadata.endTime - streamingResponseData.metadata.startTime;
       
@@ -725,7 +734,7 @@ export const streamChatCompletion = async (
       }
     }
 
-    if (debugEnabled && debugRequestId) {
+    if (captureStages && debugRequestId) {
       payloadLogger.savePayload(debugRequestId, '96_sap_streaming_service_error', { // Changed log key slightly for specificity
         message: error.message,
         status: error.response?.status,
@@ -840,11 +849,13 @@ const createEmbedding = async (sapRequest: any, modelId: string): Promise<any> =
     logger.error('SAPAIService', `Embedding creation failed after ${endTime - startTime}ms: ${error.message}`);
     
     if (error.response) {
-      logger.error('SAPAIService', `SAP AI Core error response: ${JSON.stringify(error.response.data)}`);
-      throw Object.assign(
+      logger.error('SAPAIService', `SAP AI Core error response: ${error.response.status}`, undefined, { data: upstreamErrorForLog(error.response.data) });
+      const embeddingError = Object.assign(
         new Error(`SAP AI Core embedding error: ${error.response.data?.error?.message || error.response.statusText}`),
         { status: error.response.status }
       );
+      // The message carries SAP's own text: the stored log gets the status and SAP's message cut (upstreamErrorLogText.ts).
+      throw markUpstreamText(embeddingError, error.response.status, upstreamErrorKind(error.response.data), error.response.data?.error?.message);
     }
     
     throw error;

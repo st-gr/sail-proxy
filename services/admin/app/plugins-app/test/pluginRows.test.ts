@@ -1,4 +1,6 @@
 import { builtinRows, compareVersions, helpFor, pageState, pluginRows, rowsForAction, selectionActions, withSelectedVersion } from '../webapp/model/pluginRows';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 const version = (v: string, over: Record<string, unknown> = {}) => ({
   version: v, sha256: 'abc', sizeBytes: 10, uploadedBy: 'ada@example.test', uploadedAt: '2026-11-04T10:00:00.000Z',
@@ -204,6 +206,35 @@ describe('pageState', () => {
     const gatewayStatus = { available: true, instances: [instance('a', { unpackDisabledReason: reason }), instance('b', { unpackDisabledReason: reason }), instance('c')] };
     expect(pageState(response({}, { gatewayStatus }), '').unpackDisabledReason).toBe(reason);
     expect(pageState(response({}), '').unpackDisabledReason).toBe('');
+  });
+  describe('the reason a local development gateway gives', () => {
+    // The gateway sends its reason as text (services/gateway/src/pluginInstall/sync.ts,
+    // UNPACK_DISABLED_DEV). The screen showed it as sent: lower case, English in every language.
+    const devReason = 'a local development gateway does not unpack installed plugins';
+    const withReason = (reason: string) => response({}, { gatewayStatus: { available: true, instances: [instance('local', { unpackDisabledReason: reason })] } });
+
+    it('is shown as the screen\'s own sentence', () => {
+      expect(pageState(withReason(devReason), '').unpackDisabledReason)
+        .toBe('This gateway runs in local development mode and does not unpack installed plugins. Uploaded plugins do not run on it.');
+    });
+    it('is taken from the bundle the controller injects, so it is translated', () => {
+      const asked: string[] = [];
+      const t = (key: string) => { asked.push(key); return `[${key}]`; };
+      expect(pageState(withReason(devReason), '', { t }).unpackDisabledReason).toBe('[unpackDisabledLocalDevelopment]');
+      expect(asked).toContain('unpackDisabledLocalDevelopment');
+    });
+    it('is the text the gateway really sends', () => {
+      const source = readFileSync(join(__dirname, '../../../../gateway/src/pluginInstall/sync.ts'), 'utf8');
+      expect(source).toContain(`export const UNPACK_DISABLED_DEV = '${devReason}';`);
+    });
+    it('is in every language of the bundle, and the model\'s English text is the bundle\'s', () => {
+      const dir = join(__dirname, '../webapp/i18n');
+      const line = (file: string) => readFileSync(join(dir, file), 'utf8').split('\n').find((l) => l.startsWith('unpackDisabledLocalDevelopment='));
+      for (const lang of ['', '_en', '_de', '_es', '_fr', '_it', '_nl', '_pt']) expect(line(`i18n${lang}.properties`)).toBeDefined();
+      expect(line('i18n.properties')).toBe(`unpackDisabledLocalDevelopment=${pageState(withReason(devReason), '').unpackDisabledReason}`);
+      expect(line('i18n_en.properties')).toBe(line('i18n.properties'));
+      expect(line('i18n_de.properties')).not.toBe(line('i18n.properties'));
+    });
   });
   it('offers an instance choice only with more than one instance', () => {
     expect(pageState(response({}), '').showInstances).toBe(false);

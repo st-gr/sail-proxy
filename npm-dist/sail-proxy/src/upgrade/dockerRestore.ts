@@ -125,7 +125,7 @@ export async function runDockerRestore(ctx: DockerRestoreContext): Promise<{ ok:
     log(`Restored ${dir} from ${input}.`);
     return { ok: true };
   } catch (error) {
-    const why = describe(error);
+    const why = describe(error, { kubectlHint: false });
     log(`Restore failed: ${why}`);
     return { ok: false, error: why };
   } finally {

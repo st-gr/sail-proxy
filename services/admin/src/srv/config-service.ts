@@ -1,5 +1,6 @@
 const cds = require('@sap/cds');
 import crypto from 'crypto';
+import fs from 'fs';
 import axios from 'axios';
 import Valkey from 'iovalkey';
 import Ajv from 'ajv';
@@ -14,6 +15,9 @@ import { republishAll } from '../services/userQuotaService';
 import { invalidateForEmails } from '../services/credentialInvalidation';
 import { invalidateToolRetentionDefaults } from '../services/toolUsageService';
 import { checkPluginConfig } from '../services/pluginConfigChecks';
+import { findApiConfigPath } from '../utils/apiConfigFile';
+import { overlayForGateway, storeEnvironmentReport, markHandedOver, whenLoggingSettingsLoaded } from '../services/loggingSettings';
+import { HandOverQueue } from '../services/handOverQueue';
 
 const logger = getDefaultLogger();
 
@@ -138,7 +142,7 @@ interface ConfigurationVersion {
 }
 
 interface ConfigChangeEvent {
-  eventType: 'config-changed' | 'config-activated' | 'config-rollback';
+  eventType: 'config-changed' | 'config-activated' | 'config-rollback' | 'logging-settings-changed';
   configId: string;
   configName: string;
   version: string;
@@ -155,7 +159,10 @@ const DERIVED_COLUMNS = ['checksum', 'isValid', 'validationErrors', 'validationW
  */
 const ACTIVATION_COLUMNS = ['isActive', 'deployedAt', 'deployedBy'];
 
-/** How long a configuration event publish may hold a request before it is given up. */
+/**
+ * How long one hand-over to the gateway may run in the queue before it is given up, and how long a
+ * caller waits for its hand-over at most.
+ */
 const PUBLISH_TIMEOUT_MS = 3000;
 
 /** UPDATE requests whose configData differs from the stored document (set before, read after). */
@@ -174,6 +181,8 @@ interface ValidationResult {
 class ConfigurationService {
   private valkeyClient: Valkey | null = null;
   private isValkeyAvailable = false;
+  /** Every hand-over of configuration content to the gateway, one at a time (services/handOverQueue.ts). */
+  private readonly handOvers = new HandOverQueue(PUBLISH_TIMEOUT_MS);
 
   constructor() {
     this.initializeValkey();
@@ -190,6 +199,7 @@ class ConfigurationService {
     service.on('validateConfiguration', this.validateConfiguration.bind(this));
     service.on('rollbackConfiguration', this.rollbackConfiguration.bind(this));
     service.on('getActiveConfiguration', this.getActiveConfiguration.bind(this));
+    service.on('getShippedConfiguration', this.getShippedConfiguration.bind(this));
     service.on('getConfigurationHistory', this.getConfigurationHistory.bind(this));
     service.on('getConfigurationStatus', this.getConfigurationStatus.bind(this));
 
@@ -317,6 +327,115 @@ class ConfigurationService {
     } catch (error) {
       logger.error('ConfigService', 'Failed to get active configuration', error as Error);
       return { success: false, error: 'Failed to retrieve configuration' };
+    }
+  }
+
+  /**
+   * The active configuration as the gateway gets it: getActiveConfiguration with the logging settings
+   * laid over it (services/loggingSettings.ts). Every hand-over to the gateway goes through here; the
+   * cockpit's own read (getActiveConfiguration) never carries the overlay. A failing overlay gives
+   * the configuration as it is. The overlay uses the record kept in memory: no database access for
+   * it. loggingSettingsHandedOver is what the overlay gave; pass it to markHandedOver once the
+   * gateway got the configuration.
+   */
+  async configurationForGateway(): Promise<any> {
+    const active = await this.getActiveConfiguration({});
+    if (!active.success || !active.data) return active;
+    // This is what a publish carries, and a publish goes through Valkey: entries with an end are
+    // handed over, because the expiry republish takes them back the same way.
+    const overlaid = overlayForGateway(active.data.configData, new Date(), true);
+    return { ...active, data: { ...active.data, configData: overlaid.configData }, loggingSettingsHandedOver: overlaid.handedOver };
+  }
+
+  /**
+   * Hands the active configuration to the gateway again after a change of the logging settings, or
+   * when a timed one ran out: the activation's publish, without a new version and without anything
+   * that marks the configuration as changed. The configuration is read in its own short transaction
+   * that is closed before the publish. False when the gateway could not be told.
+   */
+  async republishForLoggingSettings(): Promise<boolean> {
+    try {
+      // Its own event type: the copy publishConfigurationEvent also sends to `sap-llm-gateway:<eventType>`
+      // would, as 'config-changed', land on the gateway's channel a second time without configData.
+      // configId, name, version and checksum are taken from the configuration the hand-over reads.
+      // No caller timeout of its own: the queue's PUBLISH_TIMEOUT_MS starts when the hand-over runs, so
+      // one that waits behind others and is then published in time is not reported as not delivered.
+      const delivered = this.isValkeyAvailable && !!this.valkeyClient && await this.publishConfigurationEvent({
+        eventType: 'logging-settings-changed', configId: '', configName: '', version: '', checksum: '',
+        timestamp: new Date().toISOString()
+      }, { onlyWithConfiguration: true });
+      if (delivered !== true) {
+        logger.warn('ConfigService', 'The logging settings could not be handed to the gateway now', {
+          isValkeyAvailable: this.isValkeyAvailable
+        });
+      }
+      return delivered === true;
+    } catch (error) {
+      logger.warn('ConfigService', 'Handing the logging settings to the gateway failed', { error: (error as Error).message });
+      return false;
+    }
+  }
+
+  /** configurationForGateway in its own short transaction, closed before the caller goes on (no request's transaction). */
+  private readConfigurationForGateway(): Promise<any> {
+    return cds.tx(() => this.configurationForGateway());
+  }
+
+  /**
+   * Runs `work` once the request's transaction has committed, and not at all when it was rolled
+   * back: req.on('succeeded'), which cds 8.9.7 emits after the commit and awaits before it answers.
+   * Without a CAP request (an internal call, a script, a test with a plain object) it runs at once.
+   * Never throws: a throwing 'succeeded' listener turns the committed request into an error answer.
+   */
+  private async afterCommit(req: any, work: () => Promise<void>): Promise<void> {
+    const run = async () => {
+      try {
+        await work();
+      } catch (error) {
+        logger.warn('ConfigService', 'Handing the configuration to the gateway failed', { error: (error as Error)?.message });
+      }
+    };
+    if (req && typeof req.on === 'function') {
+      req.on('succeeded', run);
+      return;
+    }
+    await run();
+  }
+
+  /**
+   * What a change of the active configuration is followed by, once it is committed: all of them read
+   * the new configuration through another transaction or tell another process to (an in-process
+   * cache cleared before the commit could be filled again from the old version).
+   */
+  private afterActiveConfigurationChanged(): void {
+    // platform.quotas may have changed: every state document carries the effective limits.
+    invalidateQuotaDefaults();
+    // platform.toolGovernance.retention may have changed too: the next nightly purge must use it.
+    invalidateToolRetentionDefaults();
+    // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
+    costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
+    republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
+    // The gateway (and this admin's own local cache) may hold validation responses that still
+    // carry the old platform.quotas limits for up to an hour; a config activation must not wait
+    // that out.
+    invalidateForEmails(cds, 'everyone', 'platform_quotas').catch((e: any) => logger.warn('ConfigService', `platform quota cache invalidation failed: ${e?.message ?? e}`));
+  }
+
+  /**
+   * The api_config.json this installation ships, for the cockpit's comparison with the active
+   * configuration. Read on every call: an upgrade replaces the file while the service runs.
+   */
+  async getShippedConfiguration(): Promise<{ available: boolean; configData: string | null }> {
+    try {
+      const file = findApiConfigPath();
+      if (!file) return { available: false, configData: null };
+      const shipped = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return { available: true, configData: JSON.stringify(shipped) };
+    } catch (error) {
+      logger.warn('ConfigService', 'The shipped api_config.json could not be read', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return { available: false, configData: null };
     }
   }
 
@@ -474,32 +593,23 @@ class ConfigurationService {
         return { success: false, error: 'Database operations failed: ' + (error as Error).message };
       }
 
-      // Publish event with timeout protection
-      try {
-        await this.publishWithTimeout({
-          eventType: 'config-activated',
-          configId: config.ID,
-          configName: config.name,
-          version: config.version,
-          checksum: config.checksum,
-          timestamp: new Date().toISOString()
-        });
-      } catch (error) {
-        logger.warn('ConfigService', 'Event publishing failed during activation', { error: (error as Error).message });
-        // Don't fail the activation if event publishing fails
-      }
-
-      // platform.quotas may have changed: every state document carries the effective limits.
-      invalidateQuotaDefaults();
-      // platform.toolGovernance.retention may have changed too: the next nightly purge must use it.
-      invalidateToolRetentionDefaults();
-      // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
-      costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
-      republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
-      // The gateway (and this admin's own local cache) may hold validation responses that still
-      // carry the old platform.quotas limits for up to an hour; a config activation must not wait
-      // that out.
-      invalidateForEmails(cds, 'everyone', 'platform_quotas').catch((e: any) => logger.warn('ConfigService', `platform quota cache invalidation failed: ${e?.message ?? e}`));
+      // The gateway and the follow-ups get the activation once it is committed (afterCommit).
+      await this.afterCommit(req, async () => {
+        try {
+          await this.publishWithTimeout({
+            eventType: 'config-activated',
+            configId: config.ID,
+            configName: config.name,
+            version: config.version,
+            checksum: config.checksum,
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          logger.warn('ConfigService', 'Event publishing failed during activation', { error: (error as Error).message });
+          // Don't fail the activation if event publishing fails
+        }
+        this.afterActiveConfigurationChanged();
+      });
 
       logger.info('ConfigService', 'Activated configuration', {
         configId,
@@ -576,27 +686,23 @@ class ConfigurationService {
       
       await cds.run(ACTIVATE);
 
-      // Publish rollback event
-      await this.publishConfigurationEvent({
-        eventType: 'config-rollback',
-        configId: previousConfig.ID,
-        configName: previousConfig.name,
-        version: previousConfig.version,
-        checksum: previousConfig.checksum,
-        timestamp: new Date().toISOString()
+      // The gateway and the follow-ups get the rollback once it is committed (afterCommit). A failed
+      // publish does not fail the rollback: it is committed by then.
+      await this.afterCommit(req, async () => {
+        try {
+          await this.publishWithTimeout({
+            eventType: 'config-rollback',
+            configId: previousConfig.ID,
+            configName: previousConfig.name,
+            version: previousConfig.version,
+            checksum: previousConfig.checksum,
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          logger.warn('ConfigService', 'Event publishing failed during rollback', { error: (error as Error).message });
+        }
+        this.afterActiveConfigurationChanged();
       });
-
-      // platform.quotas may have changed: every state document carries the effective limits.
-      invalidateQuotaDefaults();
-      // platform.toolGovernance.retention may have changed too: the next nightly purge must use it.
-      invalidateToolRetentionDefaults();
-      // platform.maintenance.dailyRunAtUtc may have changed too: re-arm the daily run, don't run it.
-      costRecalculationService.rearm().catch((e: any) => logger.warn('ConfigService', `daily maintenance re-arm failed: ${e?.message ?? e}`));
-      republishAll().catch((e: any) => logger.warn('ConfigService', `quota republish failed: ${e?.message ?? e}`));
-      // The gateway (and this admin's own local cache) may hold validation responses that still
-      // carry the old platform.quotas limits for up to an hour; a config activation must not wait
-      // that out.
-      invalidateForEmails(cds, 'everyone', 'platform_quotas').catch((e: any) => logger.warn('ConfigService', `platform quota cache invalidation failed: ${e?.message ?? e}`));
 
       logger.info('ConfigService', 'Rolled back configuration', {
         from: currentConfig.version,
@@ -818,10 +924,10 @@ class ConfigurationService {
   }
 
   /**
-   * After an UPDATE: an active configuration whose document changed is pushed to the gateway.
-   * Via OData that cannot happen (the before handler refuses changing the active document and
-   * isActive), so this serves service-level updates only. The publish is given up after
-   * PUBLISH_TIMEOUT_MS like activation's, so a dead Valkey cannot hold the request's transaction.
+   * After an UPDATE: an active configuration whose document changed is pushed to the gateway, once
+   * the UPDATE is committed (afterCommit). The before handler refuses changing the active document
+   * and isActive, so this needs the row to become active in between (a concurrent activation). The
+   * caller waits for the publish PUBLISH_TIMEOUT_MS at most, like activation's.
    */
   private async onConfigurationUpdated(results: any, req: any): Promise<void> {
     if (!req || !documentChanged.has(req)) {
@@ -840,28 +946,33 @@ class ConfigurationService {
     if (!config?.isActive) {
       return;
     }
-    try {
-      await this.publishWithTimeout({
-        eventType: 'config-changed',
-        configId: config.ID,
-        configName: config.name,
-        version: config.version,
-        checksum: config.checksum,
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      // The update is stored; a failed publish must not fail (and roll back) the request.
-      logger.warn('ConfigService', 'Event publishing failed after a configuration update', { error: (error as Error).message });
-    }
+    await this.afterCommit(req, async () => {
+      try {
+        await this.publishWithTimeout({
+          eventType: 'config-changed',
+          configId: config.ID,
+          configName: config.name,
+          version: config.version,
+          checksum: config.checksum,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        // The update is stored; a failed publish must not fail the request.
+        logger.warn('ConfigService', 'Event publishing failed after a configuration update', { error: (error as Error).message });
+      }
+    });
   }
 
-  /** publishConfigurationEvent, rejected with 'Event publish timeout' after PUBLISH_TIMEOUT_MS. */
-  private async publishWithTimeout(event: ConfigChangeEvent): Promise<void> {
+  /**
+   * publishConfigurationEvent, rejected with 'Event publish timeout' when the caller has waited
+   * PUBLISH_TIMEOUT_MS for it (also while it still waits in the queue; it is published later then).
+   */
+  private async publishWithTimeout(event: ConfigChangeEvent): Promise<boolean | void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
+      return await Promise.race([
         this.publishConfigurationEvent(event),
-        new Promise((_, reject) => {
+        new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error('Event publish timeout')), PUBLISH_TIMEOUT_MS);
         })
       ]);
@@ -984,57 +1095,74 @@ class ConfigurationService {
   }
 
   /**
-   * Publish configuration change event to Valkey
+   * Hands the active configuration to the gateway through the queue (services/handOverQueue.ts): the
+   * configuration is read when the hand-over starts, in its own short transaction closed before the
+   * publish, so the event carries the newest committed configuration; configId, name, version and
+   * checksum are taken from it. A caller whose event type already has a hand-over waiting shares
+   * that one. With onlyWithConfiguration nothing is published when there is no active
+   * configuration. Resolves true when a configuration was published.
    */
-  private async publishConfigurationEvent(event: ConfigChangeEvent): Promise<void> {
+  private async publishConfigurationEvent(event: ConfigChangeEvent, options: { onlyWithConfiguration?: boolean } = {}): Promise<boolean> {
     if (!this.isValkeyAvailable || !this.valkeyClient) {
       logger.warn('ConfigService', 'Skipping event publishing - Valkey not available', {
         isValkeyAvailable: this.isValkeyAvailable,
         hasValkeyClient: !!this.valkeyClient
       });
-      return;
+      return false;
     }
+    const client = this.valkeyClient;
 
-    try {
-      // Use the standard CONFIG_CHANGE_CHANNEL that Gateway expects
-      const channel = CONFIG_CHANGE_CHANNEL; // 'sap-llm-gateway:config-changed'
-      
-      // Include the full configuration data for immediate gateway reload
-      const fullConfig = await this.getActiveConfiguration({});
-      const enhancedEvent = {
-        ...event,
-        configData: fullConfig.success ? fullConfig.data?.configData : undefined,
-        source: 'admin-service-activation'
-      };
-      
-      const message = JSON.stringify(enhancedEvent);
-      
-      const subscriberCount = await this.valkeyClient.publish(channel, message);
-      
-      logger.info('ConfigService', 'Published configuration event to gateway', {
-        channel,
-        eventType: event.eventType,
-        version: event.version,
-        configName: event.configName,
-        subscriberCount,
-        messageSize: message.length
-      });
-      
-      // Also publish to the specific event type channel for backwards compatibility
-      const specificChannel = `sap-llm-gateway:${event.eventType}`;
-      await this.valkeyClient.publish(specificChannel, JSON.stringify(event));
-      
-      logger.debug('ConfigService', 'Also published to specific channel', {
-        channel: specificChannel
-      });
-      
-    } catch (error) {
-      logger.error('ConfigService', 'Failed to publish configuration event', error as Error, {
-        event: event.eventType,
-        configName: event.configName
-      });
-      throw error; // Re-throw to trigger timeout handling
-    }
+    return this.handOvers.run(event.eventType, async (isAbandoned) => {
+      try {
+        // Use the standard CONFIG_CHANGE_CHANNEL that Gateway expects
+        const channel = CONFIG_CHANGE_CHANNEL; // 'sap-llm-gateway:config-changed'
+
+        // Include the full configuration data for immediate gateway reload
+        const fullConfig = await this.readConfigurationForGateway();
+        // Given up (timed out) while reading: a later hand-over may already have published something newer.
+        if (isAbandoned()) return false;
+        const data = fullConfig.success ? fullConfig.data : undefined;
+        if (!data && options.onlyWithConfiguration) return false;
+        const current: ConfigChangeEvent = data
+          ? { ...event, configId: data.id, configName: data.name, version: data.version, checksum: data.checksum }
+          : event;
+        const configData = data?.configData;
+        const enhancedEvent = {
+          ...current,
+          configData,
+          source: 'admin-service-activation'
+        };
+
+        const message = JSON.stringify(enhancedEvent);
+
+        const subscriberCount = await client.publish(channel, message);
+        if (configData !== undefined) markHandedOver(fullConfig.loggingSettingsHandedOver);
+
+        logger.info('ConfigService', 'Published configuration event to gateway', {
+          channel,
+          eventType: current.eventType,
+          version: current.version,
+          configName: current.configName,
+          subscriberCount,
+          messageSize: message.length
+        });
+
+        // Also publish to the specific event type channel for backwards compatibility
+        const specificChannel = `sap-llm-gateway:${current.eventType}`;
+        await client.publish(specificChannel, JSON.stringify(current));
+
+        logger.debug('ConfigService', 'Also published to specific channel', {
+          channel: specificChannel
+        });
+        return configData !== undefined;
+      } catch (error) {
+        logger.error('ConfigService', 'Failed to publish configuration event', error as Error, {
+          event: event.eventType,
+          configName: event.configName
+        });
+        throw error; // Re-throw to trigger timeout handling
+      }
+    });
   }
 
   /**
@@ -1084,7 +1212,7 @@ class ConfigurationService {
    * Publish admin service startup event with current configuration
    */
   private async publishStartupEvent(): Promise<void> {
-    if (!this.isValkeyAvailable || !valkeyPublisher || startupEventPublished) {
+    if (!this.isValkeyAvailable || !valkeyPublisher || !this.valkeyClient || startupEventPublished) {
       logger.debug('ConfigService', 'Skipping startup event - Valkey unavailable or already published');
       return;
     }
@@ -1096,30 +1224,12 @@ class ConfigurationService {
         return;
       }
 
-      // Get current active configuration
-      const activeConfigResult = await this.getActiveConfiguration({});
-      
-      if (activeConfigResult.success && activeConfigResult.data) {
-        // Publish configuration change event with current active config
-        const configEvent = {
-          eventType: 'config-activated',
-          configId: activeConfigResult.data.id,
-          configName: activeConfigResult.data.name,
-          version: activeConfigResult.data.version,
-          checksum: activeConfigResult.data.checksum,
-          timestamp: new Date().toISOString(),
-          source: 'admin-service-startup',
-          configData: activeConfigResult.data.configData
-        };
+      // Get current active configuration (the logging settings are loaded at admin start; wait for that,
+      // outside the queue). Read and published as one hand-over of the queue.
+      await whenLoggingSettingsLoaded();
+      const activeConfigResult = await this.handOverActiveConfiguration('admin-service-startup', 'Published startup configuration event');
 
-        await valkeyPublisher.publish(CONFIG_CHANGE_CHANNEL, JSON.stringify(configEvent));
-        
-        logger.info('ConfigService', 'Published startup configuration event', {
-          configId: activeConfigResult.data.id,
-          configName: activeConfigResult.data.name,
-          version: activeConfigResult.data.version
-        });
-      } else {
+      if (!(activeConfigResult.success && activeConfigResult.data)) {
         logger.warn('ConfigService', 'No active configuration found during startup - Gateway Service will use fallback/local config');
         
         // Optionally, create a default configuration if none exists
@@ -1211,9 +1321,19 @@ class ConfigurationService {
     if (startupEvent.service === 'gateway-service' && startupEvent.eventType === 'gateway-startup-request') {
       // Gateway service is requesting initial configuration
       logger.info('ConfigService', 'Gateway Service requesting configuration - republishing current config');
+
+      // What the gateway's environment fixes, for the logging settings (stored, no republish of its own)
+      await storeEnvironmentReport(startupEvent.fixedByEnvironment);
       
       // Re-publish current configuration for the requesting gateway
       await this.republishCurrentConfiguration();
+    }
+
+    if (startupEvent.service === 'gateway-service' && startupEvent.eventType === 'gateway-environment-report') {
+      // A gateway that was running before this admin service started: its start-up request went
+      // out while nobody listened, so it answers the start announcement with the report alone.
+      // Stored only: the gateway has its configuration, and a republish would reload every gateway.
+      await storeEnvironmentReport(startupEvent.fixedByEnvironment);
     }
   }
 
@@ -1221,36 +1341,50 @@ class ConfigurationService {
    * Republish current active configuration
    */
   private async republishCurrentConfiguration(): Promise<void> {
-    if (!this.isValkeyAvailable || !valkeyPublisher) {
+    if (!this.isValkeyAvailable || !valkeyPublisher || !this.valkeyClient) {
       return;
     }
 
     try {
-      const activeConfigResult = await this.getActiveConfiguration({});
-      
-      if (activeConfigResult.success && activeConfigResult.data) {
-        const configEvent = {
-          eventType: 'config-activated',
-          configId: activeConfigResult.data.id,
-          configName: activeConfigResult.data.name,
-          version: activeConfigResult.data.version,
-          checksum: activeConfigResult.data.checksum,
-          timestamp: new Date().toISOString(),
-          source: 'admin-service-republish',
-          configData: activeConfigResult.data.configData
-        };
-
-        await valkeyPublisher.publish(CONFIG_CHANGE_CHANNEL, JSON.stringify(configEvent));
-        
-        logger.info('ConfigService', 'Republished current configuration', {
-          configId: activeConfigResult.data.id,
-          configName: activeConfigResult.data.name,
-          version: activeConfigResult.data.version
-        });
-      }
+      await whenLoggingSettingsLoaded();
+      await this.handOverActiveConfiguration('admin-service-republish', 'Republished current configuration');
     } catch (error) {
       logger.error('ConfigService', 'Failed to republish configuration', error as Error);
     }
+  }
+
+  /**
+   * One hand-over of the queue for the start-up event and the answer to a starting gateway: reads
+   * the active configuration in its own short transaction and, when there is one, publishes it as a
+   * 'config-activated' event from `source`. It goes over the same connection as every other
+   * hand-over, so the events reach Valkey in the queue's order. Resolves with what was read.
+   */
+  private handOverActiveConfiguration(source: string, published: string): Promise<any> {
+    const client = this.valkeyClient!;
+    return this.handOvers.run(source, async (isAbandoned) => {
+      const activeConfigResult = await this.readConfigurationForGateway();
+      if (isAbandoned() || !activeConfigResult.success || !activeConfigResult.data) return activeConfigResult;
+      const configEvent = {
+        eventType: 'config-activated',
+        configId: activeConfigResult.data.id,
+        configName: activeConfigResult.data.name,
+        version: activeConfigResult.data.version,
+        checksum: activeConfigResult.data.checksum,
+        timestamp: new Date().toISOString(),
+        source,
+        configData: activeConfigResult.data.configData
+      };
+
+      await client.publish(CONFIG_CHANGE_CHANNEL, JSON.stringify(configEvent));
+      markHandedOver(activeConfigResult.loggingSettingsHandedOver);
+
+      logger.info('ConfigService', published, {
+        configId: activeConfigResult.data.id,
+        configName: activeConfigResult.data.name,
+        version: activeConfigResult.data.version
+      });
+      return activeConfigResult;
+    });
   }
 
   /**

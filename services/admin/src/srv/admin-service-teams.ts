@@ -22,6 +22,7 @@ import { isAdminRole, getCatalog } from '../services/modelEntitlementService';
 import { callGateway } from '../services/groundingGatewayClient';
 import { getUser, USERS, isServiceKeyEmail } from '../services/usersService';
 import { wantsIeee754 } from './admin-service-users';
+import { readTeamSapBilling } from './usageSapBilling';
 
 const cds = require('@sap/cds');
 const logger = getDefaultLogger();
@@ -280,27 +281,14 @@ async function assignTeamAssociation(req: any, teamId: string, column: typeof AS
 const PROFILE_SLOTS: Record<string, typeof ASSOCIATIONS[number]> = { pool: 'quotaProfile_ID', member: 'memberQuotaProfile_ID' };
 
 export function registerTeamHandlers(service: any): void {
-  // ---- SAP billing by team: both usage tables, per team and currency, folded in JS ----
+  // ---- SAP billing by team: both usage tables, per team and currency (readTeamSapBilling) ----
   const NO_TEAM = '00000000-0000-0000-0000-000000000000';
   service.on('READ', 'TeamSapBillingStats', async (req: any) => {
     // `$filter=sapTenant eq '<zone>'` narrows both tables to that SAP tenant (SAP bills per subaccount).
     const where: any[] = req.query?.SELECT?.where ?? [];
     const at = where.findIndex((t) => t?.ref?.length === 1 && t.ref[0] === 'sapTenant');
     const tenant: string | null = at >= 0 && where[at + 1] === '=' && typeof where[at + 2]?.val === 'string' ? where[at + 2].val : null;
-    const cols = ['team_ID as teamId', 'max(teamName) as teamName', 'sapCostCurrency', 'count(*) as totalRequests',
-      'COALESCE(sum(genAiTokens), 0) as totalGenAiTokens', 'COALESCE(sum(capacityUnits), 0) as totalCapacityUnits', 'COALESCE(sum(sapCost), 0) as totalSapCost'];
-    const read = (table: string) => cds.run(cds.ql.SELECT.from(table).columns(cols).where({ provider: { '!=': null }, sapCostCurrency: { '!=': null }, ...(tenant ? { sapTenant: tenant } : {}) }).groupBy('team_ID', 'sapCostCurrency'));
-    const out = new Map<string, any>();
-    for (const r of [...await read('sap.llm.gateway.admin.ApiKeyUsage'), ...await read('sap.llm.gateway.admin.AwsCredentialUsage')]) {
-      const teamId = r.teamId ?? NO_TEAM;
-      const key = `${teamId}|${r.sapCostCurrency}`;
-      const row = out.get(key) ?? { teamId, sapCostCurrency: r.sapCostCurrency, teamName: r.teamId ? r.teamName ?? null : null, totalRequests: 0, totalGenAiTokens: 0, totalCapacityUnits: 0, totalSapCost: 0 };
-      row.totalRequests += Number(r.totalRequests) || 0; row.totalGenAiTokens += Number(r.totalGenAiTokens) || 0;
-      row.totalCapacityUnits += Number(r.totalCapacityUnits) || 0; row.totalSapCost += Number(r.totalSapCost) || 0;
-      if (!row.teamName && r.teamName && r.teamId) row.teamName = r.teamName;
-      out.set(key, row);
-    }
-    return [...out.values()].sort((a, b) => String(a.teamName ?? '~').localeCompare(String(b.teamName ?? '~')) || a.sapCostCurrency.localeCompare(b.sapCostCurrency));
+    return readTeamSapBilling(tenant ? { sapTenant: tenant } : {}, NO_TEAM);
   });
 
   // ---- what the caller may do on the Teams list (Fiori Elements Create/Delete) ----

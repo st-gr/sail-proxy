@@ -12,7 +12,7 @@ For Docker and the standalone CLI, see [Backup, restore and upgrade](/deploy/bac
 ## Prerequisites
 
 - `kubectl` configured for the Kyma cluster (see [Kyma prerequisites](/deploy/kyma-prerequisites)), with access to the namespace's pods and Secrets.
-- Node.js 20 or later and a checkout of the repository with its dependencies installed (`pnpm install`).
+- Node.js 24 or later and a checkout of the repository with its dependencies installed (`pnpm install`).
 - The `postgres-0` pod running in the namespace.
 
 The tool reads the database user, password and name from the namespace's `postgres-env` Secret. It never prints the password and masks it in error messages.

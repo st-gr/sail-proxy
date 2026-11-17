@@ -34,11 +34,12 @@ export function layerModel(kind, input = {}) {
   throw new Error(`unknown layer ${kind}`);
 }
 
-// specs: [{ name, kind, input }] → <outDir>/<name>.png, 1920×1080, transparent unless the layer is opaque.
-export async function renderLayers(specs, outDir) {
+// specs: [{ name, kind, input }] → <outDir>/<name>.png, the 1920×1080 layout drawn at `scale` (4/3 for 2560×1440),
+// transparent unless the layer is opaque.
+export async function renderLayers(specs, outDir, scale = 1) {
   mkdirSync(outDir, { recursive: true });
   const server = await startCastServer('teaser');
-  const { browser, page } = await openBrowser({ width: 1920, height: 1080, scale: 1 });
+  const { browser, page } = await openBrowser({ width: 1920, height: 1080, scale });
   const files = [];
   try {
     for (const s of specs) {

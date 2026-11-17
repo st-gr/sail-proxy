@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sail-proxy Ollama service
-  version: 0.12.1
+  version: 0.13.0
   summary: The Ollama-compatible service that forwards Ollama and OpenAI requests to the sail-proxy gateway.
   description: |-
     Every route of the Ollama-compatible service (`services/ollama`), a separate process on port 11434, the standard Ollama port. It turns each Ollama request into an OpenAI request, sends it to the gateway's `/openai/v1/chat/completions`, `/openai/v1/embeddings` or `/v1/models` with its own gateway API key, and turns the answer back into Ollama's format.

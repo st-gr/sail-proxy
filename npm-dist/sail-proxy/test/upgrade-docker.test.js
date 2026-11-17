@@ -114,6 +114,8 @@ function cloneInstall(base) {
 
 const tempLeftovers = () => fs.readdirSync(os.tmpdir()).filter((f) => /^sail-proxy-(kit|render|local-config)-/.test(f)).sort();
 
+const FIXTURE_MIN_UPGRADE_FROM = '0.11.0';
+
 async function upgrade(dir, fake, o = {}) {
   const backupDir = o.backupDir || fs.mkdtempSync(path.join(scratch, 'backups-'));
   const asked = [];
@@ -143,6 +145,8 @@ async function upgrade(dir, fake, o = {}) {
       healthTimeoutSeconds: 2,
       log: (m) => lines.push(m),
       ...(o.ctx || {}),
+      // The fixture is a 0.11.0 installation: these tests are about the upgrade's steps, not the release's policy value.
+      policy: { minUpgradeFrom: FIXTURE_MIN_UPGRADE_FROM, ...((o.ctx || {}).policy || {}) },
     });
   } finally {
     restore();
@@ -255,7 +259,9 @@ test('happy path: new DOCKER_TAG and record, keys kept, steps in order, no down/
   const keysBefore = keyHashes(dir);
   const { code, result, asked, out, backups } = await upgrade(dir, fake);
   assert.strictEqual(code, 0, out.slice(-3000));
+  assert.match(out, /Compare with defaults/, 'where new default settings are offered, since the stored configuration is not changed');
   assert.deepStrictEqual(asked, []);
+  assert.doesNotMatch(out, /Fetching available versions/, 'the upgrade decides the version: setup lists no registry for its version question');
   assert.deepStrictEqual([...out.matchAll(/=== Step: (\w+) ===/g)].map((m) => m[1]),
     ['read', 'ask', 'preflight', 'outage', 'backup', 'apply', 'migrate', 'health', 'record']);
   for (const file of ['.env', '.env.docker']) {
@@ -353,6 +359,17 @@ for (const [name, arrange, message] of refusals) {
   });
 }
 
+// A Docker installation has no kubectl: a registry that refuses the login must not point at it.
+test('refused before the outage: the registry refuses the login (docker login, never kubectl)', async (base) => {
+  const c = cloneInstall(base);
+  c.fake.pullError = 'Error response from daemon: Head "https://ghcr.io/v2/st-gr/sail-proxy-gateway/manifests/0.12.0": unauthorized';
+  const { code, out, result } = await upgrade(c.dir, c.fake, {});
+  assert.strictEqual(code, 1, out.slice(-1500));
+  assert.match(result.error, /cannot be pulled.*docker login/);
+  assert.doesNotMatch(result.error, /kubectl/);
+  assert.doesNotMatch(out, /kubectl/);
+});
+
 // ---- failures after the outage roll back -----------------------------------------------------
 for (const step of ['apply', 'migrate', 'health', 'record']) {
   test(`SAIL_PROXY_UPGRADE_FAIL_AT=${step}: every file byte-identical, database restored, old version up (exit 2)`, async (base) => {
@@ -379,6 +396,7 @@ for (const step of ['apply', 'migrate', 'health', 'record']) {
     }
     assert.strictEqual(backups.length, 1, 'the backup stays');
     assert.match(out, /Rolled back/);
+    assert.doesNotMatch(out, /Compare with defaults/, 'a rolled-back upgrade ships no new defaults');
     if (step !== 'apply') assertPhases(out, ['Stopping the new components', 'Putting the previous files back', 'Restoring the database from the backup', 'Starting the previous version', 'Waiting for the previous version to report healthy']);
   });
 }

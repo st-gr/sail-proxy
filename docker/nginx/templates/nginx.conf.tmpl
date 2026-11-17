@@ -400,7 +400,7 @@ http {
         }
 
         # Handle UI5 app resources directories specifically
-        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app|plugins-app)/(resources|webapp|images)/ {
+        location ~* ^/admin/app/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app|plugins-app|logs-app)/(resources|webapp|images)/ {
             error_page 401 = @auth_required;
             auth_request /_cookie_auth;
             
@@ -460,7 +460,7 @@ http {
         }
 
         # Handle UI5 resource paths that apps expect at root level
-        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app|plugins-app)/resources/ {
+        location ~ ^/(shell|api-keys-app|aws-credentials-app|config-app|security-notifications-app|usage-analytics-app|sap-rates-app|model-library-app|users-app|teams-app|connections-app|tool-policies-app|grounding-app|plugins-app|logs-app)/resources/ {
             error_page 401 = @auth_required;
             auth_request /_cookie_auth;
             
@@ -488,7 +488,7 @@ http {
         }
 
         # Handle cross-app webapp references (e.g., usage-analytics from shell)
-        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users|teams|connections|tool-policies|grounding|plugins)/webapp/ {
+        location ~ ^/(usage-analytics|api-keys|aws-credentials|config|security-notifications|sap-rates|model-library|users|teams|connections|tool-policies|grounding|plugins|logs)/webapp/ {
             error_page 401 = @auth_required;
             auth_request /_cookie_auth;
 
@@ -506,6 +506,7 @@ http {
             rewrite ^/tool-policies/webapp/(.*)$ /app/tool-policies-app/webapp/$1 break;
             rewrite ^/grounding/webapp/(.*)$ /app/grounding-app/webapp/$1 break;
             rewrite ^/plugins/webapp/(.*)$ /app/plugins-app/webapp/$1 break;
+            rewrite ^/logs/webapp/(.*)$ /app/logs-app/webapp/$1 break;
             
             proxy_pass http://admin_service;
             include proxy_params;

@@ -29,10 +29,11 @@ jest.mock('../../src/services/configService', () => ({
 }));
 
 import {
-  claimNext, processOne, startIngestWorker, stopIngestWorker, __isRunningForTests, __sanitizeErrorMessageForTests,
+  claimNext, processOne, startIngestWorker, stopIngestWorker, __isRunningForTests, __sanitizeErrorMessageForTests, __isPermanentFailureForTests,
 } from '../../src/fileSearch/ingestWorker';
 import { getDefaultLogger } from '@libs/logger';
 import * as runners from '../../src/fileSearch/extractors/runners';
+import { PandocTooOldError } from '../../src/fileSearch/extractors/pandocSandbox';
 
 describe('ingestWorker (hermetic, no database)', () => {
   beforeEach(() => {
@@ -62,6 +63,10 @@ describe('ingestWorker (hermetic, no database)', () => {
     await expect(claimNext()).resolves.toEqual({ storeId: 'vs_1', fileId: 'file-1' });
     expect(query.mock.calls.some(([sql]) => sql.includes('UPDATE fs_jobs'))).toBe(true);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('a refused pandoc is a permanent failure: the file fails once, it is not retried', () => {
+    expect(__isPermanentFailureForTests(new PandocTooOldError())).toBe(true);
   });
 
   it('processOne resolves without throwing when file_search has no pool configured', async () => {

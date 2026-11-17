@@ -92,6 +92,16 @@ const MAP_CASES: Record<string, MapCase> = {
         key: 'max_tokens',
         incomplete: 'the renamed-to parameter name is free text the operator types'
     },
+    '/api_config/providers/anthropic/beta_header_renames': {
+        concrete: '/api_config/providers/anthropic/beta_header_renames',
+        key: 'example-beta-2099-01-01',
+        incomplete: 'the name the deployment knows the flag by is free text the operator types'
+    },
+    '/api_config/providers/aws-bedrock/beta_header_renames': {
+        concrete: '/api_config/providers/aws-bedrock/beta_header_renames',
+        key: 'example-beta-2099-01-01',
+        incomplete: 'the name the deployment knows the flag by is free text the operator types'
+    },
     '/api_config/providers/openai/param_renames': {
         concrete: '/api_config/providers/openai/param_renames',
         key: 'max_tokens',
@@ -183,6 +193,9 @@ function fixture(): any {
     for (const provider of ['anthropic', 'aws-bedrock', 'openai', 'openrouter', 'perplexity']) {
         api.providers[provider].param_renames = api.providers[provider].param_renames ?? {};
     }
+    for (const provider of ['anthropic', 'aws-bedrock']) {
+        api.providers[provider].beta_header_renames = api.providers[provider].beta_header_renames ?? {};
+    }
     api.models.overrides['example-model'] = {
         hooks: {},
         pseudonymization: { entities: {}, thresholds: {} },
@@ -232,7 +245,7 @@ describe('the maps the form offers add and remove on', () => {
         // could exercise it), and a row here that the schema does not declare is a claim on a
         // pointer the form would draw an affordance for and then not honour.
         expect(Object.keys(MAP_CASES).sort()).toEqual(mapNodesOf(apiConfigSchema).sort());
-        expect(mapNodesOf(apiConfigSchema).length).toBe(22);
+        expect(mapNodesOf(apiConfigSchema).length).toBe(24);
     });
 
     for (const template of Object.keys(MAP_CASES)) {

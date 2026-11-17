@@ -11,10 +11,10 @@ Video: [Deploy with the CLI](/guide/videos#deploy-with-the-cli), with chapters.
 
 ## Prerequisites
 
-- **Node.js 20 or later**.
+- **Node.js 24 or later**.
 - The **service key** of your SAP AI Core instance as JSON (SAP BTP cockpit → your subaccount → the AI Core service instance → Service Keys).
 - An **orchestration deployment** in SAP AI Core ([SAP's guide](https://help.sap.com/docs/sap-ai-core/sap-ai-core-service-guide/create-deployment-for-orchestration)). You can create it in SAP AI Launchpad, with the `DeploymentApi` of the SAP AI SDK, or with `cli-tools/sail-model-deploy.js` from the repository.
-- Optional, for file search uploads: `pdftotext` from poppler (PDF) and `pandoc` (.docx, .odt, .epub, .rst, .html, .tex) on your `PATH`. PowerPoint and Excel files need no tool.
+- Optional, for file search uploads: `pdftotext` from poppler (PDF) and `pandoc` 2.15 or later (.docx, .odt, .epub, .rst, .html, .tex) on your `PATH`. With an older pandoc, `.docx`, `.odt`, `.epub` and `.rst` uploads fail. PowerPoint and Excel files need no tool.
 
 ## Install and set up
 
@@ -148,6 +148,12 @@ The CLI includes an Ollama-compatible service on port 11434 for clients that exp
 | `-s`, `--since <time>` | Only lines since a time, for example `1h`, `30m`, `2d` |
 | `--clear` | Delete the log files |
 
+The standalone CLI has no cockpit and so no Logs page: the `observability.gateway_log` block of `api_config.json` has no effect here, and `sail-proxy logs` is the way to read the gateway's log.
+
+### Payload files
+
+For debugging, the gateway can write the content of requests and answers to files. Switch it on with `PAYLOAD_LOGGING_ENABLED=true` in the `.env` of the configuration directory (or `platform.logging.payload_logging_enabled` in `api_config.json`) and restart the gateway; set it to `false` or remove the line to switch it off again. The files go to `logs/payloads/` in the configuration directory, next to the gateway's log, and an update keeps them; `PAYLOAD_LOG_DIR` chooses another folder. They hold complete prompts and answers, so delete them when you are done. Unlike Docker and Kyma, the CLI does not delete payload files unless you set a limit: add `PAYLOAD_LOG_RETENTION_HOURS` (hours) or `PAYLOAD_LOG_MAX_MB` (MB) to the `.env` of the configuration directory, then restart the gateway (see [Environment variables](/reference/environment-variables)).
+
 ### File search
 
 A standalone gateway has file search only when you give it a PostgreSQL database with pgvector: set `FILE_SEARCH_DATABASE_URL` in the `.env` of the configuration directory. All API keys of a standalone gateway share one file search owner, so they see the same files and vector stores. The standalone CLI does not read scanned PDF pages (OCR), does not transcribe pages with a vision model, and does not read legacy Word `.doc` files, whatever the machine has installed.
@@ -233,6 +239,8 @@ sail-proxy update
 or with npm directly: `npm outdated -g @st-gr/sail-proxy` shows whether a newer version exists, `npm update -g @st-gr/sail-proxy` installs it. See [Backup, restore and upgrade](/deploy/backup-and-upgrade) for what to keep.
 
 Commands that start the gateway or show its status print one line when a newer version exists. The check asks npm at most once a day (after a failed attempt, at most every 6 hours), waits at most 3 seconds, and stays silent when offline. Set `SAIL_PROXY_UPDATE_CHECK=false` to switch it off.
+
+An update keeps your `api_config.json`, so settings a newer version adds to the default configuration are not in it. The first `sail-proxy run` after an update lists the settings your file lacks, each with its path and value, and names your file and the default file of the installed version. Copy the settings you want from the default file and restart the gateway. The list is shown once per installed version; your file is never changed, and a setting whose value only differs from the default is left out.
 
 The CLI also upgrades Kyma and Docker installations: `sail-proxy upgrade kyma`, `sail-proxy upgrade docker` and `sail-proxy restore kyma|docker` ([Upgrade on Kyma](/deploy/upgrade-kyma), [Upgrade on Docker](/deploy/upgrade-docker)).
 

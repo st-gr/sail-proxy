@@ -102,7 +102,9 @@ async function fetchOrchestrationDeployments(): Promise<DeploymentResource[]> {
     
     if (error.response) {
       logger.error('DeploymentDiscoveryService', 
-        `API Error - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data, null, 2)}`
+        `API Error - Status: ${error.response.status}`,
+        undefined,
+        { data: error.response.data }
       );
     }
 

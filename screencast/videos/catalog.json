@@ -4,7 +4,7 @@
     "title": "Overview",
     "subtitle": "What sail-proxy does, the architecture, a tour of the cockpit, one call, its usage row and its cost",
     "targetSeconds": 240,
-    "youtubeId": "yEGFXzamJPA",
+    "youtubeId": "2rtC4TqZLUU",
     "duration": 266,
     "vtt": true,
     "poster": true,
@@ -40,7 +40,7 @@
     "title": "Deploy with the CLI",
     "subtitle": "Install from npm, configure with the service key, run, create a key, call it from Claude Code",
     "targetSeconds": 240,
-    "youtubeId": "NE13X6oaiMQ",
+    "youtubeId": "S5KCmOJo0DQ",
     "duration": 163,
     "vtt": true,
     "poster": true,
@@ -80,8 +80,8 @@
     "title": "Deploy with Docker Compose",
     "subtitle": "Gateway, cockpit, nginx, Dex and PostgreSQL on one host",
     "targetSeconds": 300,
-    "youtubeId": "QaMR9LgLWfM",
-    "duration": 278,
+    "youtubeId": "07kNF91O5BY",
+    "duration": 284,
     "vtt": true,
     "poster": true,
     "chapters": [
@@ -94,19 +94,19 @@
         "title": "What you get"
       },
       {
-        "t": 40.195,
+        "t": 32.251,
         "title": "Set up and start"
       },
       {
-        "t": 129.559,
+        "t": 136.414,
         "title": "Sign in"
       },
       {
-        "t": 158.831,
+        "t": 165.063,
         "title": "Create a key and call it"
       },
       {
-        "t": 220.846,
+        "t": 226.002,
         "title": "Watch the usage and next steps"
       }
     ]
@@ -116,8 +116,8 @@
     "title": "Deploy on SAP BTP Kyma",
     "subtitle": "Prerequisites, the setup script, the rollout and the public cockpit on your cluster",
     "targetSeconds": 300,
-    "youtubeId": "gcq3D4dT1w0",
-    "duration": 308,
+    "youtubeId": "99B0r45qV8I",
+    "duration": 325,
     "vtt": true,
     "poster": true,
     "chapters": [
@@ -130,23 +130,23 @@
         "title": "What you get"
       },
       {
-        "t": 28.987,
+        "t": 30.593,
         "title": "Prerequisites"
       },
       {
-        "t": 51.054,
+        "t": 52.66,
         "title": "The setup script"
       },
       {
-        "t": 78.987,
+        "t": 83.893,
         "title": "Deploy and watch the rollout"
       },
       {
-        "t": 153.987,
+        "t": 158.093,
         "title": "The public cockpit"
       },
       {
-        "t": 215.792,
+        "t": 221.139,
         "title": "Clean up and next"
       }
     ]
@@ -154,10 +154,10 @@
   {
     "id": "05-cockpit",
     "title": "Cockpit deep dive",
-    "subtitle": "API keys, usage analytics, entitlements and quotas, teams, tool governance, grounding, configuration, connections",
-    "targetSeconds": 700,
-    "youtubeId": "2J_ExqMwYPY",
-    "duration": 516,
+    "subtitle": "API keys, usage analytics, entitlements and quotas, teams, tool governance, grounding, configuration and logs, connections",
+    "targetSeconds": 800,
+    "youtubeId": "kSAroqyUPQk",
+    "duration": 603,
     "vtt": true,
     "poster": true,
     "chapters": [
@@ -170,31 +170,31 @@
         "title": "API keys"
       },
       {
-        "t": 47.402,
+        "t": 48.8,
         "title": "Usage analytics"
       },
       {
-        "t": 101.51,
+        "t": 106.755,
         "title": "Entitlements and quotas"
       },
       {
-        "t": 131.874,
+        "t": 140.744,
         "title": "Teams"
       },
       {
-        "t": 165.783,
+        "t": 177.231,
         "title": "Tool governance"
       },
       {
-        "t": 208.798,
+        "t": 220.199,
         "title": "Grounding"
       },
       {
-        "t": 259.163,
+        "t": 266.359,
         "title": "Configuration and operations"
       },
       {
-        "t": 354.253,
+        "t": 444.401,
         "title": "Connections"
       }
     ]
@@ -204,8 +204,8 @@
     "title": "Clients",
     "subtitle": "Claude Code, Codex, GitHub Copilot, Gemini CLI, pi, opencode, Claude Code in an OpenShell sandbox, Claude Desktop, Open WebUI with image generation and n8n, all on one gateway",
     "targetSeconds": 240,
-    "youtubeId": "fS0VNa_52OU",
-    "duration": 580,
+    "youtubeId": "_F9WY9ORStQ",
+    "duration": 579,
     "vtt": true,
     "poster": true,
     "chapters": [
@@ -218,43 +218,43 @@
         "title": "Claude Code"
       },
       {
-        "t": 98.384,
+        "t": 97.829,
         "title": "Codex CLI"
       },
       {
-        "t": 127.817,
+        "t": 127.262,
         "title": "GitHub Copilot"
       },
       {
-        "t": 148.484,
+        "t": 147.929,
         "title": "Gemini CLI"
       },
       {
-        "t": 192.792,
+        "t": 192.962,
         "title": "pi"
       },
       {
-        "t": 227.559,
+        "t": 227.729,
         "title": "opencode"
       },
       {
-        "t": 270.625,
+        "t": 270.795,
         "title": "OpenShell sandboxes"
       },
       {
-        "t": 346.907,
+        "t": 347.732,
         "title": "Claude Desktop"
       },
       {
-        "t": 422.254,
+        "t": 425.526,
         "title": "Open WebUI"
       },
       {
-        "t": 475.262,
+        "t": 478.25,
         "title": "n8n"
       },
       {
-        "t": 516.695,
+        "t": 519.683,
         "title": "The usage page"
       }
     ]

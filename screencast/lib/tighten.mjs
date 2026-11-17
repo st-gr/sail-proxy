@@ -73,7 +73,7 @@ function blockDiffs(clip) {
 
 const seconds = (clip) => Number(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', clip], { encoding: 'utf8' }).stdout);
 
-export function tightenClip(clip, out, protect = [], opts = OPTS) {
+export function tightenClip(clip, out, protect = [], opts = OPTS, bitrate = '12M') {
   const duration = seconds(clip);
   const log = spawnSync('ffmpeg', ['-hide_banner', '-i', clip, '-af', `silencedetect=noise=${DETECT.noise}:d=${DETECT.min}`, '-vn', '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stderr;
   const cut = cuts(silencesOf(log, duration), stills(blockDiffs(clip), STILL), opts, protect);
@@ -81,7 +81,7 @@ export function tightenClip(clip, out, protect = [], opts = OPTS) {
   const keep = keeps(cut, duration);
   const parts = keep.map((k, i) => `[0:v]trim=${k.start}:${k.end},setpts=PTS-STARTPTS[v${i}];[0:a]atrim=${k.start}:${k.end},asetpts=PTS-STARTPTS[a${i}];`).join('');
   const filter = `${parts}${keep.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${keep.length}:v=1:a=1[v][a]`;
-  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', clip, '-filter_complex', filter, '-map', '[v]', '-map', '[a]', '-c:v', H264, '-b:v', '12M', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', out], { stdio: ['ignore', 'inherit', 'inherit'] });
+  const r = spawnSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', clip, '-filter_complex', filter, '-map', '[v]', '-map', '[a]', '-c:v', H264, '-b:v', bitrate, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', out], { stdio: ['ignore', 'inherit', 'inherit'] });
   if (r.status !== 0) throw new Error(`ffmpeg failed while tightening ${clip}`);
   return { duration, removed: cut.reduce((n, c) => n + c.end - c.start, 0), cuts: cut };
 }

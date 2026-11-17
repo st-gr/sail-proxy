@@ -16,6 +16,7 @@ import { buildConnectionSnapshot } from '../services/connectionSnapshot';
 import { announcePluginsAtBoot } from '../services/pluginsNotifier';
 import { isInstallEnabled, readEnabledVersions, readPackageContent, wantedPlugins } from '../services/pluginStore';
 import { deriveSigningKeys, invalidSigningScopes, SigningKey, SigningScope } from '../services/awsSigningKeys';
+import { overlayForGateway } from '../services/loggingSettings';
 
 // Import file config service
 const FileConfigService = require('./file-config-service');
@@ -1235,6 +1236,11 @@ class ValidationService {
   // Configuration Management Methods
   // ========================================
 
+  /**
+   * The configuration as the gateway gets it: the logging settings kept in memory are laid over it
+   * (services/loggingSettings.ts). The answer does not count as handed over (markHandedOver): with
+   * several gateways, the ones that only listen to the Valkey events have not got it.
+   */
   async getConfig(req: ValidationRequest): Promise<any> {
     try {
       // Query active configuration directly from database
@@ -1247,9 +1253,10 @@ class ValidationService {
       
       if (results.length > 0) {
         const config = results[0];
+        const overlaid = overlayForGateway(JSON.parse(config.configData || '{}'));
         return {
           success: true,
-          config: JSON.parse(config.configData || '{}'),
+          config: overlaid.configData,
           version: config.version,
           checksum: config.checksum,
           lastModified: config.deployedAt
@@ -1261,7 +1268,10 @@ class ValidationService {
     
     // Fallback to file-based config if database query fails
     logger.info('ValidationService', 'No active configuration in database, falling back to file config');
-    return this.configService.getConfig(req);
+    const fromFile = await this.configService.getConfig(req);
+    if (!fromFile?.success || !fromFile.config) return fromFile;
+    const overlaid = overlayForGateway(fromFile.config);
+    return { ...fromFile, config: overlaid.configData };
   }
 
   async checkConfigUpdate(req: ValidationRequest): Promise<any> {

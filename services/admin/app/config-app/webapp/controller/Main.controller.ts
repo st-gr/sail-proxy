@@ -18,6 +18,8 @@ import ResourceModel from "sap/ui/model/resource/ResourceModel";
 import formatMessage from "sap/base/strings/formatMessage";
 import Localization from "sap/base/i18n/Localization";
 import ConfigForm from "./ConfigForm";
+import ConfigShippedDefaults from "./ConfigShippedDefaults";
+import { comparisonTarget } from "../model/shippedDefaults";
 import { storedValidationMessages } from "../model/storedValidation";
 import { LatestRequest } from "../model/latestRequest";
 import { canSave, selectionState, type ConfigRow, type SelectionState } from "../model/selectionState";
@@ -54,6 +56,10 @@ export default class MainController extends Controller {
     private _dialogResizeObserver: ResizeObserver | null = null;
     private _resizeThrottleTimeout: number | null = null;
     private _configForm: ConfigForm | null = null;
+    /** "Compare with defaults" (controller/ConfigShippedDefaults.ts), built on first use. */
+    private _shippedDefaults: ConfigShippedDefaults | null = null;
+    /** The list rows the shipped-defaults notice was last worked out for. */
+    private _shippedNoticeFor: string | null = null;
     /** The detail read of the last pressed configuration; an earlier press's late answer is dropped. */
     private _detailLoad = new LatestRequest();
     /** The `_detailLoad` token whose read has answered: the open configuration the detail shows. */
@@ -167,6 +173,9 @@ export default class MainController extends Controller {
             dialogMode: "create", // Track if dialog is in "create" or "duplicate" mode
             dialogTitle: this.text("createConfigTitle"),
             rollbackReason: "", // For rollback dialog
+            // How many entries the shipped defaults hold that the active configuration lacks, and
+            // the notice above the list saying so (see controller/ConfigShippedDefaults.ts).
+            shippedDefaults: { count: 0, notice: "" },
             // Form view (see controller/ConfigForm.ts). Defaults keep the detail column exactly
             // as it is today: JSON editor, no form, toggle disabled until the gate says otherwise.
             isAdmin: false,
@@ -248,6 +257,90 @@ export default class MainController extends Controller {
     public onConfigListUpdateFinished(): void {
         this._updateToolbar();
         this._followOpenRowActiveState();
+        this._refreshShippedDefaultsNotice();
+    }
+
+    private _shippedDefaultsHelper(): ConfigShippedDefaults {
+        if (!this._shippedDefaults) {
+            this._shippedDefaults = new ConfigShippedDefaults({
+                text: (key, args) => this.text(key, args),
+                model: () => this.getView()?.getModel() as ODataModel,
+                addDependent: (control) => this.getView()?.addDependent(control),
+                openCreate: (draft) => this._openCreateDialogOn(this.text("compareDefaultsCreateTitle"), draft)
+            });
+        }
+        return this._shippedDefaults;
+    }
+
+    /**
+     * The notice above the list: the shipped defaults hold entries the active configuration
+     * lacks. Worked out again only when a row changed (an activation, a save, a rollback) - the
+     * list also reports "update finished" for sorting and paging. A viewer who may not read the
+     * shipped file simply gets no notice.
+     */
+    private _refreshShippedDefaultsNotice(): void {
+        const table = this.byId("configTable") as Table;
+        const rows = table.getItems()
+            .map((item) => item.getBindingContext()?.getObject() as (ApiConfigurationRow & { modifiedAt?: string }) | undefined)
+            .map((row) => `${row?.ID}:${row?.isActive}:${row?.modifiedAt}`)
+            .join("|");
+        if (rows === this._shippedNoticeFor) {
+            return;
+        }
+        this._shippedNoticeFor = rows;
+        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
+        this._shippedDefaultsHelper().compare().then((comparison) => {
+            const count = comparison.state === "ready" ? comparison.entries.length : 0;
+            viewModel?.setProperty("/shippedDefaults", {
+                count,
+                notice: count > 0 ? this.text("compareDefaultsNotice", [count]) : ""
+            });
+        }).catch(() => {
+            viewModel?.setProperty("/shippedDefaults", { count: 0, notice: "" });
+        });
+    }
+
+    /**
+     * The toolbar's "Compare with defaults": the ticked configuration, like the toolbar's other
+     * actions; the active one when nothing is ticked.
+     */
+    public onCompareWithDefaults(): void {
+        const target = comparisonTarget(this._tickedRows().map((row) => row.ID));
+        if (target.kind === "severalTicked") {
+            MessageBox.information(this.text("compareDefaultsPickOne"));
+            return;
+        }
+        this._openShippedComparison(target.kind === "configuration" ? target.id : undefined);
+    }
+
+    /** The notice above the list is about the active configuration, whatever is ticked. */
+    public onCompareActiveWithDefaults(): void {
+        this._openShippedComparison(undefined);
+    }
+
+    private _openShippedComparison(configId: string | undefined): void {
+        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
+        viewModel?.setProperty("/busy", true);
+        this._shippedDefaultsHelper().open(configId).catch((error: unknown) => {
+            MessageBox.error(this.text("compareDefaultsFailed", [error instanceof Error ? error.message : String(error)]));
+        }).finally(() => {
+            viewModel?.setProperty("/busy", false);
+        });
+    }
+
+    /** Opens the create dialog on a prepared document, as Duplicate does on a copy. */
+    private _openCreateDialogOn(title: string, draft: { name: string; version: string; description: string; configData: string }): void {
+        const viewModel = this.getView()?.getModel("viewModel") as JSONModel;
+        if (viewModel) {
+            viewModel.setProperty("/dialogMode", "duplicate");
+            viewModel.setProperty("/dialogTitle", title);
+            viewModel.setProperty("/newConfig", draft);
+        }
+        (this.byId("createConfigDialog") as Dialog).open();
+        setTimeout(() => {
+            this._setDynamicEditorHeight("newConfigEditor");
+            this._setupDialogResizeHandler("newConfigEditor");
+        }, 100);
     }
 
     /** The ticked rows, as the table's checkboxes show them. */

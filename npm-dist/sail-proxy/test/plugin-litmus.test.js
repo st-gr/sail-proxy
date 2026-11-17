@@ -204,6 +204,12 @@ const CORE_IMPORTERS = [path.join('services', 'configService.js'), path.join('se
 const FOLDER_HELPERS = ['webSearchTool.js', 'searchCap.js', 'anthropicWebSearchStream.js'].map(file => path.join('pluginSupport', 'webSearch', file));
 
 const templateConfig = () => fs.readFileSync(path.join(packageRoot, 'dist', 'templates', 'api_config.template.json'), 'utf8');
+// The template ships the global pseudonymization switch off; the forced-masking checks switch it on.
+const forcedTemplateConfig = () => {
+  const config = JSON.parse(templateConfig());
+  config.api_config.observability.pseudonymization.enabled = true;
+  return JSON.stringify(config);
+};
 const shippedPlugins = makeCopy().plugins; // the untouched source of every package below
 let shipped = null;
 check('every built-in loads from a folder as shipped, with the rule ids it always had', () => {
@@ -258,7 +264,7 @@ const ADDRESS = 'someone.invented@example.com';
 const maskedRequest = { model: 'anthropic--claude-4-sonnet--deployed', max_tokens: 64, messages: [{ role: 'user', content: `Write to ${ADDRESS} today.` }] };
 let maskedByShipped = null;
 check('pseudonymization, shape: a forced request reaches the upstream masked and comes back restored', () => {
-  maskedByShipped = drive(makeCopy(templateConfig()), { op: 'request', messagesRequest: maskedRequest });
+  maskedByShipped = drive(makeCopy(forcedTemplateConfig()), { op: 'request', messagesRequest: maskedRequest });
   assert.strictEqual(maskedByShipped.status, 200, JSON.stringify(maskedByShipped.body));
   assert.ok(maskedByShipped.upstreamBodies.length > 0, 'nothing reached the upstream');
   assert.ok(!maskedByShipped.upstreamBodies.join('').includes(ADDRESS), 'the address reached the upstream');
@@ -266,7 +272,7 @@ check('pseudonymization, shape: a forced request reaches the upstream masked and
 });
 
 check('pseudonymization, zip: the same forced request masks and restores the same', () => {
-  const copy = makeCopy(templateConfig());
+  const copy = makeCopy(forcedTemplateConfig());
   fs.rmSync(path.join(copy.plugins, 'pseudonymization'), { recursive: true });
   installZip(copy, path.join(shippedPlugins, 'pseudonymization'));
   const result = drive(copy, { op: 'request', messagesRequest: maskedRequest });
@@ -278,7 +284,7 @@ check('pseudonymization, zip: the same forced request masks and restores the sam
 });
 
 check('pseudonymization, folder gone: a forced request is refused and nothing reaches the upstream', () => {
-  const copy = makeCopy(templateConfig());
+  const copy = makeCopy(forcedTemplateConfig());
   fs.rmSync(path.join(copy.plugins, 'pseudonymization'), { recursive: true });
   const result = drive(copy, { op: 'request', messagesRequest: maskedRequest });
   assert.strictEqual(result.status, 503, JSON.stringify(result.body));

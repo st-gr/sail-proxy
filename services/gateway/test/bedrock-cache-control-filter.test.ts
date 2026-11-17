@@ -75,6 +75,7 @@ jest.mock('../src/services/configService', () => ({
   __esModule: true,
   default: {
     getSupportedBetaHeaders: () => [],
+    getBetaHeaderRenames: () => ({}),
     getExcludedBetaHeaders: () => [],
     getTimeout: () => 1000,
     getConfig: () => ({}),

@@ -172,7 +172,7 @@ export function validateAndCleanSchema(paramsSchema: JSONSchema, toolName: strin
       if (invalidSchemas.length > 0) {
         logger.warn('AnthropicSchemaUtils', `Found properties with invalid schema types: ${invalidSchemas.map(([prop]) => prop).join(', ')}`);
         invalidSchemas.forEach(([prop, val]) => {
-          logger.warn('AnthropicSchemaUtils', `Property '${prop}' has invalid schema: ${JSON.stringify(val)} (type: ${typeof val})`);
+          logger.warn('AnthropicSchemaUtils', `Property '${prop}' has invalid schema (type: ${typeof val})`, { schema: JSON.stringify(val) });
         });
       }
       logger.warn('AnthropicSchemaUtils', `This might be a misinterpreted schema. Attempting to use as-is but review is advised. Forcing a clean empty schema if it's completely malformed.`);

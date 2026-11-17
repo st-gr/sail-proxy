@@ -121,6 +121,8 @@ function changedLines(before: Record<string, string>, after: Record<string, stri
 }
 
 const DB_PASSWORD = 'first-run-pw-1';
+// Characters a generated IAS client secret may hold and plain YAML or String.replace would mangle.
+const IAS_CLIENT_SECRET = 'ias:s3cr#t "q" \\ $& [x]=/';
 const FIRST_RUNS: Record<string, Record<string, any>> = {
   local: {
     POSTGRES_USER: 'custom_user',
@@ -145,6 +147,19 @@ const FIRST_RUNS: Record<string, Record<string, any>> = {
     imageMode: 'registry',
     registry: 'registry.example.invalid',
     organization: 'acme-images',
+    pullImages: false
+  },
+  ias: {
+    POSTGRES_PASSWORD: '',
+    configMethod: 'skip',
+    provider: 'ias',
+    IAS_ISSUER_URL: 'https://tenant.example.invalid',
+    IAS_CLIENT_ID: '11111111-2222-3333-4444-555555555555',
+    IAS_CLIENT_SECRET,
+    IAS_ADMIN_GROUP: 'ias-admins',
+    IAS_USER_GROUP: 'ias-users',
+    useDevelopment: false,
+    baseUrl: 'https://gateway.example.invalid',
     pullImages: false
   },
   'ldap external': {
@@ -432,5 +447,58 @@ describe('setup-docker.js: docker-compose.override.yml is the admin\'s unless se
     expect(aside).toHaveLength(1);
     expect(fs.readFileSync(path.join(root, 'docker', aside[0]), 'utf8')).toBe(ADMINS);
     expect(printed.join('\n')).toContain(`moved to ${aside[0]}`);
+  });
+});
+
+describe('SAP Cloud Identity Services (IAS) as the sign-in provider', () => {
+  const dex = () => fs.readFileSync(path.join(root, 'docker', 'dex.config.yaml'), 'utf8');
+  const authEnv = () => fs.readFileSync(path.join(root, 'docker', '.env.auth'), 'utf8');
+
+  it('renders an OIDC connector against the tenant and maps the two groups to roles', async () => {
+    const shown = await run(FIRST_RUNS.ias);
+    expect(shown.find((q) => q.id === 'IAS_CLIENT_SECRET')).toMatchObject({ type: 'password' });
+    const text = dex();
+    // Dex's own issuer is untouched; the connector points at the tenant.
+    expect(text).toMatch(/^issuer: https:\/\/gateway\.example\.invalid\/dex$/m);
+    expect(text).toContain('- type: oidc');
+    expect(text).toContain('    issuer: "https://tenant.example.invalid"');
+    expect(text).toContain('    clientID: "11111111-2222-3333-4444-555555555555"');
+    expect(text).toContain(`    clientSecret: ${JSON.stringify(IAS_CLIENT_SECRET)}`);
+    expect(text).toContain('    redirectURI: https://gateway.example.invalid/dex/callback');
+    // IAS sends no "name" claim by default and Dex refuses a login without its user-name claim
+    // (missing "name" claim, trial tenant 2026-11-09): the e-mail address is the user name.
+    expect(text).toContain('    userNameKey: email');
+    expect(text).not.toMatch(/IAS_(ISSUER_URL|CLIENT_ID|CLIENT_SECRET)/);
+    expect(authEnv()).toMatch(/^IDENTITY_PROVIDER=ias$/m);
+    expect(authEnv()).toContain('ROLE_MAPPING={"ias-admins":"admin","ias-users":"user"}');
+    // The redirect URI to register in IAS is named; the secret is not printed.
+    expect(printed.join('\n')).toContain('https://gateway.example.invalid/dex/callback');
+    expect(printed.join('\n')).not.toContain(IAS_CLIENT_SECRET);
+  });
+
+  it('a re-run shows the current answers, keeps the client secret on Enter and changes no file', async () => {
+    await run(FIRST_RUNS.ias);
+    const before = files();
+    const shown = await run();
+    const defaults = Object.fromEntries(shown.map((q) => [q.id, q.default]));
+    expect(defaults).toMatchObject({
+      provider: 'ias',
+      IAS_ISSUER_URL: 'https://tenant.example.invalid',
+      IAS_CLIENT_ID: '11111111-2222-3333-4444-555555555555',
+      IAS_ADMIN_GROUP: 'ias-admins',
+      IAS_USER_GROUP: 'ias-users',
+    });
+    const secret = shown.find((q) => q.id === 'IAS_CLIENT_SECRET')!;
+    expect(secret.default).toBeUndefined();
+    expect(secret.message).toContain('Enter keeps it');
+    expect(changedLines(before, files())['docker/dex.config.yaml']).toBeUndefined();
+  });
+
+  it.each([
+    ['https://tenant.example.invalid/', 'trailing slash'],
+    ['http://tenant.example.invalid', 'not https'],
+    ['https://tenant.example.invalid/.well-known/openid-configuration', 'the discovery document'],
+  ])('refuses the issuer %s (%s)', async (issuer) => {
+    await expect(run({ ...FIRST_RUNS.ias, IAS_ISSUER_URL: issuer })).rejects.toThrow(/IAS_ISSUER_URL rejected/);
   });
 });

@@ -94,7 +94,7 @@ jest.mock('../src/utils/usageTracker', () => ({
 
 import { handleMessages } from '../src/controllers/anthropicController';
 import { anthropicErrorType, anthropicErrorMessage } from '../src/utils/anthropicErrors';
-import { failureFromError, failureFromChunk, httpStatusOr } from '../src/utils/streamStart';
+import { failureFromError, failureFromChunk, httpStatusOr, upstreamCallError } from '../src/utils/streamStart';
 
 /** An Express-like response that records the wire: status, headers, raw bytes, JSON body. */
 function mockRes() {
@@ -262,6 +262,24 @@ describe('a failure before the stream started is an HTTP error in Anthropic\'s s
     expect(res.headers['content-type']).toMatch(/^application\/json/);
     expect(res.wire).toBe('');
     expect(res.body).toEqual({ type: 'error', error: { type: 'permission_error', message: 'Bedrock said no' } });
+  });
+  it('a deployed model\'s streaming call the service answered before it threw -> counted once with its status, not answered twice', async () => {
+    modelDetails = { id: 'anthropic--claude-x--deployed', accessType: 'deployment' };
+    const res = mockRes();
+    const json = jest.spyOn(res, 'json');
+    // What awsBedrockService does when the upstream rejects a streaming call: answer, then throw.
+    bedrockImpl = () => {
+      res.status(410).json({ type: 'error', error: { type: 'invalid_request_error', message: 'Model has been retired.' } });
+      return Promise.reject(Object.assign(new Error('Model has been retired.'), { status: 410 }));
+    };
+
+    await handleMessages(mockReq({ ...body(), model: 'anthropic--claude-x--deployed' }), res, jest.fn() as any);
+
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(410);
+    expect(res.wire).toBe('');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0].status).toBe(410);
   });
 });
 
@@ -483,6 +501,37 @@ describe('non-streaming and pre-routing errors are Anthropic errors too', () => 
     expect(res.statusCode).toBe(404);
     expect(res.wire).toBe('');
     expect(res.body).toEqual({ type: 'error', error: { type: 'not_found_error', message: 'model: no-such-model-xyz' } });
+  });
+
+  it('a deployed model the upstream has retired -> HTTP 410 with the upstream\'s message, not axios\'s "Request failed with status code 410"', async () => {
+    modelDetails = { id: 'anthropic--claude-x--deployed', accessType: 'deployment' };
+    const retired = 'Model has been retired. Please update your deployment with a new model.';
+    // What awsBedrockService rethrows for a rejected call: the upstream's message, status and body.
+    bedrockImpl = () => Promise.reject(upstreamCallError(Object.assign(new Error('Request failed with status code 410'), {
+      response: { status: 410, data: { error: 'Gone', message: retired } },
+    })));
+    const res = mockRes();
+
+    await handleMessages(mockReq({ ...body(false), model: 'anthropic--claude-x--deployed' }), res, jest.fn() as any);
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.message).toBe(retired);
+  });
+
+  it.each([true, false])('a failed SAP token fetch on a deployed model (stream=%s) keeps the gateway\'s own message, not the HTTP client\'s', async (stream) => {
+    modelDetails = { id: 'anthropic--claude-x--deployed', accessType: 'deployment' };
+    // What modelService.getAuthToken throws: its own message, the HTTP client's text in details.
+    bedrockImpl = () => Promise.reject(Object.assign(new Error('Failed to authenticate with SAP AI Core'), {
+      status: 401,
+      details: { message: 'Request failed with status code 401', response: {} },
+    }));
+    const res = mockRes();
+
+    await handleMessages(mockReq({ ...body(stream), model: 'anthropic--claude-x--deployed' }), res, jest.fn() as any);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.wire).toBe('');
+    expect(res.body.error.message).toBe('Failed to authenticate with SAP AI Core');
   });
 
   it('a deployed-model failure with a bogus status -> 500 api_error, never a thrown invalid status code', async () => {

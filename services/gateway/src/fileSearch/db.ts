@@ -5,6 +5,7 @@ import { nonDefaultBuildNote, readVectorIndex, VECTOR_INDEX_NAME, VECTOR_INDEX_B
 import { getFileSearchConfig } from '../services/configService';
 import { getDefaultLogger } from '@libs/logger';
 import { FileSearchBusyError } from './dbBusy';
+import { connectionOptions } from './dbTls';
 
 const logger = getDefaultLogger();
 
@@ -49,7 +50,7 @@ export function createFileSearchPool(
   connectionString: string, opts: { max?: number; connectionTimeoutMillis?: number } = {},
 ): Pool {
   return new FileSearchPool({
-    connectionString, max: opts.max ?? 10, connectionTimeoutMillis: opts.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
+    ...connectionOptions(connectionString), max: opts.max ?? 10, connectionTimeoutMillis: opts.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
   });
 }
 
@@ -442,7 +443,7 @@ async function applySchemaLocked(
 // connection/role, so a successful migration there already proves DML
 // works with nothing separate to smoke-test.
 async function smokeTestRuntimeGrants(runtimeDsn: string): Promise<void> {
-  const smokePool = new Pool({ connectionString: runtimeDsn, max: 1 });
+  const smokePool = new Pool({ ...connectionOptions(runtimeDsn), max: 1 });
   try {
     await smokePool.query('SELECT 1 FROM file_blobs LIMIT 0');
   } finally {
@@ -500,7 +501,7 @@ async function reportVectorIndex(client: PoolClient): Promise<void> {
 // ingestWorker.ts, blob/*.ts, ...) never see DDL-capable credentials, not
 // even transiently.
 async function runPrivilegedMigration(migrationDsn: string, runtimeDsn: string | undefined): Promise<void> {
-  const migrationPool = new Pool({ connectionString: migrationDsn, max: 2 });
+  const migrationPool = new Pool({ ...connectionOptions(migrationDsn), max: 2 });
   try {
     const { user: migrationUser } = parseDsnCredentials(migrationDsn);
     const client = await migrationPool.connect();

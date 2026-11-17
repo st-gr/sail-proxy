@@ -138,7 +138,7 @@ function load() {
   // would add the keys setEnv deleted, and the environment target is read lazily from process.env.
   jest.doMock('dotenv', () => ({ __esModule: true, config: () => ({ parsed: {} }), default: { config: () => ({ parsed: {} }) } }));
   jest.doMock('../src/services/usageEventEmitter', () => ({ __esModule: true, default: { emit: jest.fn(async (e: any) => { emitted.push(e); }) } }));
-  jest.doMock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn() }));
+  jest.doMock('../src/services/siemUsageEvent', () => ({ emitSiemUsageEvent: jest.fn(), payloadCaptureOn: () => false }));
   jest.doMock('../src/toolGovernance/record', () => ({ toolsForEvent: () => undefined }));
   jest.doMock('../src/config/unifiedAuthConfig', () => ({ ...(jest.requireActual('../src/config/unifiedAuthConfig') as object), isStandaloneMode: () => false }));
   /* eslint-disable @typescript-eslint/no-var-requires */

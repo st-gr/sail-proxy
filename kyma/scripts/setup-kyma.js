@@ -47,6 +47,8 @@ const { askKeyRegeneration, keysForProviderChange, mask } = require('../../docke
 const { INSTALL_KEY, askPluginInstall, pluginInstallToWrite, pluginInstallFromEnv } = require('../../docker/setup-flow/pluginInstall');
 const { BILLING_KEYS, askBilling, billingToWrite, billingFromEnv, isValidBillingValue } = require('../../docker/setup-flow/billing');
 const { readDockerConfigValues, isExternalLdap, usesImageRegistry, githubTeam } = require('../../docker/setup-flow/docker-config');
+const { readExternalDatabase, databaseAddress, connectionStringOptions, parseExternalDatabaseArg } = require('./external-database');
+const { validateIssuerUrl } = require('../../docker/setup-flow/oidc');
 const { REGISTRY_SECRET_FILE, writeRegistrySecret, readRegistrySecret } = require('./registry-secret');
 const { INSTALL_RECORD_FILE, recordAnswers, renderInstallRecord, readInstallRecord, registryAnswers } = require('./install-record');
 const {
@@ -148,6 +150,13 @@ Options:
                  interactively unless --ci). Any namespace other than sail-proxy
                  renders into kyma/deployments/<ns>/ and prefixes the names of its
                  istio-system and cluster-scoped objects with <ns>-
+  --external-database <secret>
+                 Use a PostgreSQL outside the cluster instead of the one this setup
+                 deploys, for example SAP BTP "PostgreSQL, hyperscaler option".
+                 <secret> is the Secret of its service binding in the namespace
+                 (hostname, port, dbname, username, password, sslrootcert). Answers
+                 the "Database" question of a new installation; an installed namespace
+                 keeps what it has.
 
 Examples:
   From kyma directory:
@@ -341,6 +350,11 @@ const PROVIDERS = {
     name: 'Okta SAML',
     description: 'Okta SAML-based single sign-on',
     files: ['dex.config.yaml', 'nginx.conf']
+  },
+  ias: {
+    name: 'SAP Cloud Identity Services (OpenID Connect)',
+    description: 'Sign-in through an SAP Cloud Identity Services (IAS) tenant',
+    files: ['dex.config.yaml', 'nginx.conf']
   }
 };
 
@@ -388,6 +402,14 @@ const PROVIDER_PROMPTS = {
     { key: 'OKTA_ADMIN_GROUP', prompt: 'Okta admin group name (from Okta app assignments)', default: 'sap-llm-gateway-admin' },
     { key: 'OKTA_USER_GROUP', prompt: 'Okta user group name (from Okta app assignments)', default: 'sap-llm-gateway-user' },
     { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
+  ],
+  ias: [
+    { key: 'IAS_ISSUER_URL', prompt: 'IAS tenant issuer URL (https://<tenant>.accounts.ondemand.com)', required: true, validate: validateIssuerUrl },
+    { key: 'IAS_CLIENT_ID', prompt: 'Client ID of the IAS application', required: true },
+    { key: 'IAS_CLIENT_SECRET', prompt: 'Client secret of the IAS application', required: true, secret: true },
+    { key: 'IAS_ADMIN_GROUP', prompt: 'IAS user group for administrators', default: 'sap-llm-gateway-admin' },
+    { key: 'IAS_USER_GROUP', prompt: 'IAS user group for users', default: 'sap-llm-gateway-user' },
+    { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
   ]
 };
 
@@ -424,7 +446,139 @@ class KymaSetup {
     this.currentSecrets = {};
     this.forceOverwrite = options.forceOverwrite || false;
     this.ciMode = options.ciMode || false;
+    // --external-database <secret>: the name of a service binding Secret in the namespace. Unset,
+    // the installation runs its own PostgreSQL in the cluster (or stays external on a re-run of
+    // a namespace whose install record names a Secret). See external-database.js.
+    this.externalDatabaseOption = options.externalDatabase || null;
+    this.externalDb = null;
     this.setNamespace(options.namespace || DEFAULT_NAMESPACE);
+  }
+
+  /** The folder of the rendered templates (Secrets, ConfigMaps): the parent of the secrets folder. */
+  templatesOutputDir() {
+    return path.dirname(this.secretsDir);
+  }
+
+  /**
+   * Where the installed namespace's database is: the binding Secret its install record names, and
+   * whether the live admin service connects to a database outside the cluster. A fact about the
+   * installation, not a default for a question, so it is read on every run: also with --force,
+   * which takes no defaults from the existing configuration, and with --ci, which has no prompt
+   * session. {} for a namespace that does not exist yet.
+   */
+  async readDatabaseLocation() {
+    const namespace = this.namespace;
+    const live = await this.once(`existing-keys:${namespace}`, () => this.readExistingKeys());
+    if (live.state !== 'exists') return {};
+    const location = {};
+    const record = await readInstallRecord((args) => this.runKubectl(args), namespace);
+    const recorded = record ? record.answers.externalDatabase : null;
+    if (typeof recorded === 'string' && /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(recorded)) location.externalDatabase = recorded;
+    // What the live admin service connects to, whatever the record says.
+    const liveDatabaseUrl = ((live.secrets || {})['admin-env'] || {}).DATABASE_URL;
+    if (liveDatabaseUrl && !/@postgres:5432\//.test(liveDatabaseUrl)) {
+      location.liveDatabaseIsExternal = true;
+      // host:port/name, as databaseAddress() writes it (the password before it may hold an "@").
+      location.liveDatabaseAddress = liveDatabaseUrl.slice(liveDatabaseUrl.lastIndexOf('@') + 1).split('?')[0];
+    }
+    return location;
+  }
+
+  /**
+   * The binding Secret an installation already uses can come to hold other values than the
+   * installation runs with: SAP's operator renewed the binding's credentials, or the binding was
+   * deleted and created again under the same name. Taking them over changes the protected
+   * database values, so it is asked like a reconnect to another Secret (default: no) and told to
+   * the deploy the same way. Nothing is moved: the data must be in the database the Secret names.
+   */
+  async confirmChangedBinding(current, secretName) {
+    const live = this.liveDbCredentials;
+    const db = this.externalDb;
+    const credentialsChanged = db.user !== live.POSTGRES_USER || db.password !== live.POSTGRES_PASSWORD;
+    const liveAddress = current && current.liveDatabaseAddress;
+    const addressChanged = Boolean(liveAddress) && liveAddress !== databaseAddress(db);
+    if (!credentialsChanged && !addressChanged) return;
+    const what = addressChanged
+      ? `another database (${databaseAddress(db)}) than namespace ${this.namespace} uses (${liveAddress})`
+      : `other database credentials than namespace ${this.namespace} uses`;
+    if (this.ciMode) {
+      throw new Error(`Secret ${secretName} holds ${what}. Taking them over needs a confirmation and cannot run unattended.`);
+    }
+    const { confirmDatabaseChange } = await this.prompt([{
+      type: 'confirm',
+      name: 'confirmDatabaseChange',
+      default: false,
+      message: `Secret ${secretName} holds ${what}, for example after its service binding was renewed or created again. ` +
+        'Use them? The installation will connect with them after the next deploy; its data must be in that database.'
+    }]);
+    if (!confirmDatabaseChange) {
+      throw new Error(`Setup stopped: Secret ${secretName} holds ${what}, and taking them over was not confirmed.`);
+    }
+    this.databaseReconnect = { from: secretName, to: secretName };
+  }
+
+  /**
+   * Decide where the database is, before any database question. A namespace that is installed
+   * keeps what it has: the Secret its install record names, else its in-cluster PostgreSQL. A
+   * new installation is asked (default: the in-cluster PostgreSQL); --external-database <secret>
+   * answers the question, also for an unattended run. Reads the Secret (read-only) and refuses
+   * to move an installed namespace between the two, which would leave its data behind.
+   */
+  async selectDatabase(current) {
+    const recorded = current && current.externalDatabase ? current.externalDatabase : null;
+    let secretName = this.externalDatabaseOption || recorded;
+    this.externalDb = null;
+    if (!secretName && current && current.liveDatabaseIsExternal) {
+      // Without this, the re-run would render a PostgreSQL pod with an empty database.
+      throw new Error(`Namespace ${this.namespace} uses an external database, but its install record does not name the binding Secret. Run setup with --external-database <secret name>.`);
+    }
+    if (!secretName && !this.liveDbCredentials && !this.ciMode) {
+      const { databaseMode } = await this.prompt([{
+        type: 'list',
+        name: 'databaseMode',
+        message: 'Database:',
+        default: 'in-cluster',
+        choices: [
+          { name: 'PostgreSQL in the cluster - deployed by this setup', value: 'in-cluster', short: 'In the cluster' },
+          { name: 'External PostgreSQL - SAP BTP "PostgreSQL, hyperscaler option" or another managed PostgreSQL', value: 'external', short: 'External' }
+        ]
+      }]);
+      if (databaseMode === 'external') {
+        const { externalDatabaseSecret } = await this.prompt([{
+          type: 'input',
+          name: 'externalDatabaseSecret',
+          message: `Name of the service binding Secret in namespace ${this.namespace} (hostname, port, dbname, username, password, sslrootcert):`,
+          validate: (input) => /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(String(input).trim()) ? true : 'Enter the name of a Secret, for example postgres-binding'
+        }]);
+        secretName = String(externalDatabaseSecret).trim();
+      }
+    }
+    this.databaseReconnect = null;
+    if (!secretName) return;
+    if (recorded && secretName !== recorded) {
+      // A deliberate switch to another database, typically an instance restored from a backup. The
+      // data must already be there: setup and deploy move nothing.
+      if (this.ciMode) {
+        throw new Error(`Namespace ${this.namespace} uses the database of Secret ${recorded}. Reconnecting it to ${secretName} needs a confirmation and cannot run unattended.`);
+      }
+      const { confirmDatabaseReconnect } = await this.prompt([{
+        type: 'confirm',
+        name: 'confirmDatabaseReconnect',
+        default: false,
+        message: `Namespace ${this.namespace} uses the database of Secret ${recorded}. Reconnect it to the database of Secret ${secretName}? ` +
+          'The installation will use that database after the next deploy; its data must already be there (for example an instance restored from a backup).'
+      }]);
+      if (!confirmDatabaseReconnect) {
+        throw new Error(`Setup stopped: namespace ${this.namespace} stays on the database of Secret ${recorded}; the reconnect to ${secretName} was not confirmed.`);
+      }
+      this.databaseReconnect = { from: recorded, to: secretName };
+    }
+    if (this.liveDbCredentials && !recorded && !(current && current.liveDatabaseIsExternal)) {
+      throw new Error(`Namespace ${this.namespace} already runs with its in-cluster database. Setup does not move an installation to an external database: its data would stay behind. Run setup without --external-database, or install into a new namespace.`);
+    }
+    this.externalDb = readExternalDatabase((args) => this.runKubectl(args), this.namespace, secretName);
+    // The same Secret as before (or the one a record-less external installation is given): its values may have changed.
+    if (this.liveDbCredentials && !this.databaseReconnect) await this.confirmChangedBinding(current, secretName);
   }
 
   /**
@@ -1588,6 +1742,8 @@ ${lines.join('\n')}
   assertDbCredentialsMatchLive(dbConfig) {
     const live = this.liveDbCredentials;
     if (!live) return;
+    // A confirmed reconnect to another external database brings that database's own credentials.
+    if (this.databaseReconnect) return;
     if (dbConfig.POSTGRES_USER !== live.POSTGRES_USER || dbConfig.POSTGRES_PASSWORD !== live.POSTGRES_PASSWORD) {
       throw new Error(
         `Namespace ${this.namespace} already has a Postgres database, and its volume keeps the user and password ` +
@@ -1914,6 +2070,18 @@ ${lines.join('\n')}
    * @returns {Object} Database configuration object
    */
   async promptForDatabaseCredentials() {
+    if (this.externalDb) {
+      // The external database's owner is the binding's user: nothing to ask or to generate.
+      console.log(`🗄️  External database: user and password come from Secret ${this.externalDb.secretName}`);
+      this.sharedSecrets.POSTGRES_PASSWORD = this.externalDb.password;
+      return {
+        POSTGRES_USER: this.externalDb.user,
+        POSTGRES_PASSWORD: this.externalDb.password,
+        useGeneratedSecrets: false,
+        passwordWasGenerated: false,
+        externalDatabase: this.externalDb.secretName
+      };
+    }
     if (this.ciMode && this.liveDbCredentials) {
       console.log('🤖 CI Mode: using the database credentials of the existing namespace');
       this.sharedSecrets.POSTGRES_PASSWORD = this.liveDbCredentials.POSTGRES_PASSWORD;
@@ -2248,8 +2416,10 @@ ${lines.join('\n')}
           if (!input.trim()) {
             return 'This field is required.';
           }
-          return true;
+          return prompt.validate ? prompt.validate(input) : true;
         };
+      } else if (prompt.validate) {
+        inquirerPrompt.validate = prompt.validate;
       }
       
       // Special handling for Okta auto-fetch
@@ -2394,6 +2564,17 @@ ${lines.join('\n')}
         roleMapping[config.OKTA_USER_GROUP] = 'user';
       }
       
+      config.ROLE_MAPPING = JSON.stringify(roleMapping);
+    } else if (provider === 'ias') {
+      const roleMapping = {};
+
+      if (config.IAS_ADMIN_GROUP) {
+        roleMapping[config.IAS_ADMIN_GROUP] = 'admin';
+      }
+      if (config.IAS_USER_GROUP) {
+        roleMapping[config.IAS_USER_GROUP] = 'user';
+      }
+
       config.ROLE_MAPPING = JSON.stringify(roleMapping);
     } else if (provider === 'ldap') {
       const roleMapping = {};
@@ -2824,9 +3005,13 @@ stringData:
 PORT: "8080"
 DEPLOY_TARGET: docker
 ADMIN_SERVICE_URL: http://admin:4004
-FILE_SEARCH_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_USER)}:${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD)}@postgres:5432/sap_llm_gateway`)}
+FILE_SEARCH_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_USER)}:${encodeURIComponent(this.sharedSecrets.FILE_SEARCH_RUNTIME_PASSWORD)}@${databaseAddress(this.externalDb)}${connectionStringOptions(this.externalDb)}`)}
 VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
 METADATA_ENCRYPTION_KEY: ${this.yamlQuote(this.sharedSecrets.METADATA_ENCRYPTION_KEY)}`;
+    if (this.externalDb) {
+      // The gateway verifies the server certificate against this CA (fileSearch/dbTls.ts).
+      gatewayEnvData += `\nFILE_SEARCH_DATABASE_CA: ${this.yamlQuote(this.externalDb.ca)}`;
+    }
 
     if (config.SAP_AI_CORE_URL) {
       gatewayEnvData += `
@@ -2859,11 +3044,11 @@ metadata:
   namespace: ${config.namespace}
 type: Opaque
 stringData:
-  FILE_SEARCH_MIGRATION_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(config.POSTGRES_USER)}:${encodeURIComponent(config.POSTGRES_PASSWORD)}@postgres:5432/sap_llm_gateway`)}
+  FILE_SEARCH_MIGRATION_DATABASE_URL: ${this.yamlQuote(`postgresql://${encodeURIComponent(config.POSTGRES_USER)}:${encodeURIComponent(config.POSTGRES_PASSWORD)}@${databaseAddress(this.externalDb)}${connectionStringOptions(this.externalDb)}`)}${this.externalDb ? `\n  FILE_SEARCH_DATABASE_CA: ${this.yamlQuote(this.externalDb.ca)}` : ''}
 `;
 
     // Admin secret
-    let adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@postgres:5432/sap_llm_gateway`)}
+    let adminEnvData = `DATABASE_URL: ${this.yamlQuote(`postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@${databaseAddress(this.externalDb)}`)}
 VALKEY_URL: redis://valkey:6379
 PORT: "4004"
 VALIDATION_TOKEN_SECRET: ${this.yamlQuote(this.sharedSecrets.VALIDATION_TOKEN_SECRET)}
@@ -2877,6 +3062,10 @@ IDENTITY_PROVIDER: ${this.yamlQuote(config.provider || 'github')}
 JWT_ISSUER: ${this.yamlQuote(`${config.baseUrl}/dex`)}
 BASE_URL: ${this.yamlQuote(config.baseUrl)}
 LOGOUT_REDIRECT_URL: ${this.yamlQuote(`${config.baseUrl}/admin/app/shell/`)}`;
+    if (this.externalDb) {
+      // The CAP database driver switches TLS on when it is given the server CA.
+      adminEnvData += `\ncds.requires.db.credentials.sslrootcert: ${this.yamlQuote(this.externalDb.ca)}`;
+    }
     // Billing answers (interactive runs only): the admin reads them from its environment.
     if (this.billing) {
       adminEnvData += BILLING_KEYS.filter((key) => this.billing[key] !== undefined)
@@ -2915,6 +3104,15 @@ stringData:
     fs.mkdirSync(this.secretsDir, { recursive: true });
     fs.mkdirSync(this.configmapsDir, { recursive: true });
     
+    // What tells deploy-kyma.js that changed database values are meant (verifyLiveCredentials);
+    // any other run removes it, so a later deploy protects the database values again.
+    const reconnectMarker = path.join(this.templatesOutputDir(), 'database-reconnect.json');
+    if (this.databaseReconnect) {
+      fs.mkdirSync(path.dirname(reconnectMarker), { recursive: true });
+      fs.writeFileSync(reconnectMarker, JSON.stringify(this.databaseReconnect));
+    } else {
+      fs.rmSync(reconnectMarker, { force: true });
+    }
     writeSecret(path.join(this.secretsDir, 'postgres-env.yaml'), postgresSecret);
     writeSecret(path.join(this.secretsDir, 'gateway-env.yaml'), gatewaySecret);
     writeSecret(path.join(this.secretsDir, 'gateway-migration-env.yaml'), gatewayMigrationSecret);
@@ -3180,6 +3378,12 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
               'OKTA_SSO_URL': config.OKTA_SSO_URL || '',
               'OKTA_SAML_CA_DATA': config.OKTA_SAML_CA_DATA || ''
             });
+          } else if (config.provider === 'ias') {
+            configObj = this.replaceInObject(configObj, {
+              'IAS_ISSUER_URL': config.IAS_ISSUER_URL || '',
+              'IAS_CLIENT_ID': config.IAS_CLIENT_ID || '',
+              'IAS_CLIENT_SECRET': config.IAS_CLIENT_SECRET || ''
+            });
           } else if (config.provider === 'ldap') {
             configObj = this.replaceInObject(configObj, {
               'LDAP_HOST': config.LDAP_HOST || '',
@@ -3203,7 +3407,7 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
           adaptedConnector.config = configObj;
           
           // Ensure redirectURI is properly set (critical for GitHub and SAML providers)
-          if (config.provider === 'github' || config.provider === 'okta') {
+          if (config.provider === 'github' || config.provider === 'okta' || config.provider === 'ias') {
             adaptedConnector.config.redirectURI = `${config.baseUrl}/dex/callback`;
           }
           
@@ -3290,8 +3494,21 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
         continue;
       }
       
+      if (this.externalDb && manifestFile === 'postgres.yaml') {
+        // No PostgreSQL in the cluster; a render left from an earlier run must not be applied.
+        fs.rmSync(outputPath, { force: true });
+        console.log('⏭️  postgres.yaml skipped: the installation uses an external database');
+        continue;
+      }
       console.log(`📝 Processing ${manifestFile} from template...`);
       let content = fs.readFileSync(templatePath, 'utf8');
+      if (this.externalDb) {
+        // The pods wait for the database before they migrate. Kubernetes sets these two variables
+        // for the Service of the in-cluster PostgreSQL only.
+        content = content
+          .replace(/\$\{POSTGRES_SERVICE_HOST\}/g, () => this.externalDb.host)
+          .replace(/\$\{POSTGRES_SERVICE_PORT\}/g, () => String(this.externalDb.port));
+      }
         
         // Replace container registry placeholders
         content = content.replace(/__CONTAINER_REGISTRY__/g, config.containerRegistry);
@@ -3491,7 +3708,8 @@ ${config.OKTA_SAML_CA_DATA.split('\n').map(line => '    ' + line).join('\n')}
       // Replace all placeholders in the string
       let result = obj;
       for (const [placeholder, value] of Object.entries(replacements)) {
-        result = result.replace(new RegExp(placeholder, 'g'), value);
+        // A function, so that "$&" or "$$" in a value (a client secret) is not read as a replacement pattern.
+        result = result.replace(new RegExp(placeholder, 'g'), () => value);
       }
       return result;
     } else if (Array.isArray(obj)) {
@@ -4027,6 +4245,14 @@ ${Object.entries(gatewayConfigData).map(([key, value]) => {
       }
     });
     
+    if (this.externalDb) {
+      // The ConfigMap wins over the Secret in envFrom, so the address belongs here.
+      capDbConfig['cds.requires.db.credentials.host'] = this.externalDb.host;
+      capDbConfig['cds.requires.db.credentials.port'] = String(this.externalDb.port);
+      capDbConfig['cds.requires.db.credentials.database'] = this.externalDb.name;
+      capDbConfig['cds.requires.db.credentials.user'] = this.externalDb.user;
+    }
+
     // Add important environment variables from .env file
     if (adminEnv.DEPLOY_TARGET) {
       adminConfigData.DEPLOY_TARGET = adminEnv.DEPLOY_TARGET;
@@ -4458,7 +4684,7 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
         values.GITHUB_ORG = adminOrg || userOrg;
         values.GITHUB_ADMIN_TEAM = adminTeam;
         values.GITHUB_USER_TEAM = userTeam;
-      } else if (provider === 'ldap' || provider === 'okta') {
+      } else if (provider === 'ldap' || provider === 'okta' || provider === 'ias') {
         const prefix = provider.toUpperCase();
         values[`${prefix}_ADMIN_GROUP`] = groups.admin;
         values[`${prefix}_USER_GROUP`] = groups.user;
@@ -4556,6 +4782,12 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
       if (docker.OKTA_SSO_URL !== 'OKTA_SSO_URL') values.OKTA_SSO_URL = docker.OKTA_SSO_URL;
       values.OKTA_ADMIN_GROUP = groups.admin;
       values.OKTA_USER_GROUP = groups.user;
+    } else if (provider === 'ias') {
+      values.IAS_ISSUER_URL = docker.IAS_ISSUER_URL;
+      values.IAS_CLIENT_ID = docker.IAS_CLIENT_ID;
+      values.IAS_CLIENT_SECRET = docker.IAS_CLIENT_SECRET;
+      values.IAS_ADMIN_GROUP = groups.admin;
+      values.IAS_USER_GROUP = groups.user;
     }
     if (docker.DOCKER_REGISTRY && usesImageRegistry(docker)) {
       Object.assign(values, this.registryAnswers(docker.DOCKER_REGISTRY));
@@ -4653,11 +4885,32 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
       for (const [id, value] of Object.entries(values)) {
         if (id in current || value === undefined || value === null) continue;
         if (id === 'POSTGRES_USER' && live.db) continue;
+        if (id === 'externalDatabase') {
+          // No question: the name of the binding Secret of an external database, from the record.
+          if (typeof value === 'string' && /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(value)) current[id] = value;
+          continue;
+        }
         if (this.isValidCurrentValue(id, value)) current[id] = value;
       }
     }
+    // What the live admin service connects to, whatever the record says (see resolveExternalDatabase).
+    const liveDatabaseUrl = (liveSecrets['admin-env'] || {}).DATABASE_URL;
+    if (liveDatabaseUrl && !/@postgres:5432\//.test(liveDatabaseUrl)) current.liveDatabaseIsExternal = true;
     this.preferLiveAllowlist(current, liveValues.ipAllowlist);
+    this.preferLivePullSecret(current, liveValues.imagePullSecrets);
     return current;
+  }
+
+  /**
+   * A registry-secret in the namespace that the install record and the rendered files do not know
+   * (added by hand, to move the installation to a private registry) is used: its login is what the
+   * image lookup and the pods need. Otherwise the record's "no pull secret" won, and an upgrade to
+   * private images looked them up without a login (2026-11-17, HTTP 401 from the registry).
+   */
+  preferLivePullSecret(current, livePullSecret) {
+    if (livePullSecret !== true || current.imagePullSecrets === true) return;
+    current.imagePullSecrets = true;
+    console.log('ℹ️  The namespace holds a pull secret (registry-secret) that the install record and the rendered files do not name; it is used.');
   }
 
   /**
@@ -4780,6 +5033,7 @@ ${apiConfigContent.split('\n').map(line => '    ' + line).join('\n')}
     }
 
     const containerConfig = await this.getContainerConfig();
+    await this.selectDatabase(await this.readDatabaseLocation());
     const dbConfig = await this.promptForDatabaseCredentials();
     const sapConfig = await this.promptForServiceKey();
     // Asked on interactive runs only; --ci and the setup-docker child run write no billing values.
@@ -4943,7 +5197,7 @@ if (require.main === module) {
   if (inquirer) {
     let setup;
     try {
-      setup = new KymaSetup({ forceOverwrite, ciMode, namespace: parseNamespaceArg(args) });
+      setup = new KymaSetup({ forceOverwrite, ciMode, namespace: parseNamespaceArg(args), externalDatabase: parseExternalDatabaseArg(args) });
     } catch (error) {
       console.error(`❌ ${error.message}`);
       process.exit(1);

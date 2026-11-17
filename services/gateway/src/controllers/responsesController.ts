@@ -29,6 +29,7 @@ import { buildOrchestrationPayload, UnsupportedInputItemError } from '../respons
 import { hoistAdditionalTools } from '../responses/orchestrationBridge/additionalTools';
 import { translateOrchestrationResponse } from '../responses/orchestrationBridge/responseTranslator';
 import { createResponsesStreamTranslator, createOrchestrationBlockTranslator } from '../responses/orchestrationBridge/streamTranslator';
+import { envelopeToStreamChunk, envelopeAsSseStream } from '../responses/orchestrationBridge/streamEmulation';
 import { applyCacheBreakpoints, mapCachedTokens } from '../responses/orchestrationBridge/cacheBreakpoints';
 import { resolvePromptCachingSupport } from '../utils/promptCachingSupport';
 import { explainReasoningEffort, reasoningWasEmitted } from '../utils/reasoningSupport';
@@ -38,6 +39,7 @@ import { stripUnsupportedParams, applyParamRenames } from '../utils/unsupportedP
 import { readUpstreamErrorBody } from '../utils/upstreamErrorBody';
 import { normalizeUpstreamError, sanitizeUpstreamErrorObject } from '../utils/upstreamErrorEnvelope';
 import { deferStreamStart, chunkError, failureFromChunk, isSubstantiveChunk } from '../utils/streamStart';
+import { loggableErrorText, markUpstreamText, upstreamErrorKind, upstreamTextMeta } from '../utils/upstreamErrorLogText';
 import { awaitResponsesStreamIdle, abortResponsesStreamContinuation } from '../utils/responsesStreamIdle';
 // The single definition of the terminal Responses event types, shared with both res.write
 // interceptors. It lived here as a third private copy — and independently drifting copies
@@ -46,6 +48,7 @@ import { TERMINAL_RESPONSE_TYPES } from '../utils/sseFraming';
 import { enforceEntitlement } from '../utils/modelEntitlement';
 import { recordInvokedTools, recordNestedTools, gateContext, gateResponseBody, createCallGate, responsesAdapter } from '../toolGovernance';
 import { refuseIfForcedWithoutPlugin } from '../pluginSupport/pseudonymization/forcedRun';
+import { withoutFunctionTools } from '../pluginSupport/hostedTool/answeringCall';
 import { currentSapTarget } from '../sap/sapTarget';
 
 function badRequest(res: Response, message: string, code = 'model_not_supported'): void {
@@ -461,9 +464,18 @@ async function dispatchOrchestration(ctx: {
     providerFlag: configService.getSupportsPromptCaching(cachingProvider, undefined),
   });
 
+  // Streaming emulation: a model the configuration lists is called WITHOUT streaming and its
+  // whole answer is sent on as a stream (responses/orchestrationBridge/streamEmulation.ts
+  // says why a model is listed). One verdict for the first turn and every continuation.
+  const emulateStreaming = isStreaming && (
+    configService.shouldEmulateStreaming('openai', effectiveModel)
+    || (modelName !== effectiveModel && configService.shouldEmulateStreaming('openai', modelName))
+  );
+  const streamUpstream = isStreaming && !emulateStreaming;
+
   let payload: any;
   try {
-    payload = buildOrchestrationPayload(req.body, { modelName, stream: isStreaming });
+    payload = buildOrchestrationPayload(req.body, { modelName, stream: streamUpstream });
   } catch (err) {
     if (err instanceof UnsupportedInputItemError) {
       badRequest(res, `Unsupported Responses input item type: ${err.itemType}`, 'unsupported_input_item');
@@ -507,10 +519,14 @@ async function dispatchOrchestration(ctx: {
     // forwarding it verbatim forces another call every round until the cap stops it. The
     // engine decides, this rebuilds around the decision. Not passing it through is how the
     // orchestration branch bypassed relaxForcedToolChoice entirely.
-    buildContinuationPayload: (history: any[], opts?: { toolChoice?: any }) => {
-      const body: any = { ...req.body, input: history };
+    //
+    // `opts.withoutFunctionTools` is the engine's other verdict: the tools whose budget
+    // for this request is used up, to be left out of the answering call.
+    buildContinuationPayload: (history: any[], opts?: { toolChoice?: any; withoutFunctionTools?: string[] }) => {
+      let body: any = { ...req.body, input: history };
       if (opts) body.tool_choice = opts.toolChoice;
-      const next = buildOrchestrationPayload(body, { modelName, stream: isStreaming });
+      body = withoutFunctionTools(body, opts?.withoutFunctionTools || []);
+      const next = buildOrchestrationPayload(body, { modelName, stream: streamUpstream });
       // Reuses promptCachingEnabled resolved once above — same verdict as the
       // first turn, not a fresh resolution per continuation.
       return applyCacheBreakpoints(next, { enabled: promptCachingEnabled });
@@ -539,6 +555,17 @@ async function dispatchOrchestration(ctx: {
       sapModel: modelName,
       responseId: `resp_${crypto.randomBytes(12).toString('hex')}`,
     }),
+    // Under streaming emulation a continuation is not streamed either: the engine asks
+    // here instead of opening its own streaming call, and gets the whole answer in the
+    // wire format it reads. Absent otherwise, and the engine then posts as it always did.
+    postContinuationStream: emulateStreaming
+      ? async (body: any) => {
+        const reply = await axios.post(endpoint.url, body, {
+          headers: endpoint.headers, timeout: configService.getTimeout(false),
+        });
+        return { data: envelopeAsSseStream(reply.data) };
+      }
+      : undefined,
   };
 
   if (isStreaming) {
@@ -617,25 +644,37 @@ async function dispatchOrchestration(ctx: {
       isOpen: () => !res.writableEnded,
     });
 
-    try {
-      await sapAIService.streamChatCompletion(payload as any, (chunk: any) => {
-        const body = chunk?.final_result ?? chunk;
-        if (body?.usage) lastUsage = body.usage;
-        if (!stream.started) {
-          if (preStartFailure) return;
-          if (chunkError(chunk)) {
-            preStartFailure = chunk;
-            stream.stop();
-            return;
-          }
-          if (!isSubstantiveChunk(chunk)) {
-            heldChunks.push(chunk);
-            return;
-          }
-          stream.start();
+    const onChunk = (chunk: any): void => {
+      const body = chunk?.final_result ?? chunk;
+      if (body?.usage) lastUsage = body.usage;
+      if (!stream.started) {
+        if (preStartFailure) return;
+        if (chunkError(chunk)) {
+          preStartFailure = chunk;
+          stream.stop();
+          return;
         }
-        writeBlocks(translator.onChunk(chunk));
-      }, undefined, req as any, undefined);
+        if (!isSubstantiveChunk(chunk)) {
+          heldChunks.push(chunk);
+          return;
+        }
+        stream.start();
+      }
+      writeBlocks(translator.onChunk(chunk));
+    };
+
+    try {
+      if (emulateStreaming) {
+        // The whole answer, then one chunk through the same path a streamed chunk takes.
+        // A refusal throws before anything is written, like a stream refused outright.
+        const envelope = await sapAIService.callSAPAIOrchestration(payload as any, debugRequestId);
+        if (debugRequestId) {
+          payloadLogger.savePayload(debugRequestId, '03_responses_response_from_orchestration', envelope, req, res);
+        }
+        onChunk(envelopeToStreamChunk(envelope));
+      } else {
+        await sapAIService.streamChatCompletion(payload as any, onChunk, undefined, req as any, undefined);
+      }
     } catch (error) {
       // Thrown before the start (SAP refused the call outright): nothing was written, and
       // the catch below answers with the status. After the start: a response.failed frame.
@@ -652,7 +691,7 @@ async function dispatchOrchestration(ctx: {
     if (preStartFailure) {
       const failure = failureFromChunk(preStartFailure, 502);
       const raw = chunkError(preStartFailure);
-      const upstreamError: any = new Error(failure.message);
+      const upstreamError: any = markUpstreamText(new Error(failure.message), failure.status, upstreamErrorKind(raw));
       upstreamError.status = failure.status;
       // Filtered here as well as in normalizeUpstreamError: the catch logs this body, and
       // SAP's error carries the templated prompt in intermediate_results.
@@ -985,8 +1024,8 @@ export const handleResponses = async (req: Request, res: Response, _next: NextFu
     // the equivalent body.
     const errBody = error.response ? await readUpstreamErrorBody(error.response) : error.details;
     // 4th parameter: the 3rd is Error-typed and silently drops plain objects.
-    logger.error('responsesController', `Responses request failed for ${effectiveModel}: ${error.message}`, undefined, {
-      status, data: errBody,
+    logger.error('responsesController', `Responses request failed for ${effectiveModel}: ${loggableErrorText(error)}`, undefined, {
+      status, data: errBody, ...upstreamTextMeta(error),
     });
     if (debugRequestId && (error.response || error.details)) {
       payloadLogger.savePayload(debugRequestId, '97_responses_error_from_deployment',

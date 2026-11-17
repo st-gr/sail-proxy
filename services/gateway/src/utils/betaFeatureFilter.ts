@@ -7,6 +7,8 @@
  *    An empty/absent allowlist means "no allowlist filtering" (legacy behavior).
  * 2. Denylist (excluded): always applied on top of the allowlist result.
  *
+ * 0. Renames (beta_header_renames) are applied first, so both lists see the upstream's names.
+ *
  * @see api_config.json - providers.anthropic.supported_beta_headers / providers.anthropic.excluded_beta_headers
  */
 
@@ -46,6 +48,19 @@ export function mergeBetaFeatures(...lists: string[][]): string[] {
     }
   }
   return merged;
+}
+
+/**
+ * Replace each flag the map names by the name the upstream knows it by, before the allowlist and
+ * the denylist are applied: Anthropic's API and the Bedrock deployments behind SAP AI Core call
+ * some betas differently (advanced-tool-use-2025-11-20 is tool-search-tool-2025-10-19 there), and
+ * a flag that is merely dropped leaves the request fields it enables without their flag.
+ * Order is kept and duplicates are removed.
+ *
+ * @see api_config.json - providers.anthropic.beta_header_renames
+ */
+export function renameBetaFeatures(features: string[], renames: Record<string, string>): string[] {
+  return mergeBetaFeatures(features.map(flag => (Object.prototype.hasOwnProperty.call(renames, flag) ? renames[flag] : flag)));
 }
 
 /**

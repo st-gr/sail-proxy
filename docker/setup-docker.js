@@ -27,6 +27,8 @@ const { askKeyRegeneration, askSecret, keysForProviderChange, mask } = require('
 const { INSTALL_KEY, askPluginInstall, pluginInstallToWrite, pluginInstallFromEnv, applyPluginInstallToEnvText } = require('./setup-flow/pluginInstall');
 const { BILLING_KEYS, askBilling, billingToWrite, billingFromEnv, applyBillingToEnvText, isValidBillingValue } = require('./setup-flow/billing');
 const { readDockerConfigValues, isExternalLdap, usesImageRegistry, githubTeam } = require('./setup-flow/docker-config');
+const { validateIssuerUrl, yamlQuoted } = require('./setup-flow/oidc');
+const { askImageVersion, isValidDockerTag } = require('./setup-flow/image-version');
 /** First line of the local-build docker-compose.override.yml this script writes. */
 const LOCAL_BUILD_OVERRIDE_HEADER = '# Docker Compose Override - Local Build Mode';
 /** First line of the LDAP provider's docker-compose.override.yml (configs/providers/ldap). */
@@ -319,6 +321,11 @@ const PROVIDERS = {
     name: 'Okta SAML',
     description: 'Okta SAML-based single sign-on',
     files: ['dex.config.yaml', '.env.auth']
+  },
+  ias: {
+    name: 'SAP Cloud Identity Services (OpenID Connect)',
+    description: 'Sign-in through an SAP Cloud Identity Services (IAS) tenant',
+    files: ['dex.config.yaml', '.env.auth']
   }
 };
 
@@ -365,6 +372,14 @@ const PROVIDER_PROMPTS = {
     { key: 'OKTA_SAML_CA_DATA', prompt: 'SAML certificate (base64)', required: true, default: 'auto-fetch-from-metadata' },
     { key: 'OKTA_ADMIN_GROUP', prompt: 'Okta admin group name (from Okta app assignments)', default: 'sap-llm-gateway-admin' },
     { key: 'OKTA_USER_GROUP', prompt: 'Okta user group name (from Okta app assignments)', default: 'sap-llm-gateway-user' },
+    { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
+  ],
+  ias: [
+    { key: 'IAS_ISSUER_URL', prompt: 'IAS tenant issuer URL (https://<tenant>.accounts.ondemand.com)', required: true, validate: validateIssuerUrl },
+    { key: 'IAS_CLIENT_ID', prompt: 'Client ID of the IAS application', required: true },
+    { key: 'IAS_CLIENT_SECRET', prompt: 'Client secret of the IAS application', required: true, secret: true },
+    { key: 'IAS_ADMIN_GROUP', prompt: 'IAS user group for administrators', default: 'sap-llm-gateway-admin' },
+    { key: 'IAS_USER_GROUP', prompt: 'IAS user group for users', default: 'sap-llm-gateway-user' },
     { key: 'LOGOUT_REDIRECT_URL', prompt: 'Logout redirect URL', default: 'auto-shell' }
   ]
 };
@@ -1677,8 +1692,10 @@ class DockerSetup {
           if (!input.trim()) {
             return 'This field is required.';
           }
-          return true;
+          return prompt.validate ? prompt.validate(input) : true;
         };
+      } else if (prompt.validate) {
+        inquirerPrompt.validate = prompt.validate;
       }
       
       // Special handling for Okta auto-fetch
@@ -1833,6 +1850,17 @@ class DockerSetup {
       }
       
       config.ROLE_MAPPING = JSON.stringify(roleMapping);
+    } else if (provider === 'ias') {
+      // Map IAS user groups to application roles
+      const roleMapping = {};
+      if (config.IAS_ADMIN_GROUP) {
+        roleMapping[config.IAS_ADMIN_GROUP] = 'admin';
+      }
+      if (config.IAS_USER_GROUP) {
+        roleMapping[config.IAS_USER_GROUP] = 'user';
+      }
+
+      config.ROLE_MAPPING = JSON.stringify(roleMapping);
     } else if (provider === 'ldap') {
       // Generate ROLE_MAPPING for LDAP
       const roleMapping = {};
@@ -1928,7 +1956,40 @@ class DockerSetup {
     return { imageMode, registry, organization };
   }
 
-  /** tag: the image tag to write (sail-proxy upgrade); default the project's package.json version. */
+  /** GET for the image registry APIs: the body of a 2xx answer; rejects otherwise, with the status as error.statusCode. */
+  registryRequest(url, options = {}) {
+    return new Promise((resolve, reject) => {
+      const req = https.get(url, { timeout: 15000, ...options }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
+          else reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { statusCode: res.statusCode }));
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('the registry did not answer within 15 seconds')));
+      req.on('error', reject);
+    });
+  }
+
+  /**
+   * Registry mode: which version of the images to pull (setup-flow/image-version.js). Enter keeps
+   * the installed tag on a re-run, else the checkout's version. Local builds are not asked: they
+   * build the checkout.
+   */
+  selectImageVersion(registry, organization) {
+    return askImageVersion({
+      prompt: (questions) => this.prompt(questions),
+      once: (key, fn) => (this.session ? this.session.once(key, fn) : Promise.resolve().then(fn)),
+      request: (url, options) => this.registryRequest(url, options),
+      registry,
+      organization,
+      currentTag: this.session ? this.session.current.imageTag : undefined,
+      projectVersion: this.projectVersion()
+    });
+  }
+
+  /** tag: the image tag to write (the version question, sail-proxy upgrade); default the project's package.json version. */
   async configureDockerImages(imageMode, registry, organization, tag = undefined) {
     console.log('\nConfiguring Docker image settings...');
 
@@ -2430,6 +2491,12 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
         content = content.replace(/GITHUB_ORG/g, providerConfig.GITHUB_ORG || '');
         content = content.replace(/GITHUB_ADMIN_TEAM/g, providerConfig.GITHUB_ADMIN_TEAM || 'admins');
         content = content.replace(/GITHUB_USER_TEAM/g, providerConfig.GITHUB_USER_TEAM || 'users');
+      } else if (provider === 'ias' && file === 'dex.config.yaml') {
+        // Written double-quoted, through a function: a client secret may hold characters that
+        // plain YAML or a replacement pattern ("$&") would change.
+        content = content.replace(/IAS_ISSUER_URL/g, () => yamlQuoted(providerConfig.IAS_ISSUER_URL));
+        content = content.replace(/IAS_CLIENT_ID/g, () => yamlQuoted(providerConfig.IAS_CLIENT_ID));
+        content = content.replace(/IAS_CLIENT_SECRET/g, () => yamlQuoted(providerConfig.IAS_CLIENT_SECRET));
       } else if (provider === 'okta' && file === 'dex.config.yaml') {
         // Handle certificate data - write to file like dex-oauth2
         if (providerConfig.OKTA_SAML_CA_DATA && providerConfig.OKTA_SAML_CA_DATA !== 'auto-fetch-from-metadata') {
@@ -2722,6 +2789,11 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       console.log('4. Ensure Okta SAML app is configured with:');
       console.log(`   - Single sign on URL: ${config.baseUrl}/dex/callback`);
       console.log(`   - Audience URI: ${config.baseUrl}/dex`);
+    } else if (config.provider === 'ias') {
+      console.log('4. Ensure the IAS application (OpenID Connect) is configured with:');
+      console.log(`   - Redirect URI: ${config.baseUrl}/dex/callback`);
+      console.log('   - Grant type: Authorization Code');
+      console.log('   - A client secret with the OpenID scope');
     }
     
     // Display generated credentials for user reference
@@ -2828,6 +2900,7 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       useDevelopment: (v) => typeof v === 'boolean',
       baseUrl: validateBaseUrl,
       imageMode: (v) => ['local', 'registry'].includes(v),
+      imageTag: (v) => isValidDockerTag(v),
       registry: validateRequired('Registry is required'),
       organization: validateRequired('Organization is required'),
       [INSTALL_KEY]: (v) => typeof v === 'boolean'
@@ -2884,6 +2957,12 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       if (docker.OKTA_SSO_URL !== 'OKTA_SSO_URL') values.OKTA_SSO_URL = docker.OKTA_SSO_URL;
       values.OKTA_ADMIN_GROUP = groups.admin;
       values.OKTA_USER_GROUP = groups.user;
+    } else if (provider === 'ias') {
+      values.IAS_ISSUER_URL = docker.IAS_ISSUER_URL;
+      values.IAS_CLIENT_ID = docker.IAS_CLIENT_ID;
+      values.IAS_CLIENT_SECRET = docker.IAS_CLIENT_SECRET;
+      values.IAS_ADMIN_GROUP = groups.admin;
+      values.IAS_USER_GROUP = groups.user;
     }
 
     // Base URL: .env.nginx; localhost is the "Use localhost for development?" answer.
@@ -2899,6 +2978,8 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
       values.imageMode = usesImageRegistry(docker) ? 'registry' : 'local';
       values.registry = docker.DOCKER_REGISTRY;
       values.organization = docker.DOCKER_ORGANIZATION;
+      // The tag is an answer in registry mode only; a local build's tag is its checkout's version.
+      if (values.imageMode === 'registry') values.imageTag = docker.DOCKER_TAG;
     }
 
     // Billing: the admin .env (written by an earlier interactive run).
@@ -2956,7 +3037,7 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
    * Asks every interactive question (and runs the read-only probes) without writing anything.
    * Re-run by the prompt session on Back and on a jump from the review screen.
    * @returns {Promise<DockerAnswers>} { dbConfig, sapConfig, provider, providerConfig, baseUrl,
-   *   imageMode, registry, organization, createBackup, deleteVolumes, pullImages,
+   *   imageMode, registry, organization, imageTag, createBackup, deleteVolumes, pullImages,
    *   continueDespiteMismatch, regenerateKeys, providerChange, billing, pluginInstall }
    */
   async collectAnswers(session) {
@@ -3051,6 +3132,7 @@ REQUEST_TIMEOUT_SECONDS=900  # Request timeout in seconds (default: 15 minutes)
     answers.imageMode = imageModeConfig.imageMode;
     answers.registry = imageModeConfig.registry;
     answers.organization = imageModeConfig.organization;
+    answers.imageTag = answers.imageMode === 'registry' ? await this.selectImageVersion(answers.registry, answers.organization) : undefined;
 
     answers.billing = billingToWrite(await askBilling(session, session.current), session.current);
     answers.pluginInstall = pluginInstallToWrite(await askPluginInstall(session, session.current), session.current);

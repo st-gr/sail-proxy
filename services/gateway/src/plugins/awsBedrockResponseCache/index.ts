@@ -578,7 +578,7 @@ function initializeErrorBoundaries(logger: Logger): void {
     
     // Add process-level handler for this plugin's unhandled rejections
     process.on('unhandledRejection', unhandledRejectionHandler);
-    logger.debug('Plugin', '[awsBedrockResponseCache] Initialized plugin-level error boundaries');
+    logger.debug('[awsBedrockResponseCache] Initialized plugin-level error boundaries');
   }
 }
 
@@ -660,7 +660,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
   // current version" is wrong the moment it stops being current — so this is
   // the right behaviour independently of the correctness bug.
   if (requestDeclaresWebSearchTool(req.body)) {
-    logger.info('Plugin', '[awsBedrockResponseCache] NOT CACHING: request declares the web_search tool');
+    logger.info('[awsBedrockResponseCache] NOT CACHING: request declares the web_search tool');
     return { stop: false };
   }
 
@@ -719,7 +719,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
       // Race between the pending request and our safe timeout
       const pendingResult = await Promise.race([
         pendingRequests.get(cacheKey)!.catch((error: any) => {
-          logger.warn('Plugin', `[awsBedrockResponseCache] Pending request failed: ${error.message}`);
+          logger.warn(`[awsBedrockResponseCache] Pending request failed: ${error.message}`);
           return { success: false, cached: false, error: true };
         }),
         safeTimeout
@@ -786,7 +786,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
         logger.warn(`⚠️ DUPLICATE REQUEST: Pending request failed for key: ${cacheKey.substring(0, 8)}...`);
       }
     } catch (waitError: any) {
-      logger.error('Plugin', `❌ DUPLICATE REQUEST: Error waiting for pending request: ${waitError.message}`);
+      logger.error(`❌ DUPLICATE REQUEST: Error waiting for pending request: ${waitError.message}`);
     }
     
     // If we reach here, the pending request didn't result in a usable cache entry
@@ -809,7 +809,7 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
       cachedResponse = responseCache.get(normalizedCacheKey);
       logger.info(`Cross-format cache hit for normalized key: ${normalizedCacheKey.substring(0, 8)}...`);
     } else if (normalizedCacheKey === cacheKey) {
-      logger.debug('Plugin', 'Normalized cache key identical to main key - no streaming differences to normalize');
+      logger.debug('Normalized cache key identical to main key - no streaming differences to normalize');
     }
   }
   
@@ -833,21 +833,21 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
           // Replay each cached event with the correct model ID
           await replayStreamingEvents(res, cachedResponse.events, logger, modelId);
           
-          logger.info('Plugin', `Successfully replayed cached streaming response`);
+          logger.info(`Successfully replayed cached streaming response`);
           return { stop: true };
         } catch (error: any) {
-          logger.error('Plugin', `Error replaying cached streaming events: ${error.message}`);
+          logger.error(`Error replaying cached streaming events: ${error.message}`);
           return { stop: false };
         }
       } else {
         // No events available - this shouldn't happen for streaming cache hits
-        logger.warn('Plugin', `Cache hit for streaming request but no events available - cache format issue`);
+        logger.warn(`Cache hit for streaming request but no events available - cache format issue`);
         return { stop: false };
       }
     } else {
       // For non-streaming requests, return the body
       if (cachedResponse.body) {
-        logger.info('Plugin', `Cache hit for non-streaming request`);
+        logger.info(`Cache hit for non-streaming request`);
         
         try {
           if (!res.headersSent) {
@@ -863,19 +863,19 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
           res.status(200).json(responseWithCorrectModel);
           return { stop: true };
         } catch (error: any) {
-          logger.error('Plugin', `Error sending cached non-streaming response: ${error.message}`);
+          logger.error(`Error sending cached non-streaming response: ${error.message}`);
           return { stop: false };
         }
       } else {
-        logger.warn('Plugin', `Cache hit for non-streaming request but no body available - cache format issue`);
+        logger.warn(`Cache hit for non-streaming request but no body available - cache format issue`);
         return { stop: false };
       }
     }
   }
   
   // LOG DETAILED DEBUG INFO FOR CACHE MISSES
-  logger.info('Plugin', `Cache miss for full key: ${cacheKey.substring(0, 8)}...`);
-  logger.debug('Plugin', 'Cache miss debug info');
+  logger.info(`Cache miss for full key: ${cacheKey.substring(0, 8)}...`);
+  logger.debug('Cache miss debug info');
   
   // Register this request as pending to avoid duplicate processing
   if (!pendingRequests.has(cacheKey)) {
@@ -905,6 +905,17 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
       context.pendingRequestReject = rejectRequest!;
     }
     
+    // The after handler releases the entry when the request succeeds. Any other end of the
+    // response - a call the upstream rejected, a later plugin that stopped the request, a client
+    // that hung up - releases it here: an identical retry would otherwise wait 30 seconds for an
+    // answer that never comes. The comparison keeps a later request's entry for the same key.
+    res.once('close', () => {
+      if (pendingRequests.get(cacheKey) !== pendingPromise) return;
+      logger.info(`🧹 REQUEST ENDED WITHOUT AN ANSWER: Releasing pending request for key: ${cacheKey.substring(0, 8)}...`);
+      pendingRequests.delete(cacheKey);
+      SafePromise.safeResolve(resolveRequest!, { success: false, cached: false }, logger);
+    });
+
     // Set a timeout to prevent pending requests from hanging forever
     // Use a shorter, more reasonable timeout (5 minutes instead of 1 hour)
     const timeoutMs = Math.min(config.defaultTTL, 300000); // Max 5 minutes
@@ -964,7 +975,7 @@ async function replayStreamingEvents(res: Response, events: StreamingEvent[], lo
   
   for (const event of events) {
     if (res.writableEnded) {
-      logger.warn('Plugin', 'Response ended while replaying events');
+      logger.warn('Response ended while replaying events');
       break;
     }
     
@@ -1091,7 +1102,7 @@ async function replayStreamingEvents(res: Response, events: StreamingEvent[], lo
       // Small delay to avoid overwhelming the client
       await new Promise(resolve => setTimeout(resolve, 1));
     } catch (eventError: any) {
-      logger.error('Plugin', `Error replaying event: ${eventError.message}`);
+      logger.error(`Error replaying event: ${eventError.message}`);
     }
   }
   
@@ -1126,30 +1137,30 @@ function cleanupPendingRequests(context: RequestContext, cacheKey: string, logge
 async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Promise<any> {
   const logger = utils.logger;
   
-  logger.debug('Plugin', `AfterHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)}`);
+  logger.debug(`AfterHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)}`);
   
   // If caching is disabled or we have no upstream response, just return
   if (!config.enableCaching) {
-    logger.info('Plugin', 'NOT CACHING: Caching is disabled in config');
+    logger.info('NOT CACHING: Caching is disabled in config');
     return upstreamResponse;
   }
   
   if (!upstreamResponse) {
-    logger.info('Plugin', 'NOT CACHING: No upstream response provided');
+    logger.info('NOT CACHING: No upstream response provided');
     return null;
   }
   
   // Get context from WeakMap
   const context = requestContextMap.get(req);
   if (!context) {
-    logger.warn('Plugin', 'NOT CACHING: No context found in WeakMap for request');
+    logger.warn('NOT CACHING: No context found in WeakMap for request');
     return upstreamResponse;
   }
   
   const { cacheRequestId: requestId, cacheKey } = context;
   
   if (!requestId || !cacheKey) {
-    logger.warn('Plugin', `NOT CACHING: Missing requestId (${!!requestId}) or cacheKey (${!!cacheKey}) from context`);
+    logger.warn(`NOT CACHING: Missing requestId (${!!requestId}) or cacheKey (${!!cacheKey}) from context`);
     // Clean up pending requests even if we can't cache
     cleanupPendingRequests(context, cacheKey || 'unknown', logger, true, false);
     requestContextMap.delete(req);
@@ -1159,7 +1170,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   // Check if request took long enough to warrant caching
   const startTime = requestStartTimes.get(requestId);
   if (!startTime) {
-    logger.info('Plugin', `NOT CACHING: No start time found for request ID: ${requestId}`);
+    logger.info(`NOT CACHING: No start time found for request ID: ${requestId}`);
     // Clean up pending requests even if we can't cache
     cleanupPendingRequests(context, cacheKey, logger, true, false);
     requestContextMap.delete(req);
@@ -1175,7 +1186,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   }
   
   // Add detailed logging for caching decision
-  logger.info('Plugin', `Request completed in ${requestDuration}ms (threshold: ${config.minResponseTimeToCache}ms)`);
+  logger.info(`Request completed in ${requestDuration}ms (threshold: ${config.minResponseTimeToCache}ms)`);
   
   // Check memory limits before attempting to cache
   const stats = responseCache.getStats();
@@ -1184,7 +1195,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   
   // Only cache responses that took a significant amount of time
   if (requestDuration < config.minResponseTimeToCache) {
-    logger.info('Plugin', `NOT CACHING: Request duration (${requestDuration}ms) below threshold (${config.minResponseTimeToCache}ms)`);
+    logger.info(`NOT CACHING: Request duration (${requestDuration}ms) below threshold (${config.minResponseTimeToCache}ms)`);
     // Clean up pending requests - notify that request succeeded but wasn't cached
     cleanupPendingRequests(context, cacheKey, logger, true, false);
     requestContextMap.delete(req);
@@ -1194,7 +1205,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   // Check if the response is too large to cache
   const maxSingleItemSize = config.maxSingleItemSizeMB * 1024 * 1024; // Convert MB to bytes
   if (estimatedSize > maxSingleItemSize) {
-    logger.warn('Plugin', `NOT CACHING: Response too large (estimated: ${Math.round(estimatedSize / 1024 / 1024)}MB > max: ${config.maxSingleItemSizeMB}MB)`);
+    logger.warn(`NOT CACHING: Response too large (estimated: ${Math.round(estimatedSize / 1024 / 1024)}MB > max: ${config.maxSingleItemSizeMB}MB)`);
     // Clean up pending requests - notify that request succeeded but wasn't cached
     cleanupPendingRequests(context, cacheKey, logger, true, false);
     requestContextMap.delete(req);
@@ -1203,7 +1214,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   
   // Check if we have enough memory to cache this response
   if (stats.currentMemoryUsage + estimatedSize > stats.maxMemoryBytes) {
-    logger.warn('Plugin', `NOT CACHING: Would exceed memory limit (current: ${stats.memoryUsageMB}MB + estimated: ${Math.round(estimatedSize / 1024 / 1024)}MB > max: ${stats.memoryCapacityMB}MB)`);
+    logger.warn(`NOT CACHING: Would exceed memory limit (current: ${stats.memoryUsageMB}MB + estimated: ${Math.round(estimatedSize / 1024 / 1024)}MB > max: ${stats.memoryCapacityMB}MB)`);
     // Clean up pending requests - notify that request succeeded but wasn't cached
     cleanupPendingRequests(context, cacheKey, logger, true, false);
     requestContextMap.delete(req);
@@ -1215,13 +1226,13 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
   // Get streaming flag from stored context (more reliable than detecting from potentially consumed body)
   const isStreaming = context.isStreaming;
   
-  logger.info('Plugin', `Streaming detection: isStreaming=${isStreaming} (from stored context)`);
+  logger.info(`Streaming detection: isStreaming=${isStreaming} (from stored context)`);
                       
   try {
     if (isStreaming) {
       // For streaming responses, we need to have captured events in the context
       if (context.capturedEvents && Array.isArray(context.capturedEvents)) {
-        logger.info('Plugin', `Processing streaming response with ${context.capturedEvents.length} captured events`);
+        logger.info(`Processing streaming response with ${context.capturedEvents.length} captured events`);
         
         // Check if the captured events are too large to safely process
         // Use constant-time guard to prevent OOM from JSON.stringify
@@ -1229,7 +1240,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
         let eventsSize = Number.MAX_SAFE_INTEGER;
         
         if (context.capturedEvents.length > TOO_MANY_EVENTS) {
-          logger.warn('Plugin', `NOT CACHING STREAMING: Too many captured events (${context.capturedEvents.length} > ${TOO_MANY_EVENTS}) - skipping size calculation to prevent OOM`);
+          logger.warn(`NOT CACHING STREAMING: Too many captured events (${context.capturedEvents.length} > ${TOO_MANY_EVENTS}) - skipping size calculation to prevent OOM`);
           // Clean up pending requests - notify that request succeeded but wasn't cached
           cleanupPendingRequests(context, cacheKey, logger, true, false);
           requestContextMap.delete(req);
@@ -1239,7 +1250,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
         try {
           eventsSize = responseCache._estimateObjectSize(context.capturedEvents);
           if (eventsSize > maxSingleItemSize) {
-            logger.warn('Plugin', `NOT CACHING STREAMING: Captured events too large (estimated: ${Math.round(eventsSize / 1024 / 1024)}MB > max: ${config.maxSingleItemSizeMB}MB)`);
+            logger.warn(`NOT CACHING STREAMING: Captured events too large (estimated: ${Math.round(eventsSize / 1024 / 1024)}MB > max: ${config.maxSingleItemSizeMB}MB)`);
             // Clean up pending requests - notify that request succeeded but wasn't cached
             cleanupPendingRequests(context, cacheKey, logger, true, false);
             requestContextMap.delete(req);
@@ -1266,7 +1277,7 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
           }
         }
         
-        logger.debug('Plugin', `Using model ID for conversion: ${modelId}`);
+        logger.debug(`Using model ID for conversion: ${modelId}`);
         
         // Convert streaming events to non-streaming format
         const nonStreamingResponse = convertStreamingToNonStreaming(context.capturedEvents, logger, modelId);
@@ -1305,17 +1316,17 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
           
           if (nonStreamingCacheSuccess) {
             logger.debug(`✅ CACHED NON-STREAMING: SUCCESS for normalized key: ${normalizedCacheKey.substring(0, 8)}...`);
-            logger.debug('Plugin', `✅ Successfully cached both formats for response (${context.capturedEvents.length} events converted)`);
+            logger.debug(`✅ Successfully cached both formats for response (${context.capturedEvents.length} events converted)`);
           } else {
             logger.error(`❌ CACHE NON-STREAMING: FAILED for normalized key: ${normalizedCacheKey.substring(0, 8)}...`);
           }
         } else if (normalizedCacheKey === cacheKey) {
-          logger.debug('Plugin', `✅ Single cache entry covers both streaming and non-streaming requests (${context.capturedEvents.length} events converted)`);
+          logger.debug(`✅ Single cache entry covers both streaming and non-streaming requests (${context.capturedEvents.length} events converted)`);
         } else {
-          logger.warn('Plugin', '❌ Failed to convert streaming response to non-streaming format - no non-streaming cache created');
+          logger.warn('❌ Failed to convert streaming response to non-streaming format - no non-streaming cache created');
         }
       } else {
-        logger.warn('Plugin', `NOT CACHING STREAMING: No captured events found (context.capturedEvents: ${context.capturedEvents ? 'exists but not array' : 'missing'})`);
+        logger.warn(`NOT CACHING STREAMING: No captured events found (context.capturedEvents: ${context.capturedEvents ? 'exists but not array' : 'missing'})`);
       }
     } else {
       // For non-streaming, cache the response body
@@ -1388,7 +1399,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
     // Use the provided modelId as fallback, but still try to extract from events
     let responseModelId = modelId;
     
-    logger.debug('Plugin', `Converting ${events.length} captured events to non-streaming format`);
+    logger.debug(`Converting ${events.length} captured events to non-streaming format`);
     
     // Process events to reconstruct the response
     for (const event of events) {
@@ -1418,10 +1429,10 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
         if (!contentBlocks[blockIndex]) {
           if (event.delta && event.delta.type === 'text_delta') {
             contentBlocks[blockIndex] = { type: 'text', text: '' };
-            logger.trace('Plugin', `Auto-initialized text content block ${blockIndex}`);
+            logger.trace(`Auto-initialized text content block ${blockIndex}`);
           } else if (event.delta && event.delta.type === 'input_json_delta') {
             contentBlocks[blockIndex] = { type: 'tool_use', input: {} };
-            logger.trace('Plugin', `Auto-initialized tool_use content block ${blockIndex}`);
+            logger.trace(`Auto-initialized tool_use content block ${blockIndex}`);
           }
         }
         
@@ -1439,7 +1450,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
               // Initialize as string if it was an object
               contentBlocks[blockIndex].input = event.delta.partial_json;
             }
-            logger.trace('Plugin', `Added input_json_delta to block ${blockIndex}: "${event.delta.partial_json}"`);
+            logger.trace(`Added input_json_delta to block ${blockIndex}: "${event.delta.partial_json}"`);
           }
         }
       } else if (event.type === 'content_block_stop') {
@@ -1460,14 +1471,14 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
               
               if (missingCloseBraces > 0) {
                 inputString += '}'.repeat(missingCloseBraces);
-                logger.debug('Plugin', `Fixed incomplete JSON by adding ${missingCloseBraces} closing braces`);
+                logger.debug(`Fixed incomplete JSON by adding ${missingCloseBraces} closing braces`);
               }
             }
             
             contentBlocks[blockIndex].input = JSON.parse(inputString);
-            logger.trace('Plugin', `Parsed tool use input for block ${blockIndex}: ${JSON.stringify(contentBlocks[blockIndex].input)}`);
+            logger.trace(`Parsed tool use input for block ${blockIndex}: ${JSON.stringify(contentBlocks[blockIndex].input)}`);
           } catch (e: any) {
-            logger.warn('Plugin', `Failed to parse tool use input JSON for block ${blockIndex}: ${e.message}. Raw input: ${(contentBlocks[blockIndex].input as string).substring(0, 200)}...`);
+            logger.warn(`Failed to parse tool use input JSON for block ${blockIndex}`, { error: e.message, rawInput: (contentBlocks[blockIndex].input as string).substring(0, 200) });
             // Keep as string if parsing fails
           }
         }
@@ -1494,7 +1505,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
           stop_sequence: null,
           usage: { input_tokens: 0, output_tokens: 0 }
         };
-        logger.trace('Plugin', `Found Bedrock messageStart with role: ${event.messageStart.role}`);
+        logger.trace(`Found Bedrock messageStart with role: ${event.messageStart.role}`);
       } else if (event.contentBlockStart) {
         const blockIndex = event.contentBlockIndex ?? 0;
         if (event.contentBlockStart.start?.toolUse) {
@@ -1505,7 +1516,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
             name: event.contentBlockStart.start.toolUse.name,
             input: {}
           };
-          logger.trace('Plugin', `Initialized tool use block ${blockIndex} with name: ${event.contentBlockStart.start.toolUse.name}`);
+          logger.trace(`Initialized tool use block ${blockIndex} with name: ${event.contentBlockStart.start.toolUse.name}`);
         } else if (event.contentBlockStart.start?.text !== undefined) {
           contentBlocks[blockIndex] = {
             type: 'text',
@@ -1518,7 +1529,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
             text: ''
           };
         }
-        logger.trace('Plugin', `Initialized content block ${blockIndex}`);
+        logger.trace(`Initialized content block ${blockIndex}`);
       } else if (event.contentBlockDelta) {
         const blockIndex = event.contentBlockIndex ?? 0;
         
@@ -1526,10 +1537,10 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
         if (!contentBlocks[blockIndex]) {
           if (event.contentBlockDelta.delta?.text !== undefined) {
             contentBlocks[blockIndex] = { type: 'text', text: '' };
-            logger.trace('Plugin', `Auto-initialized text content block ${blockIndex} from Bedrock delta`);
+            logger.trace(`Auto-initialized text content block ${blockIndex} from Bedrock delta`);
           } else if (event.contentBlockDelta.delta?.toolUse?.input !== undefined) {
             contentBlocks[blockIndex] = { type: 'tool_use', input: '' };
-            logger.trace('Plugin', `Auto-initialized tool_use content block ${blockIndex} from Bedrock delta`);
+            logger.trace(`Auto-initialized tool_use content block ${blockIndex} from Bedrock delta`);
           }
         }
         
@@ -1537,7 +1548,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
           // Text content delta
           if (contentBlocks[blockIndex] && contentBlocks[blockIndex].type === 'text') {
             contentBlocks[blockIndex].text! += event.contentBlockDelta.delta.text;
-            logger.trace('Plugin', `Added text delta to block ${blockIndex}: "${event.contentBlockDelta.delta.text}"`);
+            logger.trace(`Added text delta to block ${blockIndex}: "${event.contentBlockDelta.delta.text}"`);
           }
         } else if (event.contentBlockDelta.delta?.toolUse?.input !== undefined) {
           // Tool use input delta
@@ -1548,7 +1559,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
             } else {
               contentBlocks[blockIndex].input = event.contentBlockDelta.delta.toolUse.input;
             }
-            logger.trace('Plugin', `Added tool use input delta to block ${blockIndex}: "${event.contentBlockDelta.delta.toolUse.input}"`);
+            logger.trace(`Added tool use input delta to block ${blockIndex}: "${event.contentBlockDelta.delta.toolUse.input}"`);
           }
         }
       } else if (event.contentBlockStop) {
@@ -1569,26 +1580,26 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
               
               if (missingCloseBraces > 0) {
                 inputString += '}'.repeat(missingCloseBraces);
-                logger.debug('Plugin', `Fixed incomplete JSON by adding ${missingCloseBraces} closing braces`);
+                logger.debug(`Fixed incomplete JSON by adding ${missingCloseBraces} closing braces`);
               }
             }
             
             contentBlocks[blockIndex].input = JSON.parse(inputString);
-            logger.trace('Plugin', `Parsed tool use input for block ${blockIndex}: ${JSON.stringify(contentBlocks[blockIndex].input)}`);
+            logger.trace(`Parsed tool use input for block ${blockIndex}: ${JSON.stringify(contentBlocks[blockIndex].input)}`);
           } catch (e: any) {
-            logger.warn('Plugin', `Failed to parse tool use input JSON for block ${blockIndex}: ${e.message}. Raw input: ${(contentBlocks[blockIndex].input as string).substring(0, 200)}...`);
+            logger.warn(`Failed to parse tool use input JSON for block ${blockIndex}`, { error: e.message, rawInput: (contentBlocks[blockIndex].input as string).substring(0, 200) });
             // Keep as string if parsing fails
           }
         }
       } else if (event.messageStop) {
         stopReason = event.messageStop.stopReason;
-        logger.trace('Plugin', `Found messageStop with reason: ${stopReason}`);
+        logger.trace(`Found messageStop with reason: ${stopReason}`);
       } else if (event.metadata && event.metadata.usage) {
         finalUsage = {
           output_tokens: event.metadata.usage.outputTokens || 0,
           input_tokens: event.metadata.usage.inputTokens || 0
         };
-        logger.trace('Plugin', `Found usage data: ${JSON.stringify(finalUsage)}`);
+        logger.trace(`Found usage data: ${JSON.stringify(finalUsage)}`);
       }
     }
     
@@ -1604,7 +1615,7 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
         stop_sequence: null,
         usage: { input_tokens: 0, output_tokens: 0 }
       };
-      logger.debug('Plugin', 'Created messageStart from content blocks since none was found');
+      logger.debug('Created messageStart from content blocks since none was found');
     }
     
     // If we found a messageStart, construct the response
@@ -1651,10 +1662,10 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
       }
     }
     
-    logger.warn('Plugin', 'No valid message content found in streaming response');
+    logger.warn('No valid message content found in streaming response');
     return null;
   } catch (error: any) {
-    logger.error('Plugin', `Error converting streaming to non-streaming: ${error.message}`);
+    logger.error(`Error converting streaming to non-streaming: ${error.message}`);
     return null;
   }
 }
@@ -1665,14 +1676,14 @@ function convertStreamingToNonStreaming(events: StreamingEvent[], logger: Logger
 async function streamHandler({ req, chunk, utils }: PluginContext): Promise<StreamHandlerResult> {
   const logger = utils.logger;
   
-  logger.trace('Plugin', '🔥🔥🔥 STREAM HANDLER CALLED 🔥🔥🔥');
+  logger.trace('🔥🔥🔥 STREAM HANDLER CALLED 🔥🔥🔥');
   
   // Check if we have context from beforeHandler
   let context = requestContextMap.get(req);
   if (!context) {
     // No context means beforeHandler didn't run (request didn't meet size criteria)
     // This is expected for smaller requests, so we just pass through
-    logger.trace('Plugin', 'No context from beforeHandler - request likely below size threshold');
+    logger.trace('No context from beforeHandler - request likely below size threshold');
     return { chunk: chunk!, capturedEvents: [] };
   }
   
@@ -1694,7 +1705,7 @@ async function streamHandler({ req, chunk, utils }: PluginContext): Promise<Stre
   
   try {
     const data = chunk!.toString();
-    logger.trace('Plugin', `Processing chunk (${data.length} bytes): ${JSON.stringify(data.substring(0, 100))}`);
+    logger.trace(`Processing chunk (${data.length} bytes): ${JSON.stringify(data.substring(0, 100))}`);
     
     // Handle different streaming formats
     if (data.startsWith('data: ')) {
@@ -1713,7 +1724,7 @@ async function streamHandler({ req, chunk, utils }: PluginContext): Promise<Stre
       }
     } else if (data.trim().startsWith('{') && data.trim().endsWith('}')) {
       // Raw JSON format (might be AWS Bedrock format)
-      logger.trace('Plugin', '✅ Found raw JSON format');
+      logger.trace('✅ Found raw JSON format');
       
       try {
         const parsedData = JSON.parse(data.trim());
@@ -1725,7 +1736,7 @@ async function streamHandler({ req, chunk, utils }: PluginContext): Promise<Stre
       }
     } else if (data.includes('data:')) {
       // Multiple SSE events in one chunk
-      logger.trace('Plugin', '✅ Found multiple SSE events in chunk');
+      logger.trace('✅ Found multiple SSE events in chunk');
       
       const lines = data.split('\
 ');
@@ -1850,7 +1861,7 @@ interface PluginErrorRule {
 async function errorHandler({ req, error, utils }: PluginErrorContext): Promise<Error> {
   const logger = utils.logger;
   
-  logger.debug('Plugin', `ErrorHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)} - Error: ${error.message}`);
+  logger.debug(`ErrorHandler called for request: ${req.method} ${redactUrl(req.originalUrl || req.url)} - Error: ${error.message}`);
   
   // Get context from WeakMap
   const context = requestContextMap.get(req);

@@ -193,6 +193,48 @@ describe('createResponsesStreamTranslator', () => {
     const addedItems = f.filter((x) => x.type === 'response.output_item.added' && x.item.type === 'function_call');
     expect(addedItems.map((x) => x.output_index)).toEqual([1, 2]);
   });
+  describe('parallel calls streamed at the SAME index (Gemini through orchestration)', () => {
+    // Seen live 2026-11-12, gemini-3.5-flash: two web searches asked for at once arrived as
+    // two chunks, both `index: 0`, each with its own id. Keyed on the index alone they became
+    // ONE call with the arguments `{"query": "a"}{"query": "b"}`, which is not JSON; the search
+    // ran with nothing usable and SAP answered the next request with a 500.
+    const call = (id: string, args: string, index = 0) => ({ index, id, function: { name: 'web_search', arguments: args } });
+    const calls = (t: any) => frames(t.finish())
+      .filter((x) => x.type === 'response.output_item.done' && x.item.type === 'function_call')
+      .map((x) => [x.output_index, x.item.call_id, x.item.arguments]);
+
+    it('keeps two calls apart that arrive in two chunks', () => {
+      const t = createResponsesStreamTranslator(OPTS);
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('vertex_tool_a__sig_s1', '{"query": "a"}')] } }] } });
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('vertex_tool_b', '{"query": "b"}')] } }] } });
+      expect(calls(t)).toEqual([
+        [0, 'vertex_tool_a__sig_s1', '{"query": "a"}'],
+        [1, 'vertex_tool_b', '{"query": "b"}'],
+      ]);
+    });
+
+    it('keeps two calls apart that arrive in one chunk', () => {
+      const t = createResponsesStreamTranslator(OPTS);
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_a', '{"query": "a"}'), call('id_b', '{"query": "b"}')] } }] } });
+      expect(calls(t)).toEqual([[0, 'id_a', '{"query": "a"}'], [1, 'id_b', '{"query": "b"}']]);
+    });
+
+    it('still joins the pieces of one call whose id is repeated on every chunk', () => {
+      const t = createResponsesStreamTranslator(OPTS);
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_a', '{"que')] } }] } });
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_a', 'ry": "a"}')] } }] } });
+      expect(calls(t)).toEqual([[0, 'id_a', '{"query": "a"}']]);
+    });
+
+    it('keeps the order of first appearance when calls at other indexes are mixed in', () => {
+      const t = createResponsesStreamTranslator(OPTS);
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_a', '{}')] } }] } });
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_c', '{}', 1)] } }] } });
+      t.onChunk({ final_result: { choices: [{ delta: { tool_calls: [call('id_b', '{}')] } }] } });
+      expect(calls(t).map((c: any[]) => c[1])).toEqual(['id_a', 'id_c', 'id_b']);
+    });
+  });
+
   // Reconciled with responseTranslator.ts: the two siblings describe the SAME turn and
   // disagreed. This one read no finish_reason at all, so an identical truncated turn
   // reported `incomplete` unstreamed and `completed` streamed — a status that flips on

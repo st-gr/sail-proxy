@@ -148,9 +148,9 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<Plugin
           const dataUrl = await imageUtils.remoteUrlToDataUrl(url);
           setUrl(part, dataUrl);
           addImageRef(req, dataUrl);
-          pluginLogger.info(`responsesImagePlugin: inlined a remote input_image (${url}) as a data URL`);
+          pluginLogger.info('responsesImagePlugin: inlined a remote input_image as a data URL', { url });
         } catch (error: any) {
-          pluginLogger.error(`responsesImagePlugin: failed to download input_image from "${url}": ${error.message}`);
+          pluginLogger.error(`responsesImagePlugin: failed to download input_image: ${error.message}`, { url });
           sendImageDownloadError(res, url, error);
           return { stop: true };
         }

@@ -1,16 +1,16 @@
 // Deploy on SAP BTP Kyma: the Kyma page, the four terminal casts, the public cockpit on the real host with the
 // overlay active (the host is replaced on screen), the teardown cast, the production checklist.
+import kymaPage from './page-take.steps.js';
+import cleanupAndNext from './cleanup-take.steps.js';
+
 const DOCS = 'http://localhost:4173/sail-proxy';
 const HOST = process.env.SAIL_DOCS_KYMA_HOST || 'sail-proxy-test.sail.example.com';
 const SHELL = `https://${HOST}/admin/app/shell/?sap-language=en&sap-theme=sap_horizon`;
 
-export default async ({ section, goto, click, type, wait, mark, caption, cast }) => {
-  await section(1);
-  await goto(`${DOCS}/deploy/kyma`);
-  await caption('The Kyma deployment');
-  await wait(9000);
-  await click('text=Architecture');
-  await wait(9000);
+export default async (api) => {
+  const { section, goto, click, type, wait, mark, caption, cast } = api;
+  // Section 1 (the Kyma page) lives in its own file, taken on its own.
+  await kymaPage(api);
 
   await section(2);
   await caption('Prerequisites');
@@ -45,11 +45,6 @@ export default async ({ section, goto, click, type, wait, mark, caption, cast })
   await caption('A GitHub sign-in: the OAuth App registration');
   await wait(9000);
 
-  await section(6);
-  await caption('Tear the test namespace down');
-  await cast('cleanup');
-  await goto(`${DOCS}/deploy/kyma`);
-  await click('text=Production checklist');
-  await caption('Next: the production checklist and the cockpit deep dive');
-  await wait(6000);
+  // Section 6 (the teardown and the production checklist) lives in its own file, taken on its own.
+  await cleanupAndNext(api);
 };

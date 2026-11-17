@@ -96,6 +96,8 @@ export async function collectDockerAnswers(o: {
 }): Promise<{ setup: any; answers: any }> {
   const { kit, images } = o;
   const setup = newSetup(kit, o.dir);
+  // The upgrade decides the version: setup's version question is not asked and no registry is listed
+  setup.selectImageVersion = async () => images.tag;
   if (o.adjustSetup) o.adjustSetup(setup);
   setup.currentSecrets = await setup.loadCurrentSecrets();
   const current = await setup.loadCurrentValues();

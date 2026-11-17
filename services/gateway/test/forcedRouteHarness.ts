@@ -32,6 +32,7 @@ const ORCHESTRATION = [{ scenarioId: 'orchestration' }];
 /** The catalogue the suites' modelService mock answers from. */
 export function catalogueDetails(m: string): any {
   if (m === 'gemini-embedding') return { id: m, model: m, owned_by: 'Google', allowedScenarios: ORCHESTRATION, versions: [{ capabilities: ['embedding'] }] };
+  if (m === 'gemini-image--deployed') return { id: m, model: 'gemini-image', owned_by: 'Google', provider: 'google', accessType: 'deployment', deploymentUrl: 'https://deployed.example.com/gemini-image' };
   if (m === 'bedrock-claude--deployed') return { id: m, owned_by: 'anthropic', executableId: 'aws-bedrock', accessType: 'deployment', deploymentUrl: 'https://deployed.example.com/bedrock' };
   if (m === 'bedrock-claude') return { id: m, owned_by: 'anthropic', executableId: 'aws-bedrock' };
   if (m === 'claude-sonnet-4--deployed') return { id: m, owned_by: 'anthropic', provider: 'anthropic', accessType: 'deployment', deploymentUrl: 'https://deployed.example.com/claude' };
@@ -107,14 +108,15 @@ export const route = (name: string) => ROUTES.find((r) => r.name === name)!;
 
 /**
  * A configuration forcing exactly `forced` endpoints, with the given hook chains
- * (`{ endpoint: { subpath: chain } }`) and no others.
+ * (`{ endpoint: { subpath: chain } }`) and no others. `globalOn` is the global switch
+ * (observability.pseudonymization.enabled) the flags only enforce under.
  */
-export function configFor(forced: string[], chains: Record<string, Record<string, any[]>> = {}) {
+export function configFor(forced: string[], chains: Record<string, Record<string, any[]>> = {}, globalOn = true) {
   const defaults = Object.fromEntries(ENDPOINTS.map((e) => [e, {
     pseudonymization: { enabled: forced.includes(e), method: 'pseudonymization', allow_user_bypass: false },
     ...(chains[e] || {}),
   }]));
-  return { hooks: { definitions: shippedHooks.definitions, defaults }, models: { overrides: {} as Record<string, any> }, observability: {} };
+  return { hooks: { definitions: shippedHooks.definitions, defaults }, models: { overrides: {} as Record<string, any> }, observability: { pseudonymization: { enabled: globalOn } } };
 }
 
 /** Register the real pseudonymization rules, plus any test plugins (`{ id: handler }`). */

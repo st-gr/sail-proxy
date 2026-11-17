@@ -35,6 +35,7 @@ beforeAll(() => {
   configFile = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configFile, JSON.stringify({
     api_config: {
+      observability: { pseudonymization: { enabled: true } },
       providers: { anthropic: { substitute_models: [{ from: 'claude-example', to: 'anthropic--claude-example--deployed' }] } },
       models: { overrides: { 'anthropic--claude-example--deployed': { pseudonymization: { enabled: true, method: 'pseudonymization' } } } },
     },

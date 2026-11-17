@@ -8,6 +8,7 @@
 import { getFileSearchConfig } from '../../services/configService';
 import { getDefaultLogger } from '@libs/logger';
 import { runExtractor } from './runners';
+import { ensurePandocSandbox, PANDOC_SANDBOX_ARG } from './pandocSandbox';
 import { ocrPdfPages, type PdfOcrOptions } from './pdfOcr';
 import { transcribePdfPages, type PdfVisionOptions } from '../visionTranscriber';
 import { htmlToStructuredText, tidyPandocMarkdown } from './htmlText';
@@ -253,7 +254,7 @@ async function readDoc(filename: string, bytes: Buffer, timeoutMs: number): Prom
   try {
     return await readLegacyDoc(bytes, { timeoutMs });
   } catch (error: any) {
-    logger.error('FileSearchExtractor', `antiword extraction failed for .doc file "${filename}"`, error);
+    logger.error('FileSearchExtractor', 'antiword extraction failed for .doc file', error, { filename });
     throw error;
   }
 }
@@ -262,7 +263,7 @@ async function readOoxml(format: OfficeFormat, filename: string, bytes: Buffer, 
   try {
     return await readOfficeOffThread(format, bytes, { timeoutMs });
   } catch (error: any) {
-    logger.error('FileSearchExtractor', `.${format} extraction failed for file "${filename}"`, error);
+    logger.error('FileSearchExtractor', `.${format} extraction failed for file`, error, { filename });
     throw error;
   }
 }
@@ -290,9 +291,10 @@ export async function extractText(filename: string, bytes: Buffer, opts: Extract
   const pandocReader = PANDOC_READERS.get(ext);
   if (pandocReader !== undefined) {
     try {
-      return await runExtractor('pandoc', ['-f', pandocReader, '-t', 'plain'], bytes, { timeoutMs });
+      await ensurePandocSandbox();
+      return await runExtractor('pandoc', [PANDOC_SANDBOX_ARG, '-f', pandocReader, '-t', 'plain'], bytes, { timeoutMs });
     } catch (error: any) {
-      logger.error('FileSearchExtractor', `pandoc extraction failed for .${ext} file "${filename}"`, error);
+      logger.error('FileSearchExtractor', `pandoc extraction failed for .${ext} file`, error, { filename });
       throw error;
     }
   }
@@ -304,7 +306,7 @@ export async function extractText(filename: string, bytes: Buffer, opts: Extract
       // stdin/stdout instead of a filesystem path.
       text = await runExtractor('pdftotext', ['-', '-'], bytes, { timeoutMs });
     } catch (error: any) {
-      logger.error('FileSearchExtractor', `pdftotext extraction failed for file "${filename}"`, error);
+      logger.error('FileSearchExtractor', 'pdftotext extraction failed for file', error, { filename });
       throw error;
     }
     // Opt-in per store: pages the vision model transcribes, in place (never throws; off = no call).
@@ -366,10 +368,11 @@ export async function extractStructuredText(
   const pandocReader = PANDOC_READERS.get(ext);
   if (pandocReader !== undefined) {
     try {
-      const text = await runExtractor('pandoc', ['-f', pandocReader, '-t', 'gfm', '--wrap=none'], bytes, { timeoutMs });
+      await ensurePandocSandbox();
+      const text = await runExtractor('pandoc', [PANDOC_SANDBOX_ARG, '-f', pandocReader, '-t', 'gfm', '--wrap=none'], bytes, { timeoutMs });
       return { text: tidyPandocMarkdown(text), format: 'markdown' };
     } catch (error: any) {
-      logger.error('FileSearchExtractor', `pandoc extraction failed for .${ext} file "${filename}"`, error);
+      logger.error('FileSearchExtractor', `pandoc extraction failed for .${ext} file`, error, { filename });
       throw error;
     }
   }

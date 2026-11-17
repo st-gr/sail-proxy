@@ -40,6 +40,8 @@ class FakeDocker {
     this.gitStatus = '';
     this.otherProjects = []; // [{ project, workingDir }] with a running postgres
     this.missingTags = [];
+    /** stderr of every `compose pull` (a registry that refuses the login), or null */
+    this.pullError = null;
     this.failOn = null; // (args) => Error | undefined
     this.beforeCommand = null; // async (args) => void
     this.restoreInputs = [];
@@ -128,6 +130,7 @@ class FakeDocker {
       case 'pull':
         for (const s of services) {
           const image = this.imageFor(s, opts);
+          if (this.pullError) throw Object.assign(new Error(`pull ${image}`), { stderr: this.pullError });
           if (this.missingTags.some((t) => image.endsWith(`:${t}`))) {
             const e = new Error(`pull ${image}`);
             e.stderr = `Error response from daemon: manifest for ${image} not found`;

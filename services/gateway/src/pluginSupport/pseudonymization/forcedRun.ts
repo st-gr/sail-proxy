@@ -2,7 +2,11 @@
  * Whether pseudonymization is forced for a request, and whether the plugin will actually run.
  *
  * "Forced" has one definition, used by the plugin itself and by the controllers that refuse a
- * forced request the plugin would not see: `models.overrides.<model>.pseudonymization.enabled`
+ * forced request the plugin would not see. It starts with the global switch,
+ * `api_config.observability.pseudonymization.enabled`: only the boolean `true` lets any flag below
+ * enforce anything; with the switch off, absent or anything else, nothing is forced (a caller's
+ * own `masking` block or trigger word still masks, that is not forcing). Under the switch:
+ * `models.overrides.<model>.pseudonymization.enabled`
  * (the model that serves the request, after substitution) first, then
  * `hooks.defaults.<endpoint>.pseudonymization.enabled` for every endpoint on the request's path:
  * the one the controller set as `__endpoint`, and any route that handed the request on to another
@@ -21,6 +25,7 @@ import { Response } from 'express';
 import { getDefaultLogger } from '@libs/logger';
 import configService, { PseudonymizationConfig, DefaultHookEntry } from '../../services/configService';
 import pluginLoader from '../../services/pluginLoader';
+import { isGlobalSwitchOn } from './enforcementState';
 import { PSEUDONYMIZATION_RULE_ID, MUST_RUN_FLAG, EXEMPT_FLAG } from './failClosed';
 
 const logger = getDefaultLogger();
@@ -68,6 +73,9 @@ export interface ForceSource {
  */
 export function readForceSource(req: any): ForceSource | null {
   const config = configService.getConfig();
+
+  // The global switch: without it no flag below enforces anything. Read on every call, never kept.
+  if (!isGlobalSwitchOn(config?.api_config)) return null;
 
   // Per-model force flag. The substitution lookup reads the `anthropic` provider's
   // substitute_models whatever the endpoint: inherited from the plugin, which always resolved its
@@ -136,7 +144,8 @@ export function checkForcedPseudonymization(req: any, hooks: unknown, servedMode
 
 /**
  * Embeddings are never pseudonymized: a masked input would be embedded instead of the real text,
- * so the vector would describe a placeholder. For an embedding request on a route that runs the
+ * so the vector would describe a placeholder. Image generation on /google is exempt the same way
+ * (the model would draw the placeholder). For such a request on a route that runs the
  * plugin chain, drop the pseudonymization plugin from `hooks` and exempt the request from the
  * executor's forced backstop; the other plugins still run. Returns the chain to run, or null when
  * nothing is left of it.

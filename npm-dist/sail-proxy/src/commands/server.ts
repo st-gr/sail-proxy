@@ -8,6 +8,7 @@ import { getStoredApiKeys } from '../utils/apikey-storage';
 import { getStoredAwsCredentials } from '../utils/aws-credentials-storage';
 import { buildGatewayEnv } from '../utils/gateway-env';
 import { checkUpdateHint, hintWithGrace } from '../utils/updateHint';
+import { checkDefaultsNotice } from '../utils/defaultsNotice';
 import { migrateConfigDir } from '../migrations';
 import { getConfigDir } from '../utils/paths';
 import axios from 'axios';
@@ -122,6 +123,10 @@ export async function runServer(): Promise<void> {
       await startOllama();
     }
     
+    // Once per installed version: the default settings the user's api_config.json lacks (an update keeps that file).
+    const defaultsNotice = checkDefaultsNotice();
+    if (defaultsNotice) console.log(chalk.yellow(`\n${defaultsNotice}`));
+
     const hint = await hintWithGrace(hintPromise);
     if (hint) console.log(chalk.dim(`\n${hint}`));
 

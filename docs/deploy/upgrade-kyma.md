@@ -9,9 +9,9 @@ description: Upgrade a Kyma installation to a new release with one command, with
 
 ## Before you start
 
-- Node.js 20 or later.
+- Node.js 24 or later.
 - `kubectl` pointed at the cluster and logged in (for example with the `oidc-login` plugin). The upgrade checks that your login may do everything the upgrade and its rollback need, and stops before changing anything if it may not.
-- The installation runs 0.11.0 or later. Skipping releases is allowed. An older installation must first be upgraded to 0.11.0 the way that release describes.
+- The installation runs 0.12.1 or later. Skipping releases is allowed.
 - Registry access: the installation's own registry login is used to find the new images.
 - Free disk space in the backup folder: three times the database size plus 100 MB.
 - The upgrade also changes the installation's own objects outside the namespace: the ClusterRole and ClusterRoleBinding of Dex and the installation's policies in `istio-system`. Your `kubectl` login needs rights for them.
@@ -51,7 +51,7 @@ On a shared machine, prefer the hidden prompt: an environment variable can be se
 | Linux and macOS | `~/.sail-proxy/backups` |
 | Windows | `%APPDATA%\sail-proxy\backups` |
 
-The file is named `<namespace>-<old version>-<date>.spbk`, for example `my-namespace-0.11.0-20261107T101500Z.spbk`. `--backup-dir <dir>` writes it somewhere else. The upgrade keeps the file after a successful run.
+The file is named `<namespace>-<old version>-<date>.spbk`, for example `my-namespace-0.12.1-20261107T101500Z.spbk`. `--backup-dir <dir>` writes it somewhere else. The upgrade keeps the file after a successful run.
 
 ## What happens
 
@@ -71,7 +71,7 @@ Pressing Ctrl-C (or closing the terminal) before step 2 cancels the run and chan
 
 It stops before the outage, with nothing changed, when:
 
-- the namespace has no installation, or the installation is older than 0.11.0;
+- the namespace has no installation, or the installation is too old for the upgrade (it names the release to upgrade to first);
 - the package is not newer than the installed version;
 - the release changes how file storage or Valkey data is laid out (its release notes say so);
 - the installation runs another PostgreSQL image than the release (a PostgreSQL change is not done by `upgrade`);
@@ -98,7 +98,7 @@ If the rollback failed, or you want to go back later:
 
 ```bash
 npx @st-gr/sail-proxy@latest restore kyma --namespace my-namespace \
-  --input ~/.sail-proxy/backups/my-namespace-0.11.0-20261107T101500Z.spbk
+  --input ~/.sail-proxy/backups/my-namespace-0.12.1-20261107T101500Z.spbk
 ```
 
 This replaces the database with the backup, after asking (`--yes` skips the question). Add `--manifests` to put back the previous version's Kubernetes objects as well; do that when you also go back to the previous images. The passphrase is asked once, or read from `SAIL_PROXY_BACKUP_PASSPHRASE`. A wrong passphrase or a damaged file is refused with "wrong passphrase or damaged file", and nothing is changed.

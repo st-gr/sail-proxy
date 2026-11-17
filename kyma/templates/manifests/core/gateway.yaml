@@ -213,7 +213,5 @@ spec:
         env:
         - name: NODE_ENV
           value: "production"
-        - name: LOG_LEVEL
-          value: "info"
         - name: DISABLE_FILE_LOGGING
           value: "true"

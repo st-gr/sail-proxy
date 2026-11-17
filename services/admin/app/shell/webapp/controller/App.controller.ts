@@ -30,6 +30,8 @@ import { backTargetRoute } from "../model/backTarget";
 import { SESSION_RELOAD_KEY, STORAGE_KEY, isSupported, languageChangeAction, needsServerLanguage, serverLanguageAction } from "../model/language";
 import { STORAGE_KEY as THEME_STORAGE_KEY, SYSTEM, currentChoice, followsSystem, serverThemeAction, themeChangeAction, themeFor, urlThemeOverride } from "../model/theme";
 import { checkForUpdate, dismiss, InstallType, versionUrl } from "../model/updateNotice";
+import { ACTIVE_RAW_CAPTURE_URL, rawCaptureNotice } from "../model/rawCaptureNotice";
+import EventBus from "sap/ui/core/EventBus";
 import { SettingsValues, changedSettings } from "../model/settings";
 import Theming from "sap/ui/core/Theming";
 import MessageToast from "sap/m/MessageToast";
@@ -74,6 +76,10 @@ export default class App extends BaseController {
 			Theming.setTheme(themeFor(SYSTEM, event.matches));
 		}
 	};
+	/** The orange bar's poll of activeRawCapture (administrators only), every minute. */
+	private _rawCaptureTimer: ReturnType<typeof setInterval> | null = null;
+	/** The Logs app says a raw capture started or stopped: the bar follows at once. */
+	private readonly _onRawCaptureChanged = (): void => { void this._loadRawCaptureNotice(); };
 	
 	// Configuration for the single admin app
 	private appConfigurations: { [appKey: string]: AppConfiguration | undefined } = {
@@ -178,6 +184,12 @@ export default class App extends BaseController {
 			manifest: true,
 			title: "nav.plugins",
 			route: "#plugins"
+		},
+		"logs": {
+			componentName: "admin.logs.Component",
+			manifest: true,
+			title: "nav.logs",
+			route: "#logs"
 		}
 	};
 
@@ -242,7 +254,8 @@ export default class App extends BaseController {
 				'users': '/admin/app/users-app/',
 				'toolPolicies': '/admin/app/tool-policies-app/',
 				'connections': '/admin/app/connections-app/',
-				'plugins': '/admin/app/plugins-app/'
+				'plugins': '/admin/app/plugins-app/',
+				'logs': '/admin/app/logs-app/'
 			};
 			return appPathMap[appKey] || '/admin/app/api-keys-app/';
 		} else {
@@ -264,7 +277,8 @@ export default class App extends BaseController {
 				'users': '/users/',
 				'toolPolicies': '/tool-policies/',
 				'connections': '/connections/',
-				'plugins': '/plugins/'
+				'plugins': '/plugins/',
+				'logs': '/logs/'
 			};
 			return appPathMap[appKey] || '/api-keys/';
 		}
@@ -303,6 +317,9 @@ export default class App extends BaseController {
 
 	onExit(): void {
 		this._darkSchemeQuery?.removeEventListener("change", this._onColorSchemeChange);
+		if (this._rawCaptureTimer) clearInterval(this._rawCaptureTimer);
+		this._rawCaptureTimer = null;
+		EventBus.getInstance().unsubscribe("admin.rawCapture", "changed", this._onRawCaptureChanged);
 	}
 
 	/** Takes the stored theme choice (index.html already applied it) and follows the OS in System mode. */
@@ -414,7 +431,8 @@ export default class App extends BaseController {
 			userInitials: "U", // Default, will be updated when user info is loaded
 			userEmail: "", // Will be updated when user info is loaded
 			isAdmin: false, // Will be updated based on isAdmin flag; gates admin-only nav entries
-			isTeamAdmin: false // From getCurrentUserPreferences; shows the Teams nav entry to team admins
+			isTeamAdmin: false, // From getCurrentUserPreferences; shows the Teams nav entry to team admins
+			rawCapture: { visible: false, text: "" } // The orange bar while a raw capture runs (administrators only)
 		});
 		this.view().setModel(appViewModel, "appView");
 		
@@ -840,7 +858,7 @@ export default class App extends BaseController {
 		const navKey = key === "config" ? "settings" : key;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins", "logs"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -956,6 +974,8 @@ export default class App extends BaseController {
 				componentConfig = { name: "admin.connections", url: componentUrl, manifest: true };
 			} else if (appKey === "plugins") {
 				componentConfig = { name: "admin.plugins", url: componentUrl, manifest: true };
+			} else if (appKey === "logs") {
+				componentConfig = { name: "admin.logs", url: componentUrl, manifest: true };
 			} else if (appKey === "users") {
 				componentConfig = {
 					name: "admin.users",
@@ -1015,7 +1035,7 @@ export default class App extends BaseController {
 				// Ensure side navigation is updated before navigation
 				const sideNav = this.view().byId("sideNavigation") as SideNavigation;
 				const navKey = appKey === "config" ? "settings" : appKey;
-				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+				if (["apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins", "logs"].includes(navKey)) {
 					sideNav.setSelectedKey(navKey);
 				}
 				
@@ -1070,6 +1090,9 @@ export default class App extends BaseController {
 				} else if (appKey === "plugins") {
 					router.navTo("pluginsList");
 					this.updateBreadcrumb("plugins");
+				} else if (appKey === "logs") {
+					router.navTo("logsList");
+					this.updateBreadcrumb("logs");
 				}
 
 				// Apply the simple height fix for floating footer positioning
@@ -1193,7 +1216,7 @@ export default class App extends BaseController {
 		const navKey = appKey === "config" ? "settings" : appKey;
 		
 		// Only set selectedKey if it's a valid navigation item key
-		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins"].includes(navKey)) {
+		if (["home", "apiKeys", "awsCredentials", "sapRates", "usage", "securityEvents", "settings", "modelLibrary", "catalogs", "groundingStores", "groundingFiles", "groundingJobs", "groundingAdmin", "teams", "users", "toolPolicies", "connections", "plugins", "logs"].includes(navKey)) {
 			sideNav.setSelectedKey(navKey);
 		}
 
@@ -1239,6 +1262,9 @@ export default class App extends BaseController {
 			} else if (appKey === "plugins") {
 				this.feRouter.navTo("pluginsList");
 				this.updateBreadcrumb("plugins");
+			} else if (appKey === "logs") {
+				this.feRouter.navTo("logsList");
+				this.updateBreadcrumb("logs");
 			}
 		}
 	}
@@ -1347,6 +1373,8 @@ export default class App extends BaseController {
 				}, 100);
 			} else if (routeName === "pluginsList") {
 				this.updateBreadcrumb("plugins");
+			} else if (routeName === "logsList") {
+				this.updateBreadcrumb("logs");
 			} else if (routeName === "ConnectionsList") {
 				this.updateBreadcrumb("connections");
 			} else if (routeName === "ConnectionsObjectPage") {
@@ -1664,6 +1692,28 @@ export default class App extends BaseController {
 		}
 	}
 
+	/** Polls activeRawCapture every 60 s for the orange bar; only for administrators, so users get no 403s. */
+	private _startRawCaptureNotice(): void {
+		if (this._rawCaptureTimer) return;
+		void this._loadRawCaptureNotice();
+		this._rawCaptureTimer = setInterval(() => { void this._loadRawCaptureNotice(); }, 60_000);
+		EventBus.getInstance().subscribe("admin.rawCapture", "changed", this._onRawCaptureChanged);
+	}
+
+	/** A failed poll leaves the bar as it was; the next one tries again. */
+	private async _loadRawCaptureNotice(): Promise<void> {
+		try {
+			const response = await fetch(ACTIVE_RAW_CAPTURE_URL, { headers: { Accept: "application/json" }, credentials: "include" });
+			if (!response.ok) return;
+			const body = await response.json();
+			await this.textsLoaded();
+			const notice = rawCaptureNotice(body?.value, new Date(), this.translate, this.formatDate);
+			(this.view().getModel("appView") as JSONModel).setProperty("/rawCapture", notice);
+		} catch (error) {
+			Log.warning(`Raw capture check skipped: ${String(error)}`, "", "App.controller");
+		}
+	}
+
 	onUpdateNoticeClose(): void {
 		const appViewModel = this.view().getModel("appView") as JSONModel;
 		try {
@@ -1710,6 +1760,7 @@ export default class App extends BaseController {
 			}
 
 			if (result?.isAdmin) void this._loadUpdateNotice();
+			if (result?.isAdmin) this._startRawCaptureNotice();
 
 			void this._loadMyQuota();
 			void this._loadMyTeams();

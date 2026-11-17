@@ -19,6 +19,9 @@ env:
   # minutes; the local `pnpm run ci` still builds and scans the images. A manual run with the
   # `build_images` input ticked builds them here (pushes and pull requests always skip).
   SKIP_DOCKER_BUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_images) && 'false' || 'true' }}
+  # Ticked, it also forces the build: otherwise the pipeline still checks HEAD~1 for image files and
+  # skips on a commit that changed none (2026-11-16, a release check that built nothing).
+  FORCE_DOCKER_BUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_images) && 'true' || 'false' }}
 
 jobs:
   ci:

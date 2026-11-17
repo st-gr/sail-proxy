@@ -1,0 +1,18 @@
+/* Logs app. A log value stays on one line in its table cell, cut with an ellipsis; the tooltip gives all of it. */
+.logsOneLine {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.logsRequestId {
+    min-width: 0;
+}
+/* A helper text under a form field (its own form element with an empty label): secondary text colour. */
+.logsFieldHelp {
+    color: var(--sapContent_LabelColor);
+}
+/* The request dialog's tabs: the content scrolls inside the dialog's fixed height, the tab row stays in view. */
+.logsTraceTabs .sapMITBContainerContent,
+.logsTraceTabs .sapMITBContent {
+    overflow-y: auto;
+}

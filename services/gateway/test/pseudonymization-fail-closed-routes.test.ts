@@ -178,7 +178,7 @@ const ROUTES: Array<[string, () => Promise<any>]> = [
     return res;
   }],
   ['Google generateContent (per-model hook)', async () => {
-    // No hooks.defaults.google ships: the chain runs here only through a per-model hook.
+    // The route under a per-model hook (a model's own hooks replace hooks.defaults.google).
     mockConfig.api_config.models.overrides['gpt-4o'] = {
       ...(mockConfig.api_config.models.overrides['gpt-4o'] || {}),
       hooks: { generateContent: [{ request: { callback: { id: 'pseudonymizationPlugin' }, match: ['header:contentTypeJson'] } }] },
@@ -211,9 +211,9 @@ function shippedConfig(forced: boolean) {
   }
   return {
     hooks,
-    // The Google route is forced per model (no hooks.defaults.google).
+    // The Google route is forced per model as well.
     models: { overrides: forced ? { 'gpt-4o': { pseudonymization: { enabled: true } } } : {} },
-    observability: {},
+    observability: { pseudonymization: { enabled: true } },
   };
 }
 

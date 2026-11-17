@@ -13,7 +13,8 @@ import { describe, it, expect } from '@jest/globals';
 import {
   parseAnthropicBetaHeader,
   mergeBetaFeatures,
-  filterBetaFeatures
+  filterBetaFeatures,
+  renameBetaFeatures
 } from '../src/utils/betaFeatureFilter';
 
 describe('parseAnthropicBetaHeader', () => {
@@ -109,5 +110,30 @@ describe('filterBetaFeatures', () => {
       excluded: []
     });
     expect(result).toEqual(['claude-code-20250219', 'context-1m-2025-08-07']);
+  });
+});
+
+describe('renameBetaFeatures', () => {
+  const renames = { 'advanced-tool-use-2025-11-20': 'tool-search-tool-2025-10-19' };
+
+  it('replaces a flag by the name the upstream knows it by and leaves the others in place', () => {
+    expect(renameBetaFeatures(['claude-code-20250219', 'advanced-tool-use-2025-11-20', 'effort-2025-11-24'], renames))
+      .toEqual(['claude-code-20250219', 'tool-search-tool-2025-10-19', 'effort-2025-11-24']);
+  });
+
+  it('a client that sent both names ends up with the upstream name once', () => {
+    expect(renameBetaFeatures(['tool-search-tool-2025-10-19', 'advanced-tool-use-2025-11-20'], renames))
+      .toEqual(['tool-search-tool-2025-10-19']);
+  });
+
+  it('no renames configured: the flags come back unchanged', () => {
+    expect(renameBetaFeatures(['a-1', 'b-2'], {})).toEqual(['a-1', 'b-2']);
+  });
+
+  it('a renamed flag still has to pass the allowlist and the denylist under its new name', () => {
+    const renamed = renameBetaFeatures(['advanced-tool-use-2025-11-20'], renames);
+    expect(filterBetaFeatures(renamed, { supported: ['tool-search-tool-2025-10-19'], excluded: [] })).toEqual(['tool-search-tool-2025-10-19']);
+    expect(filterBetaFeatures(renamed, { supported: ['claude-code-20250219'], excluded: [] })).toEqual([]);
+    expect(filterBetaFeatures(renamed, { supported: [], excluded: ['tool-search-tool-2025-10-19'] })).toEqual([]);
   });
 });

@@ -36,6 +36,28 @@ import { sapTenantMiddleware } from './sap/sapTarget';
 const logger = getDefaultLogger();
 
 /**
+ * Gives the request its id and runs the rest of its handling in a logger context, so every log
+ * line written for it carries that id, however many requests are in flight.
+ */
+export function requestContextMiddleware(req: express.Request, _res: express.Response, next: express.NextFunction): void {
+  const requestContext: RequestContext = {
+    requestId: `gateway-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.path,
+    userAgent: req.get('User-Agent'),
+    clientIp: getClientIp(req, getTrustForwardedFor()),
+    apiKey: req.get('x-api-key'),
+    service: 'gateway'
+  };
+
+  // Set debugRequestId for usage tracking consistency
+  (req as any).debugRequestId = requestContext.requestId;
+
+  logger.runWithRequestContext(requestContext, () => next());
+}
+
+/**
  * Builds the Express app: every middleware and route mount, in order, without
  * listening or starting any worker. index.ts owns start-up and shutdown.
  */
@@ -60,29 +82,12 @@ export function createApp(config: ConfigOptions): { app: express.Express; deploy
 
   app.use(bodyParser.urlencoded({ limit: config.maxRequestSize, extended: true }));
 
+  // Request context middleware. Before the access log: the access line is written when the
+  // response finishes, and carries its request's id only if the log's handlers run in its context.
+  app.use(requestContextMiddleware);
+
   // Morgan HTTP logging with shared logger
   app.use(accessLogMiddleware((message) => logger.info('HTTP', message)));
-
-  // Request context middleware
-  app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
-    const requestContext: RequestContext = {
-      requestId: `gateway-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: new Date().toISOString(),
-      method: req.method,
-      path: req.path,
-      userAgent: req.get('User-Agent'),
-      clientIp: getClientIp(req, getTrustForwardedFor()),
-      apiKey: req.get('x-api-key'),
-      service: 'gateway'
-    };
-  
-    logger.setRequestContext(requestContext);
-  
-    // Set debugRequestId for usage tracking consistency
-    (req as any).debugRequestId = requestContext.requestId;
-  
-    next();
-  });
 
   // The SAP AI Core tenant serving this request, for its usage event
   app.use(sapTenantMiddleware);

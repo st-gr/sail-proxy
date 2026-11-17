@@ -49,6 +49,8 @@ function recordAnswers({ deploymentType, provider, providerConfig, publicConfig,
     answers.imageTag = containerConfig.tag;
   }
   if (dbConfig) answers.POSTGRES_USER = dbConfig.POSTGRES_USER;
+  // The name of the binding Secret of an external database (setup-kyma.js --external-database).
+  if (dbConfig && dbConfig.externalDatabase) answers.externalDatabase = dbConfig.externalDatabase;
   if (sapConfig && sapConfig.SAP_AI_CORE_URL) {
     answers.configMethod = 'manual';
     for (const id of ['SAP_AI_CORE_URL', 'AUTH_URL', 'CLIENT_ID', 'SAP_AI_REGION', 'SAP_AI_RESOURCE_GROUP']) answers[id] = sapConfig[id];

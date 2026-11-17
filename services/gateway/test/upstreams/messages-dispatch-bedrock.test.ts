@@ -39,6 +39,7 @@ jest.mock('../../src/services/configService', () => ({
     getSubstitutedModel: (_p: string, m: string) => substitutions[m] ?? m,
     getConfig: () => ({}),
     getSupportedBetaHeaders: () => [],
+    getBetaHeaderRenames: () => ({}),
     getExcludedBetaHeaders: () => [],
   },
 }));

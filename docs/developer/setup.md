@@ -25,15 +25,15 @@ description: Node, pnpm, Valkey, the dev servers and local authentication.
 
 ### Required Software
 
-**Node.js 20+** (Critical requirement):
+**Node.js 24+** (Critical requirement):
 ```bash
 # Check current version
-node --version  # Must be 20.0.0 or higher
+node --version  # Must be 24.0.0 or higher
 
 # Install via nvm (recommended)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install 20
-nvm use 20
+nvm install 24
+nvm use 24
 
 # Verify native ESM support
 node -e "import('fs').then(() => console.log('ESM supported'))"
@@ -558,8 +558,8 @@ echo "=== End Health Check ==="
 **Node.js Version Problems**:
 ```bash
 # Error: Unexpected token 'export'
-# Solution: Upgrade to Node.js 20+
-nvm install 20 && nvm use 20
+# Solution: Upgrade to Node.js 24+
+nvm install 24 && nvm use 24
 ```
 
 **pnpm Workspace Issues**:

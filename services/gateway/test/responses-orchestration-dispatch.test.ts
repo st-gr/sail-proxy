@@ -84,9 +84,13 @@ jest.mock('../src/services/configService', () => ({
     getParamRenames: () => ({}),
     getTimeout: () => 1000,
     getHookConfig: () => hookConfigForRoute,
+    shouldEmulateStreaming: (provider: string, modelName: string) => provider === 'openai' && emulatedModels.includes(modelName),
     getConfig: () => ({}),
   },
 }));
+
+// Models listed in providers.openai.emulate_streaming_for_models, reset in beforeEach.
+let emulatedModels: string[] = [];
 
 // Per-test after-plugin override, reset in beforeEach. Lets a test simulate a plugin
 // (e.g. the hosted-tool engine's continuation) mutating __responsesExtraUsage DURING the
@@ -188,6 +192,7 @@ describe('responsesController: orchestration dispatch', () => {
     cacheFlag = undefined;
     hookConfigForRoute = undefined;
     afterPluginsBehavior = null;
+    emulatedModels = [];
     getSupportsPromptCaching.mockClear();
     orchestrationResult = {
       final_result: {
@@ -661,6 +666,121 @@ describe('responsesController: orchestration dispatch', () => {
     });
   });
 
+  describe('streaming emulation (a model in providers.openai.emulate_streaming_for_models)', () => {
+    // Why it exists on this route: SAP orchestration's stream merges a Gemini model's calls
+    // when text precedes them; the same turn without streaming keeps them apart.
+    const twoCalls = () => ({
+      final_result: {
+        choices: [{
+          message: {
+            role: 'assistant', content: 'I will look up both cities.',
+            tool_calls: [
+              { id: 'vertex_tool_a__sig_s1', type: 'function', function: { name: 'get_temperature', arguments: '{"city": "Oslo"}' } },
+              { id: 'vertex_tool_b', type: 'function', function: { name: 'get_temperature', arguments: '{"city": "Lima"}' } },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 40, completion_tokens: 12, total_tokens: 52 },
+      },
+    });
+    const streamedReq = (model = 'anthropic--claude-4.8-opus'): any => ({ body: { model, input: 'Oslo and Lima?', stream: true }, headers: {} });
+    const framesOf = (res: any) => res.writes.map((w: string) => JSON.parse(w.replace(/^data: /, '').trim()));
+
+    it('calls orchestration WITHOUT streaming and answers the client with a stream', async () => {
+      emulatedModels = ['anthropic--claude-4.8-opus'];
+      orchestrationResult = twoCalls();
+      const res = mockRes();
+      await handleResponses(streamedReq(), res, () => {});
+
+      expect(orchestrationCalls.map((c) => c.kind)).toEqual(['non-streaming']);
+      expect(orchestrationCalls[0].payload.config.stream).toBeUndefined();
+
+      expect(res.headers['Content-Type']).toBe('text/event-stream');
+      const frames = framesOf(res);
+      expect(frames[0].type).toBe('response.created');
+      const terminal = frames[frames.length - 1];
+      expect(terminal.type).toBe('response.completed');
+      expect(terminal.response.output.map((o: any) => [o.type, o.call_id ?? null, o.arguments ?? null])).toEqual([
+        ['message', null, null],
+        ['function_call', 'vertex_tool_a__sig_s1', '{"city": "Oslo"}'],
+        ['function_call', 'vertex_tool_b', '{"city": "Lima"}'],
+      ]);
+      expect(frames.filter((f: any) => f.type === 'response.output_text.delta').map((f: any) => f.delta).join(''))
+        .toBe('I will look up both cities.');
+      expect(res.ended).toBe(true);
+    });
+
+    it('bills the usage of the whole answer', async () => {
+      emulatedModels = ['anthropic--claude-4.8-opus'];
+      orchestrationResult = twoCalls();
+      await handleResponses(streamedReq(), mockRes(), () => {});
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0][1].inputTokens).toBe(40);
+      expect(usageEvents[0][1].outputTokens).toBe(12);
+      expect(usageEvents[0][3]).toBe(200);
+    });
+
+    it('a model that is not listed still streams from orchestration', async () => {
+      emulatedModels = ['some-other-model'];
+      orchestrationChunks = [{ choices: [{ delta: { content: 'Hi' } }] }];
+      await handleResponses(streamedReq(), mockRes(), () => {});
+      expect(orchestrationCalls.map((c) => c.kind)).toEqual(['streaming']);
+      expect(orchestrationCalls[0].payload.config.stream).toEqual({ enabled: true });
+    });
+
+    it('a request without streaming is not touched by the setting', async () => {
+      emulatedModels = ['anthropic--claude-4.8-opus'];
+      const req: any = { body: { model: 'anthropic--claude-4.8-opus', input: 'hi' }, headers: {} };
+      const res = mockRes();
+      await handleResponses(req, res, () => {});
+      expect(orchestrationCalls.map((c) => c.kind)).toEqual(['non-streaming']);
+      expect(res.body.object).toBe('response');
+      expect(res.writes).toHaveLength(0);
+    });
+
+    it('a refusal is the HTTP status and the error envelope, with no frames written', async () => {
+      emulatedModels = ['anthropic--claude-4.8-opus'];
+      nonStreamingRejection = Object.assign(new Error('Request failed with status code 400'), {
+        status: 400, details: { error: { message: 'bad request from SAP', code: 400 } },
+      });
+      const res = mockRes();
+      await handleResponses(streamedReq(), res, () => {});
+      expect(res.statusCode).toBe(400);
+      expect(res.writes).toHaveLength(0);
+      expect(res.body.error).toBeDefined();
+    });
+
+    it('builds continuations without streaming too, and fetches them itself as a stream', async () => {
+      emulatedModels = ['anthropic--claude-4.8-opus'];
+      const req = streamedReq();
+      await handleResponses(req, mockRes(), () => {});
+      const upstream = req.__responsesUpstream;
+
+      const body = upstream.buildContinuationPayload([{ type: 'message', role: 'user', content: 'next' }]);
+      expect(body.config.stream).toBeUndefined();
+
+      expect(typeof upstream.postContinuationStream).toBe('function');
+      posted.length = 0;
+      const reply = await upstream.postContinuationStream(body);
+      expect(posted).toHaveLength(1);
+      expect(posted[0].url).toBe('http://mock-sap/deployments/abc/v2/completion');
+      expect(posted[0].cfg.responseType).toBeUndefined();
+      let text = '';
+      for await (const piece of reply.data) text += piece.toString();
+      expect(text).toContain('data: ');
+      expect(text.trim().endsWith('data: [DONE]')).toBe(true);
+    });
+
+    it('offers no function of its own for continuations when the model streams for real', async () => {
+      const req = streamedReq();
+      orchestrationChunks = [{ choices: [{ delta: { content: 'Hi' } }] }];
+      await handleResponses(req, mockRes(), () => {});
+      expect(req.__responsesUpstream.postContinuationStream).toBeUndefined();
+      expect(req.__responsesUpstream.buildContinuationPayload([]).config.stream).toEqual({ enabled: true });
+    });
+  });
+
   describe('the continuation context stashed for the hosted-tool engine', () => {
     /** Drive one orchestration dispatch and hand back what it stashed on the request. */
     async function stashFor(body: any): Promise<any> {
@@ -682,6 +802,31 @@ describe('responsesController: orchestration dispatch', () => {
       const upstream = await stashFor({});
       const next: any = upstream.buildContinuationPayload([], { toolChoice: undefined });
       expect(next.config.modules.prompt_templating.model.params).not.toHaveProperty('tool_choice');
+    });
+
+    it('leaves the tools the engine names out of the answering call, and keeps the others', async () => {
+      const tools = [
+        { type: 'function', name: 'web_search', description: 'search', parameters: { type: 'object', properties: {} } },
+        { type: 'function', name: 'shell', description: 'run', parameters: { type: 'object', properties: {} } },
+      ];
+      const upstream = await stashFor({ tools });
+      const toolNames = (payload: any): string[] =>
+        (payload.config.modules.prompt_templating.prompt.tools || []).map((t: any) => t.function?.name ?? t.name);
+
+      expect(toolNames(upstream.buildContinuationPayload([], { toolChoice: undefined }))).toEqual(['web_search', 'shell']);
+      const answering: any = upstream.buildContinuationPayload([], { toolChoice: 'auto', withoutFunctionTools: ['web_search'] });
+      expect(toolNames(answering)).toEqual(['shell']);
+      // The first turn, and the client's own body, keep the whole list.
+      expect(toolNames(orchestrationCalls[0].payload)).toEqual(['web_search', 'shell']);
+    });
+
+    it('sends the answering call with no tool list and no tool_choice when the only tool is left out', async () => {
+      const upstream = await stashFor({
+        tools: [{ type: 'function', name: 'web_search', description: 'search', parameters: { type: 'object', properties: {} } }],
+      });
+      const answering: any = upstream.buildContinuationPayload([], { toolChoice: 'auto', withoutFunctionTools: ['web_search'] });
+      expect(answering.config.modules.prompt_templating.prompt).not.toHaveProperty('tools');
+      expect(answering.config.modules.prompt_templating.model.params).not.toHaveProperty('tool_choice');
     });
 
     it('translates a continuation REPLY, on both transports', async () => {

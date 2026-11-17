@@ -5,13 +5,13 @@ description: Configure OpenAI Codex CLI to talk to SAP AI Core through the gatew
 
 # Codex CLI
 
-[Codex CLI](https://github.com/openai/codex) is OpenAI's terminal coding agent. It speaks the OpenAI **Responses API**, which the gateway serves at `/openai/v1/responses`. Reasoning items, tool calls and native SSE framing pass through unchanged, PII masking covers the whole Responses body in both directions, and Codex's hosted `web_search` tool and its sub-agents work through the gateway.
+[Codex CLI](https://github.com/openai/codex) is OpenAI's terminal coding agent. It speaks the OpenAI **Responses API**, which the gateway serves at `/openai/v1/responses`. Reasoning items, tool calls and native SSE framing pass through unchanged, PII masking, once switched on, covers the whole Responses body in both directions, and Codex's hosted `web_search` tool and its sub-agents work through the gateway.
 
 ## Prerequisites
 
 - A running gateway (see [Quick start](/guide/quick-start)) and a gateway API key.
 - Codex CLI installed (`npm i -g @openai/codex`, or your usual channel).
-- A model in the Model Library. A GPT-5 or later, or o-series, model with its own SAP AI Core deployment is served natively (deploy one with `cli-tools/sail-model-deploy.js` or SAP AI Launchpad); other catalogue models go through SAP orchestration.
+- A model in the Model Library. A GPT-5 or later, or o-series, model with its own SAP AI Core deployment is served natively (an administrator deploys one with *Deploy* on the model's page in the [Model Library](/guide/cockpit/model-library#model-library), with `cli-tools/sail-model-deploy.js`, or in SAP AI Launchpad); other catalogue models go through SAP orchestration.
 
 ## Launch with the sail-proxy CLI
 
@@ -56,11 +56,13 @@ On a Docker or Kyma deployment behind nginx, use `https://sail.example.com/gatew
 
 Use the bare model name (for example `gpt-5-mini`) or its `--deployed` id. The Responses route resolves the bare name to its `--deployed` twin when that deployment can serve the Responses API, so Codex keeps a name it recognizes while inference runs on the deployment. A model with no Responses-capable deployment goes through SAP orchestration instead.
 
+Prefer a deployed GPT model for Codex. A Gemini model, which the Responses route always serves through orchestration, can lose tool calls it makes in one step: see [Gemini: several tool calls in one step](/guide/troubleshooting#gemini-several-tool-calls-in-one-step).
+
 Codex may print `warning: Model metadata for '…' not found. Defaulting to fallback metadata`. That is expected: a gateway model name has no entry in Codex's built-in catalogue, and the session is not affected.
 
 ## Web search
 
-Codex attaches a hosted `web_search` tool to its requests. SAP AI Core deployments reject hosted tools, so the gateway runs the search itself through Perplexity `sonar-pro` on SAP AI Core (a `sonar-pro` deployment when one exists, otherwise SAP orchestration), then calls the model again with the results. The search goes out under your SAP AI Core tenant, not from the user's machine, and carries only the query. The turn ends with the model's own answer: Codex receives a `web_search_call` item for the search, followed by the assistant's message. The query is pseudonymized before it is sent to the search model; Codex sees the real query. The number of searches per request is capped by `api_config.capabilities.web_search.max_searches_per_request` (default 3).
+Codex attaches a hosted `web_search` tool to its requests. SAP AI Core deployments reject hosted tools, so the gateway runs the search itself through Perplexity `sonar-pro` on SAP AI Core (a `sonar-pro` deployment when one exists, otherwise SAP orchestration), then calls the model again with the results. The search goes out under your SAP AI Core tenant, not from the user's machine, and carries only the query. The turn ends with the model's own answer: Codex receives a `web_search_call` item for the search, followed by the assistant's message. With pseudonymization switched on, the query is pseudonymized before it is sent to the search model; Codex sees the real query. The number of searches per request is capped by `api_config.capabilities.web_search.max_searches_per_request` (default 3). When the model asks for more, the extra searches are not run and the model answers from the ones that did; raise the value (up to 10) if answers often need more searches.
 
 Codex emits the hosted tool only when web search is on and its model catalogue marks the model as able to use it. The launcher handles both: it copies `~/.codex/models_cache.json`, sets `use_responses_lite` to `false` on the model's entry, and passes `web_search=live` and `model_catalog_json=<copy>`. When `~/.codex/models_cache.json` does not exist yet, the launcher skips web search and prints how to seed the catalogue: one run against OpenAI itself, for example:
 
@@ -73,6 +75,21 @@ For a manual setup, do the same by hand: copy the catalogue, set `"use_responses
 ```toml
 web_search = "live"
 model_catalog_json = "/path/to/your/catalog-copy.json"
+```
+
+### Codex's own app services
+
+A Codex that is signed in to ChatGPT also brings ChatGPT's app services, a web search among them. The model can call them beside the gateway's tools, and what they do goes to OpenAI under your ChatGPT sign-in, not through the gateway: no entitlement, quota, tool policy or usage record applies to it. The launcher leaves them as you have them. To make sure a search is always the gateway's, switch them off for the session:
+
+```bash
+sail-proxy codex -c features.apps=false "..."
+```
+
+or for every session, in `~/.codex/config.toml`:
+
+```toml
+[features]
+apps = false
 ```
 
 ## Sub-agents

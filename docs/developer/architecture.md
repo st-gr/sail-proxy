@@ -143,7 +143,7 @@ In standalone mode (`GATEWAY_STANDALONE=true`, the npm CLI) the gateway validate
 ### Backend Services
 
 **Runtime Environment**:
-- **Node.js 20+**
+- **Node.js 24+**
 - **TypeScript**
 - **Express**: gateway and Ollama service
 - **SAP CAP**: admin service

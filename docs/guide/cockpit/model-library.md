@@ -51,7 +51,9 @@ Core publishes them. Every user sees the models in their entitlement; administra
   deployed or called directly.
 - **Deployments** (administrators). *Fetch Deployments* lists the model's SAP AI Core deployments.
   *Deploy* creates one: it reuses an existing configuration or creates one, starts the deployment and
-  waits up to five minutes for it to run. Deployments incur cost until they are stopped in the SAP AI
+  waits up to five minutes for it to run. The same *Deploy* button sits at the top right of the model's
+  page, for a model that has no deployment yet; it asks you to confirm, and uses the region and resource
+  group of the gateway's SAP AI Core connection. Deployments incur cost until they are stopped in the SAP AI
   Launchpad.
 - **Refresh** (administrators) re-reads the model list from the gateway.
 

@@ -116,6 +116,10 @@
                                         press="onRollbackConfiguration" 
                                         type="Critical"
                                         tooltip="{i18n>rollbackTooltip}"/>
+                                <Button text="{i18n>compareDefaults}"
+                                        icon="sap-icon://compare"
+                                        press="onCompareWithDefaults"
+                                        tooltip="{i18n>compareDefaultsTooltip}"/>
                                 <ToolbarSeparator/>
                                 <Button text="{i18n>delete}" 
                                         icon="sap-icon://delete" 
@@ -138,6 +142,16 @@
                                         press="onRefresh"/>
                             </OverflowToolbar>
                         </headerToolbar>
+                        <!-- The shipped defaults hold entries the active configuration lacks: pressing
+                             the bar opens the comparison (controller/ConfigShippedDefaults.ts). -->
+                        <infoToolbar>
+                            <OverflowToolbar visible="{= ${viewModel>/shippedDefaults/count} > 0 }"
+                                             active="true"
+                                             press="onCompareActiveWithDefaults">
+                                <core:Icon src="sap-icon://message-information"/>
+                                <Label text="{viewModel>/shippedDefaults/notice}"/>
+                            </OverflowToolbar>
+                        </infoToolbar>
                         <columns>
                             <Column width="20%" minScreenWidth="Tablet" demandPopin="true" hAlign="Left">
                                 <Text text="{i18n>configuration}" class="sapMTextBold"/>

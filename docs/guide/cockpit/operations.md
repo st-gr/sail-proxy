@@ -21,7 +21,7 @@ The admin service exposes these actions through its OData API; the cockpit has n
 
 The cockpit has no backup or restore function. Back up the database of the deployment with the
 database's own tools. On Kyma, `cli-tools/kyma-db-manager.js` backs up (`backup`) and restores
-(`restore`) the PostgreSQL database of a namespace.
+(`restore`) the PostgreSQL database of a namespace. A Kyma installation that uses an external PostgreSQL, such as SAP BTP's "PostgreSQL, hyperscaler option", gets that service's own backups instead; see [Backup, restore and upgrade](/deploy/backup-and-upgrade#sap-btp-kyma).
 
 ## Audit Trail
 

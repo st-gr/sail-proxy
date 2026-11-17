@@ -34,9 +34,10 @@ import {
 import { FieldControl, scrollControlIntoTabView } from "../model/descriptorControls";
 import { ScrollAncestorNode, tabScrollAncestor } from "../model/formViewport";
 import { pluginFor, registerPlugin } from "../model/formPlugins";
-import { applyDescriptor, removeAt } from "../model/schemaForm";
+import { removeAt } from "../model/schemaForm";
 import { fieldErrorOf } from "../model/validateSection";
 import { rejectedFields } from "../model/rejectedFields";
+import { GLOBAL_SWITCH_POINTER, applyChange, autoFlipMessage, fieldNote } from "../model/pseudonymizationSwitch";
 import { Translator, messageTranslator } from "../model/validationTexts";
 import CredentialSection from "./ConfigFormCredentials";
 import MapEditor from "./ConfigFormMaps";
@@ -140,6 +141,11 @@ export default class ConfigForm {
      * controls are: this is how a schema error is put on the field it is about.
      */
     private _fieldControls: Record<string, FieldControl> = {};
+    /**
+     * The pseudonymization notes and their switches, by JSON pointer (`pseudonymizationSwitch`).
+     * Rebuilt on every render like `_fieldControls`; an edit updates them in place, without a rebuild.
+     */
+    private _fieldNotes: Record<string, { note: { setText(text: string): unknown }; swtch: { setState(state: boolean): unknown } }> = {};
     /** Pointers this form has put an error on, so it never clears a state it did not set. */
     private _markedFields: string[] = [];
     /**
@@ -147,6 +153,8 @@ export default class ConfigForm {
      * a corrected field clears itself; without that the form is unusable after one mistake.
      */
     private _showFieldErrors = false;
+    /** The switched-on notice `_applyChange` last showed, so switching the switch Off clears only it. */
+    private _autoFlipNotice = "";
     /**
      * The pointers of the map entry panels currently expanded, remembered across the rebuild every
      * edit triggers so an override the operator opened does not snap shut the moment they add a
@@ -978,6 +986,7 @@ export default class ConfigForm {
         // The controls the errors were on have just been destroyed; the registry is rebuilt below
         // and the marks re-applied at the end, so nothing points at a destroyed control.
         this._fieldControls = {};
+        this._fieldNotes = {};
         this._markedFields = [];
         // The panels and map nodes are the JUST-DESTROYED build's; the new build repopulates them
         // below. The expanded set is NOT reset - it is the memory this whole change exists to keep.
@@ -1022,6 +1031,10 @@ export default class ConfigForm {
             },
             onMapContainer: (pointer: string) => {
                 this._mapNodePointers.add(pointer);
+            },
+            fieldNote: (pointer: string) => fieldNote(this._document, pointer, this._messages()),
+            onFieldNote: (pointer, controls) => {
+                this._fieldNotes[pointer] = controls;
             }
         });
         attachTabSelection(tabBar, (key: string) => this._setProperty("/formSelectedTab", key));
@@ -1370,8 +1383,13 @@ export default class ConfigForm {
         if (!this._document) {
             return false;
         }
+        // Enabling an endpoint or model flag under the global switch's Off switches it on with it:
+        // both writes or neither, so a failed flip leaves the document as it was.
+        let flip: boolean;
         try {
-            this._document = applyDescriptor(this._document, pointer, value) as Record<string, unknown>;
+            const next = applyChange(this._document, pointer, value);
+            this._document = next.document as Record<string, unknown>;
+            flip = next.flipped;
         } catch (error) {
             MessageBox.error(this._text("formApplyFailed") + " " + pointer);
             return false;
@@ -1381,6 +1399,18 @@ export default class ConfigForm {
         // saved. This is what lets the controller's own "unsaved changes" guard fire if the
         // user closes the detail column with form edits pending.
         this._writeDocumentToEditor();
+        if (flip) {
+            // `setState` fires no change event, so this does not come back through here.
+            this._fieldNotes[GLOBAL_SWITCH_POINTER]?.swtch.setState(true);
+            this._autoFlipNotice = autoFlipMessage(this._document, this._messages());
+            this._setProperty("/formNotice", this._autoFlipNotice);
+        } else if (pointer === GLOBAL_SWITCH_POINTER && value !== true && this._autoFlipNotice !== "" && this._getProperty("/formNotice") === this._autoFlipNotice) {
+            this._setProperty("/formNotice", "");
+        }
+        // No rebuild: every note follows the edit in place.
+        for (const notePointer of Object.keys(this._fieldNotes)) {
+            this._fieldNotes[notePointer].note.setText(fieldNote(this._document, notePointer, this._messages()) ?? "");
+        }
         // A field marked when a save was refused must clear as soon as it is corrected, or one
         // mistake leaves the form permanently red.
         if (this._showFieldErrors) {
@@ -1448,6 +1478,7 @@ export default class ConfigForm {
         (this._host.byId("configFormContent") as VBox)?.destroyItems();
         // The registry would otherwise hold destroyed controls into the next configuration.
         this._fieldControls = {};
+        this._fieldNotes = {};
         this._markedFields = [];
         this._showFieldErrors = false;
         // Expansion memory is per configuration: the next one's entries have not been seen, so they

@@ -95,6 +95,8 @@ async function buildInstallation() {
 
 const tempLeftovers = () => fs.readdirSync(os.tmpdir()).filter((f) => /^sail-proxy-(kit|render)-/.test(f)).sort();
 
+const FIXTURE_MIN_UPGRADE_FROM = '0.11.0';
+
 async function upgrade(fake, o = {}) {
   const backupDir = o.backupDir || fs.mkdtempSync(path.join(scratch, 'backups-'));
   const asked = [];
@@ -124,6 +126,8 @@ async function upgrade(fake, o = {}) {
       healthTimeoutSeconds: 2,
       log: (m) => lines.push(m),
       ...(o.ctx || {}),
+      // The fixture is a 0.11.0 installation: these tests are about the upgrade's steps, not the release's policy value.
+      policy: { minUpgradeFrom: FIXTURE_MIN_UPGRADE_FROM, ...((o.ctx || {}).policy || {}) },
     });
   } finally {
     restore();
@@ -178,6 +182,7 @@ test('happy path: steps in order, nothing asked, new version healthy, record wri
   assert.match(out, /Kubernetes namespace: sail-proxy-test/);
   const steps = [...out.matchAll(/=== Step: (\w+) ===/g)].map((m) => m[1]);
   assert.deepStrictEqual(steps, ['read', 'ask', 'preflight', 'outage', 'backup', 'apply', 'migrate', 'health', 'record']);
+  assert.match(out, /Upgrade complete[^\n]*\n[^\n]*Compare with defaults/, 'after the summary: where new default settings are offered, since the stored configuration is not changed');
   for (const name of ['gateway', 'admin', 'nginx']) assert.match(image(fake, name), /sail-proxy-\w+:0\.12\.0$/);
   assert.deepStrictEqual(replicas(fake), replicas(base));
   assert.match(fake.db, /admin schema of 0\.12\.0/);
@@ -210,6 +215,9 @@ const refusals = [
   ['source 0.10.0', (f) => { f.get('configmap', NS, 'sail-proxy-install').data.version = '0.10.0'; return {}; }, /starts from 0\.11\.0/],
   ['storage layout change', () => ({ ctx: { policy: { storageLayoutChange: true } } }), /layout of file storage/],
   ['postgres image differs', (f) => { f.get('statefulset', NS, 'postgres').spec.template.spec.containers[0].image = 'postgres:17'; return {}; }, /Postgres image/],
+  // An installation made with setup-kyma.js --external-database has no PostgreSQL workload: the
+  // upgrade's dump and rollback cannot reach its database.
+  ['external database', (f) => { f.objects.delete(f.key('statefulset', NS, 'postgres')); return {}; }, /external database/],
   ['rebuild running', (f) => { f.rebuildRunning = true; return {}; }, /rebuild-index Job is running/],
   ['can-i no', (f) => { f.denied.add('delete secrets'); return {}; }, /may not do everything.*delete secrets/],
   ['image missing', () => ({ ctx: { lookupDigest: async () => { throw new Error('404 Not Found'); } } }), /cannot be found/],
@@ -229,6 +237,19 @@ for (const [name, arrange, message] of refusals) {
     assert.deepStrictEqual(backups, []);
   });
 }
+
+// 2026-11-17: ghcr answered the image lookup with 401 UNAUTHORIZED and the refusal ended in
+// "kubectl is no longer logged in". The registry's login is the namespace's registry-secret.
+test('refused before the outage: the registry refuses the login (names the pull secret, not kubectl)', async (base) => {
+  const fake = base.clone();
+  const lookupDigest = async () => { throw new Error('HTTP 401: {"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}'); };
+  const { code, out, result } = await upgrade(fake, { ctx: { lookupDigest } });
+  assert.strictEqual(code, 1, out.slice(-1500));
+  assert.match(result.error, /cannot be found with the installation's registry login/);
+  assert.match(result.error, /registry-secret/);
+  assert.doesNotMatch(result.error, /kubectl/);
+  assert.doesNotMatch(out, /kubectl is no longer logged in/);
+});
 
 // ---- failures after the outage roll back -----------------------------------------------------
 for (const step of ['apply', 'migrate', 'health']) {
@@ -340,6 +361,31 @@ test('Okta installation: exactly OKTA_METADATA_URL and OKTA_SAML_CA_DATA are ask
   });
   assert.deepStrictEqual(asked, ['OKTA_METADATA_URL', 'OKTA_SAML_CA_DATA']);
   assert.strictEqual(code, 0, out.slice(-1500));
+});
+
+test('SAP Cloud Identity Services installation: nothing is asked, and the new Dex config keeps the issuer, client ID and client secret', async (base) => {
+  const fake = base.clone();
+  const IAS = { issuer: 'https://tenant.example.test', clientID: '11111111-2222-3333-4444-555555555555', clientSecret: 'ias:s3cr#t "q" $& [x]=/' };
+  const record = fake.get('configmap', NS, 'sail-proxy-install');
+  const answers = JSON.parse(record.data.answers);
+  Object.assign(answers, { provider: 'ias', IAS_ISSUER_URL: IAS.issuer, IAS_CLIENT_ID: IAS.clientID, IAS_ADMIN_GROUP: 'gw-admins', IAS_USER_GROUP: 'gw-users', LOGOUT_REDIRECT_URL: 'auto-shell' });
+  record.data.answers = JSON.stringify(answers);
+  const adminEnv = fake.get('secret', NS, 'admin-env');
+  adminEnv.data.IDENTITY_PROVIDER = Buffer.from('ias').toString('base64');
+  adminEnv.data.ROLE_MAPPING = Buffer.from('{"gw-admins":"admin","gw-users":"user"}').toString('base64');
+  // The client secret is in no record: it comes from the live Dex config.
+  fake.add({ apiVersion: 'v1', kind: 'Secret', metadata: { name: 'dex-config', namespace: NS }, stringData: { 'config.yaml': JSON.stringify({
+    issuer: 'https://gw.example.test/dex',
+    connectors: [{ type: 'oidc', id: 'sap-ias', name: 'SAP Cloud Identity Services', config: { ...IAS, redirectURI: 'https://gw.example.test/dex/callback', scopes: ['email', 'profile', 'groups'], insecureEnableGroups: true, userNameKey: 'email' } }],
+  }) } });
+  const { code, asked, out } = await upgrade(fake);
+  assert.deepStrictEqual(asked, []);
+  assert.strictEqual(code, 0, out.slice(-1500));
+  const dex = Buffer.from(fake.get('secret', NS, 'dex-config').data['config.yaml'], 'base64').toString('utf8');
+  for (const value of [IAS.issuer, IAS.clientID]) assert.ok(dex.includes(value), `the upgraded Dex config holds ${value}`);
+  assert.ok(dex.includes('type: oidc') || dex.includes('"type": "oidc"') || dex.includes('"type":"oidc"'), 'still an OIDC connector');
+  assert.ok(dex.includes('s3cr#t'), 'the client secret is carried over');
+  assert.ok(!out.includes(IAS.clientSecret), 'and never printed');
 });
 
 test('first upgrade (no install record): the logout redirect is read from admin-env, not asked', async (base) => {
@@ -523,6 +569,27 @@ test('the images keep the installation\'s registry and organization (a private o
   for (const name of ['gateway', 'admin', 'nginx']) assert.strictEqual(image(flagged, name), `registry.example.test/rc-images/sail-proxy-${name}:rc-1a2b3c4d`);
 });
 
+// 2026-11-17: an installation from public images got its registry-secret by hand, before an upgrade
+// to images in a private registry. The install record still said "no pull secret" and won.
+test('a pull secret added after the install is used: the image lookup gets its login, the pods its name', async (base) => {
+  const fake = base.clone();
+  assert.strictEqual(JSON.parse(fake.get('configmap', NS, 'sail-proxy-install').data.answers).imagePullSecrets, false);
+  const TOKEN = 'registry-token-added-later';
+  fake.add({
+    apiVersion: 'v1', kind: 'Secret', type: 'kubernetes.io/dockerconfigjson', metadata: { name: 'registry-secret', namespace: NS },
+    stringData: { '.dockerconfigjson': JSON.stringify({ auths: { 'ghcr.io': { username: 'robot', password: TOKEN } } }) },
+  });
+  const logins = [];
+  const lookupDigest = async (config) => { logins.push([config.dockerUsername, config.dockerPassword]); return `sha256:${'c'.repeat(64)}`; };
+  const { code, out } = await upgrade(fake, { ctx: { lookupDigest } });
+  assert.strictEqual(code, 0, out.slice(-1500));
+  assert.deepStrictEqual(logins[0], ['robot', TOKEN]);
+  for (const name of ['gateway', 'admin']) {
+    assert.deepStrictEqual(fake.get('deployment', NS, name).spec.template.spec.imagePullSecrets, [{ name: 'registry-secret' }]);
+  }
+  assert.ok(!out.includes(TOKEN), 'the token is not printed');
+});
+
 test('SAIL_PROXY_BACKUP_PASSPHRASE is read once and reaches no child (the kit\'s setup-docker.js included)', async (base) => {
   const fake = base.clone();
   const atSpawn = [];
@@ -564,6 +631,35 @@ test('rollback: migration pods that do not go stop the rollback before the resto
   assert.match(out, /Migration pods are still running/);
   assert.ok(!fake.calls.some((a) => /gunzip/.test(a.join(' '))), 'the database was not restored');
   assert.ok(out.includes(`sail-proxy restore kyma --namespace ${NS} --input "${result.backup}"`));
+});
+
+// The default namespace's allowlist policy is `allowlist-<domain>` without a label: the snapshot and
+// the restore check own it by that exact name, from the installation's BASE_URL.
+test('default namespace on another domain: its allowlist policy is snapshotted and restorable, a foreign one never', async () => {
+  const { readInstallObjects, isInstallObject, allowlistPolicyName } = require('../dist/upgrade/kymaCluster');
+  const policy = (name, labels) => ({ apiVersion: 'security.istio.io/v1', kind: 'AuthorizationPolicy', metadata: { name, namespace: 'istio-system', ...(labels ? { labels } : {}) }, spec: {} });
+  const adminEnv = { apiVersion: 'v1', kind: 'Secret', type: 'Opaque', metadata: { name: 'admin-env', namespace: 'sail-proxy' }, data: { BASE_URL: Buffer.from('https://llm-gw.c-example1.kyma.ondemand.com').toString('base64') } };
+  const cluster = {
+    'secrets -n sail-proxy': [adminEnv],
+    'authorizationpolicies.security.istio.io -n istio-system': [
+      policy('allowlist-llm-gw'), policy('allowlist-voxtral'), policy('allowlist-cp-tunnel'),
+      policy('allowlist-llm-gw-other', { 'sail-proxy/namespace': 'someone-else' }),
+    ],
+  };
+  const kubectl = async (args) => {
+    if (args[0] === 'get' && args.includes('-n')) return { stdout: JSON.stringify({ items: cluster[`${args[1]} -n ${args[args.indexOf('-n') + 1]}`] || [] }) };
+    throw Object.assign(new Error('kubectl failed'), { stderr: `Error from server (NotFound): ${args[1]} "${args[2]}" not found\n` });
+  };
+  const snapshot = await readInstallObjects(kubectl, 'sail-proxy');
+  const istio = snapshot.filter((o) => o.metadata.namespace === 'istio-system').map((o) => o.metadata.name).sort();
+  assert.deepStrictEqual(istio, ['allowlist-cp-tunnel', 'allowlist-llm-gw']);
+  const name = allowlistPolicyName(snapshot, 'sail-proxy');
+  assert.strictEqual(name, 'allowlist-llm-gw');
+  assert.strictEqual(isInstallObject(policy('allowlist-llm-gw'), 'sail-proxy', name), true);
+  assert.strictEqual(isInstallObject(policy('allowlist-voxtral'), 'sail-proxy', name), false);
+  assert.strictEqual(isInstallObject(policy('allowlist-llm-gw'), 'sail-proxy'), false, 'without the name only the historic allowlist-sail-proxy* is owned');
+  // a namespace other than the default keeps its prefix-and-label rule
+  assert.strictEqual(allowlistPolicyName([{ ...adminEnv, metadata: { name: 'admin-env', namespace: NS } }], NS), `${NS}-allowlist-llm-gw`);
 });
 
 // restoreObjects branches, against a scripted kubectl

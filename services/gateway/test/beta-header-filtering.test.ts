@@ -48,6 +48,16 @@ describe('Beta Header Filtering', () => {
     });
   });
 
+  describe('configService.getBetaHeaderRenames', () => {
+    it('ships the tool search flag under the name the Bedrock deployments know, and allows that name', () => {
+      // Measured 2026-11-10 on seven deployed Claude models: all refuse advanced-tool-use-2025-11-20
+      // and accept tool-search-tool-2025-10-19; without either, Sonnet 4.5 refuses `defer_loading`.
+      expect(configService.getBetaHeaderRenames()).toEqual({ 'advanced-tool-use-2025-11-20': 'tool-search-tool-2025-10-19' });
+      expect(configService.getSupportedBetaHeaders()).toContain('tool-search-tool-2025-10-19');
+      expect(configService.getSupportedBetaHeaders()).not.toContain('advanced-tool-use-2025-11-20');
+    });
+  });
+
   describe('beta header filtering logic', () => {
     const filterBetaHeaders = (headers: string[], excluded: string[]): string[] => {
       return headers.filter(h => !excluded.includes(h));

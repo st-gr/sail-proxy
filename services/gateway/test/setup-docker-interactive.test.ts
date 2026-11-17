@@ -218,6 +218,8 @@ describe('setup-docker.js interactive: ask everything, review, then write', () =
         ['imageMode', 'registry'],
         ['registry', 'ghcr.io'],
         ['organization', 'st-gr'],
+        // The harness's registry cannot be listed, so the version is typed (setup-docker-image-version.test.ts)
+        ['customImageVersion', '1.2.3'],
         ...BILLING,
         ['deleteVolumes', true],
         ['pullImages', true],

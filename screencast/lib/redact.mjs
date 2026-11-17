@@ -53,8 +53,9 @@ export function overlaySource(map) {
     for (const c of n.childNodes) node(c);
   };
   node(document.body);
-  new MutationObserver((ms) => { for (const m of ms) { for (const a of m.addedNodes) node(a); if (m.type === 'characterData') node(m.target); } })
-    .observe(document.body, { childList: true, subtree: true, characterData: true });
+  // A control that re-renders its tooltip changes the title of an element already on the page: watch titles too.
+  new MutationObserver((ms) => { for (const m of ms) { for (const a of m.addedNodes) node(a); if (m.type === 'characterData') node(m.target); if (m.type === 'attributes') { const t = fix(m.target.getAttribute('title') || ''); if (t !== (m.target.getAttribute('title') || '')) m.target.setAttribute('title', t); } } })
+    .observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['title'] });
   // A script that sets an input's value (a UI5 Select writes its key into a hidden input) fires no mutation: sweep.
   if (window.setInterval && document.querySelectorAll) window.setInterval(() => {
     for (const el of document.querySelectorAll('input, textarea')) if (el.value) { const t = fix(el.value); if (t !== el.value) el.value = t; }

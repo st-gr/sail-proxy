@@ -2,7 +2,8 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
-jest.mock('@libs/logger', () => ({ getDefaultLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), trace: jest.fn() }) }));
+const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), trace: jest.fn() };
+jest.mock('@libs/logger', () => ({ getDefaultLogger: () => mockLog }));
 
 const CATALOGUE: Record<string, any> = {
   'gemini-3.1-flash-image': { id: 'gemini-3.1-flash-image', model: 'gemini-3.1-flash-image', owned_by: 'Google' },
@@ -155,6 +156,22 @@ describe('POST /openai/v1/images/generations', () => {
     expect(r.status).toBe(400);
     expect(r.body.error).toMatchObject({ type: 'invalid_request_error', param: 'response_format' });
     expect(posted).toHaveLength(0);
+  });
+  it('a refused request leaves its reason in the log, without the prompt: some clients show their user only "Bad Request"', async () => {
+    mockLog.warn.mockClear();
+    await request(app).post('/openai/v1/images/generations').send({ model: 'gemini-3.1-flash-image', prompt: 'a portrait of Jane Roe', response_format: 'url' });
+    const lines = mockLog.warn.mock.calls.map((call: any[]) => call.join(' '));
+    expect(lines.some((line) => /refused/i.test(line) && line.includes('response_format') && line.includes('use response_format b64_json'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('Jane Roe');
+  });
+  it('a size that is not offered is served with the nearest one: the answer names the size used and the log names both', async () => {
+    mockLog.info.mockClear();
+    const r = await request(app).post('/openai/v1/images/generations').send({ model: 'gemini-3.1-flash-image', prompt: 'a red circle', size: '512x512' });
+    expect(r.status).toBe(200);
+    expect(posted[0].body.generationConfig.imageConfig).toEqual({ aspectRatio: '1:1', imageSize: '1K' });
+    expect(r.body.size).toBe('1024x1024');
+    const lines = mockLog.info.mock.calls.map((call: any[]) => call.join(' '));
+    expect(lines.some((line) => line.includes('512x512') && line.includes('1024x1024'))).toBe(true);
   });
 });
 

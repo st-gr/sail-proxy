@@ -1,6 +1,7 @@
 /**
- * How many hosted web searches one request may perform before the gateway stops
- * continuing the turn.
+ * How many hosted web searches one request may perform. A search asked for beyond that is
+ * not run; the model is asked once more, without the tool, to answer from what it has, and
+ * the turn ends there.
  *
  * Each search costs a Perplexity call plus a full deployment round trip, so this is a
  * cost control as well as the continuation loop's termination guarantee — which is why

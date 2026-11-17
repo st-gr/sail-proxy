@@ -28,7 +28,7 @@ The pseudonymization plugin intercepts all LLM API requests at the gateway level
 - PII is detected and replaced **before** the request leaves the gateway
 - The LLM provider receives only pseudonymized tokens (e.g., `MASKED_PERSON_1`)
 - The gateway's payload logging provides an auditable evidence chain per request
-- Activation is caller-controlled (explicit `masking` field or in-message triggerword) or operator-forced per model/endpoint via `api_config.json` — see §6
+- Activation is caller-controlled (explicit `masking` field or in-message triggerword) or operator-forced per model/endpoint via `api_config.json` while the global switch `observability.pseudonymization.enabled` is `true` (it ships `false`) — see §6
 - Performance overhead is negligible (~0.12ms per message)
 
 ---
@@ -342,10 +342,10 @@ Allows specifying entity types, replacement strategies, allow-lists, and custom 
 Include `<sail-proxy:pseudonymization:on>` or `<sail-proxy:anonymization:on>` in any message. The triggerword is stripped before processing — it never reaches the LLM. Activates masking with the plugin's default category set enabled (see §6); `profile-org`, `profile-location`, and `profile-ip-address` are opt-in and stay off unless an operator enables them in `api_config.json`.
 
 **3. Per-model force flag (operator-controlled):**
-`api_config.json` → `models.overrides[<id>].pseudonymization.enabled: true`. Activates masking on every request to that model regardless of caller.
+`api_config.json` → `models.overrides[<id>].pseudonymization.enabled: true`. Activates masking on every request to that model regardless of caller, while the global switch `observability.pseudonymization.enabled` is boolean `true`; with it off or absent the flag is paused.
 
 **4. Per-endpoint force flag (operator-controlled):**
-`api_config.json` → `hooks.defaults.<endpoint>.pseudonymization.enabled: true`. Activates masking on every request to that endpoint regardless of model or caller. Per-model takes precedence when both are set.
+`api_config.json` → `hooks.defaults.<endpoint>.pseudonymization.enabled: true`. Activates masking on every request to that endpoint regardless of model or caller. Per-model takes precedence when both are set. The same global-switch condition applies. Because the switch ships `false`, enforcement is opt-in per installation, and switching it off removes fail-closed enforcement for every endpoint at once; methods 1 and 2 are unaffected.
 
 All four methods feed into the same masking pipeline. Operator-controlled methods (3, 4) cannot be overridden by adversarial prompt content — only by operator-gated bypass (see below).
 
@@ -387,7 +387,7 @@ Benchmarked on a 190-character message containing 6 entity types (500 iterations
 - Pseudonymization overhead: ~0.12 ms
 - **Percentage overhead: 0.004%–0.024%**
 
-The plugin adds zero perceptible latency either way. The near-zero-cost no-op path applies only when none of the four activation methods (see §6) fire for a request; on force-enabled endpoints — `anthropic`, `openai`, and `aws-bedrock` by default — every request instead runs full detection at the ~0.12 ms measured above.
+The plugin adds zero perceptible latency either way. The near-zero-cost no-op path applies only when none of the four activation methods (see §6) fire for a request; on force-enabled endpoints — `anthropic`, `openai`, `aws-bedrock` and `google` once the global switch is on — every request instead runs full detection at the ~0.12 ms measured above.
 
 ---
 
@@ -422,7 +422,7 @@ The plugin adds zero perceptible latency either way. The near-zero-cost no-op pa
 
 ### Configuration Security
 - The plugin activates via any of four methods (see §6): an explicit `masking` field, an in-message triggerword, or an operator-set per-model/per-endpoint force flag in `api_config.json`
-- PII detection also occurs with no client field at all on force-enabled models/endpoints — e.g., this gateway force-enables pseudonymization on the `anthropic`, `openai`, and `aws-bedrock` endpoints today
+- PII detection also occurs with no client field at all on force-enabled models/endpoints — e.g., the shipped configuration sets the force flag on the `anthropic`, `openai`, `aws-bedrock` and `google` endpoints, which take effect once an administrator switches the global switch on
 - Allow-lists and entity type selection are per-request and client-controlled only on the explicit `masking` field path; on the triggerword and force-config paths, entity type selection uses the operator-configured default category set and allow-lists are unavailable
 - Custom regex patterns are per-request (not persisted)
 
@@ -454,7 +454,7 @@ Exercises the full gateway pipeline end-to-end:
 2. Allow-list preservation
 3. Custom regex detection
 4. Anonymization mode (irreversible)
-5. Pass-through config: `masking_info` is absent from the response when no `masking` field is given — this endpoint is force-enabled in the shipped `api_config.json`, so masking still runs; the test verifies the audit field's default-off behavior, not that masking was skipped
+5. Pass-through config: `masking_info` is absent from the response when no `masking` field is given — this endpoint's force flag is set in the shipped `api_config.json`, so masking still runs once the global switch is on; the test verifies the audit field's default-off behavior, not that masking was skipped
 6. Triggerword activation (pseudonymization)
 7. Triggerword activation (anonymization)
 

@@ -102,8 +102,9 @@ function unmaskStrings(value: any, unmask: (s: string) => string): any {
 }
 
 /**
- * Unmask a Converse (or Nova invoke) response in place: `output.message.content[]` text,
- * tool-call inputs and reasoning text.
+ * Unmask a Converse (or Nova invoke) response in place: `output.message.content[]` text and
+ * tool-call inputs. Reasoning text is signed by the model and restored with its restore record
+ * (pluginSupport/pseudonymization/thinkingRoundTrip.ts), before this runs.
  */
 export function unmaskConverseOutput(response: any, unmask: (s: string) => string): void {
   const content = response?.output?.message?.content;
@@ -112,7 +113,5 @@ export function unmaskConverseOutput(response: any, unmask: (s: string) => strin
     if (!block || typeof block !== 'object') continue;
     if (typeof block.text === 'string') block.text = unmask(block.text);
     if (block.toolUse && block.toolUse.input !== undefined) block.toolUse.input = unmaskStrings(block.toolUse.input, unmask);
-    const reasoning = block.reasoningContent?.reasoningText;
-    if (reasoning && typeof reasoning.text === 'string') reasoning.text = unmask(reasoning.text);
   }
 }

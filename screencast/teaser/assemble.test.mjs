@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSong, musicFilter, textWindows, layerKey } from './assemble.mjs';
+import { checkSong, musicFilter, textWindows, layerKey, deliveryArgs, TO_BT709 } from './assemble.mjs';
 
 test('refuses a song of the wrong length', () => {
   assert.throws(() => checkSong(100), /105\.6 s/);
@@ -25,4 +25,16 @@ test('every text layer gets its own file name', () => {
   const a = layerKey({ kind: 'text', input: { lines: ['One gateway. Every tool.'], style: 'title' } });
   const b = layerKey({ kind: 'text', input: { lines: ['Open source. Community-built.'], style: 'title' } });
   assert.notEqual(a, b);
+});
+
+// The upload file plays everywhere and loses as little as possible on top of the 320 kb/s MP3: x264 High at a low
+// CRF, BT.709-tagged yuv420p, a keyframe every half second, AAC-LC 48 kHz 384 kb/s, moov atom first.
+test('the delivery encode is tagged H.264 High with 48 kHz AAC at 384 kb/s', () => {
+  const s = deliveryArgs().join(' ');
+  for (const p of ['-c:v libx264', '-profile:v high', '-crf 16', '-pix_fmt yuv420p', '-g 15', '-color_primaries bt709', '-color_trc bt709', '-colorspace bt709',
+    '-c:a aac', '-b:a 384k', '-ar 48000', '-movflags +faststart']) assert.ok(s.includes(p), `${p} missing: ${s}`);
+});
+
+test('the picture is converted to BT.709 and its frames carry the tags', () => {
+  for (const p of ['out_color_matrix=bt709', 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709']) assert.ok(TO_BT709.includes(p), TO_BT709);
 });

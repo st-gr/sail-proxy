@@ -9,10 +9,12 @@ import modelService from '../services/modelService';
 import { executeBeforePlugins, executeAfterPlugins } from '../services/pluginExecutor';
 import { PSEUDONYMIZATION_HOOK_MISSING_CODE, recordRouteEndpoint, refuseIfForcedWithoutPlugin } from '../pluginSupport/pseudonymization/forcedRun';
 import { PSEUDONYMIZATION_FAILED_CODE } from '../pluginSupport/pseudonymization/failClosed';
+import { restoreThinkingBlocks } from '../pluginSupport/pseudonymization/thinkingRoundTrip';
 import { getDefaultLogger } from '@libs/logger';
 const logger = getDefaultLogger();
 import { createUsageMetrics, emitUsageEvent, updateTokenCounts } from '../utils/usageTracker';
 import { isPayloadLoggingEnabled } from '../utils/payloadLogger';
+import { isRawCaptured } from '../services/rawCapture';
 import { enforceEntitlement } from '../utils/modelEntitlement';
 import { resolveExternalTarget } from '../upstreams/externalTarget';
 import { recordInvokedTools, bedrockAdapter, tapStreamedTools } from '../toolGovernance';
@@ -114,8 +116,8 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
   // whether payload logging is enabled. So the id passed to the service below
   // must stay gated on payloadLoggingActive, or every Bedrock streaming
   // response gets buffered in memory even with logging off (the production
-  // default).
-  const payloadLoggingActive = process.env.DEBUG === 'true' || isPayloadLoggingEnabled();
+  // default). A request in a raw capture session is the exception: its stages are collected.
+  const payloadLoggingActive = process.env.DEBUG === 'true' || isPayloadLoggingEnabled() || isRawCaptured(req.debugRequestId);
   const debugRequestId = req.debugRequestId || uuidv4();
   req.debugRequestId = debugRequestId;
   logger.info('AwsBedrockController', `Processing request for model: ${req.params.modelId}, subpath: ${req.params.subpath}, Debug ID: ${debugRequestId}`);
@@ -203,6 +205,15 @@ export const handleBedrockRequest = async (req: BedrockRequest, res: Response, _
     // Get any hook configuration for this model+subpath
     (req as any).__endpoint = 'aws-bedrock';
     const hookConfig = configService.getHookConfig(substitutedModelName, subpath, 'aws-bedrock');
+
+    // Thinking the client returns carries the gateway's restore record on its signature
+    // (thinkingRoundTrip.ts). Stripped and applied here, for every request: the upstream must get
+    // the signature and the text it produced, with masking on or off, with hooks or without.
+    const thinking = restoreThinkingBlocks(req.body);
+    (req as any).__thinkingExact = thinking.exact;
+    if (thinking.restored + thinking.unreadable > 0) {
+      logger.info('AwsBedrockController', `Thinking round trip: ${thinking.restored} block(s) rebuilt from their record, ${thinking.unreadable} without a usable record`);
+    }
 
     // Fail closed: with pseudonymization forced and no hook chain that runs the plugin, the
     // request would reach the deployment unmasked.

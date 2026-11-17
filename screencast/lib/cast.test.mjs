@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scrub, scrubEvents, coalesce, serialize, castText, castSeconds, keys, resolveSend, castHeader, verify, unwrapped, secretsEnv, maskRedraw, recordCast, blankEvents, MASK as MASK_TEXT } from './cast.mjs';
+import { scrub, scrubEvents, coalesce, serialize, castText, castSeconds, keys, resolveSend, castHeader, verify, unwrapped, secretsEnv, maskRedraw, recordCast, blankEvents, fastForward, MASK as MASK_TEXT } from './cast.mjs';
 
 const KEY = 'sk-' + 'live' + '0123456789abcdefghijklmn';
 const LONG = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo' + 'wMTIzNDU2Nzg5YWJjZGVmZ2hpams=';
@@ -287,4 +287,14 @@ test('unwrapped pads a move to a column with spaces, so prose positioned word by
   assert.ok(verify([[0, `x ${'a'.repeat(44)} y`]], {}, [], 110).includes('long token'));
   // A real token positioned at a column is still refused.
   assert.ok(verify([[0, `key\x1b[10G${LONG}`]], {}, [], 110).includes('long token'));
+});
+
+test('fastForward divides the gaps between the markers and pulls the rest forward', () => {
+  const ev = [[0, '$ '], [1, 'Pulling gateway'], [5, '…'], [9, 'Pulled'], [10, '$ ']];
+  assert.deepEqual(fastForward(ev, { from: 'Pulling', to: 'Pulled', factor: 4 }),
+    [[0, '$ '], [1, 'Pulling gateway'], [2, '…'], [3, 'Pulled'], [4, '$ ']]);
+});
+
+test('fastForward throws when a marker is missing', () => {
+  assert.throws(() => fastForward([[0, 'a']], { from: 'Pulling', to: 'Pulled', factor: 4 }), /marker "Pulling" never appeared/);
 });

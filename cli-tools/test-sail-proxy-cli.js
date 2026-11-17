@@ -245,6 +245,13 @@ try {
   }
   log('Inference returned 200 ✓');
 
+  log('sail-proxy logs gateway --tail 5 shows timestamped lines');
+  const logsOut = run(cliBin, ['logs', 'gateway', '--tail', '5'], { env: cliEnv });
+  if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/.test(logsOut.stdout)) {
+    throw new Error(`sail-proxy logs shows no timestamped line:\n${logsOut.stdout}`);
+  }
+  log('sail-proxy logs shows the gateway console lines ✓');
+
   log('Plugin: drop the sample zip into ~/.sail-proxy/plugins, restart, the rule is in the log');
   const pluginsSourceDir = path.join(cfgDir, 'plugins');
   const sampleZip = path.join(pluginsSourceDir, 'samplePlugin-1.0.0.zip');

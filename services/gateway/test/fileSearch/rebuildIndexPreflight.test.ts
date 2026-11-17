@@ -10,19 +10,29 @@ let indexDefinition: string | null = null;
 /** The preflight statement that fails, its SQLSTATE and on which of its runs (1: the first preflight). */
 let failure: { match: string; code: string; on: number } | null = null;
 let runs = 0;
+/** The options every Client of a run was created with. */
+const clients: any[] = [];
+/** The build's own connection fails its DROP INDEX once, as a lost connection does. */
+let dropFailsOnce = false;
 jest.mock('pg', () => ({
   __esModule: true,
   Client: class {
+    constructor(options: any) { clients.push(options); }
     async connect(): Promise<void> {}
     async end(): Promise<void> {}
     escapeIdentifier(s: string): string { return `"${s}"`; }
     async query(sql: string): Promise<{ rows: any[] }> {
       sent.push(sql);
+      if (dropFailsOnce && sql.startsWith('DROP INDEX CONCURRENTLY')) {
+        dropFailsOnce = false;
+        throw new Error('Connection terminated unexpectedly');
+      }
       if (failure && sql.includes(failure.match)) {
         runs += 1;
         if (runs === failure.on) throw Object.assign(new Error('the server message'), { code: failure.code });
       }
       if (sql.includes('pg_try_advisory_lock')) return { rows: [{ ok: true }] };
+      if (sql.includes('pg_backend_pid')) return { rows: [{ pid: 4711 }] };
       if (sql.includes('pg_extension')) return { rows: [{ extversion: '0.8.0' }] };
       if (sql.includes('pg_has_role')) return { rows: [{ schema: 'public', owner: true, role: 'owner', dimensions: 4 }] };
       if (sql.includes('reltuples')) return { rows: [{ n: String(reltuples) }] };
@@ -54,6 +64,9 @@ describe('rebuild-index preflight', () => {
     indexDefinition = null;
     failure = null;
     runs = 0;
+    clients.length = 0;
+    dropFailsOnce = false;
+    delete process.env.FILE_SEARCH_DATABASE_CA;
   });
 
   it('--dry-run bounds its own statements: the session timeouts come first', async () => {
@@ -133,5 +146,46 @@ describe('rebuild-index preflight', () => {
     failure = { match: 'pg_get_indexdef', code: '55P03', on: 3 }; // the first preflight reads two indexes
     await expect(run([])).rejects.toThrow(/another session holds a lock on the chunk table/);
     expect(sent.some((s) => s.includes('pg_advisory_unlock'))).toBe(true);
+  });
+});
+
+describe('rebuild-index connections to a database with a CA', () => {
+  // An external database: the DSN says sslmode=no-verify (encrypt), and FILE_SEARCH_DATABASE_CA holds
+  // the binding's CA. Every file-search connection then checks the server certificate against it.
+  const DSN = 'postgresql://owner:pw@db.example.org:5432/app?sslmode=no-verify';
+
+  beforeEach(() => {
+    sent.length = 0;
+    reltuples = 30;
+    indexDefinition = null;
+    failure = null;
+    runs = 0;
+    clients.length = 0;
+    dropFailsOnce = false;
+    delete process.env.FILE_SEARCH_DATABASE_CA;
+  });
+
+  it('the run, its progress monitor and the connection that drops a failed build all verify the certificate', async () => {
+    process.env.FILE_SEARCH_DATABASE_CA = 'the binding CA';
+    failure = { match: 'CREATE INDEX CONCURRENTLY', code: 'XX000', on: 1 };
+    dropFailsOnce = true;
+    try {
+      await expect(rebuildVectorIndex(DSN, parseRebuildIndexArgs([]), { write: () => {} })).rejects.toThrow(RebuildIndexError);
+    } finally {
+      delete process.env.FILE_SEARCH_DATABASE_CA;
+    }
+
+    expect(clients.map((c) => c.application_name)).toEqual([
+      'file-search-rebuild-index', 'file-search-rebuild-index-progress', 'file-search-rebuild-index',
+    ]);
+    for (const options of clients) {
+      expect(options.connectionString).toBe('postgresql://owner:pw@db.example.org:5432/app');
+      expect(options.ssl).toMatchObject({ ca: 'the binding CA', rejectUnauthorized: true });
+    }
+  });
+
+  it('without a CA the connection string is used as it is', async () => {
+    await expect(rebuildVectorIndex(DSN, parseRebuildIndexArgs(['--dry-run']), { write: () => {} })).resolves.toBe('dry-run');
+    expect(clients).toEqual([{ connectionString: DSN, application_name: 'file-search-rebuild-index' }]);
   });
 });

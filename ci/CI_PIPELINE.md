@@ -150,6 +150,8 @@ document said while the code had already moved on.
     same two conditions.
   - `SKIP_DOCKER_BUILD=true` (or `1`) skips Phases 7–9 without looking at the changes; `FORCE_DOCKER_BUILD`
     wins. The GitHub workflow sets it unless a manual run ticks `build_images`; a local run does not set it.
+    A ticked `build_images` also sets `FORCE_DOCKER_BUILD`: a manual run has no push base, so the change
+    check would compare HEAD~1 only and skip on a commit that touched no image file.
 
 ### Phase 8: Docker Container Runtime Validation
 - 🐳 Starts postgres and the **admin** container, and checks schema deployment

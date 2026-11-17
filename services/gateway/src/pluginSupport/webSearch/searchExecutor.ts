@@ -154,7 +154,7 @@ async function getPerplexityDeploymentId(pluginLogger: Logger): Promise<string |
 export async function executeWebSearch(query: string, pluginLogger: Logger): Promise<SearchResult[]> {
   const systemPrompt = loadSystemPrompt();
 
-  pluginLogger.info(`Executing web search via Perplexity sonar-pro for query: "${query}"`);
+  pluginLogger.info('Executing web search via Perplexity sonar-pro', { query });
 
   try {
     const sapConfig = configService.getSAPAICoreConfig();

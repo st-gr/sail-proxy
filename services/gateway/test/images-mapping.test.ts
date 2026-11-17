@@ -28,6 +28,28 @@ describe('mapImageRequest — generations', () => {
   ])('maps size %s', (size, imageConfig) => {
     expect(ok({ model: 'm', prompt: 'p', size }).geminiBody.generationConfig.imageConfig).toEqual(imageConfig);
   });
+  // Open WebUI's default image size is 512x512, and its error handling hides the reason of a 400
+  // from the user. The image model takes an aspect ratio, so any other WIDTHxHEIGHT is served
+  // with the nearest offered one, and the answer names the size that was used.
+  it.each([
+    ['512x512', '1024x1024', { aspectRatio: '1:1', imageSize: '1K' }],
+    ['256x256', '1024x1024', { aspectRatio: '1:1', imageSize: '1K' }],
+    ['1200x1000', '1024x1024', { aspectRatio: '1:1', imageSize: '1K' }],
+    ['1792x1024', '1536x1024', { aspectRatio: '3:2', imageSize: '1K' }],
+    ['1280x720', '1536x1024', { aspectRatio: '3:2', imageSize: '1K' }],
+    ['1024x1792', '1024x1536', { aspectRatio: '2:3', imageSize: '1K' }],
+    ['720X1280', '1024x1536', { aspectRatio: '2:3', imageSize: '1K' }],
+  ])('size %s is served as %s, the nearest offered aspect ratio', (size, used, imageConfig) => {
+    const v = ok({ model: 'm', prompt: 'p', size });
+    expect(v.geminiBody.generationConfig.imageConfig).toEqual(imageConfig);
+    expect(v.size).toBe(used);
+    expect(v.requestedSize).toBe(size);
+  });
+  it('an offered size is not reported as replaced, and quality still raises the resolution of a replaced one', () => {
+    expect(ok({ model: 'm', prompt: 'p', size: '1536x1024' }).requestedSize).toBeUndefined();
+    expect(ok({ model: 'm', prompt: 'p' }).requestedSize).toBeUndefined();
+    expect(ok({ model: 'm', prompt: 'p', size: '512x512', quality: 'high' }).geminiBody.generationConfig.imageConfig).toEqual({ aspectRatio: '1:1', imageSize: '2K' });
+  });
   it('size auto and quality standard/low/medium/xhigh/auto add nothing', () => {
     expect(ok({ model: 'm', prompt: 'p', size: 'auto', quality: 'standard' }).geminiBody.generationConfig.imageConfig).toBeUndefined();
     expect(ok({ model: 'm', prompt: 'p', quality: 'auto' }).geminiBody.generationConfig.imageConfig).toBeUndefined();
@@ -46,8 +68,10 @@ describe('mapImageRequest — generations', () => {
     [{ model: 'm', prompt: 'p', n: 0 }, 'n'],
     [{ model: 'm', prompt: 'p', n: 5 }, 'n'],
     [{ model: 'm', prompt: 'p', n: 1.5 }, 'n'],
-    [{ model: 'm', prompt: 'p', size: '256x256' }, 'size'],
-    [{ model: 'm', prompt: 'p', size: '1792x1024' }, 'size'],
+    [{ model: 'm', prompt: 'p', size: 'large' }, 'size'],
+    [{ model: 'm', prompt: 'p', size: '0x512' }, 'size'],
+    [{ model: 'm', prompt: 'p', size: '512x' }, 'size'],
+    [{ model: 'm', prompt: 'p', size: 512 }, 'size'],
     [{ model: 'm', prompt: 'p', quality: 'hd' }, 'quality'],
     [{ model: 'm', prompt: 'p', response_format: 'url' }, 'response_format'],
     [{ model: 'm', prompt: 'p', output_format: 'jpeg' }, 'output_format'],

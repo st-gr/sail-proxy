@@ -1,14 +1,14 @@
 {
   "name": "admin",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "SAP AI Core LLM Gateway Admin Service with SAP CAP",
   "private": true,
   "main": "dist/index.js",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.{js,json}\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && node ../../cli-tools/copy-api-docs.js dist/api-docs ../../openapi/gateway.yaml ../../openapi/admin-odata.json ../../openapi/admin-rest.yaml ../../openapi/ollama.yaml && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../tool-policies-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../teams-app && pnpm run build && cd ../connections-app && pnpm run build && cd ../grounding-app && pnpm run build && cd ../plugins-app && pnpm run build && cd ../..",
+    "build": "cds build && tsc -p . && cpy \"src/srv/*.cds\" dist/srv/ && cpy \"src/srv/*.cds\" dist/services/admin/src/srv/ && cpy \"dist/services/admin/src/srv/*.js\" dist/srv/ && cpy \"dist/services/admin/src/services/*.{js,json}\" dist/services/ && cpy \"src/db/**\" dist/db/ && cpy \"src/schemas/**\" dist/schemas/ && cpy \"gen/src/srv/src/srv/**/*.{js,json,xml}\" dist/srv/ && cpy \"dist/services/admin/src/index.js\" dist/ && node ../../cli-tools/copy-api-docs.js dist/api-docs ../../openapi/gateway.yaml ../../openapi/admin-odata.json ../../openapi/admin-rest.yaml ../../openapi/ollama.yaml && cd app/api-keys-app && pnpm run build && cd ../aws-credentials-app && pnpm run build && cd ../usage-analytics-app && pnpm run build && cd ../security-notifications-app && pnpm run build && cd ../tool-policies-app && pnpm run build && cd ../config-app && pnpm run build && cd ../model-library-app && pnpm run build && cd ../sap-rates-app && pnpm run build && cd ../users-app && pnpm run build && cd ../teams-app && pnpm run build && cd ../connections-app && pnpm run build && cd ../grounding-app && pnpm run build && cd ../plugins-app && pnpm run build && cd ../logs-app && pnpm run build && cd ../..",
     "start": "node server.js",
     "start:cds": "cds-serve",
     "start:docker": "DEPLOY_TARGET=docker node server.js",
@@ -341,6 +341,12 @@
           "configFile": "ui5.yaml",
           "mountPath": "/plugins",
           "versionOverride": "1.136.22"
+        },
+        "logs-app": {
+          "path": "app/logs-app",
+          "configFile": "ui5.yaml",
+          "mountPath": "/logs",
+          "versionOverride": "1.136.22"
         }
       }
     }
@@ -358,6 +364,7 @@
     "app/teams-app",
     "app/connections-app",
     "app/grounding-app",
-    "app/plugins-app"
+    "app/plugins-app",
+    "app/logs-app"
   ]
 }

@@ -278,6 +278,43 @@ service AdminService {
   
   entity AwsCredentialRotations as projection on admin.AwsCredentialRotations;
 
+  // The gateway's log (services/gatewayLogIngest.ts): read-only, admin only. A $search finds the
+  // whole text as typed, literally and case-insensitively, in these three columns: a before-READ
+  // handler replaces CAP's search (first word only) by srv/gateway-log-search.ts, which the export
+  // (srv/admin-service-logs.ts) uses too. One read may return up to 2,000 rows (the Logs page's view).
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  @cds.search: { message, component, requestId }
+  @cds.query.limit: { max: 2000 }
+  entity GatewayLog as projection on admin.GatewayLogEntries;
+
+  // Payload traces (services/payloadTraceIngest.ts): read-only, admin only. The sealed prompt is not
+  // part of the projection; a trace that was not masked is read through openPayloadTrace or its
+  // download, which write the audit event. A $search finds the whole text as typed, literally and
+  // case-insensitively, in these columns (srv/payload-trace-search.ts replaces CAP's search).
+  // promptSealed says whether a sealed prompt is stored: a raw-capture trace recorded while payload
+  // capture was off carries the facts only, so the cockpit offers no "Show content" for it.
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  @cds.search: { prompt, answer, requestId, model, endpoint, keyName, userEmail }
+  @cds.query.limit: { max: 2000 }
+  entity PayloadTraces as projection on admin.PayloadTraces {
+    *,
+    case when sealedPrompt is null then false else true end as promptSealed : Boolean
+  } excluding { sealedPrompt };
+
+  // The raw traces without their sealed stages: names, sizes and cut marks per request. A stage is
+  // read through openRawStage or the download (srv/admin-service-traces.ts), which audit it.
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity RawTraceIndex as projection on admin.RawTraces excluding { stages };
+
+  // Raw capture sessions, running and past: who started each, why, for which keys and addresses,
+  // and when and by whom it ended. Started and stopped through startRawCapture and stopRawCapture.
+  @readonly
+  @(restrict: [{ grant: ['READ'], to: 'admin' }])
+  entity RawCaptureSessions as projection on admin.RawCaptureSessions;
+
   // ========================================
   // Security Notifications
   // ========================================
@@ -662,7 +699,28 @@ service AdminService {
     unpricedRequests: Integer;
   };
 
+  // SAP Capacity-Unit billing for the requested period. One row per credential (API key or AWS
+  // credential) and currency: the token and capacity-unit figures are currency-neutral, the cost is
+  // never summed across currencies; rows without a price yet have currency null. Connection
+  // (external provider) rows carry no SAP figures and are left out.
+  type SapBillingCredentialItem : {
+    credentialType: String(13);   // 'apiKey' | 'awsCredential'
+    credentialId: String(36);
+    name: String;
+    sapCostCurrency: String(3);
+    totalRequests: Integer;
+    totalImageInputTokens: Integer64; totalImageOutputTokens: Integer64;
+    totalAudioInputTokens: Integer64; totalAudioOutputTokens: Integer64;
+    totalGenAiTokens: Decimal(16,4); totalCapacityUnits: Decimal(16,6); totalSapCost: Decimal(14,6);
+  };
+  // Priced rows per team and currency over both usage tables; platform admins only (else empty).
+  type SapBillingTeamItem : {
+    teamId: UUID; teamName: String; sapCostCurrency: String(3);
+    totalRequests: Integer; totalGenAiTokens: Decimal(16,4); totalCapacityUnits: Decimal(16,6); totalSapCost: Decimal(14,6);
+  };
+
   type UsageStatisticsResult : {
+    sapBilling: { credentials: array of SapBillingCredentialItem; teams: array of SapBillingTeamItem; };
     apiKeyUsage: array of ApiKeyUsageItem;
     awsCredentialUsage: array of AwsCredentialUsageItem;
     providerUsage: array of ProviderUsageItem;
@@ -851,6 +909,14 @@ service AdminService {
     warnings: array of String;
   };
   
+  // The api_config.json the installation ships, for the cockpit's "Compare with defaults".
+  // available is false when the file cannot be read; configData is then null.
+  @(requires: 'admin')
+  function getShippedConfiguration() returns {
+    available: Boolean;
+    configData: String;  // JSON configuration
+  };
+
   // Gateway service endpoint - simplified
   @(restrict: [
     { grant: ['EXECUTE'], to: 'gateway' },
@@ -904,6 +970,118 @@ service AdminService {
       };
     };
     error: String;
+  };
+
+  // Logging switches and levels outside the configuration versions (services/loggingSettings.ts,
+  // srv/admin-service-logging-settings.ts): laid over the active configuration whenever it is handed
+  // to the gateway; the configuration versions never change because of them. Null means "as the
+  // configuration says"; entries that have run out are left out. The configuration* fields are the
+  // active configuration's own values; environmentFixed is what the last gateway start reported
+  // (environmentReported false: no gateway has reported yet). warning is set when the settings were
+  // saved but the gateway could not be told now.
+  type LoggingSettingsResult : {
+    logStorageEnabled: Boolean;
+    payloadCaptureEnabled: Boolean;
+    defaultLevel: String(5);
+    defaultLevelUntil: Timestamp;
+    componentLevels: array of { component: String(80); level: String(5); until: Timestamp; };
+    configurationLogStorageEnabled: Boolean;
+    configurationPayloadCaptureEnabled: Boolean;
+    // The admin's own seal key (@libs/trace-seal): strong, missing, too-short or publicly-known.
+    traceKeyStatus: String;
+    configurationDefaultLevel: String(5);
+    configurationComponentLevels: array of { component: String(80); level: String(5); };
+    // The lowest level the Logs page stores (observability.gateway_log.min_level, INFO when not set).
+    configurationStoredLevel: String(5);
+    environmentReported: Boolean;
+    environmentReportedAt: Timestamp;
+    environmentFixed: array of { variable: String(40); value: String(100); };
+    // Whether the gateway writes payload files (PAYLOAD_LOGGING_ENABLED, else payload_logging_enabled).
+    payloadFileLoggingEnabled: Boolean;
+    warning: String;
+  };
+
+  @(requires: 'admin')
+  function getLoggingSettings() returns LoggingSettingsResult;
+
+  // The component names of the stored gateway log, each once, sorted without regard to case: the
+  // Switches and levels tab suggests them for a component level (srv/admin-service-logging-settings.ts).
+  @(requires: 'admin')
+  function gatewayLogComponents() returns array of String(80);
+
+  // Replaces the settings (no merge). componentLevels: JSON { "<component>": { "level": "DEBUG", "minutes": 30 } },
+  // minutes optional. Levels ERROR, WARN, INFO, DEBUG, TRACE; minutes 1 to 1440.
+  @(requires: 'admin')
+  action setLoggingSettings(
+    logStorageEnabled: Boolean,
+    payloadCaptureEnabled: Boolean,
+    defaultLevel: String,
+    defaultLevelMinutes: Integer,
+    componentLevels: LargeString
+  ) returns LoggingSettingsResult;
+
+  @(requires: 'admin')
+  action resetLoggingSettings() returns LoggingSettingsResult;
+
+  // Empties what is stored of the gateway's log (srv/admin-service-log-delete.ts). what: `log`, the
+  // gateway log; `traces`, the payload traces and raw traces; `all`, all of them; any other value is
+  // refused with 400 and deletes nothing. logEntries counts the log entries removed, traces the requests
+  // removed (a raw-captured request counts once), deleted their sum; one audit event
+  // `logging.stored.delete` is written per call that deleted.
+  @(requires: 'admin')
+  action deleteStoredLogs(what: String) returns { deleted: Integer; logEntries: Integer; traces: Integer; };
+
+  // Opens one payload trace (srv/admin-service-traces.ts): a masked trace's prompt and answer as
+  // stored; for a trace that was not masked its sealed prompt, opened, with the audit event
+  // `payload.trace.open`. problem: `keys-differ` (sealed with another METADATA_ENCRYPTION_KEY) or
+  // `malformed`; then prompt is null and the event's outcome is failure. 404 for an unknown ID.
+  @(requires: 'admin')
+  function openPayloadTrace(ID: String) returns {
+    masked  : Boolean;
+    prompt  : LargeString;
+    answer  : LargeString;
+    problem : String;
+  };
+
+  // Opens one stage of a raw trace, with the audit event `raw.trace.open` (actor, request id, stage
+  // name; never the content). content is the stage's JSON text, its leading bytes when cut is true.
+  // problem as for openPayloadTrace. 404 for an unknown ID or a stage the trace does not have.
+  @(requires: 'admin')
+  function openRawStage(ID: String, stage: String) returns {
+    stage   : String;
+    content : LargeString;
+    cut     : Boolean;
+    problem : String;
+  };
+
+  // Starts a raw capture session (srv/admin-service-raw-capture.ts): the requests of the API keys
+  // (ApiKeys or AwsCredentials IDs) and of every credential the e-mail addresses own now are captured
+  // raw for 15, 60 or 240 minutes (at most payload_capture.raw.max_duration_minutes); a credential
+  // created later is not included. 400 without any key or address, for another duration, an empty
+  // reason, an unknown key or an address that owns no credential; 503 when Valkey cannot be reached.
+  // credentialCount is the number of credentials; keyWarning is set when METADATA_ENCRYPTION_KEY is
+  // missing, short or publicly known. Audit event `raw.capture.start`.
+  @(requires: 'admin')
+  action startRawCapture(apiKeyIds: array of String, emails: array of String, minutes: Integer, reason: String) returns {
+    ID              : String;
+    endsAt          : Timestamp;
+    credentialCount : Integer;
+    keyWarning      : String;
+  };
+
+  // Stops a running session; 404 for an unknown ID, 409 when it has ended, 503 without Valkey.
+  // Audit event `raw.capture.stop`.
+  @(requires: 'admin')
+  action stopRawCapture(ID: String);
+
+  // The sessions running now, earliest end first (the cockpit's bar).
+  @(requires: 'admin')
+  function activeRawCapture() returns array of {
+    ID           : String;
+    endsAt       : Timestamp;
+    startedBy    : String;
+    keyCount     : Integer;
+    addressCount : Integer;
   };
 
   @(requires: 'admin')

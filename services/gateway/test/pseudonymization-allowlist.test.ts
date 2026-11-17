@@ -130,7 +130,8 @@ describe('the allow-list decides what is never masked', () => {
 
     // ...and the bad one was reported, by name, exactly once.
     const naming = logger.warn.mock.calls
-      .map((args: any[]) => args.join(' '))
+      // the pattern travels in the metadata (console only), not in the message
+      .map((args: any[]) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
       .filter((line: string) => line.includes(broken));
     expect(naming).toHaveLength(1);
     expect(naming[0]).toContain('allowlist');
@@ -138,7 +139,7 @@ describe('the allow-list decides what is never masked', () => {
     // Once per process, not once per request: a second detection over the same list is silent.
     logger.warn.mockClear();
     detectEntities(SENTENCE, cfg);
-    expect(logger.warn.mock.calls.filter((args: any[]) => args.join(' ').includes(broken))).toHaveLength(0);
+    expect(logger.warn.mock.calls.filter((args: any[]) => JSON.stringify(args).includes(JSON.stringify(broken).slice(1, -1)))).toHaveLength(0);
   });
 
   /**
@@ -156,7 +157,8 @@ describe('the allow-list decides what is never masked', () => {
     expect(masked(SENTENCE, { allowlist: { patterns: [broad] } })).toEqual([]);
 
     const naming = logger.warn.mock.calls
-      .map((args: any[]) => args.join(' '))
+      // the pattern travels in the metadata (console only), not in the message
+      .map((args: any[]) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
       .filter((line: string) => line.includes(broad));
     expect(naming).toHaveLength(1);
     expect(naming[0]).toContain('ordinary personal data');
@@ -164,7 +166,7 @@ describe('the allow-list decides what is never masked', () => {
     // Once per process, not once per request.
     logger.warn.mockClear();
     masked(SENTENCE, { allowlist: { patterns: [broad] } });
-    expect(logger.warn.mock.calls.filter((args: any[]) => args.join(' ').includes(broad))).toHaveLength(0);
+    expect(logger.warn.mock.calls.filter((args: any[]) => JSON.stringify(args).includes(JSON.stringify(broad).slice(1, -1)))).toHaveLength(0);
   });
 
   it('says nothing about a pattern that only matches machinery', () => {
@@ -232,7 +234,7 @@ describe('the allow-list layers global -> endpoint -> model by CONCATENATION', (
   };
 
   beforeEach(() => {
-    mockConfig.api_config.observability.pseudonymization = undefined;
+    mockConfig.api_config.observability.pseudonymization = { enabled: true };
     mockConfig.api_config.models.overrides = {};
     mockConfig.api_config.hooks.defaults = { anthropic: { pseudonymization: { enabled: true } } };
   });
@@ -242,12 +244,12 @@ describe('the allow-list layers global -> endpoint -> model by CONCATENATION', (
   });
 
   it('honours a global allow-list', async () => {
-    mockConfig.api_config.observability.pseudonymization = { allowlist: { terms: ['Watson Studio'] } };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, allowlist: { terms: ['Watson Studio'] } };
     expect(await maskedValues()).toEqual(['Ferreira Nakamura']);
   });
 
   it('an endpoint list EXTENDS the global one rather than replacing it', async () => {
-    mockConfig.api_config.observability.pseudonymization = { allowlist: { terms: ['Watson Studio'] } };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, allowlist: { terms: ['Watson Studio'] } };
     mockConfig.api_config.hooks.defaults = {
       anthropic: { pseudonymization: { enabled: true, allowlist: { terms: ['Ferreira Nakamura'] } } },
     };
@@ -255,7 +257,7 @@ describe('the allow-list layers global -> endpoint -> model by CONCATENATION', (
   });
 
   it('a per-model list extends both layers above it', async () => {
-    mockConfig.api_config.observability.pseudonymization = { allowlist: { terms: ['Watson Studio'] } };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, allowlist: { terms: ['Watson Studio'] } };
     mockConfig.api_config.models.overrides = {
       'claude-sonnet-4-20250514': { pseudonymization: { allowlist: { patterns: ['Ferreira \\w+'] } } },
     };
@@ -264,7 +266,7 @@ describe('the allow-list layers global -> endpoint -> model by CONCATENATION', (
 
   // The property concatenation exists for: a lower layer can only ever ADD an exemption.
   it('a lower layer cannot remove an upper layer entry', async () => {
-    mockConfig.api_config.observability.pseudonymization = { allowlist: { terms: ['Watson Studio'] } };
+    mockConfig.api_config.observability.pseudonymization = { enabled: true, allowlist: { terms: ['Watson Studio'] } };
     mockConfig.api_config.hooks.defaults = {
       anthropic: { pseudonymization: { enabled: true, allowlist: { terms: [] } } },
     };
@@ -376,7 +378,7 @@ describe('a saturated request warns once, and masks everything anyway', () => {
   };
 
   beforeEach(() => {
-    mockConfig.api_config.observability.pseudonymization = undefined;
+    mockConfig.api_config.observability.pseudonymization = { enabled: true };
     mockConfig.api_config.models.overrides = {};
   });
 
@@ -425,6 +427,7 @@ describe('a saturated request warns once, and masks everything anyway', () => {
 
   it('an allowed value is not counted, because it was never masked', async () => {
     mockConfig.api_config.observability.pseudonymization = {
+      enabled: true,
       allowlist: { patterns: ['Ana Silva0 Nakamura0'] },
     };
     const { maskedValues, report } = await run(roster(41), 40);

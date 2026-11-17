@@ -68,7 +68,7 @@ jest.mock('../src/utils/usageTracker', () => ({
 import { handleChatCompletion } from '../src/controllers/openaiController';
 import { EMAIL, mockReq, registerPlugins, run, shippedHooks } from './forcedRouteHarness';
 
-const shipped = () => ({ hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: {} });
+const shipped = () => ({ hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: { pseudonymization: { enabled: true } } });
 /** The orchestration payloads handed to sapAIService. */
 const sapPayloads = () => upstream.mock.calls.map((c: any[]) => c[1]);
 
@@ -103,12 +103,16 @@ describe('forced, Claude model on orchestration chat, block content in the last 
     expect(JSON.stringify(sapPayloads())).not.toContain(EMAIL);
   });
 
-  it('no system message: the default system prompt is used', async () => {
+  it('no system message: the default system prompt is used, followed by the pseudonymization note', async () => {
     const body = { model: 'claude-sonnet-4', messages: [{ role: 'user', content: [{ type: 'text', text: `Write to ${EMAIL}` }] }] };
     await run(handleChatCompletion, mockReq(body, '/openai/v1/chat/completions'));
 
     const [payload] = sapPayloads();
-    expect(payload.config.modules.prompt_templating.prompt.template).toEqual([{ role: 'system', content: 'You are a helpful assistant.' }]);
+    const template = payload.config.modules.prompt_templating.prompt.template;
+    expect(template).toHaveLength(1);
+    expect(template[0].role).toBe('system');
+    expect(template[0].content).toMatch(/^You are a helpful assistant\.\n\n/);
+    expect(template[0].content).toContain('copy its token EXACTLY');
     expect(JSON.stringify(sapPayloads())).not.toContain(EMAIL);
   });
 });

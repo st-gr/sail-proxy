@@ -10,6 +10,7 @@ import * as imageUtils from '../utils/imageUtils';
 import configService from '../services/configService';
 import { sanitizeUpstreamErrorObject, errorTypeForStatus } from '../utils/upstreamErrorEnvelope';
 import { deferStreamStart, DeferredStreamStart, failureFromError, isSubstantiveChunk, httpStatusOr } from '../utils/streamStart';
+import { loggableBody, upstreamErrorKind, upstreamErrorText } from '../utils/upstreamErrorLogText';
 import { deployedSiblingName } from '../utils/responsesEligibility';
 import { chatToResponsesRequest, isChatToolsRefusal, responsesToChatCompletion } from '../responses/chatBridge';
 import { relayDeployedStream } from './deployedStreamRelay';
@@ -201,6 +202,28 @@ function isOrchestrationModelRefusal(err: any): boolean {
 }
 
 /**
+ * Models whose orchestration refused a system message the gateway added ("An internal system
+ * prompt is configured for this model. Adding additional system messages is prohibited.", HTTP
+ * 400; sap-abap-1), with the time of the refusal: for an hour they get no added system message
+ * (the pseudonymization note). A system message of the client's own is never removed.
+ */
+const systemMessageRefused = new Map<string, number>();
+
+function refusesAddedSystemMessage(model: string): boolean {
+  const at = systemMessageRefused.get(model);
+  if (at === undefined) return false;
+  if (Date.now() - at < REFUSAL_MEMORY_MS) return true;
+  systemMessageRefused.delete(model);
+  return false;
+}
+
+/** Whether an upstream error is the orchestration refusing system messages for the model. */
+function isSystemMessageRefusal(err: any): boolean {
+  const failure = failureFromError(err);
+  return failure.status === 400 && /internal system prompt is configured|additional system messages is prohibited/i.test(failure.message);
+}
+
+/**
  * The model's `--deployed` twin when the request may be served by it instead, else null: a
  * deployment of it runs (deploymentUrl), the deployed chat path serves its provider (OpenAI-
  * compatible; an Anthropic twin answered "designed for embeddings" live), the caller is entitled to
@@ -321,6 +344,22 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     logger.warn('openaiController', `The orchestration refuses ${originalModelFromRequest}; serving it through its deployment ${twin}`);
     for (const field of Object.keys(req)) if (!ownFields.has(field)) delete (req as any)[field];
     req.body = { ...clientBody, model: twin };
+    await handleChatCompletion(req, res, next);
+    return true;
+  };
+
+  /**
+   * The orchestration refused the system message the gateway added (the pseudonymization note)
+   * and nothing reached the client yet: handle the request again, as the client sent it, without
+   * adding one. False for any other error, or when the system message is the client's own.
+   */
+  let systemMessageAdded = false;
+  const servedWithoutAddedSystemMessage = async (err: any): Promise<boolean> => {
+    if (!systemMessageAdded || !clientBody || res.headersSent || res.writableEnded || !isSystemMessageRefusal(err)) return false;
+    systemMessageRefused.set(originalModelFromRequest, Date.now());
+    logger.warn('openaiController', `The orchestration refuses system messages for ${originalModelFromRequest}; sending the request without the gateway's note`);
+    for (const field of Object.keys(req)) if (!ownFields.has(field)) delete (req as any)[field];
+    req.body = clientBody;
     await handleChatCompletion(req, res, next);
     return true;
   };
@@ -622,7 +661,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
       return; // Deployed model request handled
 
     } catch (error: any) {
-      logger.error('openaiController', `Error handling deployed model ${originalModelFromRequest}:`, error.response?.data || error.message);
+      logger.error('openaiController', `Error handling deployed model ${originalModelFromRequest}:`, error instanceof Error ? error : undefined, { data: loggableBody(error?.response?.data) || error?.message });
       
       // Determine provider name based on request source
       const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
@@ -720,8 +759,13 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         logger.info('openaiController', `Plugin short-circuited request for ${req.body.model}/${subPath}`);
         return; // Response already sent by plugin
       }
+      // The payload was built before the plugins ran: a system message a plugin added (the
+      // pseudonymization note) is not in it yet. A model that refuses system messages goes without.
+      if (!refusesAddedSystemMessage(originalModelFromRequest)) {
+        systemMessageAdded = adoptAddedSystemMessage(payload, req.body.messages);
+      }
     }
-    
+
     // Check if model supports streaming when stream=true is requested
     if (req.body.stream === true) {
       // First check if we should emulate streaming
@@ -915,7 +959,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           // Checked: it reaches res.status() when nothing was streamed yet.
           const errorStatus = httpStatusOr(chunk.status,
             Number.isInteger(sapErrorCode) && sapErrorCode >= 400 && sapErrorCode <= 599 ? sapErrorCode : 500);
-          logger.error('openaiController', `Error chunk received: ${errorMessage}`);
+          logger.error('openaiController', `Error chunk received: ${upstreamErrorText(errorStatus, upstreamErrorKind(sapError), errorMessage)}`, undefined, { upstreamMessage: errorMessage });
           // sapAIService resolves the stream promise after an error chunk, so remember the
           // failure for the completion handler: this request is billed as failed, not as a 200.
           if (streamErrorStatus === null) streamErrorStatus = errorStatus;
@@ -1248,6 +1292,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
           logger.error('openaiController', `Error in streaming: ${err.message}`);
           streamStart?.stop();
           if (await servedByTwin(err)) return;
+          if (await servedWithoutAddedSystemMessage(err)) return;
 
           // build a proper error payload: SAP's own message where its body carries one (not
           // axios's "Request failed with status code 400"), OpenAI's vocabulary for `type`.
@@ -1338,6 +1383,7 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
         res.json(transformedResponse);
       } catch (error: any) {
         if (await servedByTwin(error)) return;
+        if (await servedWithoutAddedSystemMessage(error)) return;
         // Determine provider name based on request source
         const providerName = (req as any).isOpenRouterRequest ? 'openrouter' : 'openai';
         const modelName = (req as any).isOpenRouterRequest ? (req as any).originalOpenRouterModel || originalModelFromRequest : originalModelFromRequest;
@@ -1371,6 +1417,32 @@ export const handleChatCompletion = async (req: OpenAIRequest, res: Response, ne
     }
   }
 };
+
+/**
+ * Brings a system message that a before-plugin put at the front of the client's messages into the
+ * SAP payload, which was built from those messages before the plugins ran. Messages the plugins
+ * changed in place are already in the payload (same objects); a new one is not. It becomes the
+ * first message SAP gets; where the payload holds only the default system text (the Anthropic
+ * content-block branch without a client system message) it takes that place.
+ */
+export function adoptAddedSystemMessage(payload: SAPPayload, messages: OpenAIMessage[] | undefined): boolean {
+  const added = Array.isArray(messages) ? messages[0] : undefined;
+  if (!added || added.role !== 'system') return false;
+  const template = payload.config.modules.prompt_templating.prompt.template as OpenAIMessage[];
+  const history = (payload.messages_history || []) as OpenAIMessage[];
+  if (history.includes(added) || template.includes(added)) return false;
+  const defaultSystem = template.length === 1 && template[0].role === 'system' && !messages!.includes(template[0]);
+  if (defaultSystem) {
+    // The default system text stays in front of what the plugin added.
+    if (typeof template[0].content === 'string' && typeof added.content === 'string') {
+      added.content = `${template[0].content}\n\n${added.content}`;
+    }
+    template[0] = added;
+    return true;
+  }
+  payload.messages_history = [added, ...history];
+  return true;
+}
 
 export async function transformRequestToSAPFormat(openAIReq: OpenAIRequestBody): Promise<SAPPayload> {
   // Convert the OpenAI API request (e.g. model, messages, parameters)
@@ -2029,7 +2101,7 @@ function emulateOpenAIStreamFromFullResponse(res: Response, responseData: any, c
       : typeof candidate?.content === 'string' ? candidate.content
       : typeof candidate?.text === 'string' ? candidate.text
       : '';
-    logger.warn('openaiController', `Using fallback content extraction for emulation: ${fullContent.substring(0, 100)}...`);
+    logger.warn('openaiController', 'Using fallback content extraction for emulation', { content: `${fullContent.substring(0, 100)}...` });
   }
 
   // Send initial message_start chunk

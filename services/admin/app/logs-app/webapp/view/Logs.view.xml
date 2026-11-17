@@ -1,0 +1,35 @@
+<mvc:View
+    controllerName="admin.logs.controller.Logs"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    displayBlock="true">
+    <!-- The three tabs are views of their own, each with its controller (controller/LogsTabs.ts links the first two).
+         The footer holds the Switches and levels tab's Save, Reset to configuration and Cancel; it shows on that tab only. -->
+    <Page id="logsPage" showHeader="false" floatingFooter="true" showFooter="{= ${logsUi>/tab} === 'settings' }"
+        class="sapUiResponsivePadding--content sapUiResponsivePadding--footer">
+        <content>
+            <IconTabBar id="logsTabs" expandable="false" selectedKey="{logsUi>/tab}" stretchContentHeight="false"
+                class="sapUiResponsivePadding--header sapUiResponsivePadding--content">
+                <items>
+                    <IconTabFilter id="gatewayLogTab" key="log" text="{i18n>tabGatewayLog}">
+                        <mvc:XMLView id="gatewayLogView" viewName="admin.logs.view.GatewayLog"/>
+                    </IconTabFilter>
+                    <IconTabFilter id="payloadTracesTab" key="traces" text="{i18n>tabPayloadTraces}">
+                        <mvc:XMLView id="payloadTracesView" viewName="admin.logs.view.PayloadTraces"/>
+                    </IconTabFilter>
+                    <IconTabFilter id="settingsTab" key="settings" text="{i18n>tabSettings}">
+                        <mvc:XMLView id="settingsView" viewName="admin.logs.view.LoggingSettings"/>
+                    </IconTabFilter>
+                </items>
+            </IconTabBar>
+        </content>
+        <footer>
+            <OverflowToolbar id="settingsFooter">
+                <ToolbarSpacer/>
+                <Button id="saveSettingsButton" text="{i18n>saveSettings}" type="Emphasized" enabled="{settingsUi>/dirty}" press=".onSaveSettings"/>
+                <Button id="resetSettingsButton" text="{i18n>resetSettings}" type="Ghost" enabled="{settingsUi>/loaded}" press=".onResetSettings"/>
+                <Button id="cancelSettingsButton" text="{i18n>cancelSettings}" type="Transparent" enabled="{settingsUi>/dirty}" press=".onCancelSettings"/>
+            </OverflowToolbar>
+        </footer>
+    </Page>
+</mvc:View>

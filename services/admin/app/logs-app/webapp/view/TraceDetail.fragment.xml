@@ -1,0 +1,150 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:form="sap.ui.layout.form">
+    <!-- One request opened (controller/TraceDetail.ts). Content is shown as text only. -->
+    <Dialog id="traceDetailDialog" title="{i18n>traceDetailTitle}" contentWidth="60rem" contentHeight="44rem" verticalScrolling="false" resizable="true" draggable="true"
+        class="sapUiNoContentPadding">
+        <content>
+            <!-- General: the facts, the prompt and the answer. Raw capture (only for a request captured raw): its stages.
+                 The dialog always opens on General (controller/TraceDetail.ts). The tab bar fills the dialog's fixed height
+                 and its content scrolls (css/style.css), so the tabs stay in view and the dialog keeps its place. -->
+            <IconTabBar id="traceDetailTabs" selectedKey="{detail>/tab}" expandable="false" stretchContentHeight="true" headerMode="Inline"
+                class="logsTraceTabs sapUiResponsivePadding--header sapUiResponsivePadding--content">
+                <items>
+                    <IconTabFilter id="traceGeneralTab" key="general" text="{i18n>traceTabGeneral}">
+            <form:Form id="traceFactsForm" editable="false" ariaLabelledBy="traceFactsTitle">
+                <form:toolbar>
+                    <OverflowToolbar style="Clear">
+                        <Title id="traceFactsTitle" text="{i18n>traceFactsTitle}" level="H3"/>
+                        <ToolbarSpacer/>
+                        <!-- The trace (facts, masked prompt and answer) as a file; the raw stages download on the Raw capture tab. -->
+                        <Button id="downloadTraceButton" text="{i18n>downloadTrace}" icon="sap-icon://download" type="Transparent"
+                            visible="{detail>/downloadTrace}" enabled="{= !${detail>/downloading} }" press=".onDownloadTrace"/>
+                    </OverflowToolbar>
+                </form:toolbar>
+                <form:layout>
+                    <form:ColumnLayout columnsM="2" columnsL="2" columnsXL="2"/>
+                </form:layout>
+                <form:formContainers>
+                    <form:FormContainer>
+                        <form:formElements>
+                            <form:FormElement label="{i18n>columnTime}">
+                                <form:fields><Text id="traceTimeText" text="{detail>/row/timeText}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnRequestId}">
+                                <form:fields><Text id="traceRequestIdText" text="{detail>/row/requestId}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnRoute}" visible="{detail>/hasLight}">
+                                <form:fields><Text text="{detail>/row/facts/route}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnModel}" visible="{detail>/hasLight}">
+                                <form:fields><Text text="{detail>/row/facts/model}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>factApiKey}" visible="{detail>/hasLight}">
+                                <form:fields><Text text="{detail>/row/facts/keyName}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>factUser}" visible="{detail>/hasLight}">
+                                <form:fields><Text text="{detail>/row/facts/userEmail}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnStatus}" visible="{detail>/hasLight}">
+                                <form:fields><ObjectStatus text="{detail>/row/facts/status}" state="{detail>/row/facts/statusState}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnDuration}" visible="{detail>/hasLight}">
+                                <form:fields><Text text="{detail>/row/durationText}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>factTokens}" visible="{= ${detail>/tokens} !== '' }">
+                                <form:fields><Text text="{detail>/tokens}"/></form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>columnContent}">
+                                <form:fields><Text id="traceContentText" text="{detail>/row/contentText}"/></form:fields>
+                            </form:FormElement>
+                        </form:formElements>
+                    </form:FormContainer>
+                </form:formContainers>
+            </form:Form>
+
+            <MessageStrip type="Information" showIcon="true" class="sapUiSmallMarginTop" text="{detail>/truncatedText}"
+                visible="{= ${detail>/truncatedText} !== '' }"/>
+            <MessageStrip type="Information" showIcon="true" class="sapUiSmallMarginTop" text="{detail>/omittedText}"
+                visible="{= ${detail>/omittedText} !== '' }"/>
+
+            <!-- The prompt and the answer (model/traceDetail.ts): masked text at once; a sealed prompt only
+                 after "Show content"; a facts-only trace (raw capture while payload capture was off) says it holds none.
+                 "Show content", View and the downloads are disabled while their call runs (one audit row per click). -->
+            <VBox id="traceContentBox" visible="{detail>/hasLight}" busy="{detail>/contentBusy}" busyIndicatorDelay="300" class="sapUiSmallMarginTop">
+                <MessageStrip id="noContentStrip" type="Information" showIcon="true" text="{i18n>noContentStored}" visible="{detail>/noContent}"
+                    class="sapUiTinyMarginBottom"/>
+                <MessageStrip id="notMaskedStrip" type="Warning" showIcon="true" text="{i18n>notMaskedNote}" visible="{detail>/sealed}"
+                    class="sapUiTinyMarginBottom"/>
+                <Button id="showContentButton" text="{i18n>showContent}" icon="sap-icon://show"
+                    visible="{detail>/showContent}" enabled="{= !${detail>/contentBusy} }" press=".onShowContent"/>
+                <MessageStrip id="contentProblemStrip" type="Error" showIcon="true" text="{detail>/contentProblem}"
+                    visible="{= ${detail>/contentProblem} !== '' }" class="sapUiTinyMarginTop"/>
+                <VBox visible="{= !${detail>/noContent} &amp;&amp; (${detail>/masked} || ${detail>/contentShown}) }">
+                    <Label id="promptLabel" text="{= ${detail>/masked} ? ${i18n>promptMaskedLabel} : ${i18n>promptLabel} }" labelFor="promptArea"/>
+                    <TextArea id="promptArea" value="{detail>/prompt}" editable="false" width="100%" rows="8" growing="true" growingMaxLines="20"/>
+                    <Label id="answerLabel" text="{i18n>answerMaskedLabel}" labelFor="answerArea" visible="{detail>/masked}" class="sapUiSmallMarginTop"/>
+                    <TextArea id="answerArea" value="{detail>/answer}" editable="false" width="100%" rows="8" growing="true" growingMaxLines="20"
+                        visible="{detail>/masked}"/>
+                </VBox>
+            </VBox>
+
+                    </IconTabFilter>
+                    <IconTabFilter id="traceRawTab" key="raw" text="{i18n>traceTabRaw}" visible="{detail>/stageActions}"
+                        count="{= ${detail>/stages}.length > 0 ? String(${detail>/stages}.length) : '' }">
+            <!-- A request captured raw: its stages, each to view and to download, and all of them. -->
+            <VBox id="stagesBox" visible="{detail>/stageActions}">
+                <MessageStrip type="Warning" showIcon="true" text="{i18n>stagesNote}" class="sapUiTinyMarginBottom"/>
+                <MessageStrip type="Error" showIcon="true" text="{detail>/stagesProblem}" visible="{= ${detail>/stagesProblem} !== '' }"/>
+                <Table id="stagesTable" items="{detail>/stages}" busy="{detail>/stagesBusy}" busyIndicatorDelay="300" noDataText="{i18n>stagesNone}"
+                    ariaLabelledBy="stagesTitle">
+                    <headerToolbar>
+                        <OverflowToolbar style="Clear">
+                            <Title id="stagesTitle" text="{i18n>stagesTitle}" level="H3"/>
+                            <ToolbarSpacer/>
+                            <Button id="downloadAllButton" icon="sap-icon://download" text="{i18n>downloadAllStages}" type="Transparent"
+                                enabled="{= ${detail>/rawId} !== '' &amp;&amp; !${detail>/downloading} }" press=".onDownloadAll"/>
+                        </OverflowToolbar>
+                    </headerToolbar>
+                    <columns>
+                        <Column><Text text="{i18n>stageColumnName}"/></Column>
+                        <Column width="7rem" hAlign="End"><Text text="{i18n>stageColumnSize}"/></Column>
+                        <Column width="9rem"><Text text="{i18n>stageColumnCut}"/></Column>
+                        <Column width="9rem" hAlign="End"><Text text="{i18n>columnActions}"/></Column>
+                    </columns>
+                    <items>
+                        <ColumnListItem vAlign="Middle">
+                            <cells>
+                                <Text text="{detail>name}"/>
+                                <Text text="{detail>size}"/>
+                                <ObjectStatus text="{= ${detail>cut} ? ${i18n>stageCut} : '' }" state="Warning"/>
+                                <HBox justifyContent="End" renderType="Bare">
+                                    <Button text="{i18n>viewStage}" enabled="{= !${detail>/stageBusy} }" press=".onViewStage" class="sapUiTinyMarginEnd"/>
+                                    <Button icon="sap-icon://download" type="Transparent" tooltip="{i18n>downloadStage}"
+                                        enabled="{= !${detail>/downloading} }" press=".onDownloadStage"/>
+                                </HBox>
+                            </cells>
+                        </ColumnListItem>
+                    </items>
+                </Table>
+                <VBox id="stageContentBox" visible="{= ${detail>/stageName} !== '' || ${detail>/stageProblem} !== '' }" busy="{detail>/stageBusy}"
+                    busyIndicatorDelay="300" class="sapUiSmallMarginTop">
+                    <MessageStrip type="Error" showIcon="true" text="{detail>/stageProblem}" visible="{= ${detail>/stageProblem} !== '' }"/>
+                    <Label id="stageContentLabel" text="{detail>/stageName}" labelFor="stageContentArea" visible="{= ${detail>/stageName} !== '' }"/>
+                    <MessageStrip type="Information" showIcon="true" text="{i18n>stageCutNote}" visible="{detail>/stageCut}" class="sapUiTinyMarginBottom"/>
+                    <TextArea id="stageContentArea" value="{detail>/stageContent}" editable="false" width="100%" rows="12" growing="true" growingMaxLines="30"
+                        visible="{= ${detail>/stageName} !== '' }"/>
+                </VBox>
+            </VBox>
+                    </IconTabFilter>
+                </items>
+            </IconTabBar>
+        </content>
+        <buttons>
+            <!-- The footer only leaves the dialog; each download sits on the tab its content is on. -->
+            <Button id="logLinesButton" text="{i18n>logLines}" icon="sap-icon://list" press=".onLogLines"/>
+            <Button id="closeTraceButton" text="{i18n>close}" type="Emphasized" press=".onClose"/>
+        </buttons>
+    </Dialog>
+</core:FragmentDefinition>

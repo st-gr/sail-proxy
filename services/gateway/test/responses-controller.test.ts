@@ -100,6 +100,7 @@ jest.mock('../src/services/configService', () => ({
           definitions: { 'header:contentTypeJson': { type: 'header', name: 'content-type', equals: 'application/json' } },
           defaults: { openai: { pseudonymization: { enabled: configState.pseudonymizationForced } } },
         },
+        observability: { pseudonymization: { enabled: true } },
       },
     }),
   },

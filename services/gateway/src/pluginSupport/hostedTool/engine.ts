@@ -97,6 +97,7 @@ import {
 import { syntheticId } from './syntheticId';
 import { getToolResult, putToolResult } from './resultCache';
 import { buildReplayFunctionCall } from './replayTranslation';
+import { withoutFunctionTools } from './answeringCall';
 import { fileSearchCallerOf, searchUsageSink } from '../../fileSearch/usage';
 import { callerTeamIds } from '../../utils/userBlock';
 
@@ -610,9 +611,12 @@ type QueueItem =
  *     prefixed by every item earlier calls already streamed (each synthetic call item in
  *     place of the function_call it replaced) and `usage` summed across every call.
  *  6. A hosted-tool call in the continuation's own output repeats the whole cycle,
- *     bounded by each descriptor's `maxCallsPerRequest()`.
+ *     bounded by each descriptor's `maxCallsPerRequest()`. A call over that bound is
+ *     answered as refused and the next continuation is the ANSWERING call, POSTed without
+ *     that tool (answeringCall.ts), so the turn still ends with the model's answer.
  *
- * FALLBACK. With no upstream context, no budget left, or a continuation POST that fails,
+ * FALLBACK. With no upstream context, a tool asked for again after its answering call, or a
+ * continuation POST that fails,
  * the client would otherwise be left with a call item and no answer at all — so the
  * pre-continuation `message` blocks carrying the formatted results are emitted after the
  * fact and the held terminal is written with the old in-place substitution. Requests that
@@ -726,7 +730,12 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
   let heldTerminal: { frame: any; rawBlock: string } | null = null;
   /** Calls actually run this request, per descriptor type: the cap is per tool, not per turn. */
   const callsRunByType = new Map<string, number>();
-  let capReached = false;
+  /** Tool types a call of this request was refused for: their budget is used up. */
+  const cappedTypes = new Set<string>();
+  /** The capped types the answering call was POSTed without (see answeringCall.ts). */
+  const strippedTypes = new Set<string>();
+  /** A call was refused for a tool the model had already been asked to answer without. */
+  let capExhausted = false;
   let indexOffset = 0;                // added to the current continuation's output_index values
   let sequenceOffset = 0;             // ditto for sequence_number, so it stays monotonic
   let maxIndexSeen = -1;              // highest client-facing output_index emitted so far
@@ -762,7 +771,7 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
   /** Whether a (further) continuation call is possible at all right now. */
   const canContinue = (): boolean => {
     const upstream = upstreamCtx();
-    return !!(upstream && upstream.url) && !capReached && !continuationFinished && !clientGone;
+    return !!(upstream && upstream.url) && !capExhausted && !continuationFinished && !clientGone;
   };
 
   /** Resolve everyone waiting on the idle hook, once nothing is outstanding. */
@@ -1140,9 +1149,11 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
    * Enforces the cap of the call's OWN descriptor: a request that has exhausted its
    * web_search budget may still have file_search budget left. A call that finds no budget
    * left is answered with an empty, `failed` result rather than skipped, so it still gets a
-   * function_call_output and client-facing items; `capReached` then blocks any further
-   * continuation for the whole turn — POSTing a turn with an unanswerable call in it is the
-   * malformed shape parallel calls risk, regardless of which tool ran out of budget.
+   * function_call_output and client-facing items. The first refusal of a tool does not end
+   * the turn: the next continuation is the ANSWERING call, POSTed without that tool, so the
+   * model writes its answer from what it has. A refusal for a tool it was already asked to
+   * answer without sets `capExhausted`, which blocks any further continuation — that is the
+   * loop's termination guarantee, and the turn then ends with the result dumps.
    */
   const performCall = async (
     index: number, descriptor: HostedToolDescriptor, call: ParsedCall,
@@ -1152,7 +1163,8 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
     let result: ToolExecResult;
 
     if (alreadyRun >= maxCalls) {
-      capReached = true;
+      if (strippedTypes.has(descriptor.type)) capExhausted = true;
+      cappedTypes.add(descriptor.type);
       result = failedResult(call, 'cap_reached');
       pluginLogger.warn(`responsesWebSearchPlugin: reached the ${descriptor.type} cap of ${maxCalls} for this request; not running the call at output_index ${index}`);
     } else {
@@ -1593,11 +1605,23 @@ export function installHostedToolInterceptor(req: Request, res: Response, plugin
           // Responses-shaped payload (this loop only runs on a streaming turn); an
           // orchestration body has its own `config.stream.enabled` set by the builder and
           // no top-level `stream` key to spread onto — see continuationBody's docstring.
-          response = await axios.post(
-            upstream.url,
-            continuationBody(upstream, history),
-            { headers: upstream.headers, timeout: upstream.timeoutMs, responseType: 'stream' },
-          );
+          // A tool whose budget is used up is not offered again: this is then the answering
+          // call. Marked before the POST, so a call the reply still makes for that tool ends
+          // the turn instead of buying another round.
+          const answeringWithout = descriptorsOfTypes(cappedTypes);
+          if (answeringWithout.some(d => !strippedTypes.has(d.type))) {
+            pluginLogger.warn(`responsesWebSearchPlugin: the ${answeringWithout.map(d => d.type).join(', ')} budget of this request is used up; asking the model to answer with what it has`);
+          }
+          for (const d of answeringWithout) strippedTypes.add(d.type);
+          // An upstream that fetches its continuations itself (streaming emulation on the
+          // orchestration bridge) is asked; every other one is posted to with a stream.
+          const body = continuationBody(upstream, history, answeringWithout);
+          response = typeof upstream.postContinuationStream === 'function'
+            ? await upstream.postContinuationStream(body)
+            : await axios.post(
+              upstream.url, body,
+              { headers: upstream.headers, timeout: upstream.timeoutMs, responseType: 'stream' },
+            );
         } catch (error: any) {
           pluginLogger.error(`Hosted-tool continuation stream failed: ${error.message}`);
           stopWithoutContinuing();
@@ -1877,13 +1901,27 @@ function relaxForcedToolChoice(payload: any): any {
  * to the cap, which is the exact live failure relaxForcedToolChoice was
  * introduced to fix.
  */
-function continuationBody(upstream: any, history: any[]): any {
+/** The registered descriptors of `types`, for the answering call's list of tools to leave out. */
+function descriptorsOfTypes(types: Iterable<string>): HostedToolDescriptor[] {
+  const found: HostedToolDescriptor[] = [];
+  for (const type of types) {
+    const descriptor = descriptorForType(type);
+    if (descriptor) found.push(descriptor);
+  }
+  return found;
+}
+
+function continuationBody(upstream: any, history: any[], answeringWithout: HostedToolDescriptor[] = []): any {
+  // The answering call (answeringCall.ts): the tools whose budget is used up are left out.
+  // Decided here for both shapes, like the relaxation, and handed to a builder as names.
+  const names = answeringWithout.map(d => d.functionName);
   if (typeof upstream?.buildContinuationPayload === 'function') {
     return upstream.buildContinuationPayload(history, {
       toolChoice: relaxForcedToolChoice({ tool_choice: upstream.toolChoice }).tool_choice,
+      ...(names.length > 0 ? { withoutFunctionTools: names } : {}),
     });
   }
-  return { ...relaxForcedToolChoice(upstream.payload), input: history };
+  return withoutFunctionTools({ ...relaxForcedToolChoice(upstream.payload), input: history }, names);
 }
 
 // ------------------------------------------------------------------------ before handler
@@ -2248,6 +2286,8 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
     let history: any[] = normalizeInputToItems(req.body?.input);
     /** Calls actually run this request, per descriptor type. */
     const callsRunByType = new Map<string, number>();
+    /** The capped tool types the answering call was POSTed without (see answeringCall.ts). */
+    const strippedTypes = new Set<string>();
     let didContinue = false;
     let sawUsage = !!current?.usage;
     let usageInput = current?.usage?.input_tokens || 0;
@@ -2298,19 +2338,18 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
         takenByType.set(descriptor.type, (takenByType.get(descriptor.type) || 0) + 1);
         batch.push({ item, descriptor });
       }
-      // Not one call left that any cap can cover. Stop WITHOUT touching this round's
-      // output, so the defensive sweep below drops the stranded calls — the loop guard
-      // `while (searches < maxSearches)` this replaces did exactly that, and falling into
-      // the in-place splice below instead would hand the client a failed call item + result
-      // dump for a call the old code silently dropped.
-      if (batch.length === 0) break;
-
-      // At least one call in this batch is over its own tool's cap: POSTing a continuation
-      // with it still unanswered is exactly the malformed-turn shape parallel calls risk,
-      // so this batch cannot be continued at all — whatever we did resolve gets shown to
-      // the client (in place, via replaceHostedToolCalls below) and the loop ends here,
-      // same as having no upstream context.
-      const overflow = calls.length > batch.length;
+      // A call over its own tool's cap is answered with the reason and the model is asked
+      // once more WITHOUT that tool (the answering call, answeringCall.ts), so the turn ends
+      // with its answer. A call refused for a tool the model was already asked to answer
+      // without cannot be granted another round — that is the loop's termination guarantee.
+      const exhausted = strandedByCap.some(s => strippedTypes.has(s.descriptor.type));
+      const canPost = !!upstream && !!upstream.url;
+      // Not one call left that any cap can cover, and no answering call to give. Stop WITHOUT
+      // touching this round's output, so the defensive sweep below drops the stranded calls —
+      // the loop guard `while (searches < maxSearches)` this replaces did exactly that, and
+      // falling into the in-place splice below instead would hand the client a failed call
+      // item + result dump for a call the old code silently dropped.
+      if (batch.length === 0 && (exhausted || !canPost)) break;
 
       // Resolved sequentially, matching the pre-extraction loop — but do NOT read that as
       // "the ordering and the counts depend on it", because they do not, and a later change
@@ -2349,31 +2388,37 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
       const pairsByCallId = new Map<string, RenderedPair>(
         resolved.map(r => [r.result.call.callId, renderPair(req, r.descriptor, r.result, optsFor, pluginLogger)] as const)
       );
-      // Empty whenever `overflow` is false (batch === calls, nothing was excluded), so this
-      // is a no-op on every round this loop actually continues past — only the spliced-in-place
-      // rounds below ever have a stranded-by-cap entry to add.
+      // Empty whenever nothing was refused (batch === calls), so this is a no-op on every
+      // ordinary round. A refused call gets its pair either way: the client sees its failed
+      // call item whether the model then answers or the turn ends here.
+      const refused: Array<{ descriptor: HostedToolDescriptor; result: ToolExecResult }> = [];
       for (const { item, descriptor } of strandedByCap) {
-        const strandedCall = parseItemCall(descriptor, item);
-        pairsByCallId.set(
-          strandedCall.callId,
-          renderPair(req, descriptor, failedResult(strandedCall, 'cap_reached'), optsFor, pluginLogger),
-        );
+        const result = failedResult(parseItemCall(descriptor, item), 'cap_reached');
+        refused.push({ descriptor, result });
+        pairsByCallId.set(result.call.callId, renderPair(req, descriptor, result, optsFor, pluginLogger));
       }
 
-      // No upstream context, or the cap didn't leave room to answer every call in this
-      // batch: this batch cannot be continued at all. Splice in place — same as a
-      // continuation POST failure below — so an item that preceded the call (a `reasoning`
-      // item, most commonly) still precedes it in what the client sees.
-      if (!upstream || !upstream.url || overflow) {
+      // No upstream context, or a call was refused for a tool the model had already been
+      // asked to answer without: this batch cannot be continued at all. Splice in place —
+      // same as a continuation POST failure below — so an item that preceded the call (a
+      // `reasoning` item, most commonly) still precedes it in what the client sees.
+      if (!canPost || exhausted) {
         current = { ...current, output: replaceHostedToolCalls(req, current.output || [], pairsByCallId, optsFor, pluginLogger) };
         break;
       }
 
+      // Every call of the round is answered in what the model reads, the refused ones with
+      // the reason: a turn with an unanswered call in it is rejected by the deployment.
       history = [
         ...history,
         ...(current.output || []),
         ...resolved.map(r => r.descriptor.renderOutput(r.result)),
+        ...refused.map(r => r.descriptor.renderOutput(r.result)),
       ];
+      if (refused.length > 0) {
+        pluginLogger.warn(`The ${[...new Set(refused.map(r => r.descriptor.type))].join(', ')} budget of this request is used up; ${refused.length} call(s) refused, asking the model to answer with what it has`);
+        for (const r of refused) strippedTypes.add(r.descriptor.type);
+      }
 
       let next: any;
       try {
@@ -2387,7 +2432,7 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
           // blind deep walk): a short masked original landing inside an opaque field like
           // `encrypted_content`, `id`, or `call_id` would corrupt a deployment-signed blob
           // or break the function_call/function_call_output pairing.
-          continuationBody(upstream, remaskResponsesItems(history, req)),
+          continuationBody(upstream, remaskResponsesItems(history, req), descriptorsOfTypes(strippedTypes)),
           { headers: upstream.headers, timeout: upstream.timeoutMs }
         );
         // The REPLY-side twin of `buildContinuationPayload`, for the same reason: an
@@ -2404,7 +2449,7 @@ export async function hostedToolAfterHandler({ req, upstreamResponse, utils }: P
         pluginLogger.error(`Hosted-tool continuation call failed: ${error.message}`);
         // The tool calls themselves already succeeded or failed independently of this —
         // pairsByCallId's status, set above from the call outcome, is left exactly as it
-        // was. Splice in place, same as the no-upstream/overflow fallback above: the
+        // was. Splice in place, same as the no-upstream fallback above: the
         // continuation never happened, so there is no model answer to prepend these ahead
         // of, and an item that preceded the call keeps preceding it here too.
         current = { ...current, output: replaceHostedToolCalls(req, current.output || [], pairsByCallId, optsFor, pluginLogger) };

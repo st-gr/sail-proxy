@@ -1,4 +1,4 @@
-import { parseModelMethod, resolveGeminiDeployment, geminiUrl, usageFromGemini, usageFromSse, geminiError, estimateEmbedTokens, requestsImageOutput } from '../src/services/googleGeminiService';
+import { parseModelMethod, resolveGeminiDeployment, geminiUrl, usageFromGemini, usageFromSse, geminiError, estimateEmbedTokens, requestsImageOutput, requestsImageOutputOnly } from '../src/services/googleGeminiService';
 
 describe('parseModelMethod', () => {
   it('splits model and method', () => {
@@ -98,5 +98,19 @@ describe('requestsImageOutput', () => {
     expect(requestsImageOutput({ generationConfig: { responseModalities: 'IMAGE' } })).toBe(false);
     expect(requestsImageOutput({ generationConfig: {} })).toBe(false);
     expect(requestsImageOutput(undefined)).toBe(false);
+  });
+});
+
+describe('requestsImageOutputOnly', () => {
+  it('is true only when every entry of generationConfig.responseModalities is IMAGE (any case)', () => {
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: ['IMAGE'] } })).toBe(true);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: ['image', 'IMAGE'] } })).toBe(true);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } })).toBe(false);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: ['IMAGE', 'AUDIO'] } })).toBe(false);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: ['TEXT'] } })).toBe(false);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: [] } })).toBe(false);
+    expect(requestsImageOutputOnly({ generationConfig: { responseModalities: 'IMAGE' } })).toBe(false);
+    expect(requestsImageOutputOnly({ generationConfig: {} })).toBe(false);
+    expect(requestsImageOutputOnly(undefined)).toBe(false);
   });
 });

@@ -12,6 +12,10 @@ jest.mock('../../src/services/configService', () => ({
 }));
 
 const mockRunExtractor = jest.fn();
+jest.mock('../../src/fileSearch/extractors/pandocSandbox', () => ({
+  ...jest.requireActual('../../src/fileSearch/extractors/pandocSandbox'),
+  ensurePandocSandbox: () => Promise.resolve(),
+}));
 jest.mock('../../src/fileSearch/extractors/runners', () => ({
   ...jest.requireActual('../../src/fileSearch/extractors/runners'),
   runExtractor: (...a: any[]) => mockRunExtractor(...a),

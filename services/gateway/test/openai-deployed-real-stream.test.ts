@@ -139,7 +139,7 @@ describe('deployed chat streams from the deployment', () => {
     (pseudonymizationRules as any[]).forEach((rule: any, i: number) => { (global as any).pluginRegistry[`${rule.id}_${rule.strategy}_${i}`] = rule; });
   });
   beforeEach(() => {
-    mockConfig.api_config = { hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: {} };
+    mockConfig.api_config = { hooks: JSON.parse(JSON.stringify(shippedHooks)), models: { overrides: {} }, observability: { pseudonymization: { enabled: true } } };
     (global as any).matcherCache?.clear?.();
     mockAxiosPost.mockReset();
     usageEvents.length = 0;

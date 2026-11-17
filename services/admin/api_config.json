@@ -20,8 +20,12 @@
           "effort-2025-11-24",
           "mid-conversation-system-2026-04-07",
           "afk-mode-2026-01-31",
-          "fine-grained-tool-streaming-2025-05-14"
+          "fine-grained-tool-streaming-2025-05-14",
+          "tool-search-tool-2025-10-19"
         ],
+        "beta_header_renames": {
+          "advanced-tool-use-2025-11-20": "tool-search-tool-2025-10-19"
+        },
         "emulate_streaming_for_models": [
           "anthropic--claude-4-opus"
         ],
@@ -1806,6 +1810,37 @@
               }
             }
           ]
+        },
+        "google": {
+          "pseudonymization": {
+            "enabled": true,
+            "method": "pseudonymization",
+            "allow_user_bypass": false
+          },
+          "generateContent": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            }
+          ],
+          "streamGenerateContent": [
+            {
+              "request": {
+                "callback": {
+                  "id": "pseudonymizationPlugin"
+                },
+                "match": [
+                  "header:contentTypeJson"
+                ]
+              }
+            }
+          ]
         }
       }
     },
@@ -1880,6 +1915,7 @@
     },
     "observability": {
       "pseudonymization": {
+        "enabled": false,
         "entities": {
           "profile-person": true,
           "profile-email": true,
@@ -2000,6 +2036,23 @@
             "interval_ms": 300000
           }
         ]
+      },
+      "gateway_log": {
+        "enabled": true,
+        "retention_hours": 48,
+        "max_entries": 2000000,
+        "min_level": "INFO"
+      },
+      "payload_capture": {
+        "enabled": false,
+        "retention_hours": 48,
+        "raw": {
+          "max_duration_minutes": 240,
+          "retention_hours": 24,
+          "stage_max_bytes": 262144,
+          "max_stages": 40,
+          "request_max_bytes": 2097152
+        }
       }
     }
   }

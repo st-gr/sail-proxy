@@ -4,5 +4,4 @@ metadata:
   name: gateway-config
   namespace: sail-proxy
 data:
-  LOG_LEVEL: "info"
   ADMIN_URL: "http://admin:4004"

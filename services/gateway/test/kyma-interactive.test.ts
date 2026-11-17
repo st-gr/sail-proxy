@@ -163,6 +163,8 @@ const BODY: Step[] = [
   ['organization', 'st-gr'],
   ['imagePullSecrets', false],
   ['version', '1.2.3'],
+  // A new installation is asked where its database is; the default is the in-cluster PostgreSQL.
+  ['databaseMode', 'in-cluster'],
   ['POSTGRES_USER', 'admin_user'],
   ['POSTGRES_PASSWORD', ''],
   ['configMethod', 'skip'],
@@ -193,6 +195,7 @@ describe('setup-kyma.js interactive: ask everything, review, then write', () => 
         ...back([
           'POSTGRES_PASSWORD',
           'POSTGRES_USER',
+          'databaseMode',
           'version',
           'imagePullSecrets',
           'organization',

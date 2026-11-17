@@ -1,0 +1,131 @@
+<mvc:View
+    controllerName="admin.logs.controller.GatewayLog"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:table="sap.ui.table"
+    xmlns:rowmodes="sap.ui.table.rowmodes">
+    <VBox id="gatewayLogBox">
+        <MessageStrip id="loadErrorStrip" type="Error" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{log>/loadError}" visible="{= ${log>/loadError} !== '' }"/>
+        <MessageStrip id="pollErrorStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{log>/pollError}" visible="{= ${log>/pollError} !== '' }"/>
+
+        <!-- The filters wrap onto further lines instead of overflowing into a menu: they stay on the page at any width. -->
+        <!-- The panel names the group for screen readers (role region, labelled by its header). -->
+        <Panel id="filterPanel" headerText="{i18n>filterTitle}" accessibleRole="Region" backgroundDesign="Transparent" class="sapUiSmallMarginBottom">
+        <FlexBox id="filterBar" wrap="Wrap" alignItems="End">
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="fromLabel" text="{i18n>fromLabel}" labelFor="fromPicker"/>
+                <DateTimePicker id="fromPicker" width="13rem" value="{log>/fromLocal}" valueFormat="yyyy-MM-dd HH:mm:ss"
+                    displayFormat="short" valueState="{log>/rangeState}" valueStateText="{log>/rangeError}" change=".onRangeChange"/>
+            </VBox>
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="toLabel" text="{i18n>toLabel}" labelFor="toPicker"/>
+                <DateTimePicker id="toPicker" width="13rem" value="{log>/toLocal}" valueFormat="yyyy-MM-dd HH:mm:ss"
+                    displayFormat="short" valueState="{log>/rangeState}" valueStateText="{log>/rangeError}" change=".onRangeChange"/>
+            </VBox>
+            <HBox alignItems="Center" wrap="Wrap" class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Button id="last15Button" text="{i18n>quickLast15}" press=".onLast15" class="sapUiTinyMarginEnd"/>
+                <Button id="lastHourButton" text="{i18n>quickLastHour}" press=".onLastHour" class="sapUiTinyMarginEnd"/>
+                <Button id="todayButton" text="{i18n>quickToday}" press=".onToday" class="sapUiTinyMarginEnd"/>
+                <Text id="timeZoneText" text="{log>/timeZoneText}"/>
+            </HBox>
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="searchLabel" text="{i18n>searchLabel}" labelFor="searchField"/>
+                <SearchField id="searchField" width="16rem" value="{log>/search}" placeholder="{i18n>searchPlaceholder}"
+                    tooltip="{i18n>searchTooltip}" ariaLabelledBy="searchLabel" search=".onReload"/>
+            </VBox>
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="levelLabel" text="{i18n>levelTooltip}" labelFor="levelSelect"/>
+                <Select id="levelSelect" selectedKey="{log>/level}" change=".onReload">
+                    <core:Item key="" text="{i18n>levelAll}"/>
+                    <core:Item key="ERROR" text="{i18n>levelMinError}"/>
+                    <core:Item key="WARN" text="{i18n>levelMinWarn}"/>
+                    <core:Item key="INFO" text="{i18n>levelMinInfo}"/>
+                    <core:Item key="DEBUG" text="{i18n>levelMinDebug}"/>
+                    <core:Item key="TRACE" text="{i18n>levelMinTrace}"/>
+                </Select>
+            </VBox>
+        </FlexBox>
+        </Panel>
+
+        <MessageStrip id="deleteResultStrip" type="Success" showIcon="true" class="sapUiTinyMarginBottom"
+            text="{log>/deleteResult}" visible="{= ${log>/deleteResult} !== '' }"/>
+        <MessageStrip id="droppedStrip" type="Information" showIcon="true" class="sapUiTinyMarginBottom"
+            text="{log>/droppedText}" visible="{= ${log>/droppedText} !== '' }"/>
+
+        <!-- Every value from the log reaches the page as text: the highlight formatter escapes each piece
+             (model/highlight.ts) and adds only the <strong> around a match. -->
+        <table:Table id="logTable" rows="{log>/entries}" selectionMode="None" busy="{log>/busy}" busyIndicatorDelay="300"
+            noData="{log>/noDataText}" ariaLabelledBy="logTitle" firstVisibleRowChanged=".onFirstVisibleRowChanged">
+            <table:extension>
+                <!-- Live, the order and the table's actions sit in its own toolbar, inside the table's padding. -->
+                <OverflowToolbar id="viewToolbar" style="Clear">
+                    <Title id="logTitle" text="{i18n>logTitle}" level="H2"/>
+                    <ToggleButton id="liveButton" icon="{log>/liveIcon}" text="{log>/liveText}" type="{log>/liveType}" pressed="{log>/live}"
+                        tooltip="{i18n>liveTooltip}" press=".onLiveToggle" class="sapUiSmallMarginBegin">
+                        <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+                    </ToggleButton>
+                    <SegmentedButton id="orderButton" selectedKey="{log>/order}" selectionChange=".onOrderChange" ariaLabelledBy="orderLabel">
+                        <layoutData><OverflowToolbarLayoutData priority="NeverOverflow"/></layoutData>
+                        <items>
+                            <SegmentedButtonItem id="newestLastItem" key="newestLast" text="{i18n>orderNewestLast}"/>
+                            <SegmentedButtonItem id="newestFirstItem" key="newestFirst" text="{i18n>orderNewestFirst}"/>
+                        </items>
+                    </SegmentedButton>
+                    <core:InvisibleText id="orderLabel" text="{i18n>orderLabel}"/>
+                    <Text id="liveStatusText" text="{log>/statusText}">
+                        <layoutData><OverflowToolbarLayoutData priority="NeverOverflow" shrinkable="true"/></layoutData>
+                    </Text>
+                    <ToolbarSpacer/>
+                    <Button id="refreshButton" icon="sap-icon://refresh" text="{i18n>refresh}" type="Transparent" press=".onReload"/>
+                    <Button id="exportButton" icon="sap-icon://download" text="{i18n>export}" type="Transparent" tooltip="{i18n>exportTooltip}" press=".onExport"/>
+                    <Button id="deleteNowButton" icon="sap-icon://delete" text="{i18n>deleteNow}" type="Reject" tooltip="{i18n>deleteNowTooltip}"
+                        enabled="{= !${log>/deleting} }" press=".onDeleteNow"/>
+                </OverflowToolbar>
+            </table:extension>
+            <table:rowMode>
+                <rowmodes:Auto minRowCount="15"/>
+            </table:rowMode>
+            <table:columns>
+                <table:Column id="timeColumn" width="14rem">
+                    <Label text="{i18n>columnTime}"/>
+                    <table:template><Text text="{log>timeText}" wrapping="false"/></table:template>
+                </table:Column>
+                <table:Column id="levelColumn" width="6rem">
+                    <Label text="{i18n>columnLevel}"/>
+                    <table:template><ObjectStatus text="{log>level}" state="{log>levelState}" stateAnnouncementText="{i18n>levelAnnouncement}"/></table:template>
+                </table:Column>
+                <table:Column id="componentColumn" width="12rem">
+                    <Label text="{i18n>columnComponent}"/>
+                    <table:template><FormattedText htmlText="{parts: [{path: 'log>component'}, {path: 'log>/appliedSearch'}], formatter: '.highlight'}" tooltip="{log>component}" class="logsOneLine"/></table:template>
+                </table:Column>
+                <table:Column id="requestIdColumn" width="17rem">
+                    <Label text="{i18n>columnRequestId}"/>
+                    <table:template>
+                        <HBox alignItems="Center" renderType="Bare">
+                            <FormattedText htmlText="{parts: [{path: 'log>requestId'}, {path: 'log>/appliedSearch'}], formatter: '.highlight'}" tooltip="{log>requestId}" class="logsOneLine logsRequestId"/>
+                            <Button icon="sap-icon://copy" type="Transparent" tooltip="{i18n>copyRequestId}"
+                                visible="{= ${log>requestId} !== '' }" press=".onCopyRequestId"/>
+                            <Button icon="sap-icon://inspection" type="Transparent" tooltip="{i18n>payloadTraceLink}"
+                                visible="{= ${log>requestId} !== '' }" press=".onPayloadTrace"/>
+                        </HBox>
+                    </table:template>
+                </table:Column>
+                <table:Column id="messageColumn" minWidth="200">
+                    <Label text="{i18n>columnMessage}"/>
+                    <table:template><FormattedText htmlText="{parts: [{path: 'log>messageText'}, {path: 'log>/appliedSearch'}], formatter: '.highlight'}" tooltip="{log>messageText}" class="logsOneLine"/></table:template>
+                </table:Column>
+            </table:columns>
+        </table:Table>
+
+        <MessageStrip id="newBelowStrip" type="Information" showIcon="true" class="sapUiTinyMarginTop"
+            text="{i18n>newEntriesBelow}" visible="{log>/newBelow}">
+            <link>
+                <Link id="jumpToNewestLink" text="{i18n>jumpToNewest}" press=".onJumpToNewest"/>
+            </link>
+        </MessageStrip>
+        <Text id="footerText" text="{log>/footerText}" class="sapUiSmallMarginBegin sapUiTinyMarginTop"/>
+    </VBox>
+</mvc:View>

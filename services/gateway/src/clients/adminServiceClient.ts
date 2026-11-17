@@ -14,6 +14,7 @@ import {
   REJECTED_VALIDATION_TOKEN_SECRETS
 } from '../../../../libs/aws-token-validation/validation-token-secrets';
 import { getDefaultLogger } from '@libs/logger';
+import { secretLabel } from '../utils/secretLabel';
 import type { Connection } from '../connections/types';
 import type { WantedPlugin } from '../pluginInstall/sync';
 const logger = getDefaultLogger();
@@ -253,7 +254,7 @@ export class AdminServiceClient {
     try {
       logger.trace('AdminServiceClient', 'Creating unified validation token', {
         authType: request.authType,
-        identifier: request.identifier.substring(0, 10) + '...',
+        identifierLabel: secretLabel(request.identifier),
         endpoint: request.endpoint
       });
 
@@ -282,7 +283,7 @@ export class AdminServiceClient {
     
     try {
       logger.trace('AdminServiceClient', 'Validating unified auth token', {
-        tokenPrefix: request.token.substring(0, 20) + '...'
+        tokenLabel: secretLabel(request.token)
       });
 
       const response = await this.makeRequest<UnifiedValidationResponse>('POST', '/odata/v4/validation/validateUnifiedAuthByToken', request);

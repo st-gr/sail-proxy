@@ -13,9 +13,9 @@ describe('nginx template', () => {
 
   it('has the app in the three name lists and its webapp rewrite', () => {
     const listOf = (start: string) => template.split('\n').find((line) => line.includes(start))!;
-    expect(listOf('location ~* ^/admin/app/(shell|')).toContain('|plugins-app)');
-    expect(listOf('location ~ ^/(shell|')).toContain('|plugins-app)');
-    expect(listOf('location ~ ^/(usage-analytics|')).toContain('|plugins)');
+    expect(listOf('location ~* ^/admin/app/(shell|')).toMatch(/\|plugins-app[|)]/);
+    expect(listOf('location ~ ^/(shell|')).toMatch(/\|plugins-app[|)]/);
+    expect(listOf('location ~ ^/(usage-analytics|')).toMatch(/\|plugins[|)]/);
     expect(template).toContain('rewrite ^/plugins/webapp/(.*)$ /app/plugins-app/webapp/$1 break;');
   });
 
@@ -54,8 +54,8 @@ describe('CI registration', () => {
 
   it('expects the nav entry for an admin and not for a user', () => {
     const roles = read('ci', 'scripts', 'ui-journeys', 'roles.js');
-    expect(roles).toMatch(/visibleNav:[^\]]*'Connections', 'Plugins'\]/);
-    expect(roles).toMatch(/hiddenNav:[^\]]*'Connections', 'Plugins'\]/);
+    expect(roles).toMatch(/visibleNav:[^\]]*'Connections', 'Plugins'[,\]]/);
+    expect(roles).toMatch(/hiddenNav:[^\]]*'Connections', 'Plugins'[,\]]/);
   });
 });
 
@@ -70,7 +70,7 @@ describe('shell registration', () => {
   });
 
   it('routes to the screen and keeps the side navigation in step in all three places', () => {
-    expect(controller.match(/"connections", "plugins"\]\.includes/g)).toHaveLength(3);
+    expect(controller.match(/"connections", "plugins"(, "\w+")*\]\.includes/g)).toHaveLength(3);
     expect(controller).toContain('router.navTo("pluginsList")');
     expect(controller).toContain('this.feRouter.navTo("pluginsList")');
     expect(controller).toContain('routeName === "pluginsList"');

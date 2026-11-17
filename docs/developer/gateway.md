@@ -672,6 +672,18 @@ the `index.ts` attachment and the `closeAll` call in `gracefulShutdown`.
 - The after-plugins run per chunk (the stream strategy), so the pseudonymization plugin can unmask placeholders before a frame reaches the client.
 - Usage is taken from the final chunk and emitted once the stream ends.
 
+### Parallel tool calls from Gemini through orchestration
+
+Measured live on 2026-11-12 with `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3.5-flash`, `gemini-3.5-flash-lite` and `gemini-3.8-flash` through orchestration, with `config.stream.enabled`:
+
+- **Two calls, no text before them**: orchestration sends one chunk per call, both with `index: 0` and each with its own `id`; the first id carries the thought signature (`vertex_tool_<uuid>__sig_<signature>`), the second does not. A translator that keys a call on `index` alone merges them into one call whose arguments are two JSON objects in a row and whose id is the second one's, so the signature is lost. `google/orchestrationBridge/streamTranslator.ts` and `responses/orchestrationBridge/streamTranslator.ts` open a new call when a new id arrives at an index that already holds one.
+- **Text, then two calls in the same step**: orchestration itself sends ONE chunk with ONE tool call: one id without a signature and the arguments of both calls in a row (`{"city": "Oslo"}{"city": "Lima"}`), in 10 of 10 runs over the five models (all with `chunk_size: 200`). The gateway cannot repair this from the stream. Splitting the arguments into two calls gives the second an invented id, and the next request is then refused with `400 - LLM Module: Function call is missing a thought_signature in functionCall parts`. The chat-completions route passes the merged call to the client as it arrives.
+- **Without streaming** the same turn returns two tool calls, the first with its signature.
+- **With the model in `providers.openai.emulate_streaming_for_models`**, `/openai/v1/chat/completions` calls orchestration without streaming and replays the answer: two tool-call chunks, the first id with its signature, and the follow-up turn with both results is answered (`gemini-3.5-flash` and `gemini-2.5-flash`, 5 of 5 runs). `/openai/v1/responses` reads the same setting for a model served through orchestration (`responses/orchestrationBridge/streamEmulation.ts`): `dispatchOrchestration` calls `callSAPAIOrchestration` and feeds the answer to the stream translator as one chunk, and the hosted-tool engine fetches its continuation calls through the upstream's `postContinuationStream` instead of opening a stream of its own. Verified the same day: two calls, the follow-up turn, a web-search turn with its continuations, and Codex with `gemini-2.5-flash`.
+- **A Gemini deployment on `/google`** returns both `functionCall` parts with the signature on the first, streamed or not. `/openai/v1/chat/completions` and `/openai/v1/responses` refuse a Gemini deployment, so a Gemini model is always served through orchestration there.
+
+The user-facing description is in the guide's [Troubleshooting](/guide/troubleshooting#gemini-several-tool-calls-in-one-step).
+
 ### Streaming Emulation
 
 **Pseudo-Streaming for Batch Models**: a model listed in a provider's `emulate_streaming_for_models` (exact name, or the name without its `<provider>--` prefix; `configService.shouldEmulateStreaming`) is called without streaming, and the controller replays the full answer as a stream. On the OpenAI routes `emulateOpenAIStreamFromFullResponse` sends the role chunk, then the content split by `chunkText` (about 15 characters per chunk), then one chunk per tool call (index, id, name, whole arguments), then the finish chunk and `data: [DONE]`. A `--deployed` model on `/openai/v1/chat/completions` streams for real when the client asks for a stream: the deployment is called with `stream: true` and `include_usage`, and `controllers/deployedStreamRelay.ts` relays its chunks, each through the after-plugins (per-chunk unmasking), bills from the usage frame and forwards that frame only on `stream_options.include_usage`. A one-piece answer (a deployment that answers JSON, or the `/responses` fallback when a deployment refuses function tools on chat) is replayed as above. The Bedrock route emulates the subpaths a model does not serve natively (see above).
@@ -716,8 +728,9 @@ could not see); `google`, which composes nothing, uses `additionalProperties: fa
 
 - the **shared** settings (`substitute_models`, `unsupported_params`, `param_renames`,
   `emulate_streaming_for_models`, `supports_prompt_caching`, `supports_responses_api`, …);
-- the **Anthropic wire version and beta-flag filters** (`anthropic_bedrock_version`,
-  `supported_beta_headers`, `excluded_beta_headers`) — only on `anthropic` and `aws-bedrock`;
+- the **Anthropic wire version, beta-flag renames and beta-flag filters** (`anthropic_bedrock_version`,
+  `beta_header_renames`, `supported_beta_headers`, `excluded_beta_headers`) — only on `anthropic` and
+  `aws-bedrock`;
 - their **own extension** (`openai_deployment_api_version`; `default_pricing`, `model_mappings`) —
   only on `openai` and `openrouter` respectively.
 

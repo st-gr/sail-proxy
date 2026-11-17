@@ -34,6 +34,7 @@
  */
 
 import { truncateUpstreamMessage } from './upstreamErrorEnvelope';
+import { markUpstreamText, upstreamErrorKind } from './upstreamErrorLogText';
 
 /** How long a route may hold its status line waiting for the first upstream content. */
 export const STREAM_START_DEADLINE_MS = 10_000;
@@ -179,6 +180,29 @@ export function failureFromError(err: any, fallbackStatus = 500): StreamFailure 
     ?? (typeof err?.message === 'string' && err.message ? err.message : 'upstream request failed');
   // Same cap as normalizeUpstreamError: an upstream body can be an arbitrarily long page.
   return { status, message: truncateUpstreamMessage(message) };
+}
+
+/**
+ * A call the upstream rejected, in one shape for every caller of the service that made it: the
+ * upstream body's message as the error's message (the HTTP client's "Request failed with status
+ * code 410" names no cause), the upstream's status, and the parsed body on `response.data`.
+ * `body` is the drained body of a streaming call, whose `response.data` is a consumed stream.
+ * An error without an upstream answer (a timeout, a failed token fetch) and one already in this
+ * shape are returned as they are.
+ */
+export function upstreamCallError(error: any, body: any = error?.response?.data): any {
+  if (!error?.response || error.upstreamCallError) return error;
+  const clientMessage = typeof error.message === 'string' && error.message ? error.message : 'upstream request failed';
+  const upstreamText = messageOfBody(body);
+  const failure: any = new Error(truncateUpstreamMessage(upstreamText ?? clientMessage));
+  if (upstreamText !== undefined) markUpstreamText(failure, error.response.status, upstreamErrorKind(body));
+  failure.status = error.response.status;
+  failure.code = error.code;
+  failure.isAxiosError = error.isAxiosError;
+  failure.response = { status: error.response.status, headers: error.response.headers, data: body };
+  failure.cause = error;
+  failure.upstreamCallError = true;
+  return failure;
 }
 
 /**

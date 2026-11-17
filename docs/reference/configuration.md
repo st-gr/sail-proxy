@@ -61,7 +61,7 @@ This page covers the keys clients notice most. Every provider key is described o
 | `param_renames` | object | Parameter renames for deployments ([Parameter renames](#parameter-renames-for-deployed-models)) |
 | `supports_responses_api` | boolean | Whether the model may be served on `/openai/v1/responses`. Absent leaves the built-in rule: deployed GPT-5 and later, and the o-series |
 | `contextLength` | integer | Context window in tokens, used only when SAP AI Core reports none |
-| `pseudonymization` | object | Per-model pseudonymization settings |
+| `pseudonymization` | object | Per-model pseudonymization settings. Its `enabled` enforces masking for the model only while the [global switch](#pseudonymization-global-switch) is on |
 
 ## Cache token pricing
 
@@ -152,7 +152,7 @@ The shipped configuration maps Claude Code's model names (`anthropic` provider) 
 
 ## Beta flag filtering
 
-Anthropic clients such as Claude Code send beta feature flags in the `anthropic-beta` header. SAP AI Core rejects the whole request with `400 invalid beta flag` when a flag is unknown to its Anthropic deployments. Two keys under `api_config.providers.anthropic` filter the flags; they are read only from that provider:
+Anthropic clients such as Claude Code send beta feature flags in the `anthropic-beta` header. SAP AI Core rejects the whole request with `400 invalid beta flag` when a flag is unknown to its Anthropic deployments. Three keys under `api_config.providers.anthropic` rename and filter the flags; they are read only from that provider:
 
 ```json
 {
@@ -167,8 +167,12 @@ Anthropic clients such as Claude Code send beta feature flags in the `anthropic-
           "effort-2025-11-24",
           "mid-conversation-system-2026-04-07",
           "afk-mode-2026-01-31",
-          "fine-grained-tool-streaming-2025-05-14"
+          "fine-grained-tool-streaming-2025-05-14",
+          "tool-search-tool-2025-10-19"
         ],
+        "beta_header_renames": {
+          "advanced-tool-use-2025-11-20": "tool-search-tool-2025-10-19"
+        },
         "excluded_beta_headers": [
           "prompt-caching-scope-2026-01-05",
           "redact-thinking-2026-02-12",
@@ -182,10 +186,11 @@ Anthropic clients such as Claude Code send beta feature flags in the `anthropic-
 }
 ```
 
+- **`beta_header_renames`**: a flag a client sends under Anthropic's name (the key) is forwarded under the name the SAP AI Core deployment knows it by (the value). It is applied first, so the two lists below see the new name, and the new name must be on the allowlist to be forwarded. The shipped entry is the tool search beta, which Claude Code sends as `advanced-tool-use-2025-11-20` together with a tool marked `defer_loading`; the deployments know it as `tool-search-tool-2025-10-19` and reject the other name. Dropping the flag is not enough: Claude Sonnet 4.5 then rejects the request with `defer_loading: Extra inputs are not permitted`. A connection to Amazon Bedrock applies the same renames and lists.
 - **`supported_beta_headers`** (allowlist): while it is non-empty, only these flags are forwarded, including flags from a model's `inject_beta_features` or from the request body. Empty or absent means no allowlist: every flag goes through.
 - **`excluded_beta_headers`** (denylist): always applied on top of the allowlist. A flag in both lists is dropped.
 
-The values above are the shipped ones. When SAP AI Core starts accepting a new flag, add it to `supported_beta_headers`.
+The values above are the shipped ones. When SAP AI Core starts accepting a new flag, add it to `supported_beta_headers`. A configuration stored before these entries shipped does not gain them by an upgrade; the Admin Cockpit's [Compare with defaults](/guide/cockpit/configuration#compare-with-defaults) offers them.
 
 ## Unsupported provider parameters
 
@@ -291,4 +296,66 @@ Model gpt-5-nano does not support embeddings
 
 ## Streaming emulation
 
-For a model that cannot stream, `emulate_streaming_for_models` under a provider makes the gateway stream anyway: it sends a non-streaming request to SAP AI Core and replays the complete answer to the client as a stream of chunks. The list matches the model name sent upstream, exactly or without its `provider--` prefix. If the answer takes long, the gateway keeps the connection open with keep-alive events until it starts the stream. Use it for clients that only work with streamed responses. Deployed models (`--deployed` ids on the OpenAI chat route) need no entry: when the client asks for a stream, the gateway streams from the deployment itself; an answer that arrives in one piece (a deployment that does not stream, or the `/responses` fallback for tools) is replayed, tool calls included.
+For a model that cannot stream, `emulate_streaming_for_models` under a provider makes the gateway stream anyway: it sends a non-streaming request to SAP AI Core and replays the complete answer to the client as a stream of chunks. The list matches the model name sent upstream, exactly or without its `provider--` prefix. If the answer takes long, the gateway keeps the connection open with keep-alive events until it starts the stream. Use it for clients that only work with streamed responses, and for a model whose stream from SAP's orchestration service is not reliable: a Gemini model can lose tool calls it makes in one step there (see [Troubleshooting](/guide/troubleshooting#gemini-several-tool-calls-in-one-step)). `providers.openai.emulate_streaming_for_models` applies to `/openai/v1/chat/completions` and, for a model served through orchestration, to `/openai/v1/responses`, including the gateway's own follow-up calls after a web or file search. Deployed models (`--deployed` ids on the OpenAI chat route) need no entry: when the client asks for a stream, the gateway streams from the deployment itself; an answer that arrives in one piece (a deployment that does not stream, or the `/responses` fallback for tools) is replayed, tool calls included.
+
+## Pseudonymization global switch
+
+`observability.pseudonymization.enabled` is the global switch for enforced masking. Only the boolean `true` switches it on. `false`, or no value, switches it off.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `observability.pseudonymization.enabled` | `false` | While `true`, the `enabled` flags of an endpoint (`hooks.defaults.<endpoint>.pseudonymization.enabled`) and of a model (`models.overrides.<model>.pseudonymization.enabled`) enforce masking. While `false` or absent, those flags are paused: they keep their values and enforce nothing, and no request is refused for failing to be masked. A caller can still ask for masking for a request, with a `masking` field in the body or the trigger word `<sail-proxy:pseudonymization:on>`, whatever this setting says. |
+
+The shipped configuration sets the switch to `false` and keeps the flags of the `openai`, `anthropic`, `aws-bedrock` and `google` endpoints and one model set, so setting it to `true` turns masking on everywhere. A stored configuration without the key behaves as `false`.
+
+## Gateway log
+
+`observability.gateway_log` makes the gateway store its log, so administrators can read, search and download it on the cockpit's [Logs](/guide/cockpit/logs) page. Storing is on by default. It applies to the Docker and Kyma deployments only: in the standalone `sail-proxy` CLI the block has no effect, and the CLI writes its log to a file that `sail-proxy logs` shows. The Logs page can switch storing on and off without a new configuration version, and its switch overrules `enabled`.
+
+```json
+"observability": {
+  "gateway_log": {
+    "enabled": true,
+    "retention_hours": 48,
+    "max_entries": 2000000,
+    "min_level": "INFO"
+  }
+}
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Whether the log is stored. A configuration without the block stores it too; set `false` to switch storing off. |
+| `retention_hours` | `48` | Entries older than this many hours are deleted. `0` keeps them until the limit on their number is reached. |
+| `max_entries` | `2000000` | The most entries kept; the oldest are deleted first. `0` means no limit. |
+| `min_level` | `INFO` | The lowest level that is stored: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE`. `DEBUG` and `TRACE` lines can contain parts of requests and answers, so store them only while looking into a problem. |
+
+## Payload capture
+
+`observability.payload_capture` makes each request leave a light trace that administrators can inspect on the cockpit's [Logs](/guide/cockpit/logs) page: its facts plus the masked prompt and answer. A request that is not masked keeps its prompt encrypted, without the answer. The raw stages of a request (what the client sent, what the gateway sent upstream, what came back) come only from the raw capture sessions started on the Logs page; the `raw` values bound them. Capture is off by default. It applies to the Docker and Kyma deployments only: in the standalone `sail-proxy` CLI the block has no effect. The Logs page can switch capture on and off without a new configuration version, and its switch overrules `enabled`.
+
+```json
+"observability": {
+  "payload_capture": {
+    "enabled": false,
+    "retention_hours": 48,
+    "raw": {
+      "max_duration_minutes": 240,
+      "retention_hours": 24,
+      "stage_max_bytes": 262144,
+      "max_stages": 40,
+      "request_max_bytes": 2097152
+    }
+  }
+}
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Whether payload traces are stored. |
+| `retention_hours` | `48` | Traces older than this many hours are deleted. `0` keeps them until they are deleted by hand. |
+| `raw.max_duration_minutes` | `240` | The longest a raw capture session may run, in minutes. |
+| `raw.retention_hours` | `24` | Raw captures older than this many hours are deleted. `0` keeps them until they are deleted by hand. |
+| `raw.stage_max_bytes` | `262144` | The most bytes kept of one stage of a request; more is cut off. |
+| `raw.max_stages` | `40` | The most stages kept of one request. |
+| `raw.request_max_bytes` | `2097152` | The most bytes kept of all stages of one request together. |

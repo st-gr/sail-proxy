@@ -13,7 +13,7 @@ The **Usage Analytics** application (Analytics → Usage) reports what went thro
 ## Tabs
 
 - **Overview**: key metrics (requests, tokens, token cost, SAP cost, response time), charts by provider and model, and the provider usage table. A Connections cost figure is shown apart from SAP cost.
-- **Cost**: cost by provider and by model, the Connections cost figure and a Connections spend table with the spend per connection, the SAP billing breakdown by API key, and the top e-mail addresses, API keys and AWS credentials by cost.
+- **Cost**: cost by provider and by model, the Connections cost figure and a Connections spend table with the spend per connection, the SAP billing breakdown by API key and AWS credential, and the top e-mail addresses, API keys and AWS credentials by cost.
 - **Performance**: response time and success rate by provider.
 - **Models**: usage distribution and per-model details.
 
@@ -33,7 +33,7 @@ Broken down by provider and by model, the tables report:
 - Error count
 - Cost, where cost data is available
 
-The **SAP Billing by API Key** table also lists **Image Output Tokens** (tokens from generated images,
+The **SAP Billing by API Key and AWS Credential** table also lists **Image Output Tokens** (tokens from generated images,
 priced at the image output rate entered in the [Model Library](/guide/cockpit/model-library) rather
 than the ordinary output rate) and **Audio Input Tokens** and **Audio Output Tokens** (tokens from
 realtime voice sessions, priced at the audio rates entered in the Model Library). In the per-key
@@ -51,6 +51,10 @@ model tokens are converted into GenAI tokens with the per-model rates of the Mod
 tokens into **Capacity Units** with the CU factor (`platform.billing.cuFactor`, 1.90385 by default),
 and capacity units into SAP cost with the **Price per CU** that administrators maintain per usage
 type and validity period under Settings → **SAP Capacity Unit Prices**.
+
+The SAP Cost tile and the SAP billing tables (by API key and AWS credential, and by team) show the
+chosen **Time Period**, like the other figures, and count usage through API keys and through AWS
+credentials.
 
 ![The SAP Capacity Unit prices used to turn cost factors into money](../../assets/screenshots/cockpit/sap-rates.png)
 *Each row is a price per capacity unit for a usage type and a validity period.*

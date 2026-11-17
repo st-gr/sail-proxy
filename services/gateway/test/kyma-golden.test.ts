@@ -61,7 +61,7 @@ async function renderDefault(outputRoot: string, projectRoot: string, setup = ne
   setup.runDockerSetup = async (config: Record<string, unknown>) => {
     // Stands in for setup-docker.js + postProcessEnvFiles with fixed .env content.
     await setup.createEnvConfigMaps(
-      { LOG_LEVEL: 'info', ADMIN_URL: 'http://localhost:4004', PORT: '3000' },
+      { ADMIN_URL: 'http://localhost:4004', PORT: '3000' },
       {
         NODE_ENV: 'production',
         LOG_LEVEL: 'info',

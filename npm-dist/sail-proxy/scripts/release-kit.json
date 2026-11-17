@@ -45,6 +45,10 @@
       "reason": "required by setup-kyma.js / deploy-kyma.js"
     },
     {
+      "path": "kyma/scripts/external-database.js",
+      "reason": "required by setup-kyma.js / deploy-kyma.js"
+    },
+    {
       "path": "kyma/templates/configmaps/.gitkeep",
       "reason": "Kyma manifest and secret templates that setup-kyma.js renders"
     },
@@ -169,6 +173,14 @@
       "reason": "the upgrade's prompt wrapper: answers what the installation holds, asks only the rest"
     },
     {
+      "path": "docker/setup-flow/oidc.js",
+      "reason": "prompt flow shared by setup-docker.js and setup-kyma.js"
+    },
+    {
+      "path": "docker/setup-flow/image-version.js",
+      "reason": "the image version question of setup-docker.js (registry mode)"
+    },
+    {
       "path": "docker/configs/providers/github/.env.auth",
       "reason": "provider and shared config templates copied by setup-docker.js"
     },
@@ -214,6 +226,14 @@
     },
     {
       "path": "docker/configs/providers/okta/dex.config.yaml",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ias/.env.auth",
+      "reason": "provider and shared config templates copied by setup-docker.js"
+    },
+    {
+      "path": "docker/configs/providers/ias/dex.config.yaml",
       "reason": "provider and shared config templates copied by setup-docker.js"
     },
     {

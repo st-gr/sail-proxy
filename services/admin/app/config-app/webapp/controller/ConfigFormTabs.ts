@@ -77,6 +77,10 @@ export interface BuildTabsOptions {
     onContainerPanel?: (pointer: string, panel: Panel) => void;
     /** Offers the pointer of every map container this build renders - see `DescriptorControlOptions`. */
     onMapContainer?: (pointer: string) => void;
+    /** Text beside the switch at `pointer` - see `DescriptorControlOptions`. */
+    fieldNote?: DescriptorControlOptions["fieldNote"];
+    /** Offers each switch that has a note, with its note - see `DescriptorControlOptions`. */
+    onFieldNote?: DescriptorControlOptions["onFieldNote"];
 }
 
 /**
@@ -108,7 +112,9 @@ export function buildTabs(opts: BuildTabsOptions): IconTabBar {
         isEntryExpanded: opts.isEntryExpanded,
         onEntryToggle: opts.onEntryToggle,
         onContainerPanel: opts.onContainerPanel,
-        onMapContainer: opts.onMapContainer
+        onMapContainer: opts.onMapContainer,
+        fieldNote: opts.fieldNote,
+        onFieldNote: opts.onFieldNote
     };
 
     // The tab ORDER follows the document, exactly as the sections and the fields within them do -

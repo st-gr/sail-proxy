@@ -20,4 +20,7 @@ describe.each(files)('%s', (file) => {
   it('binds Plugins to isAdmin only, so an admin sees the entry and a user does not', () => {
     expect(visibleOf(xml, 'plugins')).toBe('{appView>/isAdmin}');
   });
+  it('binds Logs to isAdmin only, so an admin sees the entry and a user does not', () => {
+    expect(visibleOf(xml, 'logs')).toBe('{appView>/isAdmin}');
+  });
 });

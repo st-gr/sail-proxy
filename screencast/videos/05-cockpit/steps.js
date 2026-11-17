@@ -1,9 +1,12 @@
 // Cockpit deep dive, as the admin through the header proxy. The Create page leaves a draft; it is discarded
 // at the end of section 1 so the demo data stays as seeded. Section 4 needs the seeded team "Platform team"
 // and images built after Teams Part B.
+import configAndOperations from './config-take.steps.js';
+
 const SHELL = '/admin/app/shell/?sap-language=en&sap-theme=sap_horizon';
 
-export default async ({ section, goto, click, type, wait, hold, caption, scroll, end }) => {
+export default async (api) => {
+  const { section, goto, click, type, wait, hold, caption, scroll } = api;
   await section(1);
   await goto(SHELL);
   await click('nav=API Keys > Access');
@@ -92,50 +95,6 @@ export default async ({ section, goto, click, type, wait, hold, caption, scroll,
   await wait(9000);
   await hold(3000); // the narration ends before the section does: keep the page on screen
 
-  await section(7);
-  await click('nav=Configuration Management > Settings');
-  await caption('Configuration versions');
-  await wait(6000);
-  await click('text=Active');
-  await click('text=Providers');
-  await caption('The active configuration: providers, substitutions, streaming');
-  await wait(8000);
-  await click('text=Observability');
-  await caption('Pseudonymization: personal data masked before a request leaves, restored in the answer');
-  await wait(5000);
-  await scroll(450, { ms: 2500, x: 1600 }); // the entity categories, each with its own switch
-  await wait(4000);
-  await caption('Observability: SIEM sinks for the security and usage events');
-  await scroll(1400, { ms: 3500, x: 1600 }); // on to the SIEM panel and its sinks
-  await wait(8000);
-  await click('nav=Security Notifications > Analytics');
-  await caption('Failed authentications and other security events');
-  await wait(8000);
-  await click('[id$="--profileAvatar"]');
-  await click('[id$="--settingsButton"]');
-  await caption('Settings: theme and language');
-  await wait(2000);
-  await click('[id$="--settingsTheme"]');
-  await click('text=Dark');
-  await click('[id$="--settingsSave"]'); // the theme changes live
-  await caption('The dark theme');
-  await wait(6000);
-  await click('[id$="--profileAvatar"]');
-  await click('[id$="--settingsButton"]');
-  await click('[id$="--settingsLanguage"]');
-  await click('text=Deutsch');
-  // Set before the reload: the runner shows it again on the reloaded page (a caption set after it never showed).
-  await caption('The cockpit in German, one of seven languages');
-  await click('[id$="--settingsSave"]'); // a changed language reloads the cockpit
-  await wait(12000);
-  await end();
-  // Off camera: back to Light and English for the admin (both are stored per user on the server).
-  await click('[id$="--profileAvatar"]');
-  await click('[id$="--settingsButton"]');
-  await click('[id$="--settingsTheme"]');
-  await click('text=Hell');
-  await click('[id$="--settingsLanguage"]');
-  await click('text=English');
-  await click('[id$="--settingsSave"]');
-  await wait(5000);
+  // Section 7 (configuration, logs, security notifications, settings) lives in its own file, taken on its own.
+  await configAndOperations(api);
 };

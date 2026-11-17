@@ -5,8 +5,10 @@ const logger = getDefaultLogger();
 import { Request, Response } from 'express';
 import configService from '../services/configService';
 import { isStandaloneMode } from '../config/unifiedAuthConfig';
-import { redactUrl, redactQuery } from './redactUrl';
-import { API_KEY_HEADERS } from './extractApiKey';
+import { filterSensitiveHeaders, stageFacts } from './sensitiveHeaders';
+import { recordStage } from '../services/rawCapture';
+
+export { filterSensitiveHeaders };
 
 interface LoggingConfig {
   api_config?: {
@@ -73,47 +75,35 @@ const getLoggingConfig = (): { logFolderPath: string; payloadLoggingEnabled: boo
   return { logFolderPath, payloadLoggingEnabled };
 };
 
-// Get dynamic log directory path
-const getLogDir = (): string => {
-  const { logFolderPath } = getLoggingConfig();
-  // Use project root logs directory to avoid nodemon restart issues
-  return path.join(__dirname, '..', '..', logFolderPath, 'payloads');
-};
-
-// Headers that should be filtered out for security
-const SENSITIVE_HEADERS = [
-  'authorization',
-  ...API_KEY_HEADERS,
-  'x-auth-token',
-  'cookie',
-  'set-cookie',
-  'x-csrf-token',
-  'x-session-id',
-  'proxy-authorization',
-  'www-authenticate',
-  'x-forwarded-authorization',
-  // Provider connection credentials: the Azure OpenAI key, an AWS session token, a Google API key
-  'api-key',
-  'x-amz-security-token',
-  'x-goog-api-key'
-];
-
-export function filterSensitiveHeaders(headers: Record<string, any>): Record<string, string> {
-  const filtered: Record<string, string> = {};
-  
-  for (const [key, value] of Object.entries(headers)) {
-    const lowerKey = key.toLowerCase();
-    if (SENSITIVE_HEADERS.includes(lowerKey)) {
-      filtered[key] = '[REDACTED]';
-    } else if (lowerKey === 'referer' || lowerKey === 'referrer') {
-      filtered[key] = redactUrl(String(value));
-    } else {
-      filtered[key] = String(value);
-    }
-  }
-  
-  return filtered;
+/**
+ * The payload folder: PAYLOAD_LOG_DIR when set (the Docker image and the npm CLI set it), otherwise the
+ * configured log folder + /payloads. Relative paths resolve against the working directory, the rule of
+ * the gateway's other files (CONFIG_FILE_PATH, @libs/logger); never against this module's folder, which
+ * in the compiled tree is dist/services/gateway/src/utils.
+ */
+export function resolvePayloadDir(env: NodeJS.ProcessEnv, logFolderPath: string, cwd: string): string {
+  const explicit = env.PAYLOAD_LOG_DIR?.trim();
+  if (explicit) return path.resolve(cwd, explicit);
+  return path.resolve(cwd, logFolderPath, 'payloads');
 }
+
+/** The folder savePayload and the Anthropic stream dump write to, and the payload folder sweeper cleans. */
+export const getLogDir = (): string => resolvePayloadDir(process.env, getLoggingConfig().logFolderPath, process.cwd());
+
+/**
+ * The startup warning while the file payload logger is on (null while it is off): its files hold
+ * request and answer payloads, not masked in every stage, and nobody's opening them is audited.
+ */
+export function payloadFilesNotice(enabled: boolean, dir: string): string | null {
+  if (!enabled) return null;
+  return `File payload logging is on (PAYLOAD_LOGGING_ENABLED or platform.logging.payload_logging_enabled): `
+    + `request and answer payloads are written to ${dir}, not masked in every stage, and reading them is not audited. `
+    + 'Payload traces and raw capture are the audited way; switch the file logger off unless you are debugging.';
+}
+
+/** The Anthropic controller's raw stream dumps (text files beside the JSON stages). */
+export const STREAM_DUMP_SUFFIX = '_04_client_native_stream_response.txt';
+export const isStreamDumpFile = (name: string): boolean => name.endsWith(STREAM_DUMP_SUFFIX);
 
 function ensureLogDirExists(): { success: boolean; logDir: string } {
   const logDir = getLogDir();
@@ -150,6 +140,9 @@ export const savePayload = (
   req?: Request,
   res?: Response
 ): void => {
+  // A request in a raw capture session keeps its stages whether file logging is on or not.
+  recordStage(requestId, stage, data, req, res);
+
   const { payloadLoggingEnabled } = getLoggingConfig();
 
   // Skip debug logging for disabled payload logging to avoid log noise at INFO level
@@ -186,23 +179,8 @@ export const savePayload = (
       payload: data
     };
 
-    // Add request information if available
-    if (req) {
-      enhancedData.httpMethod = req.method;
-      enhancedData.url = redactUrl(req.originalUrl || req.url);
-      enhancedData.queryParams = req.query && Object.keys(req.query).length > 0 ? redactQuery(req.query as Record<string, unknown>) : undefined;
-      enhancedData.requestHeaders = filterSensitiveHeaders(req.headers);
-    }
-
-    // Add response information if available
-    if (res) {
-      enhancedData.statusCode = res.statusCode;
-      // Get response headers (if any have been set)
-      const responseHeaders = res.getHeaders();
-      if (Object.keys(responseHeaders).length > 0) {
-        enhancedData.responseHeaders = filterSensitiveHeaders(responseHeaders as Record<string, any>);
-      }
-    }
+    // Add request and response information if available
+    Object.assign(enhancedData, stageFacts(req, res));
 
     // Safely handle large or circular objects
     let jsonData: string;

@@ -89,7 +89,7 @@ export function attachRealtimeUpgrade(server: Server, overrides: Partial<Realtim
   return {
     closeAll(code: number, reason: string): void {
       // `clientTracking` is on by default, so wss.clients holds exactly the live sessions.
-      if (wss.clients.size > 0) logger.info('Realtime', `Closing ${wss.clients.size} open session(s) with ${code} ${reason}`);
+      if (wss.clients.size > 0) logger.info('Realtime', `Closing ${wss.clients.size} open session(s) with ${code}`, { reason });
       for (const client of wss.clients) {
         try { client.close(code, reason); } catch { client.terminate(); }
       }
@@ -316,7 +316,8 @@ function startSession(client: WebSocket, upstream: WebSocket, ureq: UpgradeReque
       }
     },
     onClosed(side, code, reason) {
-      logger.info('Realtime', `Session ${sessionId} closed by ${side} (${code} ${reason})`, meta);
+      // The close reason is the peer's free text (possibly the upstream's words): console only.
+      logger.info('Realtime', `Session ${sessionId} closed by ${side} (${code})`, { ...meta, reason });
     },
     onBackpressure(side, paused) {
       logger.info('Realtime', `Backpressure on ${side}: ${paused ? 'paused' : 'resumed'}`, meta);

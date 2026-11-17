@@ -35,6 +35,7 @@ jest.mock('../src/services/configService', () => {
     getTimeout: () => 1000,
     getWebSearchMaxSearches: () => 0,
     getSupportedBetaHeaders: () => [],
+    getBetaHeaderRenames: () => ({}),
     getExcludedBetaHeaders: () => [],
   };
   const proxy = new Proxy(svc, { get: (t, k: string) => (k in t ? t[k] : (k === '__esModule' ? true : () => undefined)) });

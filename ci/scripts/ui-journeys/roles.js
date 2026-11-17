@@ -11,7 +11,7 @@ module.exports = {
     isAdmin: true,
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
-        'Model Library', 'Entitlements & Quotas', 'Vector Stores', 'Files', 'Jobs', 'Administration', 'Configuration Management', 'SAP Capacity Unit Prices', 'Teams', 'Users & Quotas', 'Connections', 'Plugins'],
+        'Model Library', 'Entitlements & Quotas', 'Vector Stores', 'Files', 'Jobs', 'Administration', 'Configuration Management', 'SAP Capacity Unit Prices', 'Teams', 'Users & Quotas', 'Connections', 'Plugins', 'Logs'],
       hiddenNav: [],
       userRoleLabel: 'Admin user'
     },
@@ -40,7 +40,7 @@ module.exports = {
     shell: {
       visibleNav: ['Home', 'API Keys', 'AWS Credentials', 'Usage', 'Security Notifications',
         'Model Library', 'Entitlements & Quotas', 'Vector Stores', 'Files', 'Jobs', 'Configuration Management', 'Teams'],
-      hiddenNav: ['Administration', 'SAP Capacity Unit Prices', 'Users & Quotas', 'Connections', 'Plugins'],
+      hiddenNav: ['Administration', 'SAP Capacity Unit Prices', 'Users & Quotas', 'Connections', 'Plugins', 'Logs'],
       userRoleLabel: 'User'
     },
     apiKeys: {

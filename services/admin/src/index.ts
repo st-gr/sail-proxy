@@ -152,6 +152,14 @@ async function startProgrammatically(port: number, authMode: string) {
       logger.error('Server', 'Failed to mount the version REST API', error as Error);
     }
     try {
+      const logsRestApi = await import('./srv/admin-service-logs');
+      app.use('/api/logs', logsRestApi.gatewayLogExportRouter);
+      const tracesRestApi = await import('./srv/admin-service-traces');
+      app.use('/api/logs', tracesRestApi.traceDownloadRouter);
+    } catch (error) {
+      logger.error('Server', 'Failed to mount the gateway log export and the trace downloads', error as Error);
+    }
+    try {
       const groundingRestApi = await import('./srv/grounding-rest-api');
       app.use('/api/grounding', (groundingRestApi as any).default || groundingRestApi);
       const configRestApi = await import('./srv/config-rest-api');
@@ -327,6 +335,12 @@ async function startProgrammatically(port: number, authMode: string) {
           route: `${routePrefix}/plugins-app`,
           webappPath: path.join(appBasePath, 'plugins-app/webapp'),
           distPath: path.join(appBasePath, 'plugins-app/dist')
+        },
+        {
+          name: 'logs-app',
+          route: `${routePrefix}/logs-app`,
+          webappPath: path.join(appBasePath, 'logs-app/webapp'),
+          distPath: path.join(appBasePath, 'logs-app/dist')
         }
       ];
 

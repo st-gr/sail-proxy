@@ -47,19 +47,26 @@ export type UpgradeResult =
   | { ok: true; from: string; to: string; backup: string }
   | { ok: false; failedAt: StepId; rolledBack: boolean; from: string; backup?: string; error: string; restoreCommand?: string };
 
+/** Said after every successful upgrade: an upgrade never touches the stored configuration. */
+export const NEW_DEFAULTS_NOTE = 'The stored gateway configuration is kept as it is. Settings this release newly ships are offered in the cockpit: Configuration Management, "Compare with defaults".';
+
 export const exitCodeOf = (r: UpgradeResult): number =>
   r.ok ? 0 : !OUTAGE_STEPS.includes(r.failedAt) ? 1 : r.rolledBack ? 2 : 3;
 
 const firstLine = (s: unknown) => String(s || '').trim().split('\n')[0];
 
-/** What went wrong, for the user: never a manifest or a value, only kubectl's first stderr line. */
-export function describe(error: unknown): string {
-  const e = error as { name?: string; code?: string; step?: string; stderr?: string; message?: string; signal?: string };
+/**
+ * What went wrong, for the user: never a manifest or a value, only kubectl's first stderr line.
+ * The "log in again" hint is kubectl's: not for a registry's refusal (Refusal.registry), and not at
+ * all where no kubectl runs (`kubectlHint: false`, the Docker upgrade and restore).
+ */
+export function describe(error: unknown, opts: { kubectlHint?: boolean } = {}): string {
+  const e = error as { name?: string; code?: string; step?: string; stderr?: string; message?: string; signal?: string; registry?: boolean };
   let text: string;
   if (e?.code === 'ENOSPC') text = 'the disk is full (ENOSPC)';
   else if (e?.name === 'DeployError') text = `${e.step} failed: ${firstLine(e.stderr) || 'see the output above'}`;
   else text = firstLine(e?.message || error);
-  if (isAuthError(error)) text += ' — kubectl is no longer logged in to the cluster; log in again';
+  if (opts.kubectlHint !== false && !e?.registry && isAuthError(error)) text += ' — kubectl is no longer logged in to the cluster; log in again';
   return text;
 }
 
@@ -193,6 +200,7 @@ export async function runUpgrade(ctx: UpgradeContext): Promise<UpgradeResult> {
       if (!r.success) throw new Error('Recording the installation (sail-proxy-install) failed');
     });
     log(`\nUpgrade complete: ${from} → ${target.tag}. Backup of the previous version: ${backup}`);
+    log(NEW_DEFAULTS_NOTE);
     return { ok: true, from, to: target.tag, backup: backup! };
   } catch (error) {
     const failedAt = runner.current || 'read';

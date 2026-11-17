@@ -44,3 +44,19 @@ it('TeamSapBillingStats groups both tables per team and currency, admin only', a
   expect(rows.find((x: any) => x.teamId === '00000000-0000-0000-0000-000000000000')).toMatchObject({ teamName: null, totalRequests: 1 });
   expect((await ok(GET(`${S}/TeamSapBillingStats`, USER))).status).toBe(403);
 });
+
+it('getUsageStatistics for one team: the SAP billing by team holds that team only, like the table per credential beside it', async () => {
+  const BETA = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
+  await cds.db.run(cds.ql.INSERT.into(TEAMS).entries({ ID: BETA, name: 'Beta' }));
+  await cds.db.run(cds.ql.INSERT.into(KEY_USAGE).entries([row({ apiKey_ID: 'k9', email: 'tu-user@test.com', model: 'm', team_ID: BETA, teamName: 'Beta' })]));
+  await cds.db.run(cds.ql.INSERT.into(AWS_USAGE).entries([row({ credential_ID: 'c9', userId: 'tu-user@test.com', modelId: 'm', team_ID: BETA, teamName: 'Beta' })]));
+  const stats = (teamId?: string) => GET(`${S}/getUsageStatistics(startDate=2026-10-01,endDate=2026-10-31,granularity='day'${teamId ? `,teamId=${teamId}` : ''})`, ADMIN);
+
+  const one = (await stats(BETA)).data.sapBilling;
+  expect(one.teams.map((t: any) => t.teamName)).toEqual(['Beta']);
+  expect(one.teams[0]).toMatchObject({ teamId: BETA, totalRequests: 2 });
+  expect(one.credentials.map((c: any) => c.credentialId).sort()).toEqual(['c9', 'k9']);
+
+  const all = (await stats()).data.sapBilling;
+  expect([...new Set(all.teams.map((t: any) => t.teamName))].sort()).toEqual(['Alpha', 'Beta', 'Deleted team', null]);
+});

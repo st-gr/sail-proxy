@@ -12,7 +12,7 @@ Pseudonymization placeholders are **content-derived and stable**: the id is an 8
 
 - **Residue resolves.** A token echoed from an earlier turn/file re-mints identically as long as its value is present in the current request, so it unmasks instead of leaking.
 - **The response cache is safe.** A masked response cached for an equivalent request replays correctly — its tokens are reproducible from content alone.
-- **Copy fidelity.** Decimal (not hex) ids because models reproduce digit runs far more reliably; a garbled id is unrecoverable. The plugin also injects a short system instruction telling the model to copy placeholder tokens verbatim. On an in-request id collision the id widens deterministically (8 → 10 → 12 digits).
+- **Copy fidelity.** Decimal (not hex) ids because models reproduce digit runs far more reliably; a garbled id is unrecoverable. The plugin also injects a short system instruction telling the model to copy placeholder tokens verbatim. The same instruction says that the values are restored in the answer and that the model should work with the tokens as with the real values; without it models decline tasks that address a masked person. On chat completions through SAP orchestration the instruction is a system message at the front of the request (the client's own system message gains it); a model whose orchestration refuses system messages (`sap-abap-1`, "An internal system prompt is configured for this model") is asked again without it and goes without for an hour. On an in-request id collision the id widens deterministically (8 → 10 → 12 digits).
 - **Anonymization** keeps per-request incrementing counters (`MASKED_PERSON_1`) — a content-derived token would make the same entity linkable across requests, defeating anonymization.
 
 URLs use a **URL-shaped** placeholder instead of a bare token (see the URL note under Detection).
@@ -63,6 +63,28 @@ The `StreamUnmaskBuffer` accumulates output that might be a partial placeholder 
 Chunks: ["I recommend ", "MASKED_", "PERSON_48213", "307", " call back"]
 Client: ["I recommend ", "",       "",             "John Smith", " call back"]
 ```
+
+### Thinking round trip
+
+A model's thinking (`thinking` blocks on `/anthropic` and `/aws-bedrock` invoke, `reasoningContent` on Bedrock Converse) is restored for the client like the answer text. Unlike the answer, the client sends it back: in a tool loop every request carries the thinking of the turn before, with the `signature` the model gave it, and the upstream may check the text against that signature. So the upstream must get back exactly the masked text it wrote, and no real value.
+
+```
+Model writes     thinking: "Mail MASKED_EMAIL_29234778 today."            signature: "EqQB…=="
+Client receives  thinking: "Mail jane.roe@example.org today."             signature: "EqQB…==.sp1.eyJ2Ijox…."
+Client returns   the same two values, unchanged
+Upstream gets    thinking: "Mail MASKED_EMAIL_29234778 today."            signature: "EqQB…=="
+```
+
+- **The restore record.** Every thinking block that passes the gateway under masking gets `.sp1.`, a base64url JSON record and a closing `.` appended to its signature: `{ v: 1, h: <16 hex digits of the SHA-256 of the masked text>, r: [[offset, length, placeholder], …] }`. Each entry says where a restored value stands in the text the client holds and which placeholder it replaced. The record holds no value. A block in which nothing was restored gets an empty record: it says the text is the model's own, so the next request leaves it alone. A signature is base64, so `.` cannot occur in it; a signature an upstream sends in two events around the record is put together again.
+- **Streaming.** `thinking_delta` frames run through their own buffer per block (`thinkingStream.ts`), so a placeholder cut by a frame is held back until it is whole. On the block's `signature_delta` the text still held back is sent first, then the record goes onto that signature, in place: a client may keep the last signature event it saw, so there is never a second one.
+- **The next request.** `restoreThinkingBlocks` runs in the `/anthropic` and `/aws-bedrock` controllers for every request, before a Connection's dispatch, with masking on or off and with or without a hook chain: it strips the record and rebuilds the masked text from it. The hash proves the rebuilt text is the one the model wrote. Nothing is stored, so every deployment shape and any number of gateway instances behave the same.
+- **Without a usable record** (the client changed the text, the conversation started on a release before this, or the turn was made with masking off): the block cannot be rebuilt. With masking running, every value the request's map knows is replaced by its placeholder in that block, whatever its length and also where it touches a word character (`backup_<value>`), so nothing leaves in plain text; the text may then differ from what the model signed. Thinking without a signature is masked like any other text, detectors included.
+- **Placeholders the model invents** stay in thinking as written. The answer text withholds them (`unknown_placeholders`); in thinking that would leave the client with a text the record does not describe.
+- **What is not covered.** The detectors do not run on signed thinking: it is the model's own text, and changing it would break the signature. `redacted_thinking` is passed through untouched. The record comes back from the client and proves nothing about who wrote the text; it only describes how to turn one text into another.
+- The request-wide propagation (`propagateMaskedValues`) leaves thinking blocks, their signatures and `redacted_thinking` alone; the thinking pass owns them.
+- **What the upstream checks** (measured 2026-11-17, Claude Sonnet 4.5 deployed on SAP AI Core, a block from a real tool loop): a signature with one character changed is refused with 400 ``Invalid `signature` in `thinking` block``; the original signature with a changed text (one word replaced, a sentence appended) is accepted. So the record must never reach the upstream, and a block masked again by value was accepted there. That is one model on one day: an upstream may check the text too, and then such a block fails with a 400 instead.
+
+Files: `pluginSupport/pseudonymization/thinkingRoundTrip.ts` (record, restore, re-mask), `thinkingBlocks.ts` (where thinking sits in a body), `plugins/pseudonymization/thinkingStream.ts` (one streamed block).
 
 ## Detection Pipeline (4 Tiers)
 
@@ -145,6 +167,8 @@ The plugin checks the following sources in order; the first match wins:
 2. ON triggerword in message content (`<sail-proxy:pseudonymization:on>` / `<sail-proxy:anonymization:on>`)
 3. Per-model force flag in `api_config.json` under `models.overrides[<id>].pseudonymization.enabled`
 4. Per-endpoint force flag in `api_config.json` under `hooks.defaults.<endpoint>.pseudonymization.enabled`
+
+Sources 3 and 4 enforce masking only while the global switch `observability.pseudonymization.enabled` is boolean `true`; with it off or absent the flags are paused. The product ships the switch `false`, so enforcement is opt-in per installation. Sources 1 and 2 work either way.
 
 If none of these activate, the plugin no-ops.
 
@@ -337,7 +361,7 @@ In `api_config.json`, add a `pseudonymization` block to a model entry under `mod
 }
 ```
 
-When set, every request to that model gets masked using the default entity set (all entity types). Callers do not need a triggerword.
+When set and the global switch `observability.pseudonymization.enabled` is `true`, every request to that model gets masked using the default entity set (all entity types). Callers do not need a triggerword. With the switch off (as shipped) the flag is paused.
 
 ### Method 4: Per-endpoint force flag
 
@@ -353,11 +377,11 @@ In `api_config.json`, add a `pseudonymization` block to a `hooks.defaults` endpo
 }
 ```
 
-This activates masking for **every** model accessed via that endpoint with the default entity set, including models that have no per-model entry. Per-model takes precedence over per-endpoint when both apply.
+While the global switch `observability.pseudonymization.enabled` is `true`, this activates masking for **every** model accessed via that endpoint with the default entity set, including models that have no per-model entry. Per-model takes precedence over per-endpoint when both apply. The switch ships `false`; switching it off removes enforcement for every endpoint and model at once.
 
 ## Configuring which categories are masked
 
-> **Plugin-bound scope:** these keys configure the pseudonymizationPlugin. They do **not** activate masking on their own — pseudonymization only runs when the plugin is wired into the endpoint/model hook chain (`callback.id: "pseudonymizationPlugin"`) **and** an activation source fires (force-config `enabled: true`, triggerword, or an explicit body `masking`). If the plugin is absent from the hook chain, these toggles have no effect.
+> **Plugin-bound scope:** these keys configure the pseudonymizationPlugin. They do **not** activate masking on their own — pseudonymization only runs when the plugin is wired into the endpoint/model hook chain (`callback.id: "pseudonymizationPlugin"`) **and** an activation source fires (force-config `enabled: true` while the global switch is on, triggerword, or an explicit body `masking`). If the plugin is absent from the hook chain, these toggles have no effect.
 
 When masking is activated via force-config or triggerword, the entity set comes from the plugin's built-in defaults. `api_config.json` can enable/disable individual categories with an `entities` map (`{ "<category>": true | false }`) at three layers, applied in order — **later layers win**:
 
@@ -702,7 +726,7 @@ Before upgrading a deployment that has `profile-org` or `profile-location` enabl
 
 ## Bypassing forced pseudonymization
 
-When pseudonymization is forced via Method 3 or Method 4, callers can opt out for individual requests **only if the operator has explicitly opted in** by setting the `allow_user_bypass: true` flag on the matching block. Default is `false`.
+When pseudonymization is forced via Method 3 or Method 4 (which requires the global switch `observability.pseudonymization.enabled: true`), callers can opt out for individual requests **only if the operator has explicitly opted in** by setting the `allow_user_bypass: true` flag on the matching block. Default is `false`.
 
 ```json
 "hooks": {
@@ -717,7 +741,7 @@ When pseudonymization is forced via Method 3 or Method 4, callers can opt out fo
 With the flag enabled, callers request bypass via either:
 
 - HTTP header `x-sail-proxy-pseudonymization: off`
-- Body field `"pseudonymization_off": true` (stripped from the body before forwarding upstream so the LLM never sees it)
+- Body field `"pseudonymization_off": true` (stripped from the body before forwarding upstream so the LLM never sees it, also when nothing is forced)
 
 Both signals are out-of-band from prompt content so prompt injection via tool results, web search results, or pasted text cannot trigger bypass.
 
@@ -867,5 +891,6 @@ tail -f logs/gateway.log | grep -i pseudonym
 - The proxy is stateless per-request; multi-turn conversations re-mask each time. Content-derived tokens keep this correct — the same value re-masks to the same token — but a token whose **value is no longer present** in the request (e.g. context truncated/compacted, or a token echoed from a session that used an older token scheme) cannot be unmasked; it is left as-is and flagged by the leak audit.
 - Unmasking depends on the model reproducing placeholder tokens verbatim. This is mitigated (copy-friendly decimal ids, a verbatim-copy system instruction, composable URL placeholders), but a badly garbled id is unrecoverable.
 - Loopback/private/template URLs are intentionally **not** masked (see URL handling).
+- A thinking block that comes back without a usable restore record is masked again by known value, not rebuilt: an upstream that verifies the text against the signature would refuse it; Claude Sonnet 4.5 on SAP AI Core did not on 2026-11-17 (see [Thinking round trip](#thinking-round-trip)).
 - Pseudonymization tokens are stable per value, which makes the same entity **linkable across requests** by anyone observing the masked traffic. This is acceptable (and required) for reversible pseudonymization; use anonymization mode where unlinkability matters.
 - The gateway fails fast on `EADDRINUSE`, so a stale instance cannot silently serve old plugin code (a past source of "unmasking looks broken" reports).

@@ -1,0 +1,114 @@
+<mvc:View
+    controllerName="admin.logs.controller.PayloadTraces"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core">
+    <VBox id="payloadTracesBox">
+        <!-- Whether payload capture is on, and the warning of a weak seal key (D1). -->
+        <MessageStrip id="captureStrip" type="Information" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{traces>/captureText}" visible="{= ${traces>/captureText} !== '' }"/>
+        <MessageStrip id="weakKeyStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{traces>/weakKeyText}" visible="{= ${traces>/weakKeyText} !== '' }"/>
+        <!-- The gateway's debug file logger is on: its files are neither masked in every stage nor audited. -->
+        <MessageStrip id="fileLoggingStrip" type="Warning" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{traces>/fileLoggingText}" visible="{= ${traces>/fileLoggingText} !== '' }"/>
+        <MessageStrip id="settingsErrorStrip" type="Error" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{traces>/settingsError}" visible="{= ${traces>/settingsError} !== '' }"/>
+        <MessageStrip id="tracesErrorStrip" type="Error" showIcon="true" class="sapUiSmallMarginBottom"
+            text="{traces>/loadError}" visible="{= ${traces>/loadError} !== '' }"/>
+
+        <!-- The raw capture sessions running now, each with Stop; the orange bar of the shell says the same on every page. -->
+        <Table id="sessionsTable" items="{traces>/sessions}" visible="{= ${traces>/sessions}.length > 0 }" ariaLabelledBy="sessionsTitle"
+            class="sapUiSmallMarginBottom">
+            <headerToolbar>
+                <OverflowToolbar style="Clear">
+                    <Title id="sessionsTitle" text="{i18n>sessionsTitle}" level="H2"/>
+                </OverflowToolbar>
+            </headerToolbar>
+            <columns>
+                <Column><Text text="{i18n>sessionColumnEnds}"/></Column>
+                <Column><Text text="{i18n>sessionColumnStartedBy}"/></Column>
+                <Column demandPopin="true" minScreenWidth="Tablet"><Text text="{i18n>sessionColumnTargets}"/></Column>
+                <Column width="7rem" hAlign="End"><Text text="{i18n>columnActions}"/></Column>
+            </columns>
+            <items>
+                <ColumnListItem vAlign="Middle">
+                    <cells>
+                        <Text text="{traces>endsText}"/>
+                        <Text text="{traces>startedBy}"/>
+                        <Text text="{traces>targetsText}"/>
+                        <Button text="{i18n>stopRawCapture}" type="Reject" press=".onStopRawCapture"/>
+                    </cells>
+                </ColumnListItem>
+            </items>
+        </Table>
+
+        <Panel id="tracesFilterPanel" headerText="{i18n>filterTitle}" accessibleRole="Region" backgroundDesign="Transparent" class="sapUiSmallMarginBottom">
+        <FlexBox id="tracesFilterBar" wrap="Wrap" alignItems="End">
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="tracesFromLabel" text="{i18n>fromLabel}" labelFor="tracesFromPicker" required="true"/>
+                <DateTimePicker id="tracesFromPicker" width="13rem" value="{traces>/fromLocal}" valueFormat="yyyy-MM-dd HH:mm:ss"
+                    displayFormat="short" valueState="{traces>/rangeState}" valueStateText="{traces>/rangeError}" change=".onRangeChange"/>
+            </VBox>
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="tracesToLabel" text="{i18n>toLabel}" labelFor="tracesToPicker"/>
+                <DateTimePicker id="tracesToPicker" width="13rem" value="{traces>/toLocal}" valueFormat="yyyy-MM-dd HH:mm:ss"
+                    displayFormat="short" valueState="{traces>/rangeState}" valueStateText="{traces>/rangeError}" change=".onRangeChange"/>
+            </VBox>
+            <HBox alignItems="Center" wrap="Wrap" class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Button id="tracesLast15Button" text="{i18n>quickLast15}" press=".onLast15" class="sapUiTinyMarginEnd"/>
+                <Button id="tracesLastHourButton" text="{i18n>quickLastHour}" press=".onLastHour" class="sapUiTinyMarginEnd"/>
+                <Button id="tracesTodayButton" text="{i18n>quickToday}" press=".onToday" class="sapUiTinyMarginEnd"/>
+                <Text id="tracesTimeZoneText" text="{traces>/timeZoneText}"/>
+            </HBox>
+            <VBox class="sapUiSmallMarginEnd sapUiTinyMarginBottom">
+                <Label id="tracesSearchLabel" text="{i18n>traceFilterLabel}" labelFor="tracesSearchField"/>
+                <SearchField id="tracesSearchField" width="16rem" value="{traces>/search}" placeholder="{i18n>traceFilterPlaceholder}"
+                    tooltip="{i18n>traceFilterTooltip}" ariaLabelledBy="tracesSearchLabel" search=".onReload"/>
+            </VBox>
+        </FlexBox>
+        </Panel>
+
+        <MessageStrip id="tracesDeleteResultStrip" type="Success" showIcon="true" class="sapUiTinyMarginBottom"
+            text="{traces>/deleteResult}" visible="{= ${traces>/deleteResult} !== '' }"/>
+
+        <!-- A row opens the request's detail. Every value reaches the page as text. -->
+        <Table id="tracesTable" items="{traces>/rows}" busy="{traces>/busy}" busyIndicatorDelay="300" noDataText="{traces>/noDataText}"
+            growing="true" growingThreshold="100" growingScrollToLoad="true" sticky="ColumnHeaders" ariaLabelledBy="tracesTitle">
+            <headerToolbar>
+                <!-- The table's actions sit in its own toolbar, inside the table's padding. -->
+                <OverflowToolbar id="tracesToolbar" style="Clear">
+                    <Title id="tracesTitle" text="{i18n>tracesTitle}" level="H2"/>
+                    <ToolbarSpacer/>
+                    <Button id="startRawCaptureButton" icon="sap-icon://record" text="{i18n>startRawCapture}" type="Emphasized" press=".onStartRawCapture"/>
+                    <Button id="tracesRefreshButton" icon="sap-icon://refresh" text="{i18n>refresh}" type="Transparent" press=".onRefresh"/>
+                    <Button id="tracesDeleteNowButton" icon="sap-icon://delete" text="{i18n>deleteNow}" type="Reject" tooltip="{i18n>deleteNowTooltip}"
+                        enabled="{= !${traces>/deleting} }" press=".onDeleteNow"/>
+                </OverflowToolbar>
+            </headerToolbar>
+            <columns>
+                <Column width="13rem"><Text text="{i18n>columnTime}"/></Column>
+                <Column><Text text="{i18n>columnRoute}"/></Column>
+                <Column demandPopin="true" minScreenWidth="Tablet"><Text text="{i18n>columnModel}"/></Column>
+                <Column demandPopin="true" minScreenWidth="Tablet"><Text text="{i18n>columnKeyAndUser}"/></Column>
+                <Column width="5rem"><Text text="{i18n>columnStatus}"/></Column>
+                <Column width="7rem" hAlign="End" demandPopin="true" minScreenWidth="Tablet"><Text text="{i18n>columnDuration}"/></Column>
+                <Column width="10rem"><Text text="{i18n>columnContent}"/></Column>
+            </columns>
+            <items>
+                <ColumnListItem type="Navigation" press=".onOpenTrace" vAlign="Middle">
+                    <cells>
+                        <Text text="{traces>timeText}" wrapping="false"/>
+                        <Text text="{traces>facts/route}"/>
+                        <Text text="{traces>facts/model}"/>
+                        <Text text="{traces>facts/keyAndUser}"/>
+                        <ObjectStatus text="{traces>facts/status}" state="{traces>facts/statusState}"/>
+                        <Text text="{traces>durationText}"/>
+                        <Text text="{traces>contentText}"/>
+                    </cells>
+                </ColumnListItem>
+            </items>
+        </Table>
+        <Text id="tracesFooterText" text="{traces>/footerText}" class="sapUiSmallMarginBegin sapUiTinyMarginTop"/>
+    </VBox>
+</mvc:View>

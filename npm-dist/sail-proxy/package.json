@@ -1,6 +1,6 @@
 {
   "name": "@st-gr/sail-proxy",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "SAP AI Core Local LLM Proxy - A command-line tool to run a local proxy for SAP AI Core Foundation Models",
   "keywords": [
     "sap",
@@ -89,7 +89,7 @@
     "typescript": "^5.8.3"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "publishConfig": {
     "access": "public"

@@ -3,7 +3,7 @@
   "info": {
     "title": "sail-proxy admin OData API",
     "description": "OData V4 service behind the admin cockpit (AdminService), generated from the CDS model.",
-    "version": "0.12.1"
+    "version": "0.13.0"
   },
   "x-sap-api-type": "ODATAV4",
   "x-odata-version": "4.01",
@@ -93,6 +93,9 @@
       "name": "ExpiredAwsCredentials"
     },
     {
+      "name": "GatewayLog"
+    },
+    {
       "name": "LibraryModels"
     },
     {
@@ -114,6 +117,9 @@
       "name": "MySecurityNotifications"
     },
     {
+      "name": "PayloadTraces"
+    },
+    {
       "name": "ProviderConnections"
     },
     {
@@ -124,6 +130,12 @@
     },
     {
       "name": "RateLimitWindows"
+    },
+    {
+      "name": "RawCaptureSessions"
+    },
+    {
+      "name": "RawTraceIndex"
     },
     {
       "name": "SapCapacityUnitPrice"
@@ -14562,6 +14574,181 @@
         }
       }
     },
+    "/GatewayLog": {
+      "get": {
+        "summary": "Retrieves a list of gateway log.",
+        "tags": [
+          "GatewayLog"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/top"
+          },
+          {
+            "$ref": "#/components/parameters/skip"
+          },
+          {
+            "$ref": "#/components/parameters/search"
+          },
+          {
+            "name": "$filter",
+            "description": "Filter items by property values, see [Filtering](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter)",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/count"
+          },
+          {
+            "name": "$orderby",
+            "description": "Order items by property values, see [Sorting](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "ID desc",
+                  "loggedAt",
+                  "loggedAt desc",
+                  "seq",
+                  "seq desc",
+                  "level",
+                  "level desc",
+                  "component",
+                  "component desc",
+                  "requestId",
+                  "requestId desc",
+                  "message",
+                  "message desc",
+                  "error",
+                  "error desc",
+                  "storedAt",
+                  "storedAt desc"
+                ]
+              }
+            }
+          },
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "loggedAt",
+                  "seq",
+                  "level",
+                  "component",
+                  "requestId",
+                  "message",
+                  "error",
+                  "storedAt"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved gateway log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of GatewayLog",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdminService.GatewayLog"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/GatewayLog('{ID}')": {
+      "parameters": [
+        {
+          "description": "key: ID",
+          "in": "path",
+          "name": "ID",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      ],
+      "get": {
+        "summary": "Retrieves a single gateway log.",
+        "tags": [
+          "GatewayLog"
+        ],
+        "parameters": [
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "loggedAt",
+                  "seq",
+                  "level",
+                  "component",
+                  "requestId",
+                  "message",
+                  "error",
+                  "storedAt"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved gateway log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminService.GatewayLog"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/LibraryModels": {
       "get": {
         "summary": "Retrieves a list of library models.",
@@ -17757,6 +17944,225 @@
         ]
       }
     },
+    "/PayloadTraces": {
+      "get": {
+        "summary": "Retrieves a list of payload traces.",
+        "tags": [
+          "PayloadTraces"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/top"
+          },
+          {
+            "$ref": "#/components/parameters/skip"
+          },
+          {
+            "$ref": "#/components/parameters/search"
+          },
+          {
+            "name": "$filter",
+            "description": "Filter items by property values, see [Filtering](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter)",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/count"
+          },
+          {
+            "name": "$orderby",
+            "description": "Order items by property values, see [Sorting](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "ID desc",
+                  "requestId",
+                  "requestId desc",
+                  "capturedAt",
+                  "capturedAt desc",
+                  "endpoint",
+                  "endpoint desc",
+                  "model",
+                  "model desc",
+                  "authType",
+                  "authType desc",
+                  "credentialId",
+                  "credentialId desc",
+                  "keyName",
+                  "keyName desc",
+                  "userEmail",
+                  "userEmail desc",
+                  "statusCode",
+                  "statusCode desc",
+                  "durationMs",
+                  "durationMs desc",
+                  "inputTokens",
+                  "inputTokens desc",
+                  "outputTokens",
+                  "outputTokens desc",
+                  "masked",
+                  "masked desc",
+                  "truncated",
+                  "truncated desc",
+                  "omitted",
+                  "omitted desc",
+                  "prompt",
+                  "prompt desc",
+                  "answer",
+                  "answer desc",
+                  "raw",
+                  "raw desc",
+                  "promptSealed",
+                  "promptSealed desc"
+                ]
+              }
+            }
+          },
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "requestId",
+                  "capturedAt",
+                  "endpoint",
+                  "model",
+                  "authType",
+                  "credentialId",
+                  "keyName",
+                  "userEmail",
+                  "statusCode",
+                  "durationMs",
+                  "inputTokens",
+                  "outputTokens",
+                  "masked",
+                  "truncated",
+                  "omitted",
+                  "prompt",
+                  "answer",
+                  "raw",
+                  "promptSealed"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved payload traces",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of PayloadTraces",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdminService.PayloadTraces"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/PayloadTraces('{ID}')": {
+      "parameters": [
+        {
+          "description": "key: ID",
+          "in": "path",
+          "name": "ID",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      ],
+      "get": {
+        "summary": "Retrieves a single payload trace.",
+        "tags": [
+          "PayloadTraces"
+        ],
+        "parameters": [
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "requestId",
+                  "capturedAt",
+                  "endpoint",
+                  "model",
+                  "authType",
+                  "credentialId",
+                  "keyName",
+                  "userEmail",
+                  "statusCode",
+                  "durationMs",
+                  "inputTokens",
+                  "outputTokens",
+                  "masked",
+                  "truncated",
+                  "omitted",
+                  "prompt",
+                  "answer",
+                  "raw",
+                  "promptSealed"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved payload trace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminService.PayloadTraces"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/ProviderConnections": {
       "get": {
         "summary": "Retrieves a list of provider connections.",
@@ -20486,6 +20892,353 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminService.RateLimitWindows"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/RawCaptureSessions": {
+      "get": {
+        "summary": "Retrieves a list of raw capture sessions.",
+        "tags": [
+          "RawCaptureSessions"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/top"
+          },
+          {
+            "$ref": "#/components/parameters/skip"
+          },
+          {
+            "$ref": "#/components/parameters/search"
+          },
+          {
+            "name": "$filter",
+            "description": "Filter items by property values, see [Filtering](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter)",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/count"
+          },
+          {
+            "name": "$orderby",
+            "description": "Order items by property values, see [Sorting](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "ID desc",
+                  "startedAt",
+                  "startedAt desc",
+                  "endsAt",
+                  "endsAt desc",
+                  "endedAt",
+                  "endedAt desc",
+                  "startedBy",
+                  "startedBy desc",
+                  "reason",
+                  "reason desc",
+                  "apiKeyIds",
+                  "apiKeyIds desc",
+                  "emails",
+                  "emails desc",
+                  "credentialIds",
+                  "credentialIds desc",
+                  "endedBy",
+                  "endedBy desc"
+                ]
+              }
+            }
+          },
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "startedAt",
+                  "endsAt",
+                  "endedAt",
+                  "startedBy",
+                  "reason",
+                  "apiKeyIds",
+                  "emails",
+                  "credentialIds",
+                  "endedBy"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved raw capture sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of RawCaptureSessions",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdminService.RawCaptureSessions"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/RawCaptureSessions({ID})": {
+      "parameters": [
+        {
+          "description": "key: ID",
+          "in": "path",
+          "name": "ID",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid",
+            "example": "01234567-89ab-cdef-0123-456789abcdef"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Retrieves a single raw capture session.",
+        "tags": [
+          "RawCaptureSessions"
+        ],
+        "parameters": [
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "startedAt",
+                  "endsAt",
+                  "endedAt",
+                  "startedBy",
+                  "reason",
+                  "apiKeyIds",
+                  "emails",
+                  "credentialIds",
+                  "endedBy"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved raw capture session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminService.RawCaptureSessions"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/RawTraceIndex": {
+      "get": {
+        "summary": "Retrieves a list of raw trace index.",
+        "tags": [
+          "RawTraceIndex"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/top"
+          },
+          {
+            "$ref": "#/components/parameters/skip"
+          },
+          {
+            "$ref": "#/components/parameters/search"
+          },
+          {
+            "name": "$filter",
+            "description": "Filter items by property values, see [Filtering](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter)",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/count"
+          },
+          {
+            "name": "$orderby",
+            "description": "Order items by property values, see [Sorting](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "ID desc",
+                  "requestId",
+                  "requestId desc",
+                  "sessionId",
+                  "sessionId desc",
+                  "credentialId",
+                  "credentialId desc",
+                  "capturedAt",
+                  "capturedAt desc",
+                  "stageIndex",
+                  "stageIndex desc",
+                  "cutStages",
+                  "cutStages desc"
+                ]
+              }
+            }
+          },
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "requestId",
+                  "sessionId",
+                  "credentialId",
+                  "capturedAt",
+                  "stageIndex",
+                  "cutStages"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved raw trace index",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of RawTraceIndex",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdminService.RawTraceIndex"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/RawTraceIndex('{ID}')": {
+      "parameters": [
+        {
+          "description": "key: ID",
+          "in": "path",
+          "name": "ID",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      ],
+      "get": {
+        "summary": "Retrieves a single raw trace index.",
+        "tags": [
+          "RawTraceIndex"
+        ],
+        "parameters": [
+          {
+            "name": "$select",
+            "description": "Select properties to be returned, see [Select](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect)",
+            "in": "query",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ID",
+                  "requestId",
+                  "sessionId",
+                  "credentialId",
+                  "capturedAt",
+                  "stageIndex",
+                  "cutStages"
+                ]
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieved raw trace index",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminService.RawTraceIndex"
                 }
               }
             }
@@ -35384,6 +36137,47 @@
         }
       }
     },
+    "/activeRawCapture": {
+      "get": {
+        "summary": "Invokes function activeRawCapture",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of return_AdminService_activeRawCapture",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/AdminService.return_AdminService_activeRawCapture"
+                          }
+                        ],
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/assignCatalog": {
       "post": {
         "summary": "Invokes action assignCatalog",
@@ -36354,6 +37148,50 @@
         }
       }
     },
+    "/deleteStoredLogs": {
+      "post": {
+        "summary": "Invokes action deleteStoredLogs",
+        "tags": [
+          "Service Operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.return_AdminService_deleteStoredLogs"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        },
+        "requestBody": {
+          "description": "Action parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "what": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/deploymentStatus": {
       "get": {
         "summary": "Invokes function deploymentStatus",
@@ -36618,6 +37456,44 @@
         }
       }
     },
+    "/gatewayLogComponents": {
+      "get": {
+        "summary": "Invokes function gatewayLogComponents",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Collection of String",
+                  "properties": {
+                    "@count": {
+                      "$ref": "#/components/schemas/count"
+                    },
+                    "value": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 80,
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/getActiveConfiguration": {
       "get": {
         "summary": "Invokes function getActiveConfiguration",
@@ -36862,6 +37738,35 @@
         }
       }
     },
+    "/getLoggingSettings": {
+      "get": {
+        "summary": "Invokes function getLoggingSettings",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.LoggingSettingsResult"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/getSecurityEvents": {
       "post": {
         "summary": "Invokes action getSecurityEvents",
@@ -36926,6 +37831,35 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/getShippedConfiguration": {
+      "get": {
+        "summary": "Invokes function getShippedConfiguration",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.return_AdminService_getShippedConfiguration"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
           }
         }
       }
@@ -37523,6 +38457,102 @@
         }
       }
     },
+    "/openPayloadTrace": {
+      "get": {
+        "summary": "Invokes function openPayloadTrace",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [
+          {
+            "required": false,
+            "in": "query",
+            "name": "ID",
+            "description": "String value needs to be enclosed in single quotes",
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "pattern": "^(null|'([^']|'')*')$",
+              "default": "null"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.return_AdminService_openPayloadTrace"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
+    "/openRawStage": {
+      "get": {
+        "summary": "Invokes function openRawStage",
+        "tags": [
+          "Service Operations"
+        ],
+        "parameters": [
+          {
+            "required": false,
+            "in": "query",
+            "name": "ID",
+            "description": "String value needs to be enclosed in single quotes",
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "pattern": "^(null|'([^']|'')*')$",
+              "default": "null"
+            }
+          },
+          {
+            "required": false,
+            "in": "query",
+            "name": "stage",
+            "description": "String value needs to be enclosed in single quotes",
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "pattern": "^(null|'([^']|'')*')$",
+              "default": "null"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.return_AdminService_openRawStage"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/pinNotification": {
       "post": {
         "summary": "Invokes action pinNotification",
@@ -37980,6 +39010,34 @@
         }
       }
     },
+    "/resetLoggingSettings": {
+      "post": {
+        "summary": "Invokes action resetLoggingSettings",
+        "tags": [
+          "Service Operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.LoggingSettingsResult"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        }
+      }
+    },
     "/resetTeamQuotas": {
       "post": {
         "summary": "Invokes action resetTeamQuotas",
@@ -38300,6 +39358,67 @@
         }
       }
     },
+    "/setLoggingSettings": {
+      "post": {
+        "summary": "Invokes action setLoggingSettings",
+        "tags": [
+          "Service Operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.LoggingSettingsResult"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        },
+        "requestBody": {
+          "description": "Action parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "logStorageEnabled": {
+                    "type": "boolean",
+                    "nullable": true
+                  },
+                  "payloadCaptureEnabled": {
+                    "type": "boolean",
+                    "nullable": true
+                  },
+                  "defaultLevel": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "defaultLevelMinutes": {
+                    "type": "integer",
+                    "format": "int32",
+                    "nullable": true
+                  },
+                  "componentLevels": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/setSiemCredential": {
       "post": {
         "summary": "Invokes action setSiemCredential",
@@ -38450,6 +39569,101 @@
                     "type": "string",
                     "format": "date-time",
                     "example": "2017-04-13T15:51:04.0000000Z",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/startRawCapture": {
+      "post": {
+        "summary": "Invokes action startRawCapture",
+        "tags": [
+          "Service Operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminService.return_AdminService_startRawCapture"
+                    }
+                  ],
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        },
+        "requestBody": {
+          "description": "Action parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "apiKeyIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "emails": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "minutes": {
+                    "type": "integer",
+                    "format": "int32",
+                    "nullable": true
+                  },
+                  "reason": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stopRawCapture": {
+      "post": {
+        "summary": "Invokes action stopRawCapture",
+        "tags": [
+          "Service Operations"
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/error"
+          }
+        },
+        "requestBody": {
+          "description": "Action parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ID": {
+                    "type": "string",
                     "nullable": true
                   }
                 }
@@ -44788,6 +46002,66 @@
           }
         }
       },
+      "AdminService.GatewayLog": {
+        "title": "GatewayLog",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "loggedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": "42",
+            "nullable": true
+          },
+          "level": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          },
+          "component": {
+            "type": "string",
+            "maxLength": 80,
+            "nullable": true
+          },
+          "requestId": {
+            "type": "string",
+            "maxLength": 60,
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 2000,
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "maxLength": 500,
+            "nullable": true
+          },
+          "storedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          }
+        }
+      },
       "AdminService.LibraryModels": {
         "title": "LibraryModels",
         "type": "object",
@@ -45059,6 +46333,158 @@
           "connection": {
             "type": "string",
             "maxLength": 31,
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.LoggingSettingsResult": {
+        "title": "LoggingSettingsResult",
+        "type": "object",
+        "properties": {
+          "logStorageEnabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "payloadCaptureEnabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "defaultLevel": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          },
+          "defaultLevelUntil": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "componentLevels": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/AdminService.LoggingSettingsResult_componentLevels"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          "configurationLogStorageEnabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "configurationPayloadCaptureEnabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "traceKeyStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "configurationDefaultLevel": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          },
+          "configurationComponentLevels": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/AdminService.LoggingSettingsResult_configurationComponentLevels"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          "configurationStoredLevel": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          },
+          "environmentReported": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "environmentReportedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "environmentFixed": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/AdminService.LoggingSettingsResult_environmentFixed"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          "payloadFileLoggingEnabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "warning": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.LoggingSettingsResult_componentLevels": {
+        "title": "LoggingSettingsResult_componentLevels",
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "maxLength": 80,
+            "nullable": true
+          },
+          "level": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.LoggingSettingsResult_configurationComponentLevels": {
+        "title": "LoggingSettingsResult_configurationComponentLevels",
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "maxLength": 80,
+            "nullable": true
+          },
+          "level": {
+            "type": "string",
+            "maxLength": 5,
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.LoggingSettingsResult_environmentFixed": {
+        "title": "LoggingSettingsResult_environmentFixed",
+        "type": "object",
+        "properties": {
+          "variable": {
+            "type": "string",
+            "maxLength": 40,
+            "nullable": true
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 100,
             "nullable": true
           }
         }
@@ -46099,6 +47525,106 @@
                 "$ref": "#/components/schemas/AdminService.TeamQuotaStatus"
               }
             ],
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.PayloadTraces": {
+        "title": "PayloadTraces",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "requestId": {
+            "type": "string",
+            "maxLength": 60,
+            "nullable": true
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "endpoint": {
+            "type": "string",
+            "maxLength": 500,
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "nullable": true
+          },
+          "authType": {
+            "type": "string",
+            "maxLength": 40,
+            "nullable": true
+          },
+          "credentialId": {
+            "type": "string",
+            "maxLength": 100,
+            "nullable": true
+          },
+          "keyName": {
+            "type": "string",
+            "maxLength": 100,
+            "nullable": true
+          },
+          "userEmail": {
+            "type": "string",
+            "maxLength": 255,
+            "nullable": true
+          },
+          "statusCode": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "durationMs": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "masked": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "truncated": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "omitted": {
+            "type": "string",
+            "maxLength": 30,
+            "nullable": true
+          },
+          "prompt": {
+            "type": "string",
+            "nullable": true
+          },
+          "answer": {
+            "type": "string",
+            "nullable": true
+          },
+          "raw": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "promptSealed": {
+            "type": "boolean",
             "nullable": true
           }
         }
@@ -47793,6 +49319,309 @@
             "items": {
               "$ref": "#/components/schemas/AdminService.RateLimitWindows-create"
             }
+          }
+        }
+      },
+      "AdminService.RawCaptureSessions": {
+        "title": "RawCaptureSessions",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "format": "uuid",
+            "example": "01234567-89ab-cdef-0123-456789abcdef"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "startedBy": {
+            "type": "string",
+            "maxLength": 255,
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "nullable": true
+          },
+          "apiKeyIds": {
+            "type": "string",
+            "nullable": true
+          },
+          "emails": {
+            "type": "string",
+            "nullable": true
+          },
+          "credentialIds": {
+            "type": "string",
+            "nullable": true
+          },
+          "endedBy": {
+            "type": "string",
+            "maxLength": 255,
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.RawTraceIndex": {
+        "title": "RawTraceIndex",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "requestId": {
+            "type": "string",
+            "maxLength": 60,
+            "nullable": true
+          },
+          "sessionId": {
+            "type": "string",
+            "maxLength": 60,
+            "nullable": true
+          },
+          "credentialId": {
+            "type": "string",
+            "maxLength": 100,
+            "nullable": true
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "stageIndex": {
+            "type": "string",
+            "nullable": true
+          },
+          "cutStages": {
+            "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.SapBillingCredentialItem": {
+        "title": "SapBillingCredentialItem",
+        "type": "object",
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "maxLength": 13,
+            "nullable": true
+          },
+          "credentialId": {
+            "type": "string",
+            "maxLength": 36,
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "sapCostCurrency": {
+            "type": "string",
+            "maxLength": 3,
+            "nullable": true
+          },
+          "totalRequests": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "totalImageInputTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": "42",
+            "nullable": true
+          },
+          "totalImageOutputTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": "42",
+            "nullable": true
+          },
+          "totalAudioInputTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": "42",
+            "nullable": true
+          },
+          "totalAudioOutputTokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": "42",
+            "nullable": true
+          },
+          "totalGenAiTokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.0001
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 16,
+            "x-sap-scale": 4,
+            "nullable": true
+          },
+          "totalCapacityUnits": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.000001
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 16,
+            "x-sap-scale": 6,
+            "nullable": true
+          },
+          "totalSapCost": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.000001,
+                "maximum": 99999999.999999,
+                "minimum": -99999999.999999
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 14,
+            "x-sap-scale": 6,
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.SapBillingTeamItem": {
+        "title": "SapBillingTeamItem",
+        "type": "object",
+        "properties": {
+          "teamId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "01234567-89ab-cdef-0123-456789abcdef",
+            "nullable": true
+          },
+          "teamName": {
+            "type": "string",
+            "nullable": true
+          },
+          "sapCostCurrency": {
+            "type": "string",
+            "maxLength": 3,
+            "nullable": true
+          },
+          "totalRequests": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "totalGenAiTokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.0001
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 16,
+            "x-sap-scale": 4,
+            "nullable": true
+          },
+          "totalCapacityUnits": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.000001
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 16,
+            "x-sap-scale": 6,
+            "nullable": true
+          },
+          "totalSapCost": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "decimal",
+                "multipleOf": 0.000001,
+                "maximum": 99999999.999999,
+                "minimum": -99999999.999999
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "example": 0,
+            "x-sap-precision": 14,
+            "x-sap-scale": 6,
+            "nullable": true
           }
         }
       },
@@ -51280,6 +53109,14 @@
         "title": "UsageStatisticsResult",
         "type": "object",
         "properties": {
+          "sapBilling": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminService.UsageStatisticsResult_sapBilling"
+              }
+            ],
+            "nullable": true
+          },
           "apiKeyUsage": {
             "type": "array",
             "items": {
@@ -51340,6 +53177,34 @@
             "items": {
               "type": "string",
               "maxLength": 31,
+              "nullable": true
+            }
+          }
+        }
+      },
+      "AdminService.UsageStatisticsResult_sapBilling": {
+        "title": "UsageStatisticsResult_sapBilling",
+        "type": "object",
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/AdminService.SapBillingCredentialItem"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/AdminService.SapBillingTeamItem"
+                }
+              ],
               "nullable": true
             }
           }
@@ -53657,6 +55522,36 @@
           }
         }
       },
+      "AdminService.return_AdminService_activeRawCapture": {
+        "title": "return_AdminService_activeRawCapture",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "nullable": true
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "startedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "keyCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "addressCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          }
+        }
+      },
       "AdminService.return_AdminService_bulkDeleteSecurityNotifications": {
         "title": "return_AdminService_bulkDeleteSecurityNotifications",
         "type": "object",
@@ -53905,6 +55800,27 @@
           },
           "error": {
             "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.return_AdminService_deleteStoredLogs": {
+        "title": "return_AdminService_deleteStoredLogs",
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "logEntries": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "traces": {
+            "type": "integer",
+            "format": "int32",
             "nullable": true
           }
         }
@@ -54554,6 +56470,20 @@
           }
         }
       },
+      "AdminService.return_AdminService_getShippedConfiguration": {
+        "title": "return_AdminService_getShippedConfiguration",
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "configData": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "AdminService.return_AdminService_getValidationMetrics": {
         "title": "return_AdminService_getValidationMetrics",
         "type": "object",
@@ -54843,6 +56773,50 @@
           },
           "isDefault": {
             "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.return_AdminService_openPayloadTrace": {
+        "title": "return_AdminService_openPayloadTrace",
+        "type": "object",
+        "properties": {
+          "masked": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "prompt": {
+            "type": "string",
+            "nullable": true
+          },
+          "answer": {
+            "type": "string",
+            "nullable": true
+          },
+          "problem": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.return_AdminService_openRawStage": {
+        "title": "return_AdminService_openRawStage",
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "nullable": true
+          },
+          "content": {
+            "type": "string",
+            "nullable": true
+          },
+          "cut": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "problem": {
+            "type": "string",
             "nullable": true
           }
         }
@@ -55159,6 +57133,31 @@
             "nullable": true
           },
           "message": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AdminService.return_AdminService_startRawCapture": {
+        "title": "return_AdminService_startRawCapture",
+        "type": "object",
+        "properties": {
+          "ID": {
+            "type": "string",
+            "nullable": true
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2017-04-13T15:51:04.0000000Z",
+            "nullable": true
+          },
+          "credentialCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "keyWarning": {
             "type": "string",
             "nullable": true
           }

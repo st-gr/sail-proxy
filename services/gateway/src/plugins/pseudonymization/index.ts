@@ -34,6 +34,10 @@ import { readForceSource, servedModelOf } from '../../pluginSupport/pseudonymiza
 import { unmaskText, unmaskJsonValue, unmaskJsonArguments, unmaskResponseBody } from '../../pluginSupport/pseudonymization/unmasker';
 import { mapJsonStringLeaves } from '../../utils/jsonStringLeaves';
 import { StreamUnmaskBuffer } from './streamBuffer';
+import { ThinkingStream } from './thinkingStream';
+import {
+  hasUnmarkedThinking, maskUnsignedThinking, remaskThinkingBlocks, unmaskThinkingBlocks, withThinkingSetAside,
+} from '../../pluginSupport/pseudonymization/thinkingRoundTrip';
 import { entityCache } from './entityCache';
 import {
   buildSaturationReport,
@@ -162,26 +166,25 @@ function maskJsonArguments(
  * message, or as a new system message at index 0. Index 0 keeps the last message the
  * client's own and never places a system message after a tool message.
  *
- * The system message is REPLACED by a copy, never edited in place: the orchestration
- * chat path has already built its SAP payload from these same message objects, and
- * that payload must stay as it is.
+ * An existing system message is edited IN PLACE: the orchestration chat path has already
+ * built its SAP payload from these same message objects (which is how masking reaches it),
+ * so a replaced copy would leave the note out of what the model gets. A system message
+ * added here is new to that payload; the controller adopts it (adoptAddedSystemMessage
+ * in openaiController.ts).
  */
 function appendOpenAIChatSystemNote(messages: any[], note: string): void {
-  const index = messages.findIndex((m: any) => m?.role === 'system');
-  if (index === -1) {
+  const system = messages.find((m: any) => m?.role === 'system');
+  if (!system) {
     messages.unshift({ role: 'system', content: note });
     return;
   }
-  const system = messages[index];
-  let content: any;
   if (Array.isArray(system.content)) {
-    content = [...system.content, { type: 'text', text: note }];
+    system.content = [...system.content, { type: 'text', text: note }];
   } else if (typeof system.content === 'string' && system.content.length > 0) {
-    content = `${system.content}\n\n${note}`;
+    system.content = `${system.content}\n\n${note}`;
   } else {
-    content = note;
+    system.content = note;
   }
-  messages[index] = { ...system, content };
 }
 
 /**
@@ -685,6 +688,10 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       }
     }
 
+    // The bypass field is a gateway control field, never forwarded: isBypassRequested strips it
+    // only when it is read (forced, no caller config), and native Anthropic/Bedrock reject it.
+    if (req.body && typeof req.body === 'object') delete req.body.pseudonymization_off;
+
     // No-op if no activation method triggered
     if (!maskingConfig) {
       return { stop: false };
@@ -892,6 +899,15 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
     // detected value across the request, including nodes where no detector fired
     // (e.g. the same secret riding through in an `Authorization: Bearer` header).
     // Prevents the model from seeing the raw value alongside its mask.
+    // Thinking without a signature is not model-signed text: masked like the rest, and before the
+    // propagation so a value first found there is masked everywhere.
+    maskUnsignedThinking(req.body, (text: string) => {
+      const detected = detectEntities(text, detectConfig);
+      if (detected.length === 0) return text;
+      allEntities.push(...detected);
+      return replaceEntities(text, detected, map, maskingConfig);
+    });
+
     const propagated = propagateMaskedValues(req.body, map);
 
     // A name a transcript's speaker labels vouched for is masked wherever it stands alone, in every
@@ -904,13 +920,30 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
       ? 0
       : propagateMaskedValues(req.body, map, { minLength: 1, only: vouchedNames });
 
+    // Thinking the client sent back. A block the controller rebuilt from its restore record is the
+    // text the model signed and stays as it is. Any other block gets every value this request knows
+    // replaced, whatever its length: before, a restored name shorter than the propagation's floor
+    // went back upstream in plain text inside the thinking (thinkingRoundTrip.ts).
+    const remaskedThinking = remaskThinkingBlocks(req.body, map, (req as any).__thinkingExact);
+    if (remaskedThinking > 0) {
+      logger.info(`Masked known values again in ${remaskedThinking} thinking block(s) that came back without a usable restore record`);
+    }
+
     // Tell the model to treat placeholder tokens as opaque and copy them verbatim.
     // A garbled id cannot be unmasked (the value is unrecoverable), so copy fidelity
     // is part of the design; observed in practice: models occasionally rewrite ids
     // when reproducing them in generated files unless explicitly instructed not to.
+    // The note also says that the real values come back: told only that values are "masked",
+    // models decline tasks that address a person or an address ("I can't write to a masked
+    // contact"; claude-4.5-haiku 5 of 5 on a one-line request, 2026-11-09) or drop the name.
     if (maskingConfig.method === 'pseudonymization' && map.size > 0) {
       const copyNote = 'Some values in this conversation are pseudonymized as placeholder tokens of the form '
-        + 'MASKED_<TYPE>_<id>. Treat each token as an opaque identifier: when you refer to a masked value, '
+        + 'MASKED_<TYPE>_<id>. Each token stands for a real value (a name, an e-mail address, a phone number '
+        + 'and so on) that is restored automatically in your answer before the user sees it. Work with the '
+        + 'tokens exactly as you would with the real values: address a person or write to an address by its '
+        + 'token, and complete the task as asked. Do not mention that values are masked, redacted or '
+        + 'placeholders, and do not decline the task or ask for the real value because of it. '
+        + 'Treat each token as an opaque identifier: when you refer to a masked value, '
         + 'copy its token EXACTLY, character for character. Never invent, alter, shorten, or merge token ids. '
         + 'Only use MASKED_* tokens that appear verbatim in this conversation — NEVER invent, guess, or '
         + 'construct a new MASKED_* token or id under any circumstances; a token you did not see in the input '
@@ -1018,7 +1051,18 @@ async function beforeHandler({ req, res, utils }: PluginContext): Promise<{ stop
 // AFTER HANDLER: Unmask response content
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Promise<any> {
+/**
+ * What awsBedrockService hands the after-plugins once a native stream has ended: the upstream's
+ * captured events, or a note that none were captured. Never the client's answer.
+ */
+function isStreamEndWrapper(upstreamResponse: any): boolean {
+  if (!upstreamResponse || typeof upstreamResponse !== 'object' || Array.isArray(upstreamResponse)) return false;
+  const keys = Object.keys(upstreamResponse);
+  if (keys.length !== 1) return false;
+  return Array.isArray(upstreamResponse.events) || upstreamResponse.message === 'Stream completed without captured events';
+}
+
+async function afterHandler({ req, res, upstreamResponse, utils }: PluginContext): Promise<any> {
   const logger = utils.logger;
 
   try {
@@ -1026,10 +1070,24 @@ async function afterHandler({ req, upstreamResponse, utils }: PluginContext): Pr
     if (!state) {
       return upstreamResponse;
     }
+    // End of a native stream. The events are the upstream's, masked by design: the wire interceptor
+    // restored what the client read (and audits each block it wrote), and the response cache stores
+    // the masked form. Reading them as the client's answer reported every placeholder the model
+    // wrote as an unmask miss, and one split across two deltas as an unknown token.
+    if ((res as any)?.__pseudoSseInterceptorInstalled && isStreamEndWrapper(upstreamResponse)) {
+      return upstreamResponse;
+    }
     logger.debug(`After handler: state found, method=${state.config.method}, entities=${state.entities.length}`);
 
     const map = (req as any).__pseudonymizationMap as ReplacementMap | undefined;
     if (!map) return upstreamResponse;
+
+    // Thinking of an answer in one piece, first and also with an empty map: every block gets its
+    // restore record, which must describe the masked text before anything else (below, or the
+    // patched res.json) restores placeholders in it.
+    if (state.config.method === 'pseudonymization' && hasUnmarkedThinking(upstreamResponse)) {
+      unmaskThinkingBlocks(upstreamResponse, map);
+    }
 
     // In pseudonymization mode, skip if no entities were detected
     if (state.config.method === 'pseudonymization' && map.size === 0) return upstreamResponse;
@@ -1148,13 +1206,22 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     (res as any).json = function patchedJson(body: any): Response {
       const id = (req as any)?.debugRequestId || 'unknown';
       try {
+        // Thinking first, with its restore record (a cache hit never saw the after-handler), on a
+        // copy: a cache hit may hand over the stored object.
+        if (body && typeof body === 'object' && hasUnmarkedThinking(body)) {
+          body = JSON.parse(JSON.stringify(body));
+          unmaskThinkingBlocks(body, map);
+        }
         if (body && typeof body === 'object' && map.reverse.size > 0) {
           const serialized = JSON.stringify(body);
           if (serialized.includes('MASKED_')) {
             // Restored on a parsed copy, never in place (a cache hit may hand over the stored
             // object) and never on the serialized bytes: a restored value containing `"` or `\`
             // would break the JSON. Tool-call arguments are JSON text and restored leaf by leaf.
-            const restored = unmaskResponseBody(JSON.parse(serialized), map, containmentOf(map));
+            // Thinking is set aside: its text is final, and a placeholder the model invented
+            // there must stay as written (the restore record describes that text).
+            const copy = JSON.parse(serialized);
+            const restored = withThinkingSetAside(copy, () => unmaskResponseBody(copy, map, containmentOf(map)));
             const out = JSON.stringify(restored);
             const left = Array.from(map.reverse.keys()).filter((p) => out.includes(p)).length;
             if (left > 0) {
@@ -1182,6 +1249,14 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     return b;
   };
 
+  // Thinking blocks, by key (`thinking:<index>`, `converse_reasoning:<index>`): restored like text,
+  // and each collects the restore record that goes onto its signature (thinkingStream.ts).
+  const thinkingStreams = new Map<string, ThinkingStream>();
+  const getThinking = (key: string): ThinkingStream => {
+    let s = thinkingStreams.get(key);
+    if (!s) { s = new ThinkingStream(map); thinkingStreams.set(key, s); }
+    return s;
+  };
   // Per-block emitted content, used only for the leak audit below.
   const emitted = new Map<string, string>();
   const track = (key: string, s: string): void => {
@@ -1206,8 +1281,13 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
   // Partial SSE block carried across write() calls (re-framing buffer).
   let pending = '';
 
+  // Set by processBlock when what it returns holds thinking text (a thinking frame, or a held-back
+  // rest of one sent ahead of another frame): the byte-level safety net skips that block.
+  let blockHoldsThinking = false;
+
   // Process one complete SSE block; returns the (possibly rewritten) block.
   const processBlock = (block: string): string => {
+    blockHoldsThinking = false;
     // Two SSE formats are emitted by this gateway:
     //   1) "event: <name>\ndata: <json>\n\n" (writeEventStream)
     //   2) "data: <json>\n\n" (writeChunk — used by BedrockStreamParser)
@@ -1244,6 +1324,10 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
 
     let modified = false;
     let syntheticPrefix = '';
+    // A frame of a thinking block (its text or its signature): the passes below that restore or
+    // withhold placeholders anywhere in a frame leave it alone. The thinking stream has restored
+    // what the map knows, and what the model invented must stay as written.
+    let thinkingFrame = false;
 
     // Serialize a synthetic delta in the same format as the surrounding stream,
     // emitted BEFORE the current event for correct ordering.
@@ -1268,6 +1352,41 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
       modified = true;
     }
 
+    // Anthropic content_block_delta with thinking_delta. Restored like text; a placeholder cut by
+    // the frame is held back until it is whole.
+    if (event.type === 'content_block_delta'
+        && event.delta?.type === 'thinking_delta'
+        && typeof event.delta.thinking === 'string') {
+      const key = `thinking:${event.index ?? 0}`;
+      event.delta.thinking = getThinking(key).append(event.delta.thinking);
+      track(key, event.delta.thinking);
+      modified = true;
+      thinkingFrame = true;
+      blockHoldsThinking = true;
+    }
+
+    // The thinking block's signature closes its text: what is still held back goes out first, then
+    // the restore record goes onto this signature. In place, never as a second signature event: a
+    // client may keep the last signature it saw instead of concatenating them.
+    if (event.type === 'content_block_delta'
+        && event.delta?.type === 'signature_delta'
+        && typeof event.delta.signature === 'string') {
+      const idx = event.index ?? 0;
+      const key = `thinking:${idx}`;
+      const stream = thinkingStreams.get(key);
+      if (stream) thinkingFrame = true;
+      if (stream && !stream.sealed) {
+        const remainder = stream.flush();
+        if (remainder) {
+          syntheticPrefix += synth(idx, { type: 'thinking_delta', thinking: remainder });
+          track(key, remainder);
+          blockHoldsThinking = true;
+        }
+        event.delta.signature += stream.seal();
+        modified = true;
+      }
+    }
+
     // Anthropic content_block_delta with input_json_delta (tool call input)
     if (event.type === 'content_block_delta'
         && event.delta?.type === 'input_json_delta'
@@ -1281,6 +1400,10 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
 
     // Bedrock Converse stream (the converse-stream passthrough): assistant text and tool-call
     // input fragments in `contentBlockDelta.delta`, flushed on `contentBlockStop` / `messageStop`.
+    const converseReasoningFrame = (idx: number, text: string): string => {
+      const out = { contentBlockDelta: { contentBlockIndex: idx, delta: { reasoningContent: { text } } } };
+      return `${eventName ? 'event: contentBlockDelta\n' : ''}data: ${JSON.stringify(out)}\n\n`;
+    };
     const converseDelta = event?.contentBlockDelta;
     if (converseDelta && typeof converseDelta === 'object') {
       const idx = converseDelta.contentBlockIndex ?? event.contentBlockIndex ?? 0;
@@ -1296,6 +1419,30 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         converseDelta.delta.toolUse.input = getBuf(key, true).append(converseDelta.delta.toolUse.input);
         track(key, converseDelta.delta.toolUse.input);
         modified = true;
+      }
+      // Reasoning (thinking) and its signature, as the Anthropic thinking_delta / signature_delta above.
+      const reasoning = converseDelta.delta?.reasoningContent;
+      if (reasoning && typeof reasoning === 'object') {
+        const key = `converse_reasoning:${idx}`;
+        if (typeof reasoning.text === 'string') {
+          reasoning.text = getThinking(key).append(reasoning.text);
+          track(key, reasoning.text);
+          modified = true;
+          thinkingFrame = true;
+          blockHoldsThinking = true;
+        }
+        const stream = thinkingStreams.get(key);
+        if (typeof reasoning.signature === 'string' && stream) thinkingFrame = true;
+        if (typeof reasoning.signature === 'string' && stream && !stream.sealed) {
+          const remainder = stream.flush();
+          if (remainder) {
+            syntheticPrefix += converseReasoningFrame(idx, remainder);
+            track(key, remainder);
+            blockHoldsThinking = true;
+          }
+          reasoning.signature += stream.seal();
+          modified = true;
+        }
       }
     }
     // Emit a Converse block's retained remainder as a synthetic contentBlockDelta before the
@@ -1317,13 +1464,28 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         buffers.delete(key);
         auditBlock(key);
       }
+      // A reasoning block that ended without a signature: what is held back still goes out.
+      const key = `converse_reasoning:${idx}`;
+      const stream = thinkingStreams.get(key);
+      if (stream) {
+        if (!stream.sealed) {
+          const remainder = stream.flush();
+          if (remainder) {
+            syntheticPrefix += converseReasoningFrame(idx, remainder);
+            track(key, remainder);
+            blockHoldsThinking = true;
+          }
+        }
+        thinkingStreams.delete(key);
+        auditBlock(key);
+      }
     };
     if (event?.contentBlockStop && typeof event.contentBlockStop === 'object') {
       flushConverseBlock(event.contentBlockStop.contentBlockIndex ?? event.contentBlockIndex ?? 0);
     }
     if (event?.messageStop !== undefined) {
       const open = new Set<number>();
-      for (const key of Array.from(buffers.keys())) {
+      for (const key of [...buffers.keys(), ...thinkingStreams.keys()]) {
         if (key.startsWith('converse_')) open.add(parseInt(key.split(':')[1], 10) || 0);
       }
       for (const idx of open) flushConverseBlock(idx);
@@ -1452,8 +1614,23 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         }
         buffers.delete(`tool_use:${idx}`);
       }
+      // A thinking block that ended without a signature: what is held back still goes out.
+      const thinkingKey = `thinking:${idx}`;
+      const thinkingStream = thinkingStreams.get(thinkingKey);
+      if (thinkingStream) {
+        if (!thinkingStream.sealed) {
+          const remainder = thinkingStream.flush();
+          if (remainder) {
+            syntheticPrefix += synth(idx, { type: 'thinking_delta', thinking: remainder });
+            track(thinkingKey, remainder);
+            blockHoldsThinking = true;
+          }
+        }
+        thinkingStreams.delete(thinkingKey);
+      }
       auditBlock(`text:${idx}`);
       auditBlock(`tool_use:${idx}`);
+      auditBlock(thinkingKey);
     }
 
     // Anthropic message_stop — safety flush of ALL remaining buffers (Anthropic streams
@@ -1470,6 +1647,17 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
           track(key, remainder);
         }
         buffers.delete(key);
+      }
+      for (const [key, stream] of Array.from(thinkingStreams.entries())) {
+        if (key.startsWith('thinking:') && !stream.sealed) {
+          const remainder = stream.flush();
+          if (remainder) {
+            syntheticPrefix += synth(parseInt(key.split(':')[1], 10) || 0, { type: 'thinking_delta', thinking: remainder });
+            track(key, remainder);
+            blockHoldsThinking = true;
+          }
+        }
+        thinkingStreams.delete(key);
       }
       for (const key of Array.from(emitted.keys())) auditBlock(key);
     }
@@ -1572,7 +1760,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     // token this request's map cannot resolve, which unmaskResponseBody leaves alone.
     // An `arguments` string (the done / snapshot frames of a function call) is JSON text
     // and is restored leaf by leaf, so it stays valid JSON too.
-    if (carriesPlaceholder) {
+    if (carriesPlaceholder && !thinkingFrame) {
       // Assigned, not just mutated: a frame whose JSON is a bare string or number is
       // returned by value, and unmaskResponseBody has nothing to mutate in place.
       event = unmaskResponseBody(event, map, containmentOf(map));
@@ -1616,9 +1804,11 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
     while ((sep = pending.indexOf('\n\n')) !== -1) {
       const block = pending.slice(0, sep + 2);
       pending = pending.slice(sep + 2);
-      out += processBlock(block);
+      // The net runs per block (a placeholder never spans two): one holding thinking is final.
+      const processed = processBlock(block);
+      out += blockHoldsThinking ? processed : safetyNetUnmask(processed);
     }
-    return safetyNetUnmask(out);
+    return out;
   };
 
   // Patch res.write. The Express Response.write signature has overloads; we accept any.
@@ -1662,6 +1852,7 @@ function installSseUnmaskInterceptor(req: Request, res: Response, map: Replaceme
         if (remainder) track(key, remainder);
         buffers.delete(key);
       }
+      thinkingStreams.clear();
       for (const key of Array.from(emitted.keys())) auditBlock(key);
     } catch { /* fall through to originalEnd */ }
     return chunk !== undefined ? originalEnd(chunk, ...args) : originalEnd(...args);

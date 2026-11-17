@@ -82,6 +82,7 @@
 									<tnt:NavigationListItem key="toolPolicies" text="{i18n>nav.toolPolicies}" visible="{appView>/isAdmin}" />
 									<tnt:NavigationListItem key="connections" text="{i18n>nav.connections}" visible="{appView>/isAdmin}" />
 									<tnt:NavigationListItem key="plugins" text="{i18n>nav.plugins}" visible="{appView>/isAdmin}" />
+									<tnt:NavigationListItem key="logs" text="{i18n>nav.logs}" visible="{appView>/isAdmin}" />
 								</tnt:NavigationListItem>
 							</tnt:NavigationList>
 						</tnt:fixedItem>
@@ -100,6 +101,10 @@
 							</MessageStrip>
 							<Link id="updateRunbookLink" text="{i18n>update.runbook}" href="{appView>/updateNotice/runbookUrl}" target="_blank" class="sapUiTinyMarginTop" />
 						</VBox>
+						<!-- The orange bar: a raw capture is running (model/rawCaptureNotice.ts); administrators only, on every page. -->
+						<MessageStrip id="rawCaptureBar" type="Warning" showIcon="true" text="{appView>/rawCapture/text}"
+							visible="{appView>/rawCapture/visible}" class="sapUiSmallMarginBottom" />
+
 						<!-- Navigation breadcrumb area -->
 						<HBox id="navigationArea" visible="false" alignItems="Center" class="sapUiMediumMarginBottom">
 							<Button id="backButton" icon="sap-icon://nav-back" tooltip="{i18n>back}" press=".onBackPress" type="Transparent" />

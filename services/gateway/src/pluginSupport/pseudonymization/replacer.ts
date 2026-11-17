@@ -9,6 +9,7 @@ import { EntityMatch, MaskingConfig, EntityConfig } from './types';
 import { ReplacementMap } from './replacementMap';
 import { generateFakeValue } from './fabricatedData';
 import { detectEntities } from './detectors';
+import { signedThinkingHolders } from './thinkingBlocks';
 
 /**
  * Minimum length of a detected value for it to be propagated (masked at ALL its
@@ -21,23 +22,18 @@ const REGEX_META = /[.*+?^${}()|[\]\\]/g;
 const WORD_CHAR = /[A-Za-z0-9_]/;
 
 /**
- * Propagate already-minted masks to EVERY exact occurrence of each detected value
- * across the request's string nodes — including places no detector fired (e.g. a
- * secret that was caught as `token=<secret>` in one node but rode through as
- * `Authorization: Bearer <secret>` in another). This is the primary security fix:
- * one value → one token → masked everywhere.
+ * A function replacing every exact occurrence of the map's values in a string with their
+ * placeholders, or null when no value qualifies. `onReplace` is called once per replacement.
  *
- * Operates on parsed string nodes (system + messages subtree), so JSON-escaping in
- * embedded tool_result strings is a non-issue. For values containing `"` or `\`, the
- * JSON-escaped form is also searched (an identical secret embedded inside a
- * JSON-in-string blob is escaped there). Mutates `body` in place; returns the number
- * of occurrences replaced.
+ * For values containing `"` or `\`, the JSON-escaped form is also searched (an identical secret
+ * embedded inside a JSON-in-string blob is escaped there). A value is not replaced mid-identifier:
+ * where its own edge is a word character and the adjacent text character is too. `everywhere`
+ * drops that guard: for a text in which the value is known to stand wherever it occurs.
  */
-export function propagateMaskedValues(
-  body: any,
+export function valueReplacer(
   map: ReplacementMap,
-  opts: { minLength?: number; only?: ReadonlySet<string> } = {}
-): number {
+  opts: { minLength?: number; only?: ReadonlySet<string>; onReplace?: () => void; everywhere?: boolean } = {}
+): ((s: string) => string) | null {
   const minLength = opts.minLength ?? MIN_PROPAGATION_LENGTH;
 
   // Build (needle → placeholder) pairs. Include the JSON-escaped form of any value
@@ -55,7 +51,7 @@ export function propagateMaskedValues(
       needles.push({ text: escaped, placeholder });
     }
   }
-  if (needles.length === 0) return 0;
+  if (needles.length === 0) return null;
 
   // Longest needle first so a value that is a substring of another is not shadowed.
   needles.sort((a, b) => b.text.length - a.text.length);
@@ -65,18 +61,44 @@ export function propagateMaskedValues(
     'g'
   );
 
-  let replaced = 0;
-  const replaceInString = (s: string): string =>
+  return (s: string): string =>
     s.replace(alternation, (matchStr, offset: number, whole: string) => {
       // Word-boundary guard: don't fire mid-identifier when the value's own edge is
       // a word char and the adjacent text char is too (would corrupt an identifier).
       const before = whole[offset - 1];
       const after = whole[offset + matchStr.length];
-      if (WORD_CHAR.test(matchStr[0]) && before !== undefined && WORD_CHAR.test(before)) return matchStr;
-      if (WORD_CHAR.test(matchStr[matchStr.length - 1]) && after !== undefined && WORD_CHAR.test(after)) return matchStr;
-      replaced++;
+      if (!opts.everywhere) {
+        if (WORD_CHAR.test(matchStr[0]) && before !== undefined && WORD_CHAR.test(before)) return matchStr;
+        if (WORD_CHAR.test(matchStr[matchStr.length - 1]) && after !== undefined && WORD_CHAR.test(after)) return matchStr;
+      }
+      opts.onReplace?.();
       return byText.get(matchStr) ?? matchStr;
     });
+}
+
+/**
+ * Propagate already-minted masks to EVERY exact occurrence of each detected value
+ * across the request's string nodes — including places no detector fired (e.g. a
+ * secret that was caught as `token=<secret>` in one node but rode through as
+ * `Authorization: Bearer <secret>` in another). This is the primary security fix:
+ * one value → one token → masked everywhere.
+ *
+ * Operates on parsed string nodes (system + messages subtree), so JSON-escaping in
+ * embedded tool_result strings is a non-issue. Mutates `body` in place; returns the number
+ * of occurrences replaced.
+ *
+ * Model-signed thinking (text, signature, encrypted data) is left out: the thinking pass owns it
+ * (thinkingRoundTrip.ts), and a signature or a restored text must not change here.
+ */
+export function propagateMaskedValues(
+  body: any,
+  map: ReplacementMap,
+  opts: { minLength?: number; only?: ReadonlySet<string> } = {}
+): number {
+  let replaced = 0;
+  const replaceInString = valueReplacer(map, { ...opts, onReplace: () => { replaced++; } });
+  if (!replaceInString) return 0;
+  const signed = signedThinkingHolders(body?.messages);
 
   const walk = (value: any): any => {
     if (typeof value === 'string') return replaceInString(value);
@@ -85,6 +107,7 @@ export function propagateMaskedValues(
       return value;
     }
     if (value && typeof value === 'object') {
+      if (signed.has(value)) return value;
       for (const k of Object.keys(value)) value[k] = walk(value[k]);
       return value;
     }

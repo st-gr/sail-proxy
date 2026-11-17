@@ -184,7 +184,7 @@ contains "admin" no longer qualifies.
 
 ## Pseudonymization
 
-The pseudonymization plugin masks personal data and secrets in outbound requests and restores them in responses. Its detection tiers, operating modes, evidence and residual risks are documented in [Pseudonymization security assessment](/developer/pseudonymization-assessment); how it is hooked into the request pipeline in [Plugin system](/developer/plugins). A response that contains a placeholder the model was never sent raises a `placeholder_invented` security event.
+The pseudonymization plugin masks personal data and secrets in outbound requests and restores them in responses. Its detection tiers, operating modes, evidence and residual risks are documented in [Pseudonymization security assessment](/developer/pseudonymization-assessment); how it is hooked into the request pipeline in [Plugin system](/developer/plugins). Enforced masking is opt-in per installation: the global switch `observability.pseudonymization.enabled` ships `false`, and only the boolean `true` lets the per-endpoint and per-model flags force masking. With the switch off, the fail-closed refusals (`pseudonymization_failed`, `pseudonymization_hook_missing`) disappear for every endpoint at once; masking a caller asks for (`masking` field, trigger word) still runs. A response that contains a placeholder the model was never sent raises a `placeholder_invented` security event.
 
 ## Security Events and Monitoring
 

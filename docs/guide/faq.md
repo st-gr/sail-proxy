@@ -11,19 +11,19 @@ description: Short answers to the questions that come up when adopting sail-prox
 sail-proxy is a multi-provider AI gateway: applications built for the OpenAI, Anthropic, Google Gemini, AWS Bedrock, OpenRouter or Ollama APIs work with SAP AI Core foundation models through it. It translates between the API formats and adds keys, usage tracking, quotas and governance.
 
 ### Is sail-proxy a direct connection to AI providers like OpenAI or Anthropic?
-**No**. sail-proxy routes every request through SAP AI Core, either its Orchestration API or a model's own deployment endpoint. Compliance, governance and cost control stay with SAP AI Core while the clients keep their usual APIs.
+**No**. sail-proxy routes every request through SAP AI Core, either its Orchestration API or a model's own deployment endpoint. Compliance, governance and cost control stay with SAP AI Core while the clients keep their usual APIs. The exception is a [connection](/guide/cockpit/connections) to another provider (Azure OpenAI, AWS Bedrock, the OpenAI API or the Anthropic API): requests for that connection's models go to that provider under your own account with it, not through SAP AI Core.
 
 ### What's the difference between the CLI and the Docker deployment?
 - **CLI**: a single-user gateway on your machine, installed with npm. No web interface, no roles.
 - **Docker**: a multi-user deployment with the Admin Cockpit, single sign-on, the admin and user roles, usage analytics and quotas. The Kyma deployment runs the same services on SAP BTP.
 
 ### Can I use the CLI and Docker deployments at the same time?
-Yes, but they are independent. Both can use the same SAP AI Core instance; each has its own API keys and configuration.
+Yes, but they are independent. Both can use the same SAP AI Core instance; each has its own API keys and configuration. The CLI also starts the common coding agents already configured for a gateway: `sail-proxy codex`, `sail-proxy claude`, `sail-proxy opencode`, `sail-proxy gemini` and `sail-proxy pi`. These launchers work against a Docker or Kyma gateway too: point them at it with `sail-proxy endpoint set <gateway URL> --key-env <VAR>`, where the variable holds a gateway API key. See [Launch a coding harness](/deploy/cli#launch-a-coding-harness).
 
 ## Installation and setup
 
 ### What do I need?
-- **Node.js 20 or later**
+- **Node.js 24 or later**
 - **A service key** of your SAP AI Core instance (Extended plan) and an orchestration deployment
 - **Docker with Docker Compose** for the Docker deployment; `kubectl` and a Kyma runtime for Kyma
 
@@ -52,7 +52,7 @@ Yes. The CLI runs with Node.js on Windows; the Docker deployment runs with Docke
 - PII masking (pseudonymization) of outgoing requests, and tool governance.
 
 ### What happens to my data?
-Requests and responses go to SAP AI Core, which applies SAP's data protection and privacy policies. sail-proxy records usage metadata (time, model, token counts, cost) but not request or response content, unless an operator enables payload logging (`PAYLOAD_LOGGING_ENABLED`). Files uploaded for file search are stored by the gateway until you delete them or they expire. sail-proxy is self-hosted, not a SaaS.
+Requests and responses go to SAP AI Core, which applies SAP's data protection and privacy policies. Requests for the models of a [connection](/guide/cockpit/connections) to another provider (Azure OpenAI, AWS Bedrock, the OpenAI API or the Anthropic API) go to that provider instead, under your own account with it, and that provider's terms apply to that data. sail-proxy records usage metadata (time, model, token counts, cost) but not request or response content, unless an operator enables payload logging (`PAYLOAD_LOGGING_ENABLED`). Files uploaded for file search are stored by the gateway until you delete them or they expire. sail-proxy is self-hosted, not a SaaS.
 
 ### How often should I rotate API keys?
 A common policy is every 90 days in production. Rotate a key at once when:
@@ -163,7 +163,7 @@ On the CLI, run `sail-proxy update`. Docker needs the new version set in `DOCKER
 ### Can I integrate sail-proxy with my monitoring system?
 Yes:
 - **Health endpoint**: `GET /health` on the gateway
-- **Logs**: per-component log levels (`LOG_LEVEL`, `api_config.platform.logging`)
+- **Logs**: per-component log levels (`LOG_LEVEL`, `api_config.platform.logging`); on Docker and Kyma also the cockpit's [Logs](/guide/cockpit/logs) page, where administrators read the gateway's log and change its levels
 - **Events**: usage and security events forwarded to a SIEM or a webhook
 
 ## Admin and management

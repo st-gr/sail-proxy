@@ -86,6 +86,7 @@
               "anthropic_bedrock_version",
               "excluded_beta_headers",
               "supported_beta_headers",
+              "beta_header_renames",
               "sap_cache_read_token_billing_factor",
               "sap_cache_write_token_billing_factor"
             ]
@@ -111,7 +112,8 @@
               "supports_prompt_caching",
               "anthropic_bedrock_version",
               "excluded_beta_headers",
-              "supported_beta_headers"
+              "supported_beta_headers",
+              "beta_header_renames"
             ]
           }
         },
@@ -736,7 +738,7 @@
                 "vision": {
                   "type": "object",
                   "title": "Vision transcription",
-                  "description": "Transcription of hard PDF pages by a vision model of SAP AI Core: a page is sent as an image and the model writes out its text, tables included. It runs only for vector stores whose chunking setting has a vision mode (off by default; changing a store's mode chunks the store again). Each page is one model call, recorded as usage of the store's owner; a page whose call fails keeps its text or goes to OCR. Page images are not masked: where pseudonymization is force-enabled for file_search content (for the openai endpoint or for a model), they reach the model unmasked, and the cockpit and the gateway log warn about it. Masking that a single request asks for (a trigger word or a masking field) cannot be foreseen and is not warned about. The npm standalone CLI never runs it.",
+                  "description": "Transcription of hard PDF pages by a vision model of SAP AI Core: a page is sent as an image and the model writes out its text, tables included. It runs only for vector stores whose chunking setting has a vision mode (off by default; changing a store's mode chunks the store again). Each page is one model call, recorded as usage of the store's owner; a page whose call fails keeps its text or goes to OCR. Page images are not masked: where pseudonymization is enforced for file_search content (the global switch is on and the openai endpoint or a model enables it), they reach the model unmasked, and the cockpit and the gateway log warn about it. Masking that a single request asks for (a trigger word or a masking field) cannot be foreseen and is not warned about. The npm standalone CLI never runs it.",
                   "properties": {
                     "model": {
                       "type": "string",
@@ -753,7 +755,7 @@
                         "all"
                       ],
                       "default": "off",
-                      "description": "The vision mode new vector stores get: off (the default, no vision calls), no_text (pages without a text layer, such as scans), auto (those, pages with little text such as figures, and table-heavy pages) or all (every page). Existing stores keep their own mode. Where pseudonymization is force-enabled for file_search content, the page images reach the model unmasked (a warning is shown); the same holds, without a warning, for masking that a single request asks for."
+                      "description": "The vision mode new vector stores get: off (the default, no vision calls), no_text (pages without a text layer, such as scans), auto (those, pages with little text such as figures, and table-heavy pages) or all (every page). Existing stores keep their own mode. Where pseudonymization is enforced for file_search content, the page images reach the model unmasked (a warning is shown); the same holds, without a warning, for masking that a single request asks for."
                     },
                     "max_pages_per_file": {
                       "type": "integer",
@@ -1251,7 +1253,7 @@
           "properties": {
             "components": {
               "type": "object",
-              "description": "Per-component log level override, keyed by the component name exactly as the gateway logs it - for example 'ConfigService' or 'AwsBedrockService'. A component with no entry here uses LOG_LEVEL when it is set, otherwise defaultLevel. An entry outranks LOG_LEVEL for its own component, so a pinned component ignores the environment; the shipped configuration carries no entries.",
+              "description": "Per-component log level override, keyed by the component name exactly as the gateway logs it - for example 'ConfigService' or 'AwsBedrockService'. A component with no entry here uses LOG_LEVEL when it is set, otherwise defaultLevel. An entry outranks LOG_LEVEL for its own component, so a pinned component ignores the environment; the shipped configuration carries no entries. On Docker and Kyma, the cockpit's Logs page (Settings → Logs) can set a component's level without a new configuration version, and a level set there overrules the one here.",
               "x-keySuggestions": [
                 "AnthropicService",
                 "AwsBedrockService",
@@ -1289,7 +1291,7 @@
                 "WARN",
                 "ERROR"
               ],
-              "description": "Log level for any component with no entry in `components`. If `LOG_LEVEL` is set to a recognized level it takes precedence and this field is ignored - and `LOG_LEVEL` ships set in both .env samples and the Kyma manifests, so in a stock deployment the environment wins. Otherwise it is matched case-insensitively against the logger's levels (trace, debug, info, warn, error); an unrecognized value is silently ignored. Precedence: https://st-gr.github.io/sail-proxy/developer/debugging#log-level-resolution"
+              "description": "The level the gateway logs at, unless a component has its own level in `components`. A `LOG_LEVEL` environment variable of the gateway, where one is set, overrules it. The value is one of trace, debug, info, warn and error, in upper or lower case; any other value is ignored. On Docker and Kyma, the cockpit's Logs page (Settings → Logs) can set a level without a new configuration version, and a level set there overrules this one. Precedence: https://st-gr.github.io/sail-proxy/developer/debugging#log-level-resolution"
             },
             "log_folder_path": {
               "type": "string",
@@ -1478,6 +1480,86 @@
         },
         "siem": {
           "$ref": "#/$defs/siemConfig"
+        },
+        "gateway_log": {
+          "type": "object",
+          "description": "Stores the gateway's log so that administrators can read, search and download it on the cockpit's Logs page. This applies to the Docker and Kyma deployments only; the standalone sail-proxy CLI writes its log to a file and has `sail-proxy logs`. The Logs page can switch storing on and off without a new configuration version, and its switch overrules `enabled`.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the gateway's log is stored."
+            },
+            "retention_hours": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Entries older than this many hours are deleted. 0 keeps them until the limit on their number is reached."
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The most entries kept; the oldest are deleted first. 0 means no limit."
+            },
+            "min_level": {
+              "type": "string",
+              "enum": [
+                "ERROR",
+                "WARN",
+                "INFO",
+                "DEBUG",
+                "TRACE"
+              ],
+              "description": "The lowest level that is stored. DEBUG and TRACE lines can contain parts of requests and answers, so store them only while looking into a problem."
+            }
+          },
+          "additionalProperties": false
+        },
+        "payload_capture": {
+          "type": "object",
+          "description": "While capture is on, each request leaves a light trace that administrators can inspect on the cockpit's Logs page: its facts plus the masked prompt and answer. A request that is not masked keeps its prompt encrypted, without the answer. The raw stages of a request (what the client sent, what the gateway sent upstream, what came back) come only from the raw capture sessions started on the Logs page; the `raw` values bound them. This applies to the Docker and Kyma deployments only; the standalone sail-proxy CLI never captures payloads. The Logs page can switch capture on and off without a new configuration version, and its switch overrules `enabled`.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether payload traces are stored."
+            },
+            "retention_hours": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Traces older than this many hours are deleted. 0 keeps them until they are deleted by hand."
+            },
+            "raw": {
+              "type": "object",
+              "description": "Bounds of the raw capture sessions started on the Logs page.",
+              "properties": {
+                "max_duration_minutes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "The longest a raw capture session may run, in minutes."
+                },
+                "retention_hours": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Raw captures older than this many hours are deleted. 0 keeps them until they are deleted by hand."
+                },
+                "stage_max_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "The most bytes kept of one stage of a request; more is cut off."
+                },
+                "max_stages": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "The most stages kept of one request."
+                },
+                "request_max_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "The most bytes kept of all stages of one request together."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -1488,7 +1570,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Force-activates masking for a request. Read only where this block sits under models.overrides.<model>.pseudonymization or hooks.defaults.<endpoint>.pseudonymization: true there masks that request, with the per-model block winning over the per-endpoint one. False or absent forces nothing - masking can still run when another activation source fires, such as a trigger word or a masking field in the request body. Under observability.pseudonymization this key is currently ignored; that layer contributes every other setting here except method and allow_user_bypass. Either way the plugin must be wired into the hook chain, or nothing is masked at all."
+          "description": "Under observability.pseudonymization this is the global switch: only true lets the endpoint and model flags enforce masking; false or absent pauses them all, and they keep their values. Under hooks.defaults.<endpoint>.pseudonymization or models.overrides.<model>.pseudonymization, true enforces masking for that endpoint or model while the global switch is on, with the per-model block winning over the per-endpoint one. Whatever these flags say, a caller can still request masking with a trigger word or a masking field in the request body. The plugin must be wired into the hook chain, or nothing is masked at all."
         },
         "method": {
           "type": "string",
@@ -1497,12 +1579,12 @@
             "anonymization"
           ],
           "default": "pseudonymization",
-          "description": "Masking mode: `pseudonymization` masks the request and unmasks the response; `anonymization` masks and never unmasks. Read only where this block force-activates masking (an enabled hook or model override), not under `observability.pseudonymization`. It also gates SIEM: only `pseudonymization` keeps the masked response, so under `anonymization` a content sink gets the prompt but not the response. Omitted, falls back to `pseudonymization`. Modes: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization/pseudonymization.md#modes"
+          "description": "Masking mode: `pseudonymization` masks the request and unmasks the response; `anonymization` masks and never unmasks. Read only where this block force-activates masking (an enabled hook or model override), with the global switch on, not under `observability.pseudonymization`. It also gates SIEM: only `pseudonymization` keeps the masked response, so under `anonymization` a content sink gets the prompt but not the response. Omitted, falls back to `pseudonymization`. Modes: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization/pseudonymization.md#modes"
         },
         "allow_user_bypass": {
           "type": "boolean",
           "default": false,
-          "description": "Consequential only inside a force-activation block (an enabled hook or model override); not read under `observability.pseudonymization`. Default false. When true, a caller may skip masking via header `x-sail-proxy-pseudonymization: off` (case-insensitive) or body field `pseudonymization_off: true`: the content reaches the LLM unmasked, and, where an enabled SIEM sink sets both `include_content` and `allow_unmasked_content`, that sink too. Details: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization/pseudonymization.md#bypassing-forced-pseudonymization"
+          "description": "Consequential only inside a force-activation block (an enabled hook or model override), with the global switch on; not read under `observability.pseudonymization`. Default false. When true, a caller may skip masking via header `x-sail-proxy-pseudonymization: off` (case-insensitive) or body field `pseudonymization_off: true`: the content reaches the LLM unmasked, and, where an enabled SIEM sink sets both `include_content` and `allow_unmasked_content`, that sink too. Details: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization/pseudonymization.md#bypassing-forced-pseudonymization"
         },
         "entities": {
           "description": "Per-category masking toggles: `true` masks the category at this layer, `false` does not, and a category not listed inherits the layer below (later layers win). Keys are the known-category set: the on-by-default categories; three opt-in ones that ship off (`profile-org`, `profile-location`, `profile-ip-address`); and `profile-sensitive-data`, a blanket turning all on except those three. A key outside the set is rejected here. Categories and layers: https://github.com/st-gr/sail-proxy/blob/main/services/gateway/src/plugins/pseudonymization/pseudonymization.md#configuring-which-categories-are-masked",
@@ -1665,6 +1747,14 @@
           "description": "Allowlist of Anthropic beta flags: while it is non-empty only these are forwarded, and excluded_beta_headers still applies on top. Empty or absent means no allowlist at all, so every flag the client sent goes through - which makes adding a first entry here a silent drop of every flag not listed beside it. Read only from providers.anthropic.",
           "type": "array",
           "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+$"
+          }
+        },
+        "beta_header_renames": {
+          "description": "Anthropic beta flags the gateway forwards under another name: a flag a client sends under Anthropic's name (the key) reaches the SAP AI Core deployment under the name the deployment knows it by (the value), for example advanced-tool-use-2025-11-20 as tool-search-tool-2025-10-19. Applied before supported_beta_headers and excluded_beta_headers, which then see the new name - so the new name has to be on the allowlist to be forwarded. A flag that is only dropped leaves the request fields it enables behind, and the deployment may refuse them. Read only from providers.anthropic.",
+          "type": "object",
+          "additionalProperties": {
             "type": "string",
             "pattern": "^[a-zA-Z0-9._-]+$"
           }

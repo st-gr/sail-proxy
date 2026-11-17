@@ -140,7 +140,10 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
   let usage: any = null;
   /** The last non-null `finish_reason` any chunk carried. Decides the terminal frame. */
   let finishReason: string | null = null;
-  const toolCalls = new Map<number, ToolCallAccumulator>();
+  /** Every tool call of the turn, in the order it first appeared. */
+  const toolCalls: ToolCallAccumulator[] = [];
+  /** The call each stream index is currently filling. */
+  const openCallAt = new Map<number, ToolCallAccumulator>();
 
   const block = (frame: any): string => sseBlock({ ...frame, sequence_number: seq++ });
 
@@ -361,11 +364,19 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
 
       for (const call of delta.tool_calls || []) {
         const idx = call.index ?? 0;
-        const acc = toolCalls.get(idx) || { id: '', name: '', args: '' };
+        let acc = openCallAt.get(idx);
+        // A new id at an index that already holds a call is a NEW call: Gemini through
+        // orchestration streams parallel calls at the same `index: 0`, each with its own id
+        // (measured live 2026-11-12). Keyed on the index alone they became one call whose
+        // arguments were two JSON objects in a row.
+        if (!acc || (call.id && acc.id && call.id !== acc.id)) {
+          acc = { id: '', name: '', args: '' };
+          openCallAt.set(idx, acc);
+          toolCalls.push(acc);
+        }
         if (call.id) acc.id = call.id;
         if (call.function?.name) acc.name = call.function.name;
         if (call.function?.arguments) acc.args += call.function.arguments;
-        toolCalls.set(idx, acc);
       }
 
       return out;
@@ -422,7 +433,7 @@ export function createResponsesStreamTranslator(opts: StreamTranslatorOptions) {
       }
 
       let index = output.length;
-      for (const acc of toolCalls.values()) {
+      for (const acc of toolCalls) {
         const item = {
           type: 'function_call', id: itemId('fc'), call_id: acc.id,
           name: acc.name, arguments: acc.args, status: 'completed',

@@ -169,13 +169,13 @@ describe('cockpit i18n bundles', () => {
       }
     }
     expect(found.sort()).toEqual([
-      'config-app/validationTexts.ts:EN_TEXTS', 'model-library-app/benchmarks.ts:EN_TEXTS', 'model-library-app/capabilityIcons.ts:EN_TEXTS',
+      'config-app/pseudonymizationSwitch.ts:EN_TEXTS', 'config-app/validationTexts.ts:EN_TEXTS', 'model-library-app/benchmarks.ts:EN_TEXTS', 'model-library-app/capabilityIcons.ts:EN_TEXTS',
       'model-library-app/catalogPending.ts:EN_TEXTS', 'model-library-app/deploymentBadge.ts:EN_TEXTS', 'model-library-app/formatter.ts:EN_TEXTS',
       'model-library-app/providerLabel.ts:EN_TEXTS',
-      'shell/homeTiles.ts:EN_TEXTS', 'shell/quotaDisplay.ts:EN_TEXTS', 'shell/teamsDisplay.ts:EN_TEXTS', 'grounding-app/jobs.ts:EN_TEXTS', 'grounding-app/status.ts:EN_TEXTS',
+      'shell/homeTiles.ts:EN_TEXTS', 'shell/quotaDisplay.ts:EN_TEXTS', 'shell/rawCaptureNotice.ts:EN_TEXTS', 'shell/teamsDisplay.ts:EN_TEXTS', 'grounding-app/jobs.ts:EN_TEXTS', 'grounding-app/status.ts:EN_TEXTS',
       'grounding-app/rows.ts:EN_TEXTS', 'grounding-app/api.ts:EN_TEXTS', 'grounding-app/admin.ts:EN_TEXTS', 'grounding-app/errors.ts:EN_TEXTS', 'grounding-app/reembed.ts:EN_TEXTS', 'grounding-app/chunking.ts:CHUNKING_EN_TEXTS', 'grounding-app/reextract.ts:REEXTRACT_EN_TEXTS', 'model-library-app/libraryFilters.ts:EN_TEXTS',
       'model-library-app/costDisplay.ts:EN_LABELS', 'model-library-app/deploymentPoll.ts:EN_TEXTS',
-      'plugins-app/api.ts:EN_TEXTS', 'plugins-app/pluginRows.ts:EN_TEXTS'
+      'plugins-app/api.ts:EN_TEXTS', 'plugins-app/pluginRows.ts:EN_TEXTS', 'logs-app/api.ts:EN_TEXTS'
     ].sort());
   });
 

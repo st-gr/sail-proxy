@@ -17,7 +17,14 @@ export interface ImagesUsage {
   output_tokens_details: { text_tokens: number; image_tokens: number };
 }
 export interface ImageRequestError { status: number; error: { message: string; type: string; param?: string; code?: string } }
-export interface MappedImageRequest { model: string; n: number; size: string; geminiBody: any }
+export interface MappedImageRequest {
+  model: string; n: number;
+  /** The size the images are made in: one of the offered sizes. */
+  size: string;
+  /** The size the client asked for, when it is not offered and the nearest one was used instead. */
+  requestedSize?: string;
+  geminiBody: any;
+}
 export interface UploadedImage { contentType: string; bytes: Buffer }
 
 const SIZES: Record<string, { aspectRatio: string; imageSize: string }> = {
@@ -28,6 +35,25 @@ const SIZES: Record<string, { aspectRatio: string; imageSize: string }> = {
 const IGNORED_QUALITIES = ['standard', 'low', 'medium', 'xhigh', 'auto'];
 const QUALITY_SIZE: Record<string, string> = { high: '2K', max: '4K' };
 const DEFAULT_SIZE = '1024x1024';
+
+/**
+ * The offered size for a `size` value, or null when it is no WIDTHxHEIGHT. The image model takes an
+ * aspect ratio, not pixel sizes, so a size that is not offered is served with the offered one whose
+ * aspect ratio is nearest (512x512, a common client default, as 1024x1024), instead of a 400 that
+ * some clients show their user only as "Bad Request".
+ */
+function offeredSize(size: unknown): string | null {
+  if (typeof size !== 'string') return null;
+  if (SIZES[size]) return size;
+  const match = /^(\d+)x(\d+)$/i.exec(size.trim());
+  if (!match || Number(match[1]) === 0 || Number(match[2]) === 0) return null;
+  const wanted = Math.log(Number(match[1]) / Number(match[2]));
+  const distance = (offered: string): number => {
+    const [width, height] = offered.split('x').map(Number);
+    return Math.abs(Math.log(width / height) - wanted);
+  };
+  return Object.keys(SIZES).reduce((best, offered) => (distance(offered) < distance(best) ? offered : best));
+}
 
 function bad(message: string, param: string, code = 'unsupported_parameter'): { ok: false; error: ImageRequestError } {
   return { ok: false, error: { status: 400, error: { message, type: 'invalid_request_error', param, code } } };
@@ -46,11 +72,14 @@ export function mapImageRequest(input: { body: Record<string, any>; images?: Upl
     n = b.n;
   }
   let size = DEFAULT_SIZE;
+  let requestedSize: string | undefined;
   let imageConfig: Record<string, string> | undefined;
   if (!isUnset(b.size) && b.size !== 'auto') {
-    if (!SIZES[b.size]) return bad(`size must be one of ${Object.keys(SIZES).join(', ')} or auto`, 'size', 'invalid_value');
-    size = b.size;
-    imageConfig = { ...SIZES[b.size] };
+    const offered = offeredSize(b.size);
+    if (!offered) return bad(`size must be WIDTHxHEIGHT, for example ${Object.keys(SIZES).join(', ')}, or auto`, 'size', 'invalid_value');
+    if (offered !== b.size) requestedSize = b.size;
+    size = offered;
+    imageConfig = { ...SIZES[offered] };
   }
   if (!isUnset(b.quality)) {
     if (QUALITY_SIZE[b.quality]) imageConfig = { ...(imageConfig || {}), imageSize: QUALITY_SIZE[b.quality] };
@@ -79,7 +108,13 @@ export function mapImageRequest(input: { body: Record<string, any>; images?: Upl
 
   const generationConfig: any = { responseModalities: ['IMAGE', 'TEXT'] };
   if (imageConfig) generationConfig.imageConfig = imageConfig;
-  return { ok: true, value: { model: b.model.trim(), n, size, geminiBody: { contents: [{ role: 'user', parts }], generationConfig } } };
+  return {
+    ok: true,
+    value: {
+      model: b.model.trim(), n, size, ...(requestedSize ? { requestedSize } : {}),
+      geminiBody: { contents: [{ role: 'user', parts }], generationConfig },
+    },
+  };
 }
 
 export function openAiUsageFromGemini(usageMetadata: any): ImagesUsage {

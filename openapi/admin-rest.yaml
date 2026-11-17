@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sail-proxy admin REST API
-  version: 0.12.1
+  version: 0.13.0
   summary: The admin service's REST routes for the gateway configuration, the cockpit's Grounding screens and the gateway plugins.
   description: |-
     The admin service's REST routes. The cockpit's other data (API keys, users, teams, usage, the Model Library and the configuration editor) is the admin's OData API, described in its own document.
@@ -37,6 +37,10 @@ tags:
     description: Gateway plugins installed from the cockpit. Every route needs the admin role.
   - name: Version
     description: The running version and installation type. Needs the admin role.
+  - name: Gateway log
+    description: The gateway's stored log as a text file. Needs the admin role.
+  - name: Payload traces
+    description: One stored payload trace or raw trace as a JSON file. Needs the admin role; opening what is sealed is recorded in the audit log.
   - name: Grounding status
   - name: Grounding files
   - name: Grounding vector stores
@@ -206,6 +210,198 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ConfigForbidden"
+
+  /logs/gateway/export:
+    get:
+      tags:
+        - Gateway log
+      operationId: exportGatewayLog
+      summary: Download the gateway log as text
+      description: |-
+        The gateway's stored log as a text file, one line per entry in the console format (`<timestamp> [<request id>] <LEVEL> [<component>] <message>`, then `Error: ` and the error when there is one), oldest first. A line break inside a field is written as `\n`, a tab as `\t`, a backslash as `\\`, and any other control character (and U+2028, U+2029) as `\uXXXX`, so every entry stays on one line and the file is safe to print to a terminal. The file holds at most 100,000 lines; when more entries match, its last line says so and tells the caller to narrow the time range or the search. The answer is sent as it is read from the database, as a download (`Content-Disposition: attachment`, a file name with the date).
+
+        The search is the one of the log view: it finds the whole text as typed (spaces and quotes included) anywhere in the message, the component or the request id, ignoring upper and lower case, and `%`, `_`, `"` and `\` in it stand for themselves. Needs the admin role. Only entries the gateway shipped are stored (the gateway's log settings decide whether it ships any), and they are deleted after their retention time.
+      x-sail-upstream: The admin's stored gateway log
+      parameters:
+        - name: from
+          in: query
+          description: Only entries at or after this time (ISO 8601, for example `2026-11-11T10:00:00Z`).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Only entries at or before this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: search
+          in: query
+          description: Only entries whose message, component or request id holds this whole text, as typed and ignoring upper and lower case. Blank is no search.
+          schema:
+            type: string
+        - name: level
+          in: query
+          description: The minimum level; `WARN` gives WARN and ERROR entries.
+          schema:
+            type: string
+            enum: [TRACE, DEBUG, INFO, WARN, ERROR]
+      responses:
+        "200":
+          description: The log lines.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="gateway-log-<date>.txt"`'
+              schema:
+                type: string
+          content:
+            text/plain:
+              schema:
+                type: string
+        "400":
+          description: A parameter cannot be read (an unparsable `from` or `to`, an unknown `level`, or a parameter given more than once).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "500":
+          description: The log could not be read (`export_failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+
+  /logs/traces/{id}/download:
+    get:
+      tags:
+        - Payload traces
+      operationId: downloadPayloadTrace
+      summary: Download one payload trace
+      description: |-
+        One stored payload trace as a JSON file: the request's facts (time, route, model, API key and user, status, duration, tokens, whether it was masked, cut or captured raw) with its prompt and answer. The id is the trace's `ID` in the OData entity `PayloadTraces`.
+
+        A masked trace holds the masked prompt and answer as stored; its download is not recorded. A trace that was not masked holds its prompt sealed, and no answer: the admin service opens the prompt for the file and records the download in the audit log (`payload.trace.download`, with the person and the request id, never the content). A trace with the facts only (recorded in a raw capture while payload capture was off) holds no prompt; its download is not recorded either. Needs the admin role.
+      x-sail-upstream: The admin's stored payload traces
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The trace's `ID`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The trace.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="payload-trace-<request id>.json"`; characters other than letters, digits, `.`, `_` and `-` in the request id are written as `_`.'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayloadTraceFile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "404":
+          description: No payload trace has this id (`not_found`); it may have been deleted after its retention time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "409":
+          description: The sealed prompt cannot be opened. `keys-differ`, the trace was sealed with another key (the admin service and the gateway hold different values of `METADATA_ENCRYPTION_KEY`); `malformed`, the stored trace cannot be read. The failed attempt is recorded in the audit log.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "500":
+          description: The trace could not be read (`download_failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+
+  /logs/raw/{id}/download:
+    get:
+      tags:
+        - Payload traces
+      operationId: downloadRawTrace
+      summary: Download one raw trace with all its stages, or one stage
+      description: |-
+        One stored raw trace as a JSON file: the facts (request id, raw capture session, credential, time, whether stages were cut or dropped), the stage index (name, stored size and cut mark of each stage) and every stage opened, in recording order. A stage's `content` is the JSON the gateway recorded for it (`timestamp`, the request or response facts with credential headers, URLs and query strings redacted, and `payload`); a stage that was cut is the text of its leading bytes instead. The id is the `ID` in the OData entity `RawTraceIndex`.
+
+        With `stage`, only that stage, as a file of its own: the JSON the gateway recorded for it, or, for a stage that was cut and is no longer JSON, its text (`text/plain`, a `.txt` file).
+
+        Raw stages are stored sealed; the admin service opens them for the file and records the download in the audit log (`raw.trace.download`, with the person, the request id and, for one stage, its name; never the content). Needs the admin role.
+      x-sail-upstream: The admin's stored raw traces
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The raw trace's `ID`.
+          schema:
+            type: string
+        - name: stage
+          in: query
+          required: false
+          description: The name of one stage, as in the stage index (a name recorded again is `<name>#2`, `#3`, ...). Without it, every stage.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The raw trace, or the one stage asked for.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="raw-trace-<request id>.json"`, or for one stage `raw-trace-<request id>-<stage>.json` (`.txt` for a cut stage that is no longer JSON); characters other than letters, digits, `.`, `_` and `-` in the request id and the stage name are written as `_`.'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/RawTraceFile"
+                  - type: object
+                    description: One stage (with `stage`), the JSON the gateway recorded for it.
+                    additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+                description: One stage (with `stage`) that was cut and is no longer JSON, the text of its leading bytes.
+        "400":
+          description: The `stage` parameter is empty or given more than once (`bad_request`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ConfigForbidden"
+        "404":
+          description: No raw trace has this id, or it has no stage of this name (`not_found`); it may have been deleted after its retention time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "409":
+          description: The stages cannot be opened. `keys-differ`, they were sealed with another key (the admin service and the gateway hold different values of `METADATA_ENCRYPTION_KEY`); `malformed`, the stored trace cannot be read. The failed attempt is recorded in the audit log.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
+        "500":
+          description: The trace could not be read (`download_failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigError"
 
   /plugins:
     get:
@@ -3216,6 +3412,129 @@ components:
               type: string
               format: date-time
 
+    PayloadTraceFile:
+      type: object
+      description: One payload trace. `prompt` and `answer` are null when nothing was captured (`omitted` says why); a trace that was not masked has no answer.
+      properties:
+        ID:
+          type: string
+        requestId:
+          type: string
+        capturedAt:
+          type: string
+          format: date-time
+        endpoint:
+          type:
+            - string
+            - "null"
+        model:
+          type:
+            - string
+            - "null"
+        authType:
+          type:
+            - string
+            - "null"
+        credentialId:
+          type:
+            - string
+            - "null"
+        keyName:
+          type:
+            - string
+            - "null"
+        userEmail:
+          type:
+            - string
+            - "null"
+        statusCode:
+          type:
+            - integer
+            - "null"
+        durationMs:
+          type:
+            - integer
+            - "null"
+        inputTokens:
+          type:
+            - integer
+            - "null"
+        outputTokens:
+          type:
+            - integer
+            - "null"
+        masked:
+          type: boolean
+        truncated:
+          type:
+            - boolean
+            - "null"
+          description: The prompt or the answer was cut at the content limit.
+        omitted:
+          type:
+            - string
+            - "null"
+          enum:
+            - not-captured
+            - stream-incomplete
+            - null
+        raw:
+          type:
+            - boolean
+            - "null"
+          description: The request was also captured raw.
+        prompt:
+          type:
+            - string
+            - "null"
+        answer:
+          type:
+            - string
+            - "null"
+    RawTraceFile:
+      type: object
+      description: One raw trace with every stage opened.
+      properties:
+        ID:
+          type: string
+        requestId:
+          type: string
+        sessionId:
+          type: string
+        credentialId:
+          type:
+            - string
+            - "null"
+        capturedAt:
+          type: string
+          format: date-time
+        cutStages:
+          type:
+            - boolean
+            - "null"
+          description: A stage was dropped or cut by the capture limits.
+        stageIndex:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              bytes:
+                type: integer
+              cut:
+                type: boolean
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              cut:
+                type: boolean
+              content:
+                description: The stage as recorded (an object), or the text of its leading bytes when `cut` is true.
     ConfigError:
       type: object
       required:

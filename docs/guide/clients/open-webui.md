@@ -17,9 +17,13 @@ description: Point a self-hosted Open WebUI at the OpenAI-compatible endpoint.
 
 Open WebUI's image engine can use the gateway's [OpenAI Images API](/guide/features#openai-images-api), which a deployed Gemini image model (Nano Banana) serves. SAP AI Core's orchestration service answers with text only; image models run as deployments of their own, and the gateway calls the deployment directly.
 
-- **Configure in**: *Admin Panel → Settings → Images*: engine **OpenAI**, base URL `<gateway>/openai/v1`, a gateway API key, model `gemini-3.1-flash-image--deployed`
+- **Configure in**: *Admin Panel → Settings → Images*: engine **OpenAI**, base URL `<gateway>/openai/v1`, a gateway API key, model `gemini-3.1-flash-image--deployed`, image size `1024x1024`, `1536x1024` or `1024x1536`
 - **Or with environment variables**: `ENABLE_IMAGE_GENERATION=true`, `IMAGE_GENERATION_ENGINE=openai`, `IMAGES_OPENAI_API_BASE_URL=<gateway>/openai/v1`, `IMAGES_OPENAI_API_KEY=<gateway-key>`, `IMAGE_GENERATION_MODEL=gemini-3.1-flash-image--deployed`, `IMAGE_SIZE=1536x1024`
 - **In a chat**: switch on **Image** in the message box's integrations menu, then describe the picture.
+
+The image model takes an aspect ratio, so the gateway offers the three sizes above. Any other size, such as Open WebUI's default `512x512`, is served with the offered size whose aspect ratio is nearest.
+
+If image generation fails and Open WebUI reports only "Bad Request", the gateway refused the request for one of its settings. Open WebUI does not show the gateway's reason, and a chat model asked about the failure can only guess at it. The gateway log names the reason in a line starting with `Images request refused`.
 
 The model must be deployed in your SAP AI Core resource group. Usage is booked like any other call; an administrator sets the image price in the Model Library, since SAP AI Core publishes none for image models.
 

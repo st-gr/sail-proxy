@@ -20,12 +20,27 @@ import {
 } from '../types/security';
 import { getDefaultLogger } from '@libs/logger';
 import { redactUrl } from '../utils/redactUrl';
+import { DropCounter } from '../utils/dropCounter';
 const logger = getDefaultLogger();
+
+// MAXLEN ~ counts stream entries, and each `gateway-log` entry is one batch of up to 200 log entries:
+// 300 batches hold at most 60,000 log entries. The bound counts batches, not bytes: at the largest
+// entry (about 2.5 KB) 300 x 200 x 2.5 KB is about 150 MB, under the Kyma Valkey's 256 MB limit with
+// LRU eviction (1,000 batches would be about 500 MB); typically a few MB, minutes of backlog at one batch a second.
+const GATEWAY_LOG_STREAM_MAX_BATCHES = 300;
+
+// One light trace per request: at most 1,000 traces of a few KB each (prompt and answer are capped at 8 KB).
+const PAYLOAD_TRACE_STREAM_MAX_LEN = 1000;
+// One raw trace per request of a raw capture session, each up to request_max_bytes (2 MB by default):
+// 50 bound the stream at about 100 MB while the admin service is away.
+const RAW_TRACE_STREAM_MAX_LEN = 50;
 
 class SecurityEventEmitter {
   private config: SecurityEventEmitterConfig;
   private memoryQueue: SecurityEvent[] = [];
   private valkeyClient?: any;
+  private payloadTraceDrops = new DropCounter((n) => logger.warn('SecurityEventEmitter', 'Payload traces could not be published and were dropped', { droppedSinceStart: n }));
+  private rawTraceDrops = new DropCounter((n) => logger.warn('SecurityEventEmitter', 'Raw traces could not be published and were dropped', { droppedSinceStart: n }));
 
   constructor(config: SecurityEventEmitterConfig) {
     this.config = config;
@@ -105,6 +120,54 @@ class SecurityEventEmitter {
       });
     } catch {
       // publishToValkey already logged it. Nothing else to try, by design.
+    }
+  }
+
+  /** Appends one batch of the gateway's log to the `gateway-log` stream; rejects when there is no ready client. */
+  public async appendGatewayLogBatch(batch: unknown[]): Promise<void> {
+    if (!this.valkeyClient || this.valkeyClient.status !== 'ready') throw new Error('no Valkey client');
+    await this.valkeyClient.xadd('gateway-log', 'MAXLEN', '~', String(GATEWAY_LOG_STREAM_MAX_BATCHES), '*', 'batch', JSON.stringify(batch));
+  }
+
+  /**
+   * Appends one light payload trace to the `payload-traces` stream. Not awaited: the caller gets control
+   * back at once, whatever Valkey does. A trace that cannot be published (no ready client, a failed XADD)
+   * is dropped and counted, and the console says so at most once a minute.
+   */
+  public publishPayloadTrace(json: string): void {
+    this.appendBounded('payload-traces', PAYLOAD_TRACE_STREAM_MAX_LEN, 'trace', json, this.payloadTraceDrops);
+  }
+
+  /** Appends one raw trace (sealed stages) to the `raw-traces` stream, like publishPayloadTrace. */
+  public publishRawTrace(json: string): void {
+    this.appendBounded('raw-traces', RAW_TRACE_STREAM_MAX_LEN, 'raw', json, this.rawTraceDrops);
+  }
+
+  /** A raw trace that could not even be built (sealing failed): dropped, counted with the others. */
+  public countDroppedRawTrace(): void {
+    this.rawTraceDrops.count();
+  }
+
+  /** A light trace that could not even be built: dropped, counted with the others. */
+  public countDroppedPayloadTrace(): void {
+    this.payloadTraceDrops.count();
+  }
+
+  /** What could not be published since start. */
+  public droppedTraceCounts(): { payload: number; raw: number } {
+    return { payload: this.payloadTraceDrops.total, raw: this.rawTraceDrops.total };
+  }
+
+  private appendBounded(stream: string, maxLen: number, field: string, json: string, drops: DropCounter): void {
+    if (!this.valkeyClient || this.valkeyClient.status !== 'ready') {
+      drops.count();
+      return;
+    }
+    try {
+      Promise.resolve(this.valkeyClient.xadd(stream, 'MAXLEN', '~', String(maxLen), '*', field, json))
+        .catch(() => drops.count());
+    } catch {
+      drops.count();
     }
   }
 

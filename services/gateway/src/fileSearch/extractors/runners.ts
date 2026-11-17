@@ -66,7 +66,9 @@ const MAX_STDERR_BYTES = 64 * 1024;
 // parsed (e.g. "unexpected token near: <excerpt>"), so unlike this module's
 // own diagnostics, stderr is not guaranteed free of document content —
 // truncate hard and strip control characters (same reasoning as
-// extractors/registry.ts's sanitizeExtensionForDisplay).
+// extractors/registry.ts's sanitizeExtensionForDisplay). This bounds it; it does
+// not remove content. The gateway's stored log never gets it: ExtractorExitError's
+// logText names only the tool and the exit code.
 const MAX_STDERR_IN_ERROR_MESSAGE = 200;
 
 function sanitizeStderrForError(rawStderr: string): string {
@@ -92,10 +94,14 @@ export class ExtractionOutputTooLargeError extends Error {
 }
 
 /** The tool ran and exited non-zero (it refused or failed on the input). Its `name` stays
- *  'Error', as before this class: a failed file's stored and returned last_error carries it. */
+ *  'Error', as before this class: a failed file's stored and returned last_error carries it.
+ *  Its message ends with the tool's stderr, which can quote the uploaded document: `logText`
+ *  (not enumerable, see utils/upstreamErrorLogText.ts) is what the gateway's stored log shows
+ *  instead - the tool and its exit code. The console line and last_error keep the stderr. */
 export class ExtractorExitError extends Error {
   constructor(cmd: string, readonly exitCode: number | null, stderrText: string) {
     super(`${cmd} exited with code ${exitCode}${stderrText ? `: ${stderrText}` : ''}`);
+    Object.defineProperty(this, 'logText', { value: `${cmd} exited with code ${exitCode}`, enumerable: false, configurable: true, writable: true });
   }
 }
 

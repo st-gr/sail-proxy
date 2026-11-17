@@ -23,6 +23,8 @@ function parseEnvText(content) {
   return envVars;
 }
 
+const { yamlUnquoted } = require('./oidc');
+
 function readText(dockerDir, name) {
   const filePath = path.join(dockerDir, name);
   return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
@@ -32,8 +34,9 @@ function readText(dockerDir, name) {
  * @param {string} dockerDir  the docker/ directory
  * @returns {object} POSTGRES_USER, IDENTITY_PROVIDER, groups ({ admin, user }: the first group
  *   ROLE_MAPPING maps to each role), LOGOUT_REDIRECT_URL, BASE_URL, GITHUB_CLIENT_ID,
- *   GITHUB_CLIENT_SECRET, GITHUB_ORG, OKTA_SSO_URL, LDAP_HOST, LDAP_BIND_DN, LDAP_BIND_PASSWORD,
- *   LDAP_USER_BASE_DN, LDAP_GROUP_BASE_DN, DOCKER_REGISTRY, DOCKER_ORGANIZATION,
+ *   GITHUB_CLIENT_SECRET, GITHUB_ORG, OKTA_SSO_URL, IAS_ISSUER_URL, IAS_CLIENT_ID,
+ *   IAS_CLIENT_SECRET (an OIDC connector only), LDAP_HOST, LDAP_BIND_DN, LDAP_BIND_PASSWORD,
+ *   LDAP_USER_BASE_DN, LDAP_GROUP_BASE_DN, DOCKER_REGISTRY, DOCKER_ORGANIZATION, DOCKER_TAG,
  *   DOCKER_IMAGE_MODE; undefined where a file or key is missing
  */
 function readDockerConfigValues(dockerDir) {
@@ -59,6 +62,13 @@ function readDockerConfigValues(dockerDir) {
   } catch {
     // An unreadable mapping yields no groups.
   }
+  // An OIDC connector (IAS): its issuer is indented, Dex's own `issuer:` is at column 0, and the
+  // three values are written double-quoted (oidc.js yamlQuoted).
+  const oidc = /^- type:[ \t]*oidc[ \t]*$/m.test(dex);
+  const quotedValue = (pattern) => {
+    const match = oidc ? dex.match(pattern) : null;
+    return match ? yamlUnquoted(match[1].replace(/\s+#[^"]*$/, '')) : undefined;
+  };
   // The GitHub organization is the only `- name:` entry (under connectors → config → orgs).
   const org = (dex.match(/^\s*- name:[ \t]*(.*)$/m) || [])[1];
 
@@ -72,6 +82,9 @@ function readDockerConfigValues(dockerDir) {
     GITHUB_CLIENT_SECRET: yamlValue('clientSecret'),
     GITHUB_ORG: org === undefined ? undefined : org.trim(),
     OKTA_SSO_URL: yamlValue('ssoURL'),
+    IAS_ISSUER_URL: quotedValue(/^[ \t]+issuer:[ \t]*(.*)$/m),
+    IAS_CLIENT_ID: quotedValue(/^[ \t]+clientID:[ \t]*(.*)$/m),
+    IAS_CLIENT_SECRET: quotedValue(/^[ \t]+clientSecret:[ \t]*(.*)$/m),
     LDAP_HOST: authEnv.LDAP_HOST,
     LDAP_BIND_DN: authEnv.LDAP_BIND_DN,
     LDAP_BIND_PASSWORD: authEnv.LDAP_BIND_PASSWORD,
@@ -79,6 +92,7 @@ function readDockerConfigValues(dockerDir) {
     LDAP_GROUP_BASE_DN: authEnv.LDAP_GROUP_BASE_DN,
     DOCKER_REGISTRY: imageEnv.DOCKER_REGISTRY,
     DOCKER_ORGANIZATION: imageEnv.DOCKER_ORGANIZATION,
+    DOCKER_TAG: imageEnv.DOCKER_TAG,
     DOCKER_IMAGE_MODE: imageEnv.DOCKER_IMAGE_MODE
   };
 }

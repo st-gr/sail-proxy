@@ -62,6 +62,51 @@ describe('responsesInputToMessages', () => {
     }]);
   });
 
+  describe('calls made in one step', () => {
+    const call = (id: string) => ({ type: 'function_call', call_id: id, name: 'web_search', arguments: `{"query":"${id}"}` });
+    const output = (id: string) => ({ type: 'function_call_output', call_id: id, output: `result of ${id}` });
+    const toolCall = (id: string) => ({ id, type: 'function', function: { name: 'web_search', arguments: `{"query":"${id}"}` } });
+
+    it('puts consecutive function_call items into ONE assistant message', () => {
+      // Seen live 2026-11-12, gpt-5.5 through orchestration: one assistant message per call was
+      // refused with 400 "An assistant message with 'tool_calls' must be followed by tool
+      // messages responding to each 'tool_call_id'", because the second assistant message
+      // stood where the first call's tool message was expected.
+      const msgs = responsesInputToMessages([call('c1'), call('c2'), call('c3'), output('c2'), output('c1'), output('c3')]);
+      expect(msgs).toEqual([
+        { role: 'assistant', content: '', tool_calls: [toolCall('c1'), toolCall('c2'), toolCall('c3')] },
+        { role: 'tool', tool_call_id: 'c2', content: 'result of c2' },
+        { role: 'tool', tool_call_id: 'c1', content: 'result of c1' },
+        { role: 'tool', tool_call_id: 'c3', content: 'result of c3' },
+      ]);
+    });
+
+    it('still merges when an omitted item (reasoning) sits between the calls', () => {
+      const msgs = responsesInputToMessages([call('c1'), { type: 'reasoning', summary: [] }, call('c2'), output('c1'), output('c2')]);
+      expect(msgs[0]).toEqual({ role: 'assistant', content: '', tool_calls: [toolCall('c1'), toolCall('c2')] });
+      expect(msgs).toHaveLength(3);
+    });
+
+    it('keeps calls apart that each have their output right after them', () => {
+      const msgs = responsesInputToMessages([call('c1'), output('c1'), call('c2'), output('c2')]);
+      expect(msgs.map((m: any) => m.role)).toEqual(['assistant', 'tool', 'assistant', 'tool']);
+      expect((msgs[0] as any).tool_calls).toEqual([toolCall('c1')]);
+      expect((msgs[2] as any).tool_calls).toEqual([toolCall('c2')]);
+    });
+
+    it('does not merge a call into an assistant TEXT message before it', () => {
+      const msgs = responsesInputToMessages([
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Searching.' }] },
+        call('c1'), output('c1'),
+      ]);
+      expect(msgs).toEqual([
+        { role: 'assistant', content: [{ type: 'text', text: 'Searching.' }] },
+        { role: 'assistant', content: '', tool_calls: [toolCall('c1')] },
+        { role: 'tool', tool_call_id: 'c1', content: 'result of c1' },
+      ]);
+    });
+  });
+
   it('wraps a message item with plain string content in a text block', () => {
     // Not every caller sends the array-of-parts shape for `content` — guard
     // against silently losing this to a flattening regression in textBlocks.

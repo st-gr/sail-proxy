@@ -15,6 +15,62 @@ function check(name, fn){ try { fn(); console.log('ok - '+name); } catch(e){ f++
 check('the lite gateway switches OCR off', () => assert.strictEqual(LITE_GATEWAY_ENV.FILE_SEARCH_OCR, 'off'));
 check('the lite gateway switches vision transcription off', () => assert.strictEqual(LITE_GATEWAY_ENV.FILE_SEARCH_VISION, 'off'));
 check('the lite gateway switches legacy .doc conversion off', () => assert.strictEqual(LITE_GATEWAY_ENV.FILE_SEARCH_DOC, 'off'));
+check('the lite gateway switches log shipping off', () => assert.strictEqual(LITE_GATEWAY_ENV.GATEWAY_LOG_SHIPPING, 'off'));
+// The payload cleanup limits are defaults, not forced: 0 (no cleanup) unless the user sets them.
+check('without a value of the user, the gateway gets no payload cleanup (both limits 0)', () => {
+  const env = buildGatewayEnv({ PATH: '/usr/bin' }, { PORT: '3001' }, '/cfg/api_config.json');
+  assert.strictEqual(env.PAYLOAD_LOG_RETENTION_HOURS, '0');
+  assert.strictEqual(env.PAYLOAD_LOG_MAX_MB, '0');
+});
+check("the payload cleanup limits of the CLI's .env reach the gateway", () => {
+  const env = buildGatewayEnv({ PATH: '/usr/bin' }, { PAYLOAD_LOG_RETENTION_HOURS: '72', PAYLOAD_LOG_MAX_MB: '512' }, '/cfg/api_config.json');
+  assert.strictEqual(env.PAYLOAD_LOG_RETENTION_HOURS, '72');
+  assert.strictEqual(env.PAYLOAD_LOG_MAX_MB, '512');
+});
+check('the payload cleanup limits of the shell reach the gateway', () => {
+  const env = buildGatewayEnv({ PATH: '/usr/bin', PAYLOAD_LOG_RETENTION_HOURS: '24', PAYLOAD_LOG_MAX_MB: '256' }, {}, '/cfg/api_config.json');
+  assert.strictEqual(env.PAYLOAD_LOG_RETENTION_HOURS, '24');
+  assert.strictEqual(env.PAYLOAD_LOG_MAX_MB, '256');
+});
+// The CLI's .env parser (dotenv.parse) hands over `PAYLOAD_LOG_MAX_MB=` as '' (and trims spaces); the shell can
+// pass whitespace. The gateway would read such a value, or a typo, as its own defaults (48 h, 1,024 MB).
+check('an empty, blank, non-numeric or negative payload limit keeps the CLI default 0', () => {
+  for (const bad of ['', '   ', 'abc', '-5']) {
+    const fromEnvFile = buildGatewayEnv({ PATH: '/usr/bin' }, { PAYLOAD_LOG_RETENTION_HOURS: bad, PAYLOAD_LOG_MAX_MB: bad }, '/cfg/api_config.json');
+    assert.strictEqual(fromEnvFile.PAYLOAD_LOG_RETENTION_HOURS, '0', JSON.stringify(bad));
+    assert.strictEqual(fromEnvFile.PAYLOAD_LOG_MAX_MB, '0', JSON.stringify(bad));
+    const fromShell = buildGatewayEnv({ PATH: '/usr/bin', PAYLOAD_LOG_RETENTION_HOURS: bad, PAYLOAD_LOG_MAX_MB: bad }, {}, '/cfg/api_config.json');
+    assert.strictEqual(fromShell.PAYLOAD_LOG_RETENTION_HOURS, '0', JSON.stringify(bad));
+    assert.strictEqual(fromShell.PAYLOAD_LOG_MAX_MB, '0', JSON.stringify(bad));
+  }
+});
+check('a non-negative number as payload limit reaches the gateway as the user wrote it', () => {
+  for (const good of ['24', '0', '1.5']) {
+    const env = buildGatewayEnv({ PATH: '/usr/bin' }, { PAYLOAD_LOG_RETENTION_HOURS: good, PAYLOAD_LOG_MAX_MB: good }, '/cfg/api_config.json');
+    assert.strictEqual(env.PAYLOAD_LOG_RETENTION_HOURS, good);
+    assert.strictEqual(env.PAYLOAD_LOG_MAX_MB, good);
+  }
+});
+// Payload files (PAYLOAD_LOGGING_ENABLED) go to the CLI's data folder, next to logs/gateway.log: the
+// installed package is replaced on every upgrade and may not be writable.
+check('payload files go to logs/payloads in the CLI data folder', () => {
+  const env = buildGatewayEnv({ PATH: '/usr/bin' }, {}, path.join('/home/jane/.sail-proxy', 'api_config.json'));
+  assert.strictEqual(env.PAYLOAD_LOG_DIR, path.join('/home/jane/.sail-proxy', 'logs', 'payloads'));
+});
+check("the user's own PAYLOAD_LOG_DIR (shell or .env) wins", () => {
+  assert.strictEqual(buildGatewayEnv({ PATH: '/usr/bin', PAYLOAD_LOG_DIR: '/data/p' }, {}, '/cfg/api_config.json').PAYLOAD_LOG_DIR, '/data/p');
+  assert.strictEqual(buildGatewayEnv({ PATH: '/usr/bin' }, { PAYLOAD_LOG_DIR: '/data/q' }, '/cfg/api_config.json').PAYLOAD_LOG_DIR, '/data/q');
+});
+check('a blank PAYLOAD_LOG_DIR keeps the data folder (the gateway would fall back to its own install folder)', () => {
+  const env = buildGatewayEnv({ PATH: '/usr/bin' }, { PAYLOAD_LOG_DIR: '  ' }, path.join('/cfg', 'api_config.json'));
+  assert.strictEqual(env.PAYLOAD_LOG_DIR, path.join('/cfg', 'logs', 'payloads'));
+});
+check('every other lite setting stays forced when the shell and the .env ask otherwise', () => {
+  const asked = { FILE_SEARCH_OCR: 'on', FILE_SEARCH_VISION: 'on', FILE_SEARCH_DOC: 'on', GATEWAY_LOG_SHIPPING: 'on' };
+  const env = buildGatewayEnv({ PATH: '/usr/bin', ...asked }, asked, '/cfg/api_config.json');
+  assert.deepStrictEqual(Object.keys(LITE_GATEWAY_ENV).sort(), ['FILE_SEARCH_DOC', 'FILE_SEARCH_OCR', 'FILE_SEARCH_VISION', 'GATEWAY_LOG_SHIPPING']);
+  for (const [key, value] of Object.entries(LITE_GATEWAY_ENV)) assert.strictEqual(env[key], value, key);
+});
 check('OCR, vision and .doc stay off when the shell and the .env ask for them', () => {
   const env = buildGatewayEnv(
     { FILE_SEARCH_OCR: 'auto', FILE_SEARCH_VISION: 'auto', FILE_SEARCH_DOC: 'auto', PATH: '/usr/bin' },

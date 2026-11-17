@@ -34,15 +34,31 @@ const SYSTEM_OBJECTS = new Set(['ConfigMap/kube-root-ca.crt', 'ConfigMap/istio-c
 
 const prefixOf = (ns: string) => (ns === DEFAULT_NAMESPACE ? '' : `${ns}-`);
 
-/** Whether an istio-system object belongs to this installation (deploy-kyma.js's naming). */
-export function ownsIstioObject(obj: KubeObject, ns: string): boolean {
+/**
+ * The name of the installation's IP allowlist policy in istio-system, `<prefix>allowlist-<domain>`,
+ * from the BASE_URL in its admin-env Secret (among the given objects); null when there is none.
+ */
+export function allowlistPolicyName(objects: KubeObject[], ns: string): string | null {
+  const adminEnv = objects.find((o) => o?.kind === 'Secret' && o.metadata?.name === 'admin-env' && o.metadata?.namespace === ns);
+  const encoded = (adminEnv as { data?: Record<string, string> } | undefined)?.data?.BASE_URL;
+  if (typeof encoded !== 'string') return null;
+  const host = /^https:\/\/([^.]+)\.[^.]+\.kyma\.ondemand\.com$/.exec(Buffer.from(encoded, 'base64').toString('utf8'));
+  return host ? `${prefixOf(ns)}allowlist-${host[1]}` : null;
+}
+
+/**
+ * Whether an istio-system object belongs to this installation (deploy-kyma.js's naming). The default
+ * namespace's allowlist policy carries no label: it is owned by its exact name (allowlistName) or by
+ * the historic `allowlist-sail-proxy*`, never as "any allowlist-*" (other applications keep theirs there).
+ */
+export function ownsIstioObject(obj: KubeObject, ns: string, allowlistName: string | null = null): boolean {
   const name = obj.metadata.name;
   const owner = obj.metadata.labels?.[NAMESPACE_LABEL];
   const p = prefixOf(ns);
   if (ns !== DEFAULT_NAMESPACE && owner === ns) return true;
   if (owner !== undefined && owner !== ns) return false;
   if (['allowlist-cp-tunnel', 'allowlist-cp-healthcheck', 'health-check-external-deny', 'streaming-timeouts'].map((n) => p + n).includes(name)) return true;
-  return ns === DEFAULT_NAMESPACE ? name.includes('allowlist-sail-proxy') : name.startsWith(`${p}allowlist-`);
+  return ns === DEFAULT_NAMESPACE ? name.includes('allowlist-sail-proxy') || name === allowlistName : name.startsWith(`${p}allowlist-`);
 }
 
 const resourceOf = (obj: KubeObject): string => {
@@ -59,12 +75,12 @@ const ISTIO_KINDS = new Set(ISTIO_RESOURCES.map(singular));
 const CLUSTER_KINDS = new Set(CLUSTER_RESOURCES.map(singular));
 
 /** Whether readInstallObjects could have snapshotted this object of installation ns (nothing else may be restored from a bundle). */
-export function isInstallObject(obj: KubeObject, ns: string): boolean {
+export function isInstallObject(obj: KubeObject, ns: string, allowlistName: string | null = null): boolean {
   if (!obj || typeof obj !== 'object' || typeof obj.kind !== 'string' || typeof obj.apiVersion !== 'string' || !obj.metadata || typeof obj.metadata.name !== 'string') return false;
   const kind = resourceOf(obj);
   const namespace = obj.metadata.namespace;
   if (namespace === ns) return NAMESPACED_KINDS.has(kind);
-  if (namespace === 'istio-system') return ISTIO_KINDS.has(kind) && ownsIstioObject(obj, ns);
+  if (namespace === 'istio-system') return ISTIO_KINDS.has(kind) && ownsIstioObject(obj, ns, allowlistName);
   if (namespace === undefined) return CLUSTER_KINDS.has(kind) && obj.metadata.name === `${ns}-dex`;
   return false;
 }
@@ -120,8 +136,9 @@ export async function readInstallObjects(kubectl: Kubectl, ns: string): Promise<
     const obj = await getOne(kubectl, resource, `${ns}-dex`);
     if (obj) objects.push(obj);
   }
+  const allowlistName = allowlistPolicyName(objects, ns);
   for (const resource of ISTIO_RESOURCES) {
-    for (const obj of await list(kubectl, resource, 'istio-system')) if (ownsIstioObject(obj, ns)) objects.push(obj);
+    for (const obj of await list(kubectl, resource, 'istio-system')) if (ownsIstioObject(obj, ns, allowlistName)) objects.push(obj);
   }
   return objects.map(cleanObject);
 }

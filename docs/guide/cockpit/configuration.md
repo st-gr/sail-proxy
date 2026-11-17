@@ -14,6 +14,7 @@ gateway configuration (`api_config`) as **versioned records**:
 - **Rollback** to the previous configuration, with a mandatory reason; the gateway restarts with the
   restored configuration
 - **Duplicate** and **Delete** configurations
+- **Compare with defaults**: add settings a newer release ships to your configuration
 
 Every signed-in user can read the configurations; only an administrator changes them. The service
 records each activation and rollback in its configuration history.
@@ -89,6 +90,32 @@ again. Which configuration is active, and when and by whom it was deployed, chan
 Activate and Rollback — never by editing a configuration. SIEM sink credentials are the one exception,
 described under *SIEM Sinks and Credentials in the Form*.
 
+## Compare with Defaults
+
+An installation keeps its stored configuration across upgrades. Settings that a newer release adds
+to its default configuration - a new provider setting, one more allowed beta flag, the hooks of a
+new route - therefore never reach an installation by themselves. **Compare with defaults** in the
+list's toolbar shows what the default configuration of the installed release holds and a
+configuration lacks. Like the toolbar's other actions it works on the ticked row: tick the
+configuration to compare. With nothing ticked it compares the **active** configuration; with
+several ticked it asks you to tick one.
+
+- a setting the configuration does not have at all is offered whole;
+- a missing entry of a list is offered alone and is put where the default order has it, which
+  matters for hook lists;
+- a value that only differs from the default is your own setting. It is not listed and never
+  changed. The same goes for a list entry that exists under the same name (a model mapping's
+  source name, a hook's plugin) with different content.
+
+When the active configuration lacks entries, a bar above the list says how many; selecting it
+opens the comparison for the active configuration. All entries are ticked at first. Untick what you
+do not want and choose **Create configuration**: the create dialog opens on a copy of the compared
+configuration with the ticked entries added. Creating it changes nothing yet - the new configuration is inactive until you
+**activate** it, as with any other.
+
+The comparison needs the administrator role. `sail-proxy upgrade docker` and `sail-proxy upgrade
+kyma` point to it when they finish.
+
 ## Form View
 
 A configuration's detail page carries a **Form / JSON** toggle in its title bar. **Form** is the
@@ -150,6 +177,20 @@ fallback prices and model mappings. A setting written under a provider that does
 refused by the gate rather than kept as a value that quietly does nothing — so a beta-header list
 belongs under Anthropic, not under Openai. A provider key the gateway does not read yet is still
 accepted, with the six common settings and no restriction on what else it carries.
+
+**The global pseudonymization switch, under Observability → Pseudonymization → Enabled.** Masking
+is switched off in the shipped configuration. **On** lets the endpoint switches (**Hooks → Defaults**)
+and the model switches (**Models → Overrides**) enforce masking; **Off** pauses all of them, and they
+keep their values. Directly beside the switch, a line says what the configuration does:
+*Enforced for: …* names the endpoints and models whose switches are on, *Enforced nowhere: no
+endpoint or model enables it.* says the switch is on but nothing is set beneath it, *Switched off.
+Overruled: …* names the endpoints and models that are set but paused, and *Switched off.* says
+nothing is set. An endpoint or model switch that is on while the global switch is off carries the
+note *Overruled: the global switch is off.* Switching an endpoint or model switch on while the global
+switch is off switches the global switch on as well, and a notice above the form says so: *The global
+pseudonymization switch was switched on. Now enforced for: …*. Switching a switch off, or opening a
+configuration, changes nothing else. The JSON view does not do this: what you save there is stored as
+written. A request can still ask for masking for itself, whatever the global switch says.
 
 **Tuning masking, under Observability → Pseudonymization.** Four fields decide precision, and each
 one is also available per endpoint (**Hooks → Defaults**) and per model (**Models → Overrides**).

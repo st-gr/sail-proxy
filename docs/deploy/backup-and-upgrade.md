@@ -63,6 +63,8 @@ node cli-tools/kyma-db-manager.js backup --namespace sail-proxy \
   --output backups/backup-$(date +%Y%m%d-%H%M%S).sql
 ```
 
+**With an external PostgreSQL**: if the installation uses a PostgreSQL outside the cluster, such as SAP BTP's "PostgreSQL, hyperscaler option", the service makes its own backups, and you back up and restore the database with the service's tools. `kyma-db-manager.js` works on the in-cluster PostgreSQL only, so its steps do not apply, and `sail-proxy upgrade kyma` refuses such an installation; retention times and restores are described in SAP's documentation for the service. The keys and credentials below, and the S3 bucket, still need their own copy. [External PostgreSQL on Kyma](/deploy/external-postgres#backup-and-recovery-runbook) describes the options.
+
 **Keys and credentials**: they live in the namespace's Secrets. `setup-kyma.js` carries them over from the live namespace on every run, so the live Secrets are their only source. Export them alongside each database backup:
 
 ```bash
@@ -83,7 +85,7 @@ On Docker and Kyma, the `upgrade` command makes the backup itself. For the stand
 sail-proxy update
 ```
 
-or `npm update -g @st-gr/sail-proxy`. Then restart the gateway: `sail-proxy stop`, `sail-proxy run`. Your configuration directory stays as it is. `sail-proxy config reset` would rewrite `api_config.json` from the new version's template, together with the rest of the setup.
+or `npm update -g @st-gr/sail-proxy`. Then restart the gateway: `sail-proxy stop`, `sail-proxy run`. Your configuration directory stays as it is. The first `sail-proxy run` after the update lists the settings the new version's default configuration holds and your `api_config.json` lacks; copy the ones you want from the default file it names. `sail-proxy config reset` would rewrite `api_config.json` from the new version's template, together with the rest of the setup.
 
 ### Docker Compose
 
@@ -91,7 +93,7 @@ or `npm update -g @st-gr/sail-proxy`. Then restart the gateway: `sail-proxy stop
 npx @st-gr/sail-proxy@latest upgrade docker --dir <install directory>
 ```
 
-The command backs up, upgrades and rolls back on any failure: see [Upgrade on Docker](/deploy/upgrade-docker). It needs an installation on 0.11.0 or later with registry images. For locally built images, run `git pull` and `docker compose -f docker/docker-compose.yml up -d --build` instead. No separate migration step is needed: the admin service updates its schema with `cds-deploy` at every start, and the `gateway-migrate` service updates the file search tables before the gateway starts. Check the result with `docker compose -f docker/docker-compose.yml logs admin gateway-migrate`.
+The command backs up, upgrades and rolls back on any failure: see [Upgrade on Docker](/deploy/upgrade-docker). It needs an installation on 0.12.1 or later with registry images. For locally built images, run `git pull` and `docker compose -f docker/docker-compose.yml up -d --build` instead. No separate migration step is needed: the admin service updates its schema with `cds-deploy` at every start, and the `gateway-migrate` service updates the file search tables before the gateway starts. Check the result with `docker compose -f docker/docker-compose.yml logs admin gateway-migrate`.
 
 ### SAP BTP Kyma
 
@@ -99,35 +101,14 @@ The command backs up, upgrades and rolls back on any failure: see [Upgrade on Do
 npx @st-gr/sail-proxy@latest upgrade kyma --namespace my-namespace
 ```
 
-The command backs up the database, applies the new release, runs the migrations and rolls back on any failure: see [Upgrade on Kyma](/deploy/upgrade-kyma). It keeps the encryption keys and the database credentials of the live namespace. It needs an installation on 0.11.0 or later; older installations are upgraded to 0.11.0 first.
+The command backs up the database, applies the new release, runs the migrations and rolls back on any failure: see [Upgrade on Kyma](/deploy/upgrade-kyma). It keeps the encryption keys and the database credentials of the live namespace. It needs an installation on 0.12.1 or later.
 
-`upgrade` refuses an installation older than 0.11.0, a change of the Postgres image or major version, and a release that declares a storage-layout change; it says so before it changes anything. In those cases follow the release notes of the new release, which give the manual procedure: back up the database with the database tool, run setup again from a checkout of the new release, deploy, and restore the database if the notes say so.
+`upgrade` refuses an installation that is too old for it (it names the release to upgrade to first), a change of the Postgres image or major version, and a release that declares a storage-layout change; it says so before it changes anything. In those cases follow the release notes of the new release, which give the manual procedure: back up the database with the database tool, run setup again from a checkout of the new release, deploy, and restore the database if the notes say so.
 
 For an upgrade with a data restore around it, follow [Upgrade with a schema change](/deploy/database-migration#upgrade-with-a-schema-change).
 
-## Upgrading from 0.10.0 to the next release
+## Steps for a specific release
 
-These steps and changes come from the changelog's **Unreleased** section.
-
-**AWS credentials**
-- The gateway now verifies AWS SigV4 signatures. AWS clients must sign with the credential's real secret access key; a request with a wrong signature is now refused.
-- AWS SigV4 works on JSON routes only. Multipart routes, such as file upload and image edits, answer `403` to AWS credentials.
-- Behind the Docker nginx, AWS clients may sign for the `/gateway` path.
-- Outside development, the admin logs a security warning at startup when `AWS_SECRET_ENCRYPTION_KEY` is missing or still the built-in development or sample value: the stored AWS secret access keys are then encrypted with a publicly known key. Set a generated key (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`) in the admin's environment, restart the admin, and enter the stored AWS secret access keys again: keys stored under the old value cannot be read with the new one.
-
-**Keys and services**
-- Upgrade the admin and the gateway together. They must share one `VALIDATION_TOKEN_SECRET` that is neither the built-in default nor the `.env.sample` placeholder; outside development the admin refuses tokens signed with those. On Docker, `setup-docker.js` replaces such a value in an existing `.env` with a generated one, in both the admin and the gateway file.
-- Docker: the ports of the admin service, Valkey, PostgreSQL, Dex and oauth2-proxy are bound to `127.0.0.1` only. Clients that reached them from another host must go through nginx.
-- The admin Docker image runs on PostgreSQL only; an admin container overridden to use SQLite no longer starts.
-- `LOG_LEVEL` now takes effect. Logging components that a stored configuration pins to a level (`platform.logging.components`) keep that level; to let `LOG_LEVEL` govern them, create and activate a configuration without those entries.
-- Kyma: `--namespace` allows a second deployment on the same cluster, and the keys carry over between setups. Key rotation is not supported.
-
-**File search**
-- The gateway adds tables and columns to the file search database at its first start. An installation whose gateway database role does not own the file search tables reports file search as unavailable until the migration step has run as the owner: `gateway-migrate` on Docker, the init container on Kyma, `cli-tools/file-search-migrate.js` (or `FILE_SEARCH_MIGRATION_DATABASE_URL`) elsewhere. On a large database, the first start briefly locks the chunk table; a search at that moment can fail once.
-- Existing vector stores keep their chunks and their static chunking; the upgrade re-chunks nothing and starts no model calls. A configuration written before this release keeps static chunking without contexts. To use the new default (structure chunking with contexts), set `capabilities.file_search.chunking` to `{"strategy": "structure", "max_chunk_size_tokens": 800, "chunk_overlap_tokens": 0, "contextual": true}` and activate the configuration. On the standalone CLI, `sail-proxy config reset` rewrites `api_config.json` from the new template and so switches it on too.
-- `capabilities.file_search.chunking` takes tighter ranges: `max_chunk_size_tokens` 100 to 4096, `chunk_overlap_tokens` 0 to 2048 and at most half of `max_chunk_size_tokens`. A stored configuration outside them opens in the JSON editor and must be corrected before it can be saved.
-- The existing vector index stays until you run `rebuild-index` (`cli-tools/file-search-migrate.js rebuild-index`, on the CLI `sail-proxy file-search rebuild-index`; `--dry-run` first). Run it before you switch on approximate search. On Kyma, do not back up, restore or reset the database while it runs; `kyma-db-manager.js` refuses to.
-- Files already ingested keep their chunks; scanned pages are not read again by the upgrade. A store's owner reads its files again with **Re-read Files**.
-- `GET /files` without `limit` now returns up to 10,000 files per page instead of 20.
-
-The changelog lists every change of the release.
+Steps that one release needs beyond the command above are listed under **Upgrading** in that
+release's section of the [changelog](/changelog). Read the sections of every release between the
+installed one and the new one before you upgrade.

@@ -44,6 +44,7 @@ COPY services/admin/package.docker.json ./services/admin/package.json
 COPY services/admin/tsconfig.json ./services/admin/
 COPY services/admin/.cdsrc.json ./services/admin/
 COPY services/admin/.cdsrc.docker.json ./services/admin/
+COPY services/admin/.cdsrc.js ./services/admin/
 COPY libs/ ./libs/
 COPY services/admin/src/ ./services/admin/src/
 # CDS translation bundle for the Fiori Elements annotations; cds build merges it into dist/srv/_i18n/i18n.json
@@ -268,6 +269,8 @@ RUN --mount=type=bind,from=ui5,source=/app/services/admin/app,target=/tmp/source
     chown -R nodejs:nodejs /app/services/admin/app
 # Copy CDS configuration file for database credentials
 COPY --chown=nodejs:nodejs --from=build /app/services/admin/.cdsrc.json ./services/admin/.cdsrc.json
+# TLS verification for an external PostgreSQL; contributes nothing unless its CA is configured
+COPY --chown=nodejs:nodejs --from=build /app/services/admin/.cdsrc.js ./services/admin/.cdsrc.js
 COPY --chown=nodejs:nodejs --from=build /app/libs ./libs
 
 # Tooling guard: no build or test tooling anywhere in the image - hoisted, nested inside another
@@ -293,9 +296,10 @@ RUN mkdir -p node_modules/@libs && \
     ln -sf /app/libs/dist/aws-signing node_modules/@libs/aws-signing && \
     ln -sf /app/libs/dist/service-key-parser node_modules/@libs/service-key-parser && \
     ln -sf /app/libs/dist/plugin-package node_modules/@libs/plugin-package && \
+    ln -sf /app/libs/dist/trace-seal node_modules/@libs/trace-seal && \
     echo "=== Verifying @libs symlinks ===" && \
     ls -la node_modules/@libs/ && \
-    for lib in logger types config service-auth cache-invalidation aws-token-validation aws-signing service-key-parser plugin-package; do \
+    for lib in logger types config service-auth cache-invalidation aws-token-validation aws-signing service-key-parser plugin-package trace-seal; do \
         if [ ! -e "node_modules/@libs/$lib/" ]; then \
             echo "ERROR: @libs/$lib does not resolve - the build produced no /app/libs/dist/$lib"; \
             exit 1; \

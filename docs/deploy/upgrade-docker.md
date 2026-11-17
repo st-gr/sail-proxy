@@ -9,8 +9,8 @@ description: Upgrade a Docker Compose installation to a new release with one com
 
 ## Before you start
 
-- Node.js 20 or later and Docker with Compose.
-- The installation runs 0.11.0 or later. Skipping releases is allowed.
+- Node.js 24 or later and Docker with Compose.
+- The installation runs 0.12.1 or later. Skipping releases is allowed.
 - A registry installation. Installations whose images are built locally (a `docker-compose.override.yml` that builds) are refused: update those with git and `setup-docker.js`.
 - The install directory (the clone `setup-docker.js` ran in) has no local changes to tracked files. Commit or revert them first.
 - Free disk space in the backup folder: three times the database size plus 100 MB.
@@ -49,7 +49,7 @@ On a shared machine, prefer the hidden prompt: an environment variable can be se
 | Linux and macOS | `~/.sail-proxy/backups` |
 | Windows | `%APPDATA%\sail-proxy\backups` |
 
-The file is named `<project>-<old version>-<date>.spbk`, for example `docker-0.11.0-20261107T101500Z.spbk`. It holds the database dump and the configuration files of the install directory. It is kept after a successful run.
+The file is named `<project>-<old version>-<date>.spbk`, for example `docker-0.12.1-20261107T101500Z.spbk`. It holds the database dump and the configuration files of the install directory. It is kept after a successful run.
 
 ## What happens
 
@@ -67,7 +67,7 @@ Ctrl-C or a closed terminal before step 2 cancels the run and changes nothing. F
 
 It stops before the outage, with nothing changed, when:
 
-- the directory is no Docker install directory, or the installation is older than 0.11.0;
+- the directory is no Docker install directory, or the installation is too old for the upgrade (it names the release to upgrade to first);
 - the images are built locally, or tracked files in the install directory have local changes;
 - the package is not newer than the installed version;
 - the release changes how file storage or Valkey data is laid out;
@@ -93,7 +93,7 @@ The backup holds the database and the configuration files. It does not hold the 
 
 ```bash
 npx @st-gr/sail-proxy@latest restore docker --dir /srv/sail-proxy \
-  --input ~/.sail-proxy/backups/docker-0.11.0-20261107T101500Z.spbk
+  --input ~/.sail-proxy/backups/docker-0.12.1-20261107T101500Z.spbk
 ```
 
 This replaces the database and the configuration files with the backup, after asking (`--yes` skips the question). The passphrase is asked once, or read from `SAIL_PROXY_BACKUP_PASSPHRASE`. A wrong passphrase or a damaged file is refused with "wrong passphrase or damaged file", and nothing is changed.

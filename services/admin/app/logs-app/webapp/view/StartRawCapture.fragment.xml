@@ -1,0 +1,66 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:form="sap.ui.layout.form">
+    <!-- "Start raw capture" (controller/StartRawCapture.ts). -->
+    <Dialog id="startRawCaptureDialog" title="{i18n>startRawCaptureTitle}" contentWidth="40rem" resizable="true" draggable="true"
+        busy="{capture>/busy}" busyIndicatorDelay="300" class="sapUiContentPadding">
+        <content>
+            <MessageStrip id="rawCaptureInfoStrip" type="Information" showIcon="true" text="{i18n>rawCaptureInfo}" class="sapUiSmallMarginBottom"/>
+            <MessageStrip id="rawCaptureWeakKeyStrip" type="Warning" showIcon="true" text="{capture>/weakKeyText}"
+                visible="{= ${capture>/weakKeyText} !== '' }" class="sapUiSmallMarginBottom"/>
+            <MessageStrip id="rawCaptureErrorStrip" type="Error" showIcon="true" text="{capture>/error}"
+                visible="{= ${capture>/error} !== '' }" class="sapUiSmallMarginBottom"/>
+            <form:Form id="rawCaptureForm" editable="true">
+                <form:layout>
+                    <form:ColumnLayout columnsM="1" columnsL="1" columnsXL="1"/>
+                </form:layout>
+                <form:formContainers>
+                    <form:FormContainer>
+                        <form:formElements>
+                            <form:FormElement label="{i18n>rawCaptureKeysLabel}">
+                                <form:fields>
+                                    <MultiComboBox id="rawCaptureKeys" items="{capture>/keys}" selectedKeys="{capture>/apiKeyIds}" showSecondaryValues="true"
+                                        busy="{capture>/keysBusy}" placeholder="{i18n>rawCaptureKeysPlaceholder}"
+                                        valueState="{capture>/state/keys}" valueStateText="{capture>/stateText/keys}">
+                                        <core:ListItem key="{capture>id}" text="{capture>text}" additionalText="{capture>additionalText}"/>
+                                    </MultiComboBox>
+                                </form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>rawCaptureEmailsLabel}">
+                                <form:fields>
+                                    <TextArea id="rawCaptureEmails" value="{capture>/emails}" rows="2" width="100%" placeholder="{i18n>rawCaptureEmailsPlaceholder}"
+                                        valueState="{capture>/state/emails}" valueStateText="{capture>/stateText/emails}"/>
+                                </form:fields>
+                            </form:FormElement>
+                            <form:FormElement label="{i18n>durationLabel}">
+                                <form:fields>
+                                    <Select id="rawCaptureMinutes" selectedKey="{capture>/minutes}"
+                                        valueState="{capture>/state/minutes}" valueStateText="{capture>/stateText/minutes}">
+                                        <core:Item key="15" text="{i18n>duration15}"/>
+                                        <core:Item key="60" text="{i18n>duration60}"/>
+                                        <core:Item key="240" text="{i18n>duration240}"/>
+                                    </Select>
+                                </form:fields>
+                            </form:FormElement>
+                            <form:FormElement>
+                                <form:label>
+                                    <Label id="rawCaptureReasonLabel" text="{i18n>rawCaptureReasonLabel}" required="true" labelFor="rawCaptureReason"/>
+                                </form:label>
+                                <form:fields>
+                                    <TextArea id="rawCaptureReason" value="{capture>/reason}" rows="3" width="100%" maxLength="500"
+                                        placeholder="{i18n>rawCaptureReasonPlaceholder}" required="true"
+                                        valueState="{capture>/state/reason}" valueStateText="{capture>/stateText/reason}"/>
+                                </form:fields>
+                            </form:FormElement>
+                        </form:formElements>
+                    </form:FormContainer>
+                </form:formContainers>
+            </form:Form>
+        </content>
+        <buttons>
+            <Button id="startRawCaptureConfirm" text="{i18n>startRawCaptureAction}" type="Emphasized" press=".onStart"/>
+            <Button id="startRawCaptureCancel" text="{i18n>cancel}" press=".onCancel"/>
+        </buttons>
+    </Dialog>
+</core:FragmentDefinition>

@@ -146,7 +146,7 @@ describe('deployed chat runs the plugin chain', () => {
     mockConfig.api_config = {
       hooks: JSON.parse(JSON.stringify(shippedHooks)),
       models: { overrides: {} },
-      observability: {},
+      observability: { pseudonymization: { enabled: true } },
     };
     (global as any).matcherCache?.clear?.();
     mockEmulateStreaming = false;
@@ -210,6 +210,36 @@ describe('deployed chat runs the plugin chain', () => {
     await handleChatCompletion(mockReq(chatBody({ pseudonymization_off: true })), mockRes(), jest.fn() as any);
     const sent = mockAxiosPost.mock.calls[0][1];
     expect(sent).not.toHaveProperty('pseudonymization_off');
+    expect(JSON.stringify(sent)).not.toContain(EMAIL);
+  });
+
+  it('does not forward pseudonymization_off when the caller also sends its own masking config (forced)', async () => {
+    deploymentEchoesToken();
+    const body = chatBody({ pseudonymization_off: true, masking: { method: 'pseudonymization', entities: [{ type: 'profile-email' }] } });
+    await handleChatCompletion(mockReq(body), mockRes(), jest.fn() as any);
+    const sent = mockAxiosPost.mock.calls[0][1];
+    expect(sent).not.toHaveProperty('pseudonymization_off');
+    expect(JSON.stringify(sent)).not.toContain(EMAIL);
+  });
+
+  it('does not forward pseudonymization_off with the global switch off (nothing is forced)', async () => {
+    mockConfig.api_config.observability.pseudonymization.enabled = false;
+    deploymentEchoesToken();
+    await handleChatCompletion(mockReq(chatBody({ pseudonymization_off: true })), mockRes(), jest.fn() as any);
+    const sent = mockAxiosPost.mock.calls[0][1];
+    expect(sent).not.toHaveProperty('pseudonymization_off');
+    // Nothing forced, nothing requested: the request goes out unmasked.
+    expect(JSON.stringify(sent)).toContain(EMAIL);
+  });
+
+  it('does not forward pseudonymization_off with the global switch off when the caller requests masking', async () => {
+    mockConfig.api_config.observability.pseudonymization.enabled = false;
+    deploymentEchoesToken();
+    const body = chatBody({ pseudonymization_off: true, masking: { method: 'pseudonymization', entities: [{ type: 'profile-email' }] } });
+    await handleChatCompletion(mockReq(body), mockRes(), jest.fn() as any);
+    const sent = mockAxiosPost.mock.calls[0][1];
+    expect(sent).not.toHaveProperty('pseudonymization_off');
+    // Caller-requested masking works with the switch off and is not bypassed by the field.
     expect(JSON.stringify(sent)).not.toContain(EMAIL);
   });
 
@@ -407,7 +437,10 @@ describe('deployed chat runs the plugin chain', () => {
     const afterHandler = (pseudonymizationRules as any[]).find((r: any) => r.strategy === 'after').handler;
     const utils = { logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), trace: jest.fn() } };
 
-    it('replaces the system message instead of editing it, so an already-built payload is untouched', async () => {
+    // Until 2026-11-09 the system message was replaced by a copy, which kept the note out of the
+    // orchestration payload (built before the plugins from these same objects): models on that path
+    // got MASKED_* tokens with no explanation and declined tasks. It is edited in place now.
+    it('edits the system message in place, so an already-built payload carries the note', async () => {
       const systemMessage = { role: 'system', content: 'You are terse.' };
       const req: any = mockReq({ model: 'gpt-4o', messages: [systemMessage, { role: 'user', content: `Mail ${EMAIL}` }] });
       req.__endpoint = 'openai';
@@ -416,10 +449,10 @@ describe('deployed chat runs the plugin chain', () => {
 
       await beforeHandler({ req, res: {}, utils });
 
-      expect(systemMessage.content).toBe('You are terse.');
+      expect(req.body.messages[0]).toBe(systemMessage);
       expect(alreadyBuiltHistory[0]).toBe(systemMessage);
-      expect(req.body.messages[0]).not.toBe(systemMessage);
-      expect(req.body.messages[0].content).toContain('MASKED_<TYPE>_<id>');
+      expect(alreadyBuiltHistory[0].content).toMatch(/^You are terse\.\n\n/);
+      expect(alreadyBuiltHistory[0].content).toContain('MASKED_<TYPE>_<id>');
       expect(req.body.system).toBeUndefined();
     });
 
